@@ -131,7 +131,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 55 Li
 | APP-32 | Unit tests: Pricing, Orchestrator, RFQ | APP-29, APP-30 |
 | APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
 | APP-18 | Integration: leader failover | APP-16 |
-| APP-61 | Integration test: load accounts from YAML, validate on order | APP-58, APP-59, APP-16 |
+| APP-61 | Integration test: load accounts from YAML/CSV, validate on order | APP-58, APP-59, APP-16 |
 
 **Agent strategy:** APP-16 first (validates basic E2E), then APP-31, then APP-18, APP-23, APP-32 in parallel.
 

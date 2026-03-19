@@ -76,6 +76,7 @@ PriceReceived       │ 109 │       │          │       │         │    
 AccountLoaded       │ 110 │       │          │       │    X    │     X
 AccountLoadRejected │ 111 │       │          │       │    X    │     X
 SnapshotTaken       │ 200 │       │          │       │         │     X
+AccountSnapshot     │ 201 │       │          │       │    X    │     X
 ```
 
 ### Projection Views
