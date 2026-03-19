@@ -4,20 +4,12 @@
 
 Aeron Cluster is **NOT a load balancer**. It's a **consensus system** (Raft-based, 3-node).
 
-```
-                    ┌─────────────────┐
-All commands ──────▶│  Node 0 (LEADER) │──── processes commands
-                    │  Single-threaded │──── validates orders
-                    │  Deterministic   │──── emits events
-                    └────────┬────────┘
-                             │ replicates log
-                    ┌────────┴────────┐
-                    ▼                  ▼
-            ┌──────────────────┐  ┌──────────────────┐
-            │Node 1 (FOLLOWER) │  │Node 2 (FOLLOWER) │
-            │ Replays log      │  │ Replays log      │
-            │ Hot standby      │  │ Hot standby      │
-            └──────────────────┘  └──────────────────┘
+```mermaid
+graph TD
+    Commands["All Commands"] --> Leader["Node 0 (LEADER)<br/>Single-threaded<br/>Deterministic"]
+    Leader -- "processes commands<br/>validates orders<br/>emits events" --> Log["Replicated Log"]
+    Log -- "replicates log" --> F1["Node 1 (FOLLOWER)<br/>Replays log · Hot standby"]
+    Log -- "replicates log" --> F2["Node 2 (FOLLOWER)<br/>Replays log · Hot standby"]
 ```
 
 **Key insight:** Only 1 node (leader) processes writes at any time. The other 2 are hot standbys that maintain identical state via log replay.
@@ -34,36 +26,29 @@ This is intentional — deterministic single-threaded processing is what gives u
 
 Load doesn't split across cluster nodes. Instead, load splits across **architectural layers**:
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  LAYER 1: Ingress (parallel)                                   │
-│                                                                │
-│  FIX Session 1 ──┐                                             │
-│  FIX Session 2 ──┤──▶ Gateway (Artio, multi-session) ──┐      │
-│  FIX Session N ──┘                                      │      │
-│                                                          │      │
-│  WebSocket 1 ────┐                                      │      │
-│  WebSocket 2 ────┤──▶ FIX Client Bridge ───────────────▶│      │
-│  WebSocket N ────┘                                      │      │
-│                                                          ▼      │
-├────────────────────────────────────────────────────────────────┤
-│  LAYER 2: Consensus (single leader)                            │
-│                                                                │
-│  ──▶ Cluster Leader ──▶ validate ──▶ apply ──▶ emit event     │
-│      (single-threaded, ~10μs per command)                      │
-│                                                                │
-├────────────────────────────────────────────────────────────────┤
-│  LAYER 3: Egress (parallel fan-out)                            │
-│                                                                │
-│  Events ──┬──▶ Gateway ──▶ FIX ExecReports (parallel sessions)│
-│           ├──▶ OrderProjection    ──┐                          │
-│           ├──▶ PositionProjection ──┼──▶ QueryService          │
-│           ├──▶ QuoteProjection    ──┘       │                  │
-│           │                                 ▼                  │
-│           │                           Babl ──▶ N WebSockets    │
-│           └──▶ EventLogger ──▶ Prometheus/Loki                 │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Layer1["LAYER 1: Ingress (parallel)"]
+        FIX1["FIX Session 1..N"] --> GW["Gateway<br/>(Artio, multi-session)"]
+        WS1["WebSocket 1..N"] --> Bridge["FIX Client Bridge"]
+        Bridge --> GW
+    end
+
+    subgraph Layer2["LAYER 2: Consensus (single leader)"]
+        GW --> Leader["Cluster Leader<br/>validate → apply → emit event<br/>(single-threaded, ~10μs per command)"]
+    end
+
+    subgraph Layer3["LAYER 3: Egress (parallel fan-out)"]
+        Leader -- "Events" --> GW2["Gateway → FIX ExecReports"]
+        Leader -- "Events" --> OP["OrderProjection"]
+        Leader -- "Events" --> PP["PositionProjection"]
+        Leader -- "Events" --> QP["QuoteProjection"]
+        Leader -- "Events" --> EL["EventLogger → Prometheus/Loki"]
+        OP --> QS["QueryService"]
+        PP --> QS
+        QP --> QS
+        QS --> Babl["Babl → N WebSockets"]
+    end
 ```
 
 | Layer | Parallelism | Bottleneck? |
@@ -113,22 +98,17 @@ onSessionMessage(clientSession, timestamp, buffer, offset, length):
 
 The read side is completely decoupled from the write side. This is where you scale:
 
-```
-                    Cluster Log (source of truth)
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-     │ Projection   │ │ Projection   │ │ Projection   │
-     │ Instance A   │ │ Instance B   │ │ Instance C   │
-     │ (co-located) │ │ (separate    │ │ (separate    │
-     │              │ │  process)    │ │  machine)    │
-     └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-            │                │                │
-            ▼                ▼                ▼
-     QueryService A   QueryService B   QueryService C
-            │                │                │
-     Browser pool 1   Browser pool 2   API consumers
+```mermaid
+graph TD
+    Log["Cluster Log<br/>(source of truth)"] --> PA["Projection Instance A<br/>(co-located)"]
+    Log --> PB["Projection Instance B<br/>(separate process)"]
+    Log --> PC["Projection Instance C<br/>(separate machine)"]
+    PA --> QSA["QueryService A"]
+    PB --> QSB["QueryService B"]
+    PC --> QSC["QueryService C"]
+    QSA --> B1["Browser pool 1"]
+    QSB --> B2["Browser pool 2"]
+    QSC --> API["API consumers"]
 ```
 
 **Scaling the read side:**
