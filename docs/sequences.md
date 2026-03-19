@@ -1,0 +1,175 @@
+# Sequence Diagrams
+
+## 1. New Order Single (NOS) — Happy Path
+
+The core trading flow: FIX client sends order, cluster validates, executes, and returns execution report.
+
+```mermaid
+sequenceDiagram
+    participant C as FIX Client
+    participant G as Gateway (Artio)
+    participant M as Media Driver
+    participant K as Cluster (Leader)
+    participant P as Projections
+    participant Q as QueryService
+    participant B as Babl WebSocket
+    participant W as Browser
+
+    C->>G: FIX 4.4 NewOrderSingle (35=D)
+    activate G
+    G->>G: FixToSbeTranslator.encode()
+    G->>M: PlaceOrder (SBE, Aeron IPC)
+    deactivate G
+
+    M->>K: PlaceOrder (Aeron UDP, replicated)
+    activate K
+    K->>K: PlaceOrderHandler.validate()
+    K->>K: OrderBook.add()
+    K->>K: EventSink.emit(OrderAccepted)
+    K-->>M: OrderAccepted (egress)
+    deactivate K
+
+    par FIX response
+        M-->>G: OrderAccepted (Aeron IPC)
+        activate G
+        G->>G: SbeToFixTranslator.decode()
+        G-->>C: FIX 4.4 ExecutionReport (35=8, OrdStatus=0)
+        deactivate G
+    and Projection update
+        M-->>P: OrderAccepted (Aeron IPC)
+        activate P
+        P->>P: OrderProjection.onOrderAccepted()
+        P->>Q: updated OrderView
+        deactivate P
+    and Browser streaming
+        Q->>B: OrderView (SBE, Aeron IPC)
+        B->>W: SBE binary frame (WebSocket)
+        W->>W: Web Worker decodes SBE
+        W->>W: React re-renders blotter row
+    end
+```
+
+### Latency Budget
+
+```
+FIX parse + SBE encode:     ~5 us
+Aeron IPC to cluster:       ~1-5 us
+Cluster validate + apply:  ~10 us
+Aeron egress:               ~1-5 us
+SBE decode + FIX encode:    ~5 us
+TCP to FIX client:          ~0.1 ms
+─────────────────────────────────────
+Total (FIX-to-FIX):        ~0.15 ms
+```
+
+---
+
+## 2. RFQ Full Flow
+
+Request-for-quote: client asks for a price, Pricing Service responds, client accepts, order fills.
+
+```mermaid
+sequenceDiagram
+    participant C as FIX Client
+    participant G as Gateway
+    participant K as Cluster
+    participant O as Orchestrator
+    participant PS as Pricing Service
+    participant P as Projections
+    participant B as Browser (via Babl)
+
+    C->>G: FIX QuoteRequest (35=R)
+    G->>K: QuoteRequest (SBE)
+
+    activate K
+    K->>K: QuoteRequestHandler.validate()
+    K->>K: RfqStateMachine → REQUESTED
+    K-->>O: QuoteRequested (event)
+    deactivate K
+
+    activate O
+    O->>PS: RequestPrice (symbol, qty, side)
+    PS->>PS: Calculate bid/ask spread
+    PS-->>O: PriceResponse (bid, ask)
+    O->>K: SubmitQuote (SBE)
+    deactivate O
+
+    activate K
+    K->>K: RfqStateMachine → QUOTED
+    K-->>G: QuoteCreated (event)
+    K-->>P: QuoteCreated (event)
+    deactivate K
+
+    G-->>C: FIX Quote (35=S, bid + ask)
+    P-->>B: QuoteCreated (streaming)
+
+    Note over C: Trader reviews price...
+
+    C->>G: FIX AcceptQuote
+    G->>K: AcceptQuote (SBE)
+
+    activate K
+    K->>K: RfqStateMachine → ACCEPTED
+    K->>K: OrderBook.fill() (atomic)
+    K->>K: RfqStateMachine → FILLED
+    K-->>G: OrderFilled (event)
+    K-->>P: OrderFilled (event)
+    deactivate K
+
+    G-->>C: FIX ExecutionReport (35=8, OrdStatus=2)
+    P-->>B: OrderFilled (streaming)
+```
+
+---
+
+## 3. Leader Failover
+
+Node 0 (leader) dies. Cluster elects new leader. No messages lost.
+
+```mermaid
+sequenceDiagram
+    participant C as FIX Client
+    participant G as Gateway
+    participant N0 as Node 0 (Leader)
+    participant N1 as Node 1 (Follower)
+    participant N2 as Node 2 (Follower)
+
+    Note over N0,N2: Normal operation — Node 0 is leader
+
+    C->>G: PlaceOrder
+    G->>N0: PlaceOrder (via Media Driver)
+    N0->>N1: Replicate log entry
+    N0->>N2: Replicate log entry
+    N0-->>G: OrderAccepted
+    G-->>C: ExecutionReport
+
+    Note over N0: Node 0 crashes!
+
+    N1->>N1: Election timeout
+    N1->>N2: RequestVote
+    N2-->>N1: VoteGranted
+
+    Note over N1: Node 1 becomes leader
+
+    N1->>G: New leader notification
+    G->>G: Reconnect ClusterClient to Node 1
+
+    C->>G: PlaceOrder (next order)
+    G->>N1: PlaceOrder (via Media Driver)
+    N1->>N2: Replicate log entry
+    N1-->>G: OrderAccepted
+    G-->>C: ExecutionReport
+
+    Note over N1,N2: Service continues with 2/3 nodes
+    Note over N0: Node 0 restarts, replays log, rejoins as follower
+```
+
+### Failover Guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| No message loss | Aeron log replication (majority ack before commit) |
+| No duplicate processing | Cluster sequence numbers (idempotent replay) |
+| Automatic reconnect | ClusterClient detects leader change, reconnects |
+| State recovery | New leader has full replicated log |
+| Rejoining node | Replays log from snapshot + remaining entries |
