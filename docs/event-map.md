@@ -38,12 +38,12 @@ OrderCreated        │ 100             │ PlaceOrder          │ ExecReport (
 OrderRejected       │ 101             │ PlaceOrder          │ ExecReport (150=8)
 OrderFilled         │ 102             │ AcceptQuote / match │ ExecReport (150=F)
 OrderCancelled      │ 103             │ CancelOrder         │ ExecReport (150=4)
-QuoteRequested      │ 105             │ QuoteRequest        │ (internal)
-QuoteCreated        │ 106             │ PriceResponse       │ Quote (35=S)
-QuoteRejected       │ 107             │ QuoteRequest        │ QuoteAck (35=b)
-QuoteExpired        │ 108             │ timeout             │ QuoteCancel
-PriceRequested      │ 109             │ QuoteRequest        │ (to Pricing Svc)
-PriceReceived       │ 110             │ PriceResponse       │ (internal)
+QuoteRequested      │ 104             │ QuoteRequest        │ (internal)
+QuoteCreated        │ 105             │ PriceResponse       │ Quote (35=S)
+QuoteRejected       │ 106             │ QuoteRequest        │ QuoteAck (35=b)
+QuoteExpired        │ 107             │ timeout             │ QuoteCancel
+PriceRequested      │ 108             │ QuoteRequest        │ (to Pricing Svc)
+PriceReceived       │ 109             │ PriceResponse       │ (internal)
 SnapshotTaken       │ 200             │ cluster timer       │ (internal)
 ```
 
@@ -58,12 +58,12 @@ OrderCreated        │ 100 │  X    │          │       │     X
 OrderRejected       │ 101 │  X    │          │       │     X
 OrderFilled         │ 102 │  X    │    X     │   X   │     X
 OrderCancelled      │ 103 │  X    │    X     │       │     X
-QuoteRequested      │ 105 │       │          │   X   │     X
-QuoteCreated        │ 106 │       │          │   X   │     X
-QuoteRejected       │ 107 │       │          │   X   │     X
-QuoteExpired        │ 108 │       │          │   X   │     X
-PriceRequested      │ 109 │       │          │       │     X
-PriceReceived       │ 110 │       │          │       │     X
+QuoteRequested      │ 104 │       │          │   X   │     X
+QuoteCreated        │ 105 │       │          │   X   │     X
+QuoteRejected       │ 106 │       │          │   X   │     X
+QuoteExpired        │ 107 │       │          │   X   │     X
+PriceRequested      │ 108 │       │          │       │     X
+PriceReceived       │ 109 │       │          │       │     X
 SnapshotTaken       │ 200 │       │          │       │     X
 ```
 
