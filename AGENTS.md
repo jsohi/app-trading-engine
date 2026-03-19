@@ -198,6 +198,13 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 
 ## Multi-Agent Best Practices
 
+### 0. No Direct Pushes to Main
+- **NEVER push directly to `main`** — all changes go through feature branches + PRs
+- Branch naming: `feat/app-{N}-short-description`
+- Only the Orchestrator merges approved PRs into `main`
+- A pre-push git hook enforces this locally (see `.githooks/pre-push`)
+- This is enforced by convention — treat it as a hard rule
+
 ### 1. One Issue = One Branch = One Agent
 - Each Implementer agent works in an **isolated git worktree**
 - Branch naming: `feat/app-{N}-short-description`
