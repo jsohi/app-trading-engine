@@ -25,7 +25,7 @@ Launch these agents in parallel:
 
 Read every changed file in full. Check for these **blocking violations** — any match means the branch is NOT ready to push:
 
-1. **No heap allocation in cluster hot path** — flag any `new` keyword inside cluster service code (except in snapshot restore or startup). Look for `new ArrayList`, `new HashMap`, `new String`, boxing of primitives, string concatenation with `+`, autoboxing, `String.format`, `Arrays.asList`, `List.of`, `Map.of`, `stream()`, `collect()`, lambdas that capture variables.
+1. **No heap allocation in cluster hot path** — flag any `new` keyword in files under cluster or gateway packages (except in snapshot restore or startup). Look for `new ArrayList`, `new HashMap`, `new String`, boxing of primitives, string concatenation with `+`, autoboxing, `String.format`, `Arrays.asList`, `List.of`, `Map.of`, `stream()`, `collect()`, lambdas that capture variables.
 
 2. **No `java.util.*` collections in cluster/gateway modules** — flag any import of `java.util.HashMap`, `java.util.ArrayList`, `java.util.Map`, `java.util.List`, `java.util.Set`, etc. in files under cluster or gateway packages. Must use Agrona: `Object2ObjectHashMap`, `Long2ObjectHashMap`, `Int2ObjectHashMap`, `ObjectHashSet`, etc.
 

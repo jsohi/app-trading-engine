@@ -217,7 +217,7 @@ Theoretical max:  ~2-10M commands/sec (single-threaded)
 Practical max:    ~100-500K commands/sec (with replication + egress)
 ```
 
-For context: a busy FX desk does ~10K-50K orders/day. We have 10-100x headroom.
+For context: a busy FX desk does ~10K-50K orders/day (~1 order/sec average). Peak burst rates during volatile markets can reach ~100-500 orders/sec. Against a practical max of ~100K-500K commands/sec, we have ~1000x headroom on average and ~200-1000x headroom at peak burst.
 
 ---
 
