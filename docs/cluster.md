@@ -57,9 +57,11 @@ Load doesn't split across cluster nodes. Instead, load splits across **architect
 │                                                                │
 │  Events ──┬──▶ Gateway ──▶ FIX ExecReports (parallel sessions)│
 │           ├──▶ OrderProjection    ──┐                          │
-│           ├──▶ PositionProjection ──┤──▶ QueryService ──▶ Babl │
-│           ├──▶ QuoteProjection    ──┘       │     ──▶ N browser│
-│           └──▶ EventLogger ──▶ Prometheus/Loki      WebSockets │
+│           ├──▶ PositionProjection ──┼──▶ QueryService          │
+│           ├──▶ QuoteProjection    ──┘       │                  │
+│           │                                 ▼                  │
+│           │                           Babl ──▶ N WebSockets    │
+│           └──▶ EventLogger ──▶ Prometheus/Loki                 │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```

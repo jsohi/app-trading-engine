@@ -6,7 +6,7 @@ This is the contract. SBE schema implements exactly these messages. Every arrow 
 
 ### Commands (Ingress to Cluster)
 
-SBE template IDs 1-10 are reserved for command messages.
+SBE template IDs 1-10 are reserved for command and response messages.
 AcceptQuote is not a separate SBE message — it uses NewOrderSingle with ordType=PreviouslyQuoted and quoteId set.
 
 ```
