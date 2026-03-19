@@ -43,7 +43,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 |-------|-------|-------------|
 | APP-5 | Scaffold Gradle multi-module project | Implementer → Reviewer → Test (`./gradlew projects && ./gradlew build`) |
 
-**Verification:** `./gradlew projects` shows 7+ subprojects, `./gradlew build` succeeds, CLAUDE.md exists.
+**Verification:** `./gradlew projects` shows all 14 subprojects, `./gradlew build` succeeds, CLAUDE.md exists.
 
 ---
 
@@ -52,7 +52,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 
 | Issue | Title | Branch | Parallel Group |
 |-------|-------|--------|----------------|
-| APP-6 | SBE XML schema (5 command messages) | `feat/app-6-sbe-schema` | A |
+| APP-6 | SBE XML schema (7 messages: 5 original + CancelOrder + MassQuote) | `feat/app-6-sbe-schema` | A |
 | APP-17 | Standalone Aeron Media Driver | `feat/app-17-media-driver` | B |
 | APP-19 | Domain event SBE message types | `feat/app-19-event-messages` | A (after APP-6) |
 | APP-28 | Pricing SBE messages | `feat/app-28-pricing-messages` | A (after APP-6) |
@@ -61,9 +61,9 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 **Note:** APP-19, APP-28, APP-44 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 (each building on the previous). APP-17 is fully independent.
 
 **Verification per issue:**
-- APP-6: `./gradlew :messages:generateCodecs && ./gradlew :messages:compileJava` — 5 encoder/decoder pairs generated
+- APP-6: `./gradlew :messages:generateCodecs && ./gradlew :messages:compileJava` — 7 encoder/decoder pairs generated (QuoteRequest, Quote, QuoteRequestReject, NewOrderSingle, ExecutionReport, CancelOrderRequest, MassQuote)
 - APP-17: `./gradlew :media-driver:run --args="--aeron-dir=$TMPDIR/aeron-test"` — CnC file created
-- APP-19: `./gradlew :messages:generateCodecs` — 5 event + 1 snapshot message codecs
+- APP-19: `./gradlew :messages:generateCodecs` — 10 event + 1 snapshot message codecs (OrderCreated, OrderRejected, OrderFilled, OrderCancelled, QuoteRequested, QuoteCreated, QuoteRejected, QuoteExpired, PriceRequested, PriceReceived, SnapshotHeader)
 - APP-28: `./gradlew :messages:generateCodecs` — 4 pricing message codecs
 - APP-44: `./gradlew :messages:generateCodecs` — ProductTypeEnum, TenorEnum, NoLegs groups generated
 

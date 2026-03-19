@@ -57,10 +57,9 @@ Load doesn't split across cluster nodes. Instead, load splits across **architect
 │                                                                │
 │  Events ──┬──▶ Gateway ──▶ FIX ExecReports (parallel sessions)│
 │           ├──▶ OrderProjection    ──┐                          │
-│           ├──▶ PositionProjection ──┤──▶ QueryService          │
-│           ├──▶ QuoteProjection    ──┘       │                  │
-│           ├──▶ EventLogger ──▶ Prometheus/Loki                 │
-│           └──▶ Babl ──▶ N browser WebSockets                   │
+│           ├──▶ PositionProjection ──┤──▶ QueryService ──▶ Babl │
+│           ├──▶ QuoteProjection    ──┘       │     ──▶ N browser│
+│           └──▶ EventLogger ──▶ Prometheus/Loki      WebSockets │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -91,11 +90,14 @@ onSessionMessage(clientSession, timestamp, buffer, offset, length):
 
 ### Follower Nodes
 ```
-onSessionMessage(...):  // same callback, same code path
-    1. Receive replicated log entry from leader
-    2. Decode + apply SAME operations in SAME order
-    3. State is IDENTICAL to leader at all times
-    4. Ready to become leader instantly if current leader dies
+onSessionMessage(clientSession, timestamp, buffer, offset, length):
+    // Invoked by framework on replicated log replay — same callback, same code path
+    1. Decode SBE command (flyweight, zero-alloc)
+    2. Route to CommandHandler (PlaceOrder, CancelOrder, QuoteRequest...)
+    3. Validate (same checks as leader)
+    4. Apply to write model (identical state transitions)
+    // Result: state is identical to leader at all times.
+    // Ready to become leader instantly if current leader dies.
 ```
 
 ### Why Followers Run the Same Code
@@ -217,7 +219,7 @@ Theoretical max:  ~2-10M commands/sec (single-threaded)
 Practical max:    ~100-500K commands/sec (with replication + egress)
 ```
 
-For context: a busy FX desk does ~10K-50K orders/day (~1 order/sec average). Peak burst rates during volatile markets can reach ~100-500 orders/sec. Against a practical max of ~100K-500K commands/sec, we have ~1000x headroom on average and ~200-1000x headroom at peak burst.
+For context: a busy FX desk does ~10K-50K orders/day (~1 order/sec average, ~100-500 orders/sec peak burst during volatile markets). Against a practical max of ~100K-500K commands/sec, we have ~1000x headroom on average and ~200-5000x headroom at peak burst.
 
 ---
 
