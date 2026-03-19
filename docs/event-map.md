@@ -29,7 +29,7 @@ QuoteRequestReject  │ 3               │ AG          │ QuoteRequestReject
 ExecutionReport     │ 5               │ 8 (ExecRpt) │ ExecutionReport
 ```
 
-### Events (Egress from Cluster, templateId 100-199)
+### Events (Egress from Cluster, templateId 100-109, 200+)
 
 ```
 Event               │ SBE Template ID │ Trigger Command     │ FIX Response
