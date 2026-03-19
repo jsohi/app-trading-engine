@@ -6,31 +6,44 @@ This is the contract. SBE schema implements exactly these messages. Every arrow 
 
 ### Commands (Ingress to Cluster)
 
+SBE template IDs 1-10 are reserved for command and response messages.
+AcceptQuote is not a separate SBE message — it uses NewOrderSingle with ordType=PreviouslyQuoted and quoteId set.
+
 ```
-Command             │ SBE Template ID │ FIX MsgType │ Handler
-────────────────────┼─────────────────┼─────────────┼──────────────────────
-PlaceOrder          │ 1               │ D (NOS)     │ PlaceOrderHandler
-CancelOrder         │ 2               │ F (Cancel)  │ CancelOrderHandler
-QuoteRequest        │ 3               │ R (QuoteReq)│ QuoteRequestHandler
-AcceptQuote         │ 4               │ D (NOS)     │ AcceptQuoteHandler
-MassQuote           │ 5               │ i (MassQt)  │ MassQuoteHandler
+Command             │ SBE Template ID │ FIX MsgType │ SBE Message          │ Handler
+────────────────────┼─────────────────┼─────────────┼──────────────────────┼──────────────────────
+QuoteRequest        │ 1               │ R (QuoteReq)│ QuoteRequest         │ QuoteRequestHandler
+PlaceOrder          │ 4               │ D (NOS)     │ NewOrderSingle       │ PlaceOrderHandler
+AcceptQuote         │ 4               │ D (NOS)     │ NewOrderSingle       │ AcceptQuoteHandler
+CancelOrder         │ 6               │ F (Cancel)  │ CancelOrderRequest   │ CancelOrderHandler
+MassQuote           │ 7               │ i (MassQt)  │ MassQuote            │ MassQuoteHandler
 ```
 
-### Events (Egress from Cluster)
+### Responses (Cluster → Gateway, templateId 2-5)
+
+```
+Response            │ SBE Template ID │ FIX MsgType │ SBE Message
+────────────────────┼─────────────────┼─────────────┼──────────────────────
+Quote               │ 2               │ S (Quote)   │ Quote
+QuoteRequestReject  │ 3               │ AG          │ QuoteRequestReject
+ExecutionReport     │ 5               │ 8 (ExecRpt) │ ExecutionReport
+```
+
+### Events (Egress from Cluster, templateId 100-109, 200+)
 
 ```
 Event               │ SBE Template ID │ Trigger Command     │ FIX Response
 ────────────────────┼─────────────────┼─────────────────────┼──────────────
-OrderAccepted       │ 101             │ PlaceOrder          │ ExecReport (150=0)
-OrderRejected       │ 102             │ PlaceOrder          │ ExecReport (150=8)
+OrderCreated        │ 100             │ PlaceOrder          │ ExecReport (150=0)
+OrderRejected       │ 101             │ PlaceOrder          │ ExecReport (150=8)
+OrderFilled         │ 102             │ AcceptQuote / match │ ExecReport (150=F)
 OrderCancelled      │ 103             │ CancelOrder         │ ExecReport (150=4)
-OrderFilled         │ 104             │ AcceptQuote / match │ ExecReport (150=F)
-QuoteRequested      │ 105             │ QuoteRequest        │ (internal)
-QuoteCreated        │ 106             │ PriceResponse       │ Quote (35=S)
-QuoteRejected       │ 107             │ QuoteRequest        │ QuoteAck (35=b)
-QuoteExpired        │ 108             │ timeout             │ QuoteCancel
-PriceRequested      │ 109             │ QuoteRequest        │ (to Pricing Svc)
-PriceReceived       │ 110             │ PriceResponse       │ (internal)
+QuoteRequested      │ 104             │ QuoteRequest        │ (internal)
+QuoteCreated        │ 105             │ PriceResponse       │ Quote (35=S)
+QuoteRejected       │ 106             │ QuoteRequest        │ QuoteAck (35=b)
+QuoteExpired        │ 107             │ timeout             │ QuoteCancel
+PriceRequested      │ 108             │ QuoteRequest        │ (to Pricing Svc)
+PriceReceived       │ 109             │ PriceResponse       │ (internal)
 SnapshotTaken       │ 200             │ cluster timer       │ (internal)
 ```
 
@@ -39,19 +52,19 @@ SnapshotTaken       │ 200             │ cluster timer       │ (internal)
 Which projections consume which events:
 
 ```
-Event               │ Order │ Position │ Quote │ EventLogger
-────────────────────┼───────┼──────────┼───────┼────────────
-OrderAccepted       │  X    │          │       │     X
-OrderRejected       │  X    │          │       │     X
-OrderCancelled      │  X    │    X     │       │     X
-OrderFilled         │  X    │    X     │   X   │     X
-QuoteRequested      │       │          │   X   │     X
-QuoteCreated        │       │          │   X   │     X
-QuoteRejected       │       │          │   X   │     X
-QuoteExpired        │       │          │   X   │     X
-PriceRequested      │       │          │       │     X
-PriceReceived       │       │          │       │     X
-SnapshotTaken       │       │          │       │     X
+Event               │ ID  │ Order │ Position │ Quote │ EventLogger
+────────────────────┼─────┼───────┼──────────┼───────┼────────────
+OrderCreated        │ 100 │  X    │          │       │     X
+OrderRejected       │ 101 │  X    │          │       │     X
+OrderFilled         │ 102 │  X    │    X     │   X   │     X
+OrderCancelled      │ 103 │  X    │    X     │       │     X
+QuoteRequested      │ 104 │       │          │   X   │     X
+QuoteCreated        │ 105 │       │          │   X   │     X
+QuoteRejected       │ 106 │       │          │   X   │     X
+QuoteExpired        │ 107 │       │          │   X   │     X
+PriceRequested      │ 108 │       │          │       │     X
+PriceReceived       │ 109 │       │          │       │     X
+SnapshotTaken       │ 200 │       │          │       │     X
 ```
 
 ### Projection Views
@@ -97,10 +110,10 @@ graph LR
     end
 
     subgraph Events["Events (Egress)"]
-        OA["OrderAccepted"]
+        OA["OrderCreated"]
         OR["OrderRejected"]
-        OC["OrderCancelled"]
         OF["OrderFilled"]
+        OC["OrderCancelled"]
         QReq["QuoteRequested"]
         QC["QuoteCreated"]
     end
