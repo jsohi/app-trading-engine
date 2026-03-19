@@ -7,6 +7,7 @@ This is the contract. SBE schema implements exactly these messages. Every arrow 
 ### Commands (Ingress to Cluster)
 
 SBE template IDs 1-10 are reserved for command and response messages.
+SBE template IDs 11-19 are reserved for reference data commands.
 AcceptQuote is not a separate SBE message — it uses NewOrderSingle with ordType=PreviouslyQuoted and quoteId set.
 
 ```
@@ -17,7 +18,10 @@ PlaceOrder          │ 4               │ D (NOS)     │ NewOrderSingle      
 AcceptQuote         │ 4               │ D (NOS)     │ NewOrderSingle       │ AcceptQuoteHandler
 CancelOrder         │ 6               │ F (Cancel)  │ CancelOrderRequest   │ CancelOrderHandler
 MassQuote           │ 7               │ i (MassQt)  │ MassQuote            │ MassQuoteHandler
+LoadAccount         │ 11              │ —           │ LoadAccount          │ LoadAccountHandler
 ```
+
+Template IDs 12-19 are reserved for future reference data types (instruments, currency pairs, etc.).
 
 ### Responses (Cluster → Gateway, templateId 2-5)
 
@@ -29,7 +33,7 @@ QuoteRequestReject  │ 3               │ AG          │ QuoteRequestReject
 ExecutionReport     │ 5               │ 8 (ExecRpt) │ ExecutionReport
 ```
 
-### Events (Egress from Cluster, templateId 100-109, 200+)
+### Events (Egress from Cluster, templateId 100-119, 200+)
 
 ```
 Event               │ SBE Template ID │ Trigger Command     │ FIX Response
@@ -44,27 +48,34 @@ QuoteRejected       │ 106             │ QuoteRequest        │ QuoteAck (35
 QuoteExpired        │ 107             │ timeout             │ QuoteCancel
 PriceRequested      │ 108             │ QuoteRequest        │ (to Pricing Svc)
 PriceReceived       │ 109             │ PriceResponse       │ (internal)
+AccountLoaded       │ 110             │ LoadAccount         │ (internal)
+AccountLoadRejected │ 111             │ LoadAccount         │ (internal)
 SnapshotTaken       │ 200             │ cluster timer       │ (internal)
+AccountSnapshot     │ 201             │ snapshot            │ (internal)
 ```
+
+Template IDs 112-119 are reserved for future reference data events.
 
 ### Projection Matrix
 
 Which projections consume which events:
 
 ```
-Event               │ ID  │ Order │ Position │ Quote │ EventLogger
-────────────────────┼─────┼───────┼──────────┼───────┼────────────
-OrderCreated        │ 100 │  X    │          │       │     X
-OrderRejected       │ 101 │  X    │          │       │     X
-OrderFilled         │ 102 │  X    │    X     │   X   │     X
-OrderCancelled      │ 103 │  X    │    X     │       │     X
-QuoteRequested      │ 104 │       │          │   X   │     X
-QuoteCreated        │ 105 │       │          │   X   │     X
-QuoteRejected       │ 106 │       │          │   X   │     X
-QuoteExpired        │ 107 │       │          │   X   │     X
-PriceRequested      │ 108 │       │          │       │     X
-PriceReceived       │ 109 │       │          │       │     X
-SnapshotTaken       │ 200 │       │          │       │     X
+Event               │ ID  │ Order │ Position │ Quote │ Account │ EventLogger
+────────────────────┼─────┼───────┼──────────┼───────┼─────────┼────────────
+OrderCreated        │ 100 │  X    │          │       │         │     X
+OrderRejected       │ 101 │  X    │          │       │         │     X
+OrderFilled         │ 102 │  X    │    X     │   X   │         │     X
+OrderCancelled      │ 103 │  X    │    X     │       │         │     X
+QuoteRequested      │ 104 │       │          │   X   │         │     X
+QuoteCreated        │ 105 │       │          │   X   │         │     X
+QuoteRejected       │ 106 │       │          │   X   │         │     X
+QuoteExpired        │ 107 │       │          │   X   │         │     X
+PriceRequested      │ 108 │       │          │       │         │     X
+PriceReceived       │ 109 │       │          │       │         │     X
+AccountLoaded       │ 110 │       │          │       │    X    │     X
+AccountLoadRejected │ 111 │       │          │       │    X    │     X
+SnapshotTaken       │ 200 │       │          │       │         │     X
 ```
 
 ### Projection Views
@@ -89,6 +100,14 @@ QuoteProjection
 ├── getBySymbol(String)          → Collection<QuoteView>
 └── Fields: quoteReqId, symbol, side, quantity, bidPrice,
             askPrice, state, expiryTime, legs[]
+
+AccountProjection
+├── getByAccountId(long)         → AccountView
+├── getByAccountCode(String)     → AccountView
+├── getAll()                     → Collection<AccountView>
+└── Fields: accountId, accountCode, accountName, accountType,
+            baseCurrency, status, maxOrderSize, maxDailyVolume,
+            canTrade, canRequestQuotes
 ```
 
 ## Data Flow Diagram
@@ -101,12 +120,14 @@ graph LR
         QuoteRequest
         AcceptQuote
         MassQuote
+        LoadAccount
     end
 
     subgraph Cluster["Cluster (Write Model)"]
         OH["OrderBook<br/>(Agrona maps)"]
         RFQ["RfqStateMachine"]
         PT["PositionTracker"]
+        AS["AccountStore<br/>(Agrona Long2ObjectHashMap)"]
     end
 
     subgraph Events["Events (Egress)"]
@@ -116,12 +137,14 @@ graph LR
         OC["OrderCancelled"]
         QReq["QuoteRequested"]
         QC["QuoteCreated"]
+        AL["AccountLoaded"]
     end
 
     subgraph ReadModel["Projections (Read Model)"]
         OP["OrderProjection"]
         PP["PositionProjection"]
         QP["QuoteProjection"]
+        AP["AccountProjection"]
         EL["EventLogger"]
     end
 
@@ -135,6 +158,7 @@ graph LR
     CancelOrder --> OH
     QuoteRequest --> RFQ
     AcceptQuote --> RFQ
+    LoadAccount --> AS
 
     OH --> OA
     OH --> OR
@@ -142,6 +166,7 @@ graph LR
     OH --> OF
     RFQ --> QReq
     RFQ --> QC
+    AS --> AL
 
     OA --> OP
     OA --> EL
@@ -152,10 +177,13 @@ graph LR
     OC --> PP
     QReq --> QP
     QC --> QP
+    AL --> AP
+    AL --> EL
 
     OP --> Babl
     PP --> Babl
     QP --> Babl
+    AP --> Babl
     OP --> FIX
     QP --> FIX
     EL --> Grafana

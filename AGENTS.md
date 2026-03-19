@@ -2,7 +2,7 @@
 
 ## Context
 
-Plan the sequence, agent roles, and verification strategy for implementing 50 Linear issues (APP-5 through APP-54) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
+Plan the sequence, agent roles, and verification strategy for implementing 55 Linear issues (APP-5 through APP-61) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
 
 ---
 
@@ -57,8 +57,9 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 | APP-19 | Domain event SBE message types | `feat/app-19-event-messages` | A (after APP-6) |
 | APP-28 | Pricing SBE messages | `feat/app-28-pricing-messages` | A (after APP-6) |
 | APP-44 | FX product types + NoLegs schema | `feat/app-44-fx-multileg-schema` | A (after APP-6) |
+| APP-57 | SBE schema: reference data messages (accounts) | `feat/app-57-refdata-schema` | A (after APP-44) |
 
-**Note:** APP-19, APP-28, APP-44 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 (each building on the previous). APP-17 is fully independent.
+**Note:** APP-19, APP-28, APP-44, APP-57 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 → APP-57 (each building on the previous). APP-17 is fully independent.
 
 **Verification per issue:**
 - APP-6: `./gradlew :messages:generateCodecs && ./gradlew :messages:compileJava` — 7 encoder/decoder pairs generated (QuoteRequest, Quote, QuoteRequestReject, NewOrderSingle, ExecutionReport, CancelOrderRequest, MassQuote)
@@ -80,6 +81,8 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 | APP-21 | EventJournal | Yes |
 | APP-24 | Projections module + Projection interface | Yes |
 | APP-11 | Unit tests for FIX-SBE translators | After APP-10 |
+| APP-58 | AccountStore + LoadAccountHandler in cluster | Yes (after APP-57, APP-7) |
+| APP-59 | reference-data module: generic framework + YAML/CSV loaders | Yes (after APP-57, parallel with APP-58) |
 
 **Verification:** `./gradlew :cluster:test` (APP-7, APP-20), `./gradlew :gateway:test` (APP-10, APP-11), `./gradlew :projections:compileJava` (APP-24)
 
@@ -95,6 +98,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 | APP-13 | FixGateway + FixSessionHandler | APP-10, APP-12 | After APP-12 |
 | APP-14 | ClusterNodeLauncher (3-node) | APP-8, APP-17 | After APP-8 |
 | APP-25 | OrderProjection + PositionProjection | APP-24 | Yes |
+| APP-60 | AccountProjection + account validation in order/quote handlers | APP-58, APP-24 | Yes |
 
 **Agent strategy:** Run APP-8, APP-12, APP-25 in parallel. Then APP-9, APP-13, APP-14 in a second sub-wave.
 
@@ -127,6 +131,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 | APP-32 | Unit tests: Pricing, Orchestrator, RFQ | APP-29, APP-30 |
 | APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
 | APP-18 | Integration: leader failover | APP-16 |
+| APP-61 | Integration test: load accounts from YAML, validate on order | APP-58, APP-59, APP-16 |
 
 **Agent strategy:** APP-16 first (validates basic E2E), then APP-31, then APP-18, APP-23, APP-32 in parallel.
 
@@ -212,7 +217,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 50 Li
 - Never let two agents edit the same file simultaneously
 
 ### 2. Schema Issues Are Serial
-APP-6 → APP-19 → APP-28 → APP-44 all modify `trading-schema.xml`. These MUST be sequential within their wave to avoid merge conflicts.
+APP-6 → APP-19 → APP-28 → APP-44 → APP-57 all modify `trading-schema.xml`. These MUST be sequential within their wave to avoid merge conflicts.
 
 ### 3. Review Agent Checklist
 Every PR gets a Reviewer agent that checks:
@@ -264,7 +269,7 @@ When two parallel agents produce conflicting changes:
 | 10 | 4 | Medium |
 | 11 | 2 | Short |
 
-**Total: 50 issues across 11 waves, ~16 serial steps on critical path.**
+**Total: 55 issues across 11 waves, ~16 serial steps on critical path.**
 
 ---
 
