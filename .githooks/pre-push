@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#
+# Prevents direct pushes to main. All changes must go through feature branches + PRs.
+# Install: git config core.hooksPath .githooks
+
+current_branch=$(git symbolic-ref HEAD 2>/dev/null)
+
+if [ "$current_branch" = "refs/heads/main" ]; then
+    echo ""
+    echo "BLOCKED: Direct push to main is not allowed."
+    echo ""
+    echo "  Create a feature branch and open a PR instead:"
+    echo "    git checkout -b feat/app-N-description"
+    echo "    git push -u origin feat/app-N-description"
+    echo "    gh pr create"
+    echo ""
+    exit 1
+fi
+
+exit 0
