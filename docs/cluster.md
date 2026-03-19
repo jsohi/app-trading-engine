@@ -13,11 +13,11 @@ All commands ──────▶│  Node 0 (LEADER) │──── processes
                              │ replicates log
                     ┌────────┴────────┐
                     ▼                  ▼
-            ┌──────────────┐  ┌──────────────┐
-            │Node 1 (FOLLW)│  │Node 2 (FOLLW)│
-            │ Replays log  │  │ Replays log  │
-            │ Hot standby  │  │ Hot standby  │
-            └──────────────┘  └──────────────┘
+            ┌──────────────────┐  ┌──────────────────┐
+            │Node 1 (FOLLOWER) │  │Node 2 (FOLLOWER) │
+            │ Replays log      │  │ Replays log      │
+            │ Hot standby      │  │ Hot standby      │
+            └──────────────────┘  └──────────────────┘
 ```
 
 **Key insight:** Only 1 node (leader) processes writes at any time. The other 2 are hot standbys that maintain identical state via log replay.
