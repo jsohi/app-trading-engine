@@ -16,7 +16,7 @@ graph TB
     end
 
     subgraph Server["Server Tier"]
-        Gateway["Gateway<br/>Artio FIX Acceptor :8001"]
+        Gateway["Gateway<br/>Artio FIX Acceptor :9880"]
         Cluster["Aeron Cluster (3-node)<br/>OrderBook · RFQ · Matching"]
         MediaDriver["Aeron Media Driver"]
         Pricing["Pricing Service"]

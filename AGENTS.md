@@ -2,7 +2,7 @@
 
 ## Context
 
-Plan the sequence, agent roles, and verification strategy for implementing 55 Linear issues (APP-5 through APP-61) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
+Plan the sequence, agent roles, and verification strategy for implementing 55 Linear issues (APP-5 through APP-61, non-contiguous) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
 
 ---
 

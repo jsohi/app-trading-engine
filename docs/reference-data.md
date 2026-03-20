@@ -2,7 +2,7 @@
 
 ## Data Flow
 
-```
+```text
 STARTUP SEQUENCE:
   accounts.yaml --> YamlAccountLoader --> AccountRecord[]
     --> AccountCommandEncoder --> SBE LoadAccount (templateId=11)
@@ -26,7 +26,9 @@ RUNTIME (QuoteRequest):
   FIX QuoteRequest (account="ACME-001") -> Gateway -> Cluster
     -> QuoteRequestHandler:
         1. accountStore.getByCode(accountBuffer, offset, length) -> AccountState
-        2-4. same account checks (UNKNOWN, SUSPENDED, NO_QUOTE_PERMISSION)
+        2. null -> reject UNKNOWN_ACCOUNT
+        3. status != ACTIVE -> reject ACCOUNT_SUSPENDED
+        4. !canRequestQuotes -> reject ACCOUNT_NO_QUOTE_PERMISSION
         5. proceed -> emits QuoteRequested -> Orchestrator -> Pricing Service
 
 RUNTIME (CancelOrder):
@@ -37,13 +39,15 @@ RUNTIME (CancelOrder):
 
 The NOS SBE message carries `account` as `char[16]` (the string code, e.g., "ACME-001"). AccountStore needs both a numeric primary key (for snapshots, admin operations) and a string secondary key (for order/quote validation at runtime).
 
-```
+```text
 AccountStore:
   primary:   Long2ObjectHashMap<AccountState>           (keyed by accountId - for snapshots, idempotent upsert)
   secondary: Object2ObjectHashMap<DirectBuffer, AccountState>  (keyed by accountCode - for runtime validation)
 ```
 
 Both indexes are populated atomically during `LoadAccountHandler.onCommand()` (deterministic, replicated). Lookup by account code wraps the SBE decoder's account field in a reusable `UnsafeBuffer` — zero allocation.
+
+**DirectBuffer key safety:** `DirectBuffer` is a mutable wrapper, so using it directly as a hash key from the incoming SBE message is unsafe — the underlying buffer will be reused. On insertion, the `accountCode` bytes must be **copied into a dedicated, immutable `UnsafeBuffer`** owned by the AccountStore. This copy happens once per `LoadAccountHandler.onCommand()` (not on the hot lookup path). For lookups, a reusable thread-local `UnsafeBuffer` wrapping the SBE decoder's account field is safe because lookups are read-only and single-threaded.
 
 ### API
 
@@ -75,7 +79,7 @@ The invariant is: **the FIX acceptor MUST NOT bind until all reference data is l
 
 ## Startup Ordering
 
-```
+```text
 MediaDriver -> Cluster -> ReferenceDataOrchestrator (await ALL acks) -> Gateway -> RFQ Orchestrator
 ```
 

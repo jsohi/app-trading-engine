@@ -10,7 +10,7 @@ SBE template IDs 1-10 are reserved for command and response messages.
 SBE template IDs 11-19 are reserved for reference data commands.
 AcceptQuote is not a separate SBE message — it uses NewOrderSingle with ordType=PreviouslyQuoted and quoteId set.
 
-```
+```text
 Command             │ SBE Template ID │ FIX MsgType │ SBE Message          │ Handler
 ────────────────────┼─────────────────┼─────────────┼──────────────────────┼──────────────────────
 QuoteRequest        │ 1               │ R (QuoteReq)│ QuoteRequest         │ QuoteRequestHandler
@@ -25,7 +25,7 @@ Template IDs 12-19 are reserved for future reference data types (instruments, cu
 
 ### Responses (Cluster → Gateway, templateId 2-5)
 
-```
+```text
 Response            │ SBE Template ID │ FIX MsgType │ SBE Message
 ────────────────────┼─────────────────┼─────────────┼──────────────────────
 Quote               │ 2               │ S (Quote)   │ Quote
@@ -35,7 +35,7 @@ ExecutionReport     │ 5               │ 8 (ExecRpt) │ ExecutionReport
 
 ### Events (Egress from Cluster, templateId 100-119, 200+)
 
-```
+```text
 Event               │ SBE Template ID │ Trigger Command     │ FIX Response
 ────────────────────┼─────────────────┼─────────────────────┼──────────────
 OrderCreated        │ 100             │ PlaceOrder          │ ExecReport (150=0)
@@ -60,28 +60,30 @@ Template IDs 112-119 are reserved for future reference data events.
 
 Which projections consume which events:
 
-```
+```text
 Event               │ ID  │ Order │ Position │ Quote │ Account │ EventLogger
 ────────────────────┼─────┼───────┼──────────┼───────┼─────────┼────────────
-OrderCreated        │ 100 │  X    │          │       │         │     X
-OrderRejected       │ 101 │  X    │          │       │         │     X
-OrderFilled         │ 102 │  X    │    X     │   X   │         │     X
-OrderCancelled      │ 103 │  X    │    X     │       │         │     X
-QuoteRequested      │ 104 │       │          │   X   │         │     X
-QuoteCreated        │ 105 │       │          │   X   │         │     X
-QuoteRejected       │ 106 │       │          │   X   │         │     X
-QuoteExpired        │ 107 │       │          │   X   │         │     X
-PriceRequested      │ 108 │       │          │       │         │     X
-PriceReceived       │ 109 │       │          │       │         │     X
-AccountLoaded       │ 110 │       │          │       │    X    │     X
-AccountLoadRejected │ 111 │       │          │       │    X    │     X
-SnapshotTaken       │ 200 │       │          │       │         │     X
-AccountSnapshot     │ 201 │       │          │       │    X    │     X
+OrderCreated        │ 100 │   X   │          │       │         │      X
+OrderRejected       │ 101 │   X   │          │       │         │      X
+OrderFilled         │ 102 │   X   │    X     │   X   │         │      X
+OrderCancelled      │ 103 │   X   │    X     │       │         │      X
+QuoteRequested      │ 104 │       │          │   X   │         │      X
+QuoteCreated        │ 105 │       │          │   X   │         │      X
+QuoteRejected       │ 106 │       │          │   X   │         │      X
+QuoteExpired        │ 107 │       │          │   X   │         │      X
+PriceRequested      │ 108 │       │          │       │         │      X
+PriceReceived       │ 109 │       │          │       │         │      X
+AccountLoaded       │ 110 │       │          │       │    X    │      X
+AccountLoadRejected │ 111 │       │          │       │   (1)   │      X
+SnapshotTaken       │ 200 │       │          │       │         │      X
+AccountSnapshot     │ 201 │       │          │       │    X    │      X
 ```
+
+(1) AccountProjection consumes AccountLoadRejected for observability only (logging rejected account codes and reasons). It does NOT create an account record — any rejection is a fatal startup error that aborts the process before the system becomes operational.
 
 ### Projection Views
 
-```
+```text
 OrderProjection
 ├── getByClOrdId(String)         → OrderView
 ├── getBySymbol(String)          → Collection<OrderView>
@@ -198,7 +200,7 @@ graph LR
 
 All prices and quantities use `int64 x 10^-8` (8 decimal places):
 
-```
+```text
 Display Price    │ Wire Value (int64)    │ SBE Type
 ─────────────────┼───────────────────────┼──────────
 1.08500000       │ 108500000             │ int64
@@ -207,7 +209,7 @@ Display Price    │ Wire Value (int64)    │ SBE Type
 ```
 
 Arithmetic is integer-only in the cluster:
-```
+```java
 midPrice = (bid + ask) / 2          // integer division
 spread   = ask - bid                // integer subtraction
 notional = price * quantity / 1e8   // scale correction

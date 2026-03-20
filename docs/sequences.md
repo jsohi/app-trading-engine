@@ -51,7 +51,7 @@ sequenceDiagram
 
 ### Latency Budget
 
-```
+```text
 FIX parse + SBE encode:     ~5 us
 Aeron IPC to cluster:       ~1-5 us
 Cluster validate + apply:  ~10 us
@@ -199,12 +199,15 @@ sequenceDiagram
     Note over RDO: Phase 3: Reference Data (fail-fast)
     RDO->>RDO: YamlAccountLoader reads accounts.yaml
     loop For each account
-        RDO->>K: LoadAccount (SBE, templateId=11)
+        RDO->>MD: LoadAccount (SBE, templateId=11)
+        MD->>K: LoadAccount (Aeron UDP, replicated)
         K->>K: LoadAccountHandler validates + upserts
         alt Valid
-            K-->>RDO: AccountLoaded (110)
+            K-->>MD: AccountLoaded (110)
+            MD-->>RDO: AccountLoaded (Aeron IPC)
         else Invalid or duplicate code
-            K-->>RDO: AccountLoadRejected (111)
+            K-->>MD: AccountLoadRejected (111)
+            MD-->>RDO: AccountLoadRejected (Aeron IPC)
             Note over RDO: ABORT STARTUP
         end
     end
@@ -212,7 +215,7 @@ sequenceDiagram
 
     Note over G: Phase 4: Gateway
     G->>G: Start Artio FIX acceptor
-    G->>G: Bind to port 9880
+    G->>G: Bind to configured port (default 9880, see gateway.properties)
     Note over G: FIX clients can now connect
 
     Note over O: Phase 5: RFQ Orchestrator
