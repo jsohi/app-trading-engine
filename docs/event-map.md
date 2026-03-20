@@ -128,7 +128,7 @@ graph LR
         OH["OrderBook<br/>(Agrona maps)"]
         RFQ["RfqStateMachine"]
         PT["PositionTracker"]
-        AS["AccountStore<br/>(Agrona Long2ObjectHashMap)"]
+        AS["AccountStore<br/>(dual-index: Long2ObjectHashMap + Object2ObjectHashMap)"]
     end
 
     subgraph Events["Events (Egress)"]
@@ -139,6 +139,7 @@ graph LR
         QReq["QuoteRequested"]
         QC["QuoteCreated"]
         AL["AccountLoaded"]
+        ALR["AccountLoadRejected"]
     end
 
     subgraph ReadModel["Projections (Read Model)"]
@@ -168,6 +169,7 @@ graph LR
     RFQ --> QReq
     RFQ --> QC
     AS --> AL
+    AS --> ALR
 
     OA --> OP
     OA --> EL
@@ -180,6 +182,8 @@ graph LR
     QC --> QP
     AL --> AP
     AL --> EL
+    ALR --> AP
+    ALR --> EL
 
     OP --> Babl
     PP --> Babl
@@ -208,3 +212,17 @@ midPrice = (bid + ask) / 2          // integer division
 spread   = ask - bid                // integer subtraction
 notional = price * quantity / 1e8   // scale correction
 ```
+
+## Design Notes
+
+### Account Validation: Code-Based Lookup
+
+PlaceOrderHandler and QuoteRequestHandler validate accounts using the **string account code** from the FIX/SBE message (e.g., "ACME-001"), not the numeric accountId. AccountStore exposes `getByCode(DirectBuffer, offset, length)` for zero-allocation lookup. See [reference-data.md](reference-data.md) for dual-index design.
+
+### CancelOrder: No Account Validation
+
+CancelOrder bypasses account validation by design. Cancellation must always be possible regardless of account status (e.g., if an account is suspended after an order is placed, the trader must still cancel outstanding orders). The `account` field in CancelOrder is for audit trail only.
+
+### maxDailyVolume: Reserved for Future Use
+
+The field exists in the SBE schema and AccountState but is not enforced. It requires timer infrastructure (daily reset) and cumulative volume tracking that does not yet exist.
