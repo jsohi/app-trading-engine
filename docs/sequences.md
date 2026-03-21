@@ -211,7 +211,7 @@ sequenceDiagram
             Note over RDO: ABORT STARTUP
         end
     end
-    Note over RDO: All accounts confirmed (or timeout -> abort)
+    Note over RDO: All accounts confirmed (or 10s timeout -> abort)
 
     Note over G: Phase 4: Gateway
     G->>G: Start Artio FIX acceptor

@@ -269,7 +269,7 @@ When two parallel agents produce conflicting changes:
 | 10 | 4 | Medium |
 | 11 | 2 | Short |
 
-**Total: 55 issues across 11 waves, ~16 serial steps on critical path.**
+**Total: 55 issues across 11 waves, ~18 serial steps on critical path** (updated for APP-57 → APP-58 → APP-60 reference data chain).
 
 ---
 

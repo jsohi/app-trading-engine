@@ -212,7 +212,7 @@ Arithmetic is integer-only in the cluster:
 ```java
 midPrice = (bid + ask) / 2          // integer division
 spread   = ask - bid                // integer subtraction
-notional = price * quantity / 1e8   // scale correction
+notional = price * quantity / 100_000_000L   // scale correction (integer literal, not floating-point)
 ```
 
 ## Design Notes
