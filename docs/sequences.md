@@ -51,7 +51,7 @@ sequenceDiagram
 
 ### Latency Budget
 
-```
+```text
 FIX parse + SBE encode:     ~5 us
 Aeron IPC to cluster:       ~1-5 us
 Cluster validate + apply:  ~10 us
@@ -173,3 +173,62 @@ sequenceDiagram
 | Automatic reconnect | ClusterClient detects leader change, reconnects |
 | State recovery | New leader has full replicated log |
 | Rejoining node | Replays log from snapshot + remaining entries |
+
+---
+
+## 4. Startup Sequence — Reference Data Loading
+
+The system enforces a strict startup ordering: the FIX acceptor MUST NOT bind until all reference data is loaded and confirmed by the cluster.
+
+```mermaid
+sequenceDiagram
+    participant MD as Media Driver
+    participant K as Cluster (3-node)
+    participant RDO as ReferenceDataOrchestrator
+    participant G as Gateway (Artio)
+    participant O as RFQ Orchestrator
+
+    Note over MD: Phase 1: Infrastructure
+    MD->>MD: Start 4 Media Drivers (3 cluster + 1 gateway)
+
+    Note over K: Phase 2: Cluster
+    K->>K: Start 3 cluster nodes
+    K->>K: Leader election
+    K->>K: Restore AccountStore from snapshot (if exists)
+
+    Note over RDO: Phase 3: Reference Data (fail-fast)
+    RDO->>RDO: YamlAccountLoader reads accounts.yaml
+    loop For each account
+        RDO->>MD: LoadAccount (SBE, templateId=11)
+        MD->>K: LoadAccount (Aeron UDP, replicated)
+        K->>K: LoadAccountHandler validates + upserts
+        alt Valid
+            K-->>MD: AccountLoaded (110)
+            MD-->>RDO: AccountLoaded (Aeron IPC)
+        else Invalid or duplicate code
+            K-->>MD: AccountLoadRejected (111)
+            MD-->>RDO: AccountLoadRejected (Aeron IPC)
+            Note over RDO: ABORT STARTUP
+        end
+    end
+    Note over RDO: All accounts confirmed (or 10s timeout -> abort)
+
+    Note over G: Phase 4: Gateway
+    G->>G: Start Artio FIX acceptor
+    G->>G: Bind to configured port (default 9880, see gateway.properties)
+    Note over G: FIX clients can now connect
+
+    Note over O: Phase 5: RFQ Orchestrator
+    O->>O: Start, connect to cluster egress
+    Note over O: Ready to process QuoteRequested events
+```
+
+### Startup Invariants
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| No orders before accounts loaded | Gateway starts AFTER ReferenceDataOrchestrator completes |
+| Partial load = no startup | Any AccountLoadRejected or 10s timeout aborts the process |
+| Idempotent on bounce | Upsert semantics — re-loading same accounts is safe |
+| Snapshot recovery is transparent | Cluster restores from snapshot; orchestrator re-sends (idempotent) |
+| Account changes require restart | No hot-reload; restart ReferenceDataOrchestrator to pick up new accounts |

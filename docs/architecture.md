@@ -16,7 +16,7 @@ graph TB
     end
 
     subgraph Server["Server Tier"]
-        Gateway["Gateway<br/>Artio FIX Acceptor :8001"]
+        Gateway["Gateway<br/>Artio FIX Acceptor :9880"]
         Cluster["Aeron Cluster (3-node)<br/>OrderBook · RFQ · Matching"]
         MediaDriver["Aeron Media Driver"]
         Pricing["Pricing Service"]
@@ -67,6 +67,7 @@ graph TB
     messages --> gateway
     messages --> projections
     messages --> pricing-service["pricing-service"]
+    messages --> reference-data["reference-data"]
     messages --> fix-client-bridge["fix-client-bridge"]
     messages --> websocket-server["websocket-server"]
     messages --> event-logger["event-logger"]
@@ -76,6 +77,7 @@ graph TB
     gateway --> launcher
     media-driver["media-driver"] --> launcher
     pricing-service --> launcher
+    reference-data --> launcher
     websocket-server --> launcher
 
     projections --> query-service["query-service"]
