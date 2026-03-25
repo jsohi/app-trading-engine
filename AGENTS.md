@@ -124,18 +124,19 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 
 ---
 
-### Wave 6 — Integration Tests + Wiring (5 issues)
+### Wave 6 — Integration Tests + Wiring (7 issues)
 
 | Issue | Title | Depends On |
 |-------|-------|-----------|
 | APP-16 | Integration: FIX NOS → Cluster → ExecReport | APP-15 |
+| APP-18 | Integration: leader failover | APP-16 |
+| APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
 | APP-31 | Wire Gateway → Orchestrator → Pricing → Cluster | APP-29, APP-30 |
 | APP-32 | Unit tests: Pricing, Orchestrator, RFQ | APP-29, APP-30 |
-| APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
-| APP-18 | Integration: leader failover | APP-16 |
+| APP-33 | Integration: full RFQ flow via Orchestrator | APP-31 |
 | APP-61 | Integration test: load accounts from YAML/CSV, validate on order | APP-58, APP-59, APP-16 |
 
-**Agent strategy:** APP-16 first (validates basic E2E), then APP-31, then APP-18, APP-23, APP-32 in parallel.
+**Agent strategy:** APP-16 first (validates basic E2E), then APP-31 → APP-33, then APP-18, APP-23, APP-32 in parallel.
 
 **Verification:** `./gradlew :integration-tests:test` — all tests pass within 90s timeout.
 
@@ -156,7 +157,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 
 ---
 
-### Wave 8 — FX Multi-Leg Extensions (5 issues, parallel)
+### Wave 8 — FX Multi-Leg Extensions (4 issues, parallel)
 
 | Issue | Title | Depends On |
 |-------|-------|-----------|
@@ -164,9 +165,8 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 | APP-46 | Update CommandHandlers for multi-leg | APP-22, APP-44 |
 | APP-47 | Update Orchestrator for multi-product | APP-30, APP-44 |
 | APP-48 | Update projections for multi-leg | APP-25, APP-26, APP-44 |
-| APP-33 | Integration: full RFQ flow via Orchestrator | APP-31 |
 
-**All 5 can run in parallel** since they touch different modules.
+**All 4 can run in parallel** since they touch different modules.
 
 ---
 
