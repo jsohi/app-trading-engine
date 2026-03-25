@@ -67,7 +67,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 ### Testing
 - Unit tests: `./gradlew :MODULE:test`
 - Integration tests: `./gradlew :integration-tests:test` (spins up full 3-node cluster)
-- All tests use JUnit 5
+- All tests use JUnit 6
 
 ### Git
 - Branch naming: `feat/app-{N}-short-description`
