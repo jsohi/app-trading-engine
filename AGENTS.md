@@ -49,8 +49,8 @@ Plan the sequence, agent roles, and verification strategy for implementing 66 Li
 
 ---
 
-### Wave 2 — Schema + Infrastructure (5 issues, parallel)
-**All depend only on APP-5. Run 5 Implementer agents simultaneously.**
+### Wave 2 — Schema + Infrastructure (6 issues, partially parallel)
+**Group A issues are serial (shared `trading-schema.xml`). Group B (APP-17) is independent and runs in parallel.**
 
 | Issue | Title | Branch | Parallel Group |
 |-------|-------|--------|----------------|
