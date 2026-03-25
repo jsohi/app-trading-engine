@@ -1,0 +1,17 @@
+[versions]
+aeron = "1.50.4"
+sbe = "1.37.1"
+artio = "0.175"
+agrona = "2.4.0"
+junit = "6.0.3"
+
+[libraries]
+aeron-cluster = { module = "io.aeron:aeron-cluster", version.ref = "aeron" }
+aeron-driver = { module = "io.aeron:aeron-driver", version.ref = "aeron" }
+aeron-client = { module = "io.aeron:aeron-client", version.ref = "aeron" }
+aeron-archive = { module = "io.aeron:aeron-archive", version.ref = "aeron" }
+sbe-all = { module = "uk.co.real-logic:sbe-all", version.ref = "sbe" }
+artio-core = { module = "uk.co.real-logic:artio-core", version.ref = "artio" }
+agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
