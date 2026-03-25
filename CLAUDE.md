@@ -22,7 +22,7 @@
 
 ## Module Layout
 
-```
+```text
 messages              — SBE schema + generated codecs (no internal deps)
 media-driver          — Standalone Aeron Media Driver process
 cluster               — TradingClusteredService (order matching, state machine)
