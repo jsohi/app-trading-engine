@@ -59,7 +59,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 66 Li
 | APP-19 | Domain event SBE message types | `feat/app-19-event-messages` | A (after APP-6) |
 | APP-28 | Pricing SBE messages | `feat/app-28-pricing-messages` | A (after APP-6) |
 | APP-44 | FX product types + NoLegs schema | `feat/app-44-fx-multileg-schema` | A (after APP-6) |
-| APP-70 | SBE schema: reference data messages (accounts) | `feat/app-57-refdata-schema` | A (after APP-44) |
+| APP-70 | SBE schema: reference data messages (accounts) | `feat/app-70-refdata-schema` | A (after APP-44) |
 
 **Note:** APP-19, APP-28, APP-44, APP-70 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 → APP-70 (each building on the previous). APP-17 is fully independent.
 
