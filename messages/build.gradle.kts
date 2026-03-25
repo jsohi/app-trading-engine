@@ -4,8 +4,11 @@ plugins {
 
 val sbeVersion: String by project
 
+val sbeTool by configurations.creating
+
 dependencies {
     implementation("uk.co.real-logic:sbe-all:$sbeVersion")
+    sbeTool("uk.co.real-logic:sbe-all:$sbeVersion")
 }
 
 val schemaFile = layout.projectDirectory.file("src/main/resources/trading-schema.xml")
@@ -16,7 +19,7 @@ val generateCodecs = tasks.register<JavaExec>("generateCodecs") {
     description = "Generate SBE codecs from trading-schema.xml"
 
     mainClass.set("uk.co.real_logic.sbe.SbeTool")
-    classpath = configurations.compileClasspath.get()
+    classpath = sbeTool
 
     inputs.file(schemaFile).optional()
     outputs.dir(codecOutputDir)
