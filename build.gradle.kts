@@ -1,7 +1,3 @@
-plugins {
-    java
-}
-
 allprojects {
     group = "com.trading.engine"
     version = "0.1.0-SNAPSHOT"
@@ -17,7 +13,7 @@ subprojects {
 
     apply(plugin = "java")
 
-    java {
+    configure<JavaPluginExtension> {
         toolchain {
             languageVersion.set(JavaLanguageVersion.of(25))
         }
@@ -32,7 +28,7 @@ subprojects {
     }
 
     dependencies {
-        testImplementation("org.junit.jupiter:junit-jupiter:${property("junitVersion")}")
-        testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+        "testImplementation"("org.junit.jupiter:junit-jupiter:${property("junitVersion")}")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
     }
 }
