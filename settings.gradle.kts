@@ -1,18 +1,18 @@
 rootProject.name = "trading-engine"
 
 include(
-    "messages",
-    "media-driver",
     "cluster",
-    "gateway",
-    "projections",
-    "pricing-service",
-    "websocket-server",
-    "fix-client-bridge",
     "event-logger",
-    "sbe-typescript-generator",
-    "query-service",
-    "launcher",
+    "fix-client-bridge",
+    "gateway",
     "integration-tests",
+    "launcher",
+    "media-driver",
+    "messages",
+    "pricing-service",
+    "projections",
+    "query-service",
+    "sbe-typescript-generator",
     "web-ui",
+    "websocket-server",
 )
