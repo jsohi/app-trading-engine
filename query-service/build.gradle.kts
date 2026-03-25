@@ -1,4 +1,4 @@
 dependencies {
     implementation(project(":projections"))
-    implementation(project(":cluster"))
+    implementation(project(":messages"))
 }

@@ -1,7 +1,3 @@
-plugins {
-    java
-}
-
 val sbeVersion: String by project
 
 val sbeTool by configurations.creating
