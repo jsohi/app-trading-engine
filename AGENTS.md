@@ -2,7 +2,9 @@
 
 ## Context
 
-Plan the sequence, agent roles, and verification strategy for implementing 55 Linear issues (APP-5 through APP-61, non-contiguous) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
+Plan the sequence, agent roles, and verification strategy for implementing 65 Linear issues (APP-5 through APP-69, non-contiguous) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
+
+> **Note:** See [`docs/wave-plan.md`](docs/wave-plan.md) for the authoritative wave-by-wave issue list (13 waves, 65 issues). This file focuses on agent roles, prompts, and operational protocol.
 
 ---
 
@@ -122,18 +124,19 @@ Plan the sequence, agent roles, and verification strategy for implementing 55 Li
 
 ---
 
-### Wave 6 — Integration Tests + Wiring (5 issues)
+### Wave 6 — Integration Tests + Wiring (7 issues)
 
 | Issue | Title | Depends On |
 |-------|-------|-----------|
 | APP-16 | Integration: FIX NOS → Cluster → ExecReport | APP-15 |
+| APP-18 | Integration: leader failover | APP-16 |
+| APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
 | APP-31 | Wire Gateway → Orchestrator → Pricing → Cluster | APP-29, APP-30 |
 | APP-32 | Unit tests: Pricing, Orchestrator, RFQ | APP-29, APP-30 |
-| APP-23 | Integration: gapless event sequencing | APP-22, APP-18 |
-| APP-18 | Integration: leader failover | APP-16 |
+| APP-33 | Integration: full RFQ flow via Orchestrator | APP-31 |
 | APP-61 | Integration test: load accounts from YAML/CSV, validate on order | APP-58, APP-59, APP-16 |
 
-**Agent strategy:** APP-16 first (validates basic E2E), then APP-31, then APP-18, APP-23, APP-32 in parallel.
+**Agent strategy:** APP-16 first (validates basic E2E), then APP-31 → APP-33, then APP-18, APP-23, APP-32 in parallel.
 
 **Verification:** `./gradlew :integration-tests:test` — all tests pass within 90s timeout.
 
@@ -154,7 +157,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 55 Li
 
 ---
 
-### Wave 8 — FX Multi-Leg Extensions (5 issues, parallel)
+### Wave 8 — FX Multi-Leg Extensions (4 issues, parallel)
 
 | Issue | Title | Depends On |
 |-------|-------|-----------|
@@ -162,9 +165,8 @@ Plan the sequence, agent roles, and verification strategy for implementing 55 Li
 | APP-46 | Update CommandHandlers for multi-leg | APP-22, APP-44 |
 | APP-47 | Update Orchestrator for multi-product | APP-30, APP-44 |
 | APP-48 | Update projections for multi-leg | APP-25, APP-26, APP-44 |
-| APP-33 | Integration: full RFQ flow via Orchestrator | APP-31 |
 
-**All 5 can run in parallel** since they touch different modules.
+**All 4 can run in parallel** since they touch different modules.
 
 ---
 
@@ -269,7 +271,7 @@ When two parallel agents produce conflicting changes:
 | 10 | 4 | Medium |
 | 11 | 2 | Short |
 
-**Total: 55 issues across 11 waves, ~18 serial steps on critical path** (updated for APP-57 → APP-58 → APP-60 reference data chain).
+**Total: 65 issues across 13 waves, ~18 serial steps on critical path** (see [`docs/wave-plan.md`](docs/wave-plan.md) for Wave 0 — Bootstrap and Wave 12 — Production Hardening).
 
 ---
 
@@ -327,7 +329,7 @@ Report: PASS/FAIL with relevant output.
 
 ## Verification — End-to-End
 
-After all 11 waves complete:
+After all 13 waves complete:
 
 1. `./gradlew build` — full project compiles
 2. `./gradlew test` — all unit tests pass

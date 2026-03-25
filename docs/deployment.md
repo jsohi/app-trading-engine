@@ -10,7 +10,7 @@ localhost
 ├── Cluster Node 0        (leader,   port 9000, aeron-dir: /tmp/cluster-0)
 ├── Cluster Node 1        (follower, port 9001, aeron-dir: /tmp/cluster-1)
 ├── Cluster Node 2        (follower, port 9002, aeron-dir: /tmp/cluster-2)
-├── Gateway               (FIX acceptor, port 8001)
+├── Gateway               (FIX acceptor, port 9880)
 ├── Pricing Service       (Aeron IPC)
 ├── Babl WebSocket Server (port 8443)
 ├── FIX Client Bridge     (WS port 8444)
@@ -33,7 +33,7 @@ localhost
 │  │       │                                                  │        │
 │  │  ┌────┴─────┐ ┌──────────┐ ┌────────────────┐          │        │
 │  │  │ Gateway  │ │ Pricing  │ │ Babl WebSocket │          │        │
-│  │  │ :8001    │ │ Service  │ │ :8443          │          │        │
+│  │  │ :9880    │ │ Service  │ │ :8443          │          │        │
 │  │  └──────────┘ └──────────┘ └────────────────┘          │        │
 │  │                                                          │        │
 │  │  ┌──────────────┐ ┌─────────────┐                       │        │
@@ -41,7 +41,7 @@ localhost
 │  │  │:8444         │ │             │                       │        │
 │  │  └──────────────┘ └─────────────┘                       │        │
 │  │                                                          │        │
-│  │  Exposed: 8001 (FIX), 8443 (WS binary), 8444 (WS JSON) │        │
+│  │  Exposed: 9880 (FIX), 8443 (WS binary), 8444 (WS JSON) │        │
 │  └─────────────────────────────────────────────────────────┘        │
 │                                                                      │
 │  ┌────────────────────────┐                                         │
@@ -78,7 +78,7 @@ localhost
 | Port | Service | Protocol | Purpose |
 |------|---------|----------|---------|
 | 5173 | Vite dev server | HTTP | Dev mode only, hot reload |
-| 8001 | Gateway (Artio) | FIX 4.4 TCP | Counterparty FIX sessions |
+| 9880 | Gateway (Artio) | FIX 4.4 TCP | Counterparty FIX sessions |
 | 8443 | Babl WebSocket | WS (binary) | Browser streaming (SBE frames) |
 | 8444 | FIX Client Bridge | WS (JSON) | Browser RFQ/order entry |
 | 9000-9002 | Cluster nodes | Aeron UDP | Inter-node consensus |
