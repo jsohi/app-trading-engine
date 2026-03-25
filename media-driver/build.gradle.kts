@@ -2,13 +2,10 @@ plugins {
     application
 }
 
-val aeronVersion: String by project
-val agronaVersion: String by project
-
 dependencies {
-    implementation("io.aeron:aeron-driver:$aeronVersion")
-    implementation("io.aeron:aeron-archive:$aeronVersion")
-    implementation("org.agrona:agrona:$agronaVersion")
+    implementation(libs.aeron.driver)
+    implementation(libs.aeron.archive)
+    implementation(libs.agrona)
 }
 
 application {

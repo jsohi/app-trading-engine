@@ -1,5 +1,3 @@
-val aeronVersion: String by project
-
 dependencies {
     implementation(project(":cluster"))
     implementation(project(":gateway"))
@@ -7,6 +5,6 @@ dependencies {
     implementation(project(":media-driver"))
     implementation(project(":pricing-service"))
     implementation(project(":websocket-server"))
-    implementation("io.aeron:aeron-driver:$aeronVersion")
-    implementation("io.aeron:aeron-archive:$aeronVersion")
+    implementation(libs.aeron.driver)
+    implementation(libs.aeron.archive)
 }
