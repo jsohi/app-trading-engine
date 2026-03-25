@@ -30,8 +30,8 @@ gantt
     Wave 8 — FX Multi-Leg        :w8, after w6, 14d
 
     section Observability
-    Wave 9 — Observability       :w9, after w8, 14d
-    Wave 10 — Final Assembly     :w10, after w9, 14d
+    Wave 9 — Observability       :w9, after w6, 14d
+    Wave 10 — Final Assembly     :w10, after w8 w9, 14d
 
     section Delivery
     Wave 11 — Final Deliverable  :w11, after w10, 7d
@@ -190,7 +190,7 @@ Integration validation and Docker observability stack.
 | APP-27 | Integration: CQRS read models eventually consistent with write side |
 | APP-43 | Integration: EventLogger captures all domain events gapless |
 | APP-52 | Docker Compose observability stack with Grafana dashboards |
-| APP-53 | Full Stack Dev Launcher (`./gradlew devAll`) |
+| APP-53 | Full-Stack Dev Launcher (`./gradlew devAll`) |
 
 ---
 
@@ -234,9 +234,10 @@ graph LR
     W5 --> W6["Wave 6<br/>Integration + Wiring<br/>7 issues"]
     W6 --> W7["Wave 7<br/>Web UI<br/>6 issues"]
     W6 --> W8["Wave 8<br/>FX Multi-Leg<br/>4 issues"]
+    W6 --> W9["Wave 9<br/>Observability<br/>4 issues"]
     W7 --> W11["Wave 11<br/>Final Deliverable<br/>2 issues"]
-    W8 --> W9["Wave 9<br/>Observability<br/>4 issues"]
-    W9 --> W10["Wave 10<br/>Final Assembly<br/>4 issues"]
+    W8 --> W10["Wave 10<br/>Final Assembly<br/>4 issues"]
+    W9 --> W10
     W10 --> W11
     W11 --> W12["Wave 12<br/>Prod Hardening<br/>8 issues"]
 ```
