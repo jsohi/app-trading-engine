@@ -2,9 +2,9 @@
 
 ## Context
 
-Plan the sequence, agent roles, and verification strategy for implementing 65 Linear issues (APP-5 through APP-69, non-contiguous) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
+Plan the sequence, agent roles, and verification strategy for implementing 66 Linear issues (APP-5 through APP-70, non-contiguous) using AI coding agents. The project is greenfield (no code exists). The goal is to maximize parallelism, ensure quality via review/test agents, and deliver a working trading engine end-to-end.
 
-> **Note:** See [`docs/wave-plan.md`](docs/wave-plan.md) for the authoritative wave-by-wave issue list (13 waves, 65 issues). This file focuses on agent roles, prompts, and operational protocol.
+> **Note:** See [`docs/wave-plan.md`](docs/wave-plan.md) for the authoritative wave-by-wave issue list (13 waves, 66 issues). This file focuses on agent roles, prompts, and operational protocol.
 
 ---
 
@@ -59,9 +59,9 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 | APP-19 | Domain event SBE message types | `feat/app-19-event-messages` | A (after APP-6) |
 | APP-28 | Pricing SBE messages | `feat/app-28-pricing-messages` | A (after APP-6) |
 | APP-44 | FX product types + NoLegs schema | `feat/app-44-fx-multileg-schema` | A (after APP-6) |
-| APP-57 | SBE schema: reference data messages (accounts) | `feat/app-57-refdata-schema` | A (after APP-44) |
+| APP-70 | SBE schema: reference data messages (accounts) | `feat/app-57-refdata-schema` | A (after APP-44) |
 
-**Note:** APP-19, APP-28, APP-44, APP-57 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 → APP-57 (each building on the previous). APP-17 is fully independent.
+**Note:** APP-19, APP-28, APP-44, APP-70 all modify `trading-schema.xml` so they must be **sequenced within Group A**: APP-6 → APP-19 → APP-28 → APP-44 → APP-70 (each building on the previous). APP-17 is fully independent.
 
 **Verification per issue:**
 - APP-6: `./gradlew :messages:generateCodecs && ./gradlew :messages:compileJava` — 7 encoder/decoder pairs generated (QuoteRequest, Quote, QuoteRequestReject, NewOrderSingle, ExecutionReport, CancelOrderRequest, MassQuote)
@@ -83,8 +83,8 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 | APP-21 | EventJournal | Yes |
 | APP-24 | Projections module + Projection interface | Yes |
 | APP-11 | Unit tests for FIX-SBE translators | After APP-10 |
-| APP-58 | AccountStore + LoadAccountHandler in cluster | Yes (after APP-57, APP-7) |
-| APP-59 | reference-data module: generic framework + YAML/CSV loaders | Yes (after APP-57, parallel with APP-58) |
+| APP-58 | AccountStore + LoadAccountHandler in cluster | Yes (after APP-70, APP-7) |
+| APP-59 | reference-data module: generic framework + YAML/CSV loaders | Yes (after APP-70, parallel with APP-58) |
 
 **Verification:** `./gradlew :cluster:test` (APP-7, APP-20), `./gradlew :gateway:test` (APP-10, APP-11), `./gradlew :projections:compileJava` (APP-24)
 
@@ -219,7 +219,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 65 Li
 - Never let two agents edit the same file simultaneously
 
 ### 2. Schema Issues Are Serial
-APP-6 → APP-19 → APP-28 → APP-44 → APP-57 all modify `trading-schema.xml`. These MUST be sequential within their wave to avoid merge conflicts.
+APP-6 → APP-19 → APP-28 → APP-44 → APP-70 all modify `trading-schema.xml`. These MUST be sequential within their wave to avoid merge conflicts.
 
 ### 3. Review Agent Checklist
 Every PR gets a Reviewer agent that checks:
@@ -271,7 +271,7 @@ When two parallel agents produce conflicting changes:
 | 10 | 4 | Medium |
 | 11 | 2 | Short |
 
-**Total: 65 issues across 13 waves, ~18 serial steps on critical path** (see [`docs/wave-plan.md`](docs/wave-plan.md) for Wave 0 — Bootstrap and Wave 12 — Production Hardening).
+**Total: 66 issues across 13 waves, ~18 serial steps on critical path** (see [`docs/wave-plan.md`](docs/wave-plan.md) for Wave 0 — Bootstrap and Wave 12 — Production Hardening).
 
 ---
 

@@ -1,6 +1,6 @@
 # Wave Plan
 
-13 waves, 65 issues (APP-5 – APP-69). Each wave gates the next via dependency order. See `AGENTS.md` for agent roles, prompts, and conflict resolution.
+13 waves, 66 issues (APP-5 – APP-70). Each wave gates the next via dependency order. See `AGENTS.md` for agent roles, prompts, and conflict resolution.
 
 ## Timeline
 
@@ -40,14 +40,15 @@ gantt
 
 ## Wave Summary
 
-### Wave 0 — Bootstrap (2 issues)
+### Wave 0 — Bootstrap (3 issues)
 
-Project scaffolding and CI before any code.
+Project scaffolding, CI, and documentation before any code.
 
 | Issue  | Title |
 |--------|-------|
 | APP-55 | Project documentation — architecture, CQRS, sequences, state machines, deployment |
 | APP-56 | Project bootstrap — CI, branch protection, CLAUDE.md, git config |
+| APP-57 | Reference data documentation and wave plan summary |
 
 ---
 
@@ -63,7 +64,7 @@ Everything depends on this.
 
 ### Wave 2 — Schema + Infrastructure (6 issues)
 
-SBE message schema and Aeron media driver. Schema issues are serial (shared `trading-schema.xml`): APP-6 → APP-19 → APP-28 → APP-44 → APP-57. APP-17 is independent.
+SBE message schema and Aeron media driver. Schema issues are serial (shared `trading-schema.xml`): APP-6 → APP-19 → APP-28 → APP-44 → APP-70. APP-17 is independent.
 
 | Issue  | Title |
 |--------|-------|
@@ -72,7 +73,7 @@ SBE message schema and Aeron media driver. Schema issues are serial (shared `tra
 | APP-19 | Domain event SBE message types and EventType/RejectReason enums |
 | APP-28 | Pricing SBE messages — PriceRequest, PriceResponse, PriceValidation |
 | APP-44 | FX product types, settlement fields, NoLegs repeating group |
-| APP-57 | Reference data SBE messages — LoadAccount, AccountLoaded, AccountSnapshot |
+| APP-70 | Reference data SBE messages — LoadAccount, AccountLoaded, AccountSnapshot |
 
 ---
 
@@ -246,7 +247,7 @@ graph LR
 
 | Wave | Name | Issues |
 |------|------|-------:|
-| 0 | Bootstrap | 2 |
+| 0 | Bootstrap | 3 |
 | 1 | Foundation | 1 |
 | 2 | Schema + Infrastructure | 6 |
 | 3 | Core Utilities | 8 |
@@ -259,4 +260,4 @@ graph LR
 | 10 | Final Assembly | 4 |
 | 11 | Final Deliverable | 2 |
 | 12 | Production Hardening | 8 |
-| | **Total** | **65** |
+| | **Total** | **66** |
