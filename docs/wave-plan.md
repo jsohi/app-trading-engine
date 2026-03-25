@@ -7,35 +7,35 @@
 ```mermaid
 gantt
     title Implementation Waves
-    dateFormat X
-    axisFormat %s
+    dateFormat YYYY-MM-DD
+    axisFormat Wave %W
 
     section Foundation
-    Wave 0 — Bootstrap           :w0, 0, 1
-    Wave 1 — Foundation          :w1, 1, 2
+    Wave 0 — Bootstrap           :w0, 2026-01-06, 7d
+    Wave 1 — Foundation          :w1, after w0, 7d
 
     section Schema + Core
-    Wave 2 — Schema + Infra      :w2, 2, 4
-    Wave 3 — Core Utilities      :w3, 4, 6
+    Wave 2 — Schema + Infra      :w2, after w1, 14d
+    Wave 3 — Core Utilities      :w3, after w2, 14d
 
     section Services
-    Wave 4 — Cluster + Gateway   :w4, 6, 8
-    Wave 5 — Launchers + Services:w5, 8, 10
+    Wave 4 — Cluster + Gateway   :w4, after w3, 14d
+    Wave 5 — Launchers + Services:w5, after w4, 14d
 
     section Integration
-    Wave 6 — Integration + Wiring:w6, 10, 13
+    Wave 6 — Integration + Wiring:w6, after w5, 21d
 
     section UI + Extensions
-    Wave 7 — Web UI              :w7, 13, 16
-    Wave 8 — FX Multi-Leg        :w8, 13, 15
+    Wave 7 — Web UI              :w7, after w6, 21d
+    Wave 8 — FX Multi-Leg        :w8, after w6, 14d
 
     section Observability
-    Wave 9 — Observability       :w9, 15, 17
-    Wave 10 — Final Assembly     :w10, 17, 19
+    Wave 9 — Observability       :w9, after w8, 14d
+    Wave 10 — Final Assembly     :w10, after w9, 14d
 
     section Delivery
-    Wave 11 — Final Deliverable  :w11, 19, 20
-    Wave 12 — Prod Hardening     :w12, 20, 23
+    Wave 11 — Final Deliverable  :w11, after w10, 7d
+    Wave 12 — Prod Hardening     :w12, after w11, 21d
 ```
 
 ## Wave Summary
