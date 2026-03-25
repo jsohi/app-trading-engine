@@ -1,7 +1,7 @@
 val sbeTool by configurations.creating
 
 dependencies {
-    implementation(libs.sbe.all)
+    implementation(libs.agrona)
     sbeTool(libs.sbe.all)
 }
 
@@ -16,7 +16,7 @@ val generateCodecs = tasks.register<JavaExec>("generateCodecs") {
     classpath = sbeTool
 
     inputs.file(schemaFile).optional()
-    outputs.dir(codecOutputDir)
+    outputs.dir(codecOutputDir).optional()
 
     systemProperty("sbe.output.dir", codecOutputDir.get().asFile.absolutePath)
     systemProperty("sbe.target.language", "Java")

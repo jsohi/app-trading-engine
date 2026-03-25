@@ -14,4 +14,4 @@ sbe-all = { module = "uk.co.real-logic:sbe-all", version.ref = "sbe" }
 artio-core = { module = "uk.co.real-logic:artio-core", version.ref = "artio" }
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
-junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
