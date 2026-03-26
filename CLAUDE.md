@@ -73,6 +73,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 - Branch naming: `feat/app-{N}-short-description`
 - No direct pushes to `main` — all changes via PRs
 - Commit messages reference Linear issue: `APP-{N}: description`
+- Always run `/review` before creating a PR — fix all blocking issues first
 
 ## Dependencies
 
