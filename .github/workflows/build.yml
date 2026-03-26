@@ -53,6 +53,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
+      - name: Cache NVD data
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4
+        with:
+          path: ~/.gradle/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}
+          restore-keys: owasp-nvd-
+
       - name: OWASP dependency check
         run: ./gradlew dependencyCheckAnalyze
 
