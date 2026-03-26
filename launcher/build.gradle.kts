@@ -1,3 +1,7 @@
+plugins {
+    application
+}
+
 dependencies {
     implementation(project(":cluster"))
     implementation(project(":gateway"))
@@ -8,4 +12,12 @@ dependencies {
     // Declared explicitly — launcher orchestrates driver/archive lifecycle directly
     implementation(libs.aeron.driver)
     implementation(libs.aeron.archive)
+}
+
+application {
+    mainClass.set("com.trading.engine.launcher.TradingEngineLauncher")
+    applicationDefaultJvmArgs =
+        listOf(
+            "-DLog4jContextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
+        )
 }

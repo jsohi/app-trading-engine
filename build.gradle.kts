@@ -1,5 +1,12 @@
 plugins {
     alias(libs.plugins.spotless)
+    alias(libs.plugins.owasp)
+}
+
+dependencyCheck {
+    failBuildOnCVSS = 7.0f
+    formats = listOf("HTML", "JSON")
+    suppressionFile = "$rootDir/owasp-suppressions.xml"
 }
 
 spotless {
@@ -28,6 +35,7 @@ subprojects {
     if (name == "web-ui") return@subprojects
 
     apply(plugin = "java")
+    apply(plugin = "jacoco")
     apply(plugin = "com.diffplug.spotless")
 
     configure<com.diffplug.gradle.spotless.SpotlessExtension> {
@@ -51,8 +59,27 @@ subprojects {
         useJUnitPlatform()
     }
 
+    tasks.withType<JacocoReport> {
+        reports {
+            xml.required.set(true)
+            html.required.set(true)
+        }
+    }
+
     dependencies {
         "testImplementation"(rootProject.libs.junit.jupiter)
         "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
+    }
+
+    // Infra logging: SLF4J API + Log4j2 Async + Disruptor
+    // Hot-path modules (cluster, gateway) use GFLog instead — no SLF4J
+    val hotPathModules = setOf("cluster", "gateway")
+    if (name !in hotPathModules) {
+        dependencies {
+            "implementation"(rootProject.libs.slf4j.api)
+            "runtimeOnly"(rootProject.libs.log4j.core)
+            "runtimeOnly"(rootProject.libs.log4j.slf4j2)
+            "runtimeOnly"(rootProject.libs.disruptor)
+        }
     }
 }

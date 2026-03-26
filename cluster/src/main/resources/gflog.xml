@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <appender name="console" class="com.epam.deltix.gflog.appender.console.ConsoleAppender">
+    <bufferCapacity>262144</bufferCapacity>
+  </appender>
+  <appender name="file" class="com.epam.deltix.gflog.appender.file.DailyRollingFileAppender">
+    <file>logs/cluster.log</file>
+    <append>true</append>
+    <bufferCapacity>8388608</bufferCapacity>
+    <maxFileSize>104857600</maxFileSize>
+    <maxBackupFiles>30</maxBackupFiles>
+  </appender>
+  <logger name="com.trading" level="info"/>
+  <root level="warn">
+    <appender-ref ref="console"/>
+    <appender-ref ref="file"/>
+  </root>
+</config>
