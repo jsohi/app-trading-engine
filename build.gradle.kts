@@ -1,3 +1,19 @@
+plugins {
+    alias(libs.plugins.spotless)
+}
+
+spotless {
+    kotlinGradle {
+        target("**/*.gradle.kts")
+        ktlint()
+    }
+    format("misc") {
+        target(".gitignore", ".editorconfig")
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
 allprojects {
     group = "com.trading.engine"
     version = "0.1.0-SNAPSHOT"
@@ -12,6 +28,14 @@ subprojects {
     if (name == "web-ui") return@subprojects
 
     apply(plugin = "java")
+    apply(plugin = "com.diffplug.spotless")
+
+    configure<com.diffplug.gradle.spotless.SpotlessExtension> {
+        java {
+            googleJavaFormat("1.35.0")
+            targetExclude("build/**")
+        }
+    }
 
     configure<JavaPluginExtension> {
         toolchain {

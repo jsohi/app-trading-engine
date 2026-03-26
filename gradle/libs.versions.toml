@@ -4,6 +4,10 @@ sbe = "1.37.1"
 artio = "0.175"
 agrona = "2.4.0"
 junit = "6.0.3"
+spotless = "7.0.3"
+
+[plugins]
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 
 [libraries]
 aeron-cluster = { module = "io.aeron:aeron-cluster", version.ref = "aeron" }
