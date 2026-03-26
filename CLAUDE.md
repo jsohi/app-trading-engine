@@ -9,6 +9,8 @@
 ./gradlew :messages:compileJava          # Compile generated codecs
 ./gradlew :MODULE:test                   # Run tests for a specific module
 ./gradlew :integration-tests:test        # Run integration tests
+./gradlew spotlessApply                  # Auto-format all source files
+./gradlew spotlessCheck                  # Check formatting (CI)
 ./gradlew projects                       # List all subprojects
 ```
 
