@@ -5,9 +5,15 @@ artio = "0.175"
 agrona = "2.4.0"
 junit = "6.0.3"
 spotless = "7.0.3"
+log4j2 = "2.25.3"
+disruptor = "3.4.4"
+slf4j = "2.0.17"
+gflog = "3.0.7"
+owasp = "12.1.1"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+owasp = { id = "org.owasp.dependencycheck", version.ref = "owasp" }
 
 [libraries]
 aeron-cluster = { module = "io.aeron:aeron-cluster", version.ref = "aeron" }
@@ -19,3 +25,9 @@ artio-core = { module = "uk.co.real-logic:artio-core", version.ref = "artio" }
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+log4j-core = { module = "org.apache.logging.log4j:log4j-core", version.ref = "log4j2" }
+log4j-slf4j2 = { module = "org.apache.logging.log4j:log4j-slf4j2-impl", version.ref = "log4j2" }
+disruptor = { module = "com.lmax:disruptor", version.ref = "disruptor" }
+gflog-api = { module = "com.epam.deltix:gflog-api", version.ref = "gflog" }
+gflog-core = { module = "com.epam.deltix:gflog-core", version.ref = "gflog" }

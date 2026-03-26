@@ -11,6 +11,8 @@
 ./gradlew :integration-tests:test        # Run integration tests
 ./gradlew spotlessApply                  # Auto-format all source files
 ./gradlew spotlessCheck                  # Check formatting (CI)
+./gradlew jacocoTestReport               # Generate code coverage (HTML + XML)
+./gradlew dependencyCheckAnalyze         # OWASP CVE scan (fails on CVSS >= 7)
 ./gradlew projects                       # List all subprojects
 ```
 
@@ -77,6 +79,12 @@ web-ui                — React + AG Grid browser UI (Node project)
 - Commit messages reference Linear issue: `APP-{N}: description`
 - Always run `/review` before creating a PR — fix all blocking issues first
 
+### Logging
+- **Hot-path modules** (`cluster`, `gateway`): GFLog 3.0.7 — zero-allocation, builder API: `log.info().append("Order ").append(orderId).commit()`
+- **Infra modules** (`launcher`, `websocket-server`, `media-driver`, etc.): Log4j2 2.25.3 Async + LMAX Disruptor — garbage-free mode with `AsyncLoggerContextSelector`
+- **No SLF4J on hot path** — Aeron/Artio use native error handling (CnC counters, `ErrorHandler`), not SLF4J
+- GFLog config: `src/main/resources/gflog.xml`; Log4j2 config: `src/main/resources/log4j2.xml`
+
 ## Dependencies
 
 | Library | Version | Purpose |
@@ -86,4 +94,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 | Artio | 0.175 | FIX 4.4 engine |
 | Agrona | 2.4.0 | Off-heap collections, buffers |
 | JUnit | 6.0.3 | Testing framework |
+| GFLog | 3.0.7 | Zero-alloc logging (hot path) |
+| Log4j2 | 2.25.3 | Async logging (infra modules) |
+| Disruptor | 3.4.4 | LMAX ring buffer for Log4j2 Async |
 | JDK | 25 | Runtime |

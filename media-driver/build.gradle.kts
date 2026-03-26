@@ -10,4 +10,8 @@ dependencies {
 
 application {
     mainClass.set("com.trading.engine.media.driver.MediaDriverLauncher")
+    applicationDefaultJvmArgs =
+        listOf(
+            "-DLog4jContextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
+        )
 }
