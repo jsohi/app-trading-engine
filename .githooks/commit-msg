@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# Validates commit messages start with APP-{N}: prefix (Linear issue reference).
+# Install: git config core.hooksPath .githooks
+
+msg=$(head -1 "$1")
+
+if ! echo "$msg" | grep -qE '^APP-[0-9]+: '; then
+    echo ""
+    echo "BLOCKED: Commit message must start with APP-{N}: prefix."
+    echo ""
+    echo "  Example: APP-56: Add README with docs index"
+    echo "  Got:     $msg"
+    echo ""
+    exit 1
+fi
+
+exit 0
