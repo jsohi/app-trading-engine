@@ -17,3 +17,9 @@ Low-latency trading engine built on Aeron Cluster, Artio FIX, and SBE.
 | [docs/deployment.md](docs/deployment.md) | Deployment and infrastructure |
 | [docs/web-ui.md](docs/web-ui.md) | Browser UI (React + AG Grid) |
 | [docs/wave-plan.md](docs/wave-plan.md) | Implementation wave plan (13 waves, 66 issues) |
+
+## Setup
+
+```bash
+git config core.hooksPath .githooks   # Enable commit-msg validation (APP-{N}: prefix)
+```
