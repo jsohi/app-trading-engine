@@ -5,9 +5,9 @@
         "matcher": "Bash",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Check if this command is a git commit or git checkout -b / git branch. If it is a git commit, verify the commit message starts with 'APP-{N}: ' where N is a number (Linear issue reference). If it is creating a new branch, verify the branch name matches 'feat/app-{N}-*' pattern. If the command is not git-related, ALLOW it. If it violates the convention, BLOCK it with an explanation. Command: $ARGUMENTS",
-            "timeout": 10,
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | { read -r cmd; case \"$cmd\" in git\\ commit*) if ! echo \"$cmd\" | grep -qE 'APP-[0-9]+:'; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Commit message must start with APP-{N}: prefix (Linear issue required)\"}}'; exit 0; fi; branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main); if [ \"$branch\" != \"main\" ] && ! echo \"$branch\" | grep -qE '^feat/app-[0-9]+-'; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Branch name must match feat/app-{N}-* pattern (Linear issue required)\"}}'; exit 0; fi;; git\\ checkout\\ -b*|git\\ branch\\ [!-]*) name=$(echo \"$cmd\" | sed -E 's/git (checkout -b|branch) //; s/ .*//'); if ! echo \"$name\" | grep -qE '^feat/app-[0-9]+-'; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Branch name must match feat/app-{N}-* pattern (Linear issue required)\"}}'; exit 0; fi;; esac; }",
+            "timeout": 5,
             "statusMessage": "Checking Linear issue convention..."
           }
         ]
