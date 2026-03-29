@@ -2,8 +2,8 @@
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="com.trading.engine.messages.sbe"
                    id="1"
-                   version="1"
-                   semanticVersion="0.1.0"
+                   version="2"
+                   semanticVersion="0.2.0"
                    description="Trading Engine SBE Schema"
                    byteOrder="littleEndian">
 
@@ -34,6 +34,7 @@
         <type name="Account"     primitiveType="char" length="16" description="Account code"/>
         <type name="Text"        primitiveType="char" length="64" description="Free text field"/>
         <type name="OrigClOrdID" primitiveType="char" length="20" description="Original client order identifier"/>
+        <type name="SettlDate"   primitiveType="char" length="8"  description="Settlement date YYYYMMDD (FIX tag 64)"/>
 
         <!-- Enums -->
         <enum name="SideEnum" encodingType="uint8" description="FIX tag 54">
@@ -44,7 +45,7 @@
         <enum name="OrdTypeEnum" encodingType="uint8" description="FIX tag 40">
             <validValue name="Market"           description="Market order">1</validValue>
             <validValue name="Limit"            description="Limit order">2</validValue>
-            <validValue name="PreviouslyQuoted" description="Previously quoted (RFQ accept)">3</validValue>
+            <validValue name="PreviouslyQuoted" description="Previously quoted (RFQ accept)">68</validValue>
         </enum>
 
         <enum name="TimeInForceEnum" encodingType="uint8" description="FIX tag 59">
@@ -55,10 +56,11 @@
         </enum>
 
         <enum name="ExecTypeEnum" encodingType="uint8" description="FIX tag 150">
-            <validValue name="New"      description="New order">0</validValue>
-            <validValue name="Canceled"  description="Order canceled">4</validValue>
-            <validValue name="Rejected" description="Order rejected">8</validValue>
-            <validValue name="Fill"     description="Order filled">15</validValue>
+            <validValue name="New"         description="New order">0</validValue>
+            <validValue name="PartialFill" description="Partial fill">1</validValue>
+            <validValue name="Fill"        description="Full fill">2</validValue>
+            <validValue name="Canceled"     description="Order canceled">4</validValue>
+            <validValue name="Rejected"    description="Order rejected">8</validValue>
         </enum>
 
         <enum name="OrdStatusEnum" encodingType="uint8" description="FIX tag 39">
@@ -84,35 +86,89 @@
             <validValue name="InvalidPrice"      description="Invalid price">5</validValue>
             <validValue name="Other"             description="Other reason">99</validValue>
         </enum>
+
+        <enum name="ProductTypeEnum" encodingType="uint8" description="FIX tag 460 — FX product classification">
+            <validValue name="Spot"    description="FX Spot (T+2)">1</validValue>
+            <validValue name="Forward" description="FX Forward (T+N)">2</validValue>
+            <validValue name="Swap"    description="FX Swap (near + far leg)">3</validValue>
+        </enum>
+
+        <enum name="TenorEnum" encodingType="uint8" description="Standard FX tenor periods">
+            <validValue name="ON"  description="Overnight">1</validValue>
+            <validValue name="TN"  description="Tomorrow/next">2</validValue>
+            <validValue name="SN"  description="Spot/next">3</validValue>
+            <validValue name="W1"  description="1 week">4</validValue>
+            <validValue name="W2"  description="2 weeks">5</validValue>
+            <validValue name="M1"  description="1 month">6</validValue>
+            <validValue name="M2"  description="2 months">7</validValue>
+            <validValue name="M3"  description="3 months">8</validValue>
+            <validValue name="M6"  description="6 months">9</validValue>
+            <validValue name="M9"  description="9 months">10</validValue>
+            <validValue name="Y1"  description="1 year">11</validValue>
+            <validValue name="Y2"  description="2 years">12</validValue>
+            <validValue name="IMM" description="IMM date">13</validValue>
+            <validValue name="BRK" description="Broken date (custom)">14</validValue>
+        </enum>
     </types>
 
     <!-- ======================== Command Messages (templateId 1-10) ======================== -->
 
+    <!--
+        FX Multi-Leg Convention:
+        - SPOT/FORWARD: productType=Spot/Forward, settlDate+tenor set, NoLegs count=0
+        - SWAP: productType=Swap, NoLegs count=2 (near leg + far leg, opposite sides)
+        - swapPoints = far price - near price (only meaningful for Swap)
+        - Custom field IDs 10001+ used where no standard FIX tag exists
+    -->
+
     <!-- QuoteRequest: FIX 35=R -->
     <sbe:message name="QuoteRequest" id="1" semanticType="R"
-                 description="Request for quote from client">
-        <field name="quoteReqId"   id="131" type="QuoteReqID"/>
-        <field name="symbol"       id="55"  type="Symbol"/>
-        <field name="side"         id="54"  type="SideEnum"/>
-        <field name="orderQty"     id="38"  type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"      id="1"   type="Account"/>
-        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
+                 description="Request for quote from client (single-leg or swap)">
+        <field name="quoteReqId"   id="131"   type="QuoteReqID"/>
+        <field name="symbol"       id="55"    type="Symbol"/>
+        <field name="side"         id="54"    type="SideEnum"/>
+        <field name="orderQty"     id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
+        <field name="account"      id="1"     type="Account"/>
+        <field name="transactTime" id="60"    type="uint64" description="Epoch nanos"/>
+        <field name="productType"  id="460"   type="ProductTypeEnum"/>
+        <field name="settlDate"    id="64"    type="SettlDate"/>
+        <field name="tenor"        id="10001" type="TenorEnum" description="Custom: standard tenor period"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legTenor"     id="10002" type="TenorEnum" description="Custom: leg tenor period"/>
+            <field name="legOrderQty"  id="687"   type="int64" description="Leg quantity, fixed-point 10^-8"/>
+        </group>
     </sbe:message>
 
     <!-- Quote: FIX 35=S -->
     <sbe:message name="Quote" id="2" semanticType="S"
-                 description="Quote response to client">
-        <field name="quoteReqId"   id="131" type="QuoteReqID"/>
-        <field name="quoteId"      id="117" type="QuoteID"/>
-        <field name="symbol"       id="55"  type="Symbol"/>
-        <field name="side"         id="54"  type="SideEnum"/>
-        <field name="bidPx"        id="132" type="int64" description="Bid price, fixed-point 10^-8"/>
-        <field name="offerPx"      id="133" type="int64" description="Offer price, fixed-point 10^-8"/>
-        <field name="bidSize"      id="134" type="int64" description="Bid quantity, fixed-point 10^-8"/>
-        <field name="offerSize"    id="135" type="int64" description="Offer quantity, fixed-point 10^-8"/>
-        <field name="transactTime" id="60"  type="uint64"/>
-        <field name="quoteStatus"  id="297" type="QuoteStatusEnum"/>
-        <field name="text"         id="58"  type="Text"/>
+                 description="Quote response to client (single-leg or swap)">
+        <field name="quoteReqId"   id="131"   type="QuoteReqID"/>
+        <field name="quoteId"      id="117"   type="QuoteID"/>
+        <field name="symbol"       id="55"    type="Symbol"/>
+        <field name="side"         id="54"    type="SideEnum"/>
+        <field name="bidPx"        id="132"   type="int64" description="Bid price, fixed-point 10^-8"/>
+        <field name="offerPx"      id="133"   type="int64" description="Offer price, fixed-point 10^-8"/>
+        <field name="bidSize"      id="134"   type="int64" description="Bid quantity, fixed-point 10^-8"/>
+        <field name="offerSize"    id="135"   type="int64" description="Offer quantity, fixed-point 10^-8"/>
+        <field name="transactTime" id="60"    type="uint64"/>
+        <field name="quoteStatus"  id="297"   type="QuoteStatusEnum"/>
+        <field name="text"         id="58"    type="Text"/>
+        <field name="productType"  id="460"   type="ProductTypeEnum"/>
+        <field name="settlDate"    id="64"    type="SettlDate"/>
+        <field name="tenor"        id="10001" type="TenorEnum"/>
+        <field name="swapPoints"   id="10003" type="int64" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs — per-leg pricing">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legBidPx"     id="10004" type="int64" description="Custom: leg bid price, fixed-point 10^-8"/>
+            <field name="legOfferPx"   id="10005" type="int64" description="Custom: leg offer price, fixed-point 10^-8"/>
+            <field name="legBidSize"   id="10006" type="int64" description="Custom: leg bid size, fixed-point 10^-8"/>
+            <field name="legOfferSize" id="10007" type="int64" description="Custom: leg offer size, fixed-point 10^-8"/>
+        </group>
     </sbe:message>
 
     <!-- QuoteRequestReject: FIX 35=AG -->
@@ -124,39 +180,62 @@
         <field name="side"               id="54"  type="SideEnum"/>
         <field name="transactTime"       id="60"  type="uint64"/>
         <field name="text"               id="58"  type="Text"/>
+        <field name="productType"        id="460" type="ProductTypeEnum"/>
     </sbe:message>
 
     <!-- NewOrderSingle: FIX 35=D -->
     <sbe:message name="NewOrderSingle" id="4" semanticType="D"
-                 description="New order single — also used for AcceptQuote (ordType=PreviouslyQuoted, quoteId set)">
-        <field name="clOrdId"      id="11"  type="ClOrdID"/>
-        <field name="quoteId"      id="117" type="QuoteID" description="Reference to accepted quote (empty if not from RFQ)"/>
-        <field name="symbol"       id="55"  type="Symbol"/>
-        <field name="side"         id="54"  type="SideEnum"/>
-        <field name="ordType"      id="40"  type="OrdTypeEnum"/>
-        <field name="price"        id="44"  type="int64" description="Order price, fixed-point 10^-8"/>
-        <field name="orderQty"     id="38"  type="int64" description="Order quantity, fixed-point 10^-8"/>
-        <field name="timeInForce"  id="59"  type="TimeInForceEnum"/>
-        <field name="transactTime" id="60"  type="uint64"/>
-        <field name="account"      id="1"   type="Account"/>
+                 description="New order — single-leg, swap, or AcceptQuote (ordType=PreviouslyQuoted, quoteId set)">
+        <field name="clOrdId"      id="11"    type="ClOrdID"/>
+        <field name="quoteId"      id="117"   type="QuoteID" description="Reference to accepted quote (empty if not from RFQ)"/>
+        <field name="symbol"       id="55"    type="Symbol"/>
+        <field name="side"         id="54"    type="SideEnum"/>
+        <field name="ordType"      id="40"    type="OrdTypeEnum"/>
+        <field name="price"        id="44"    type="int64" description="Order price, fixed-point 10^-8"/>
+        <field name="orderQty"     id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
+        <field name="timeInForce"  id="59"    type="TimeInForceEnum"/>
+        <field name="transactTime" id="60"    type="uint64"/>
+        <field name="account"      id="1"     type="Account"/>
+        <field name="productType"  id="460"   type="ProductTypeEnum"/>
+        <field name="settlDate"    id="64"    type="SettlDate"/>
+        <field name="tenor"        id="10001" type="TenorEnum"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs — 0 for single-leg, 2 for swap">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legPrice"     id="10008" type="int64" description="Custom: leg order price, fixed-point 10^-8"/>
+            <field name="legOrderQty"  id="687"   type="int64" description="Leg quantity, fixed-point 10^-8"/>
+        </group>
     </sbe:message>
 
     <!-- ExecutionReport: FIX 35=8 -->
     <sbe:message name="ExecutionReport" id="5" semanticType="8"
-                 description="Execution report for order status updates">
-        <field name="orderId"      id="37"  type="OrderID"/>
-        <field name="execId"       id="17"  type="ExecID"/>
-        <field name="clOrdId"      id="11"  type="ClOrdID"/>
-        <field name="quoteId"      id="117" type="QuoteID" description="Echoed if order originated from RFQ"/>
-        <field name="execType"     id="150" type="ExecTypeEnum"/>
-        <field name="ordStatus"    id="39"  type="OrdStatusEnum"/>
-        <field name="symbol"       id="55"  type="Symbol"/>
-        <field name="side"         id="54"  type="SideEnum"/>
-        <field name="leavesQty"    id="151" type="int64" description="Remaining quantity, fixed-point 10^-8"/>
-        <field name="cumQty"       id="14"  type="int64" description="Cumulative filled quantity, fixed-point 10^-8"/>
-        <field name="avgPx"        id="6"   type="int64" description="Average fill price, fixed-point 10^-8"/>
-        <field name="transactTime" id="60"  type="uint64"/>
-        <field name="text"         id="58"  type="Text"/>
+                 description="Execution report for order status updates (single-leg or swap)">
+        <field name="orderId"      id="37"    type="OrderID"/>
+        <field name="execId"       id="17"    type="ExecID"/>
+        <field name="clOrdId"      id="11"    type="ClOrdID"/>
+        <field name="quoteId"      id="117"   type="QuoteID" description="Echoed if order originated from RFQ"/>
+        <field name="execType"     id="150"   type="ExecTypeEnum"/>
+        <field name="ordStatus"    id="39"    type="OrdStatusEnum"/>
+        <field name="symbol"       id="55"    type="Symbol"/>
+        <field name="side"         id="54"    type="SideEnum"/>
+        <field name="leavesQty"    id="151"   type="int64" description="Remaining quantity, fixed-point 10^-8"/>
+        <field name="cumQty"       id="14"    type="int64" description="Cumulative filled quantity, fixed-point 10^-8"/>
+        <field name="avgPx"        id="6"     type="int64" description="Average fill price, fixed-point 10^-8"/>
+        <field name="transactTime" id="60"    type="uint64"/>
+        <field name="text"         id="58"    type="Text"/>
+        <field name="productType"  id="460"   type="ProductTypeEnum"/>
+        <field name="settlDate"    id="64"    type="SettlDate"/>
+        <field name="tenor"        id="10001" type="TenorEnum"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs — per-leg fill details">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legLastPx"    id="10009" type="int64" description="Custom: leg fill price, fixed-point 10^-8"/>
+            <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8"/>
+            <field name="legLeavesQty" id="10011" type="int64" description="Custom: leg remaining quantity, fixed-point 10^-8"/>
+            <field name="legCumQty"    id="10012" type="int64" description="Custom: leg cumulative filled quantity, fixed-point 10^-8"/>
+        </group>
     </sbe:message>
 
     <!-- CancelOrderRequest: FIX 35=F -->
@@ -168,6 +247,7 @@
         <field name="side"         id="54"  type="SideEnum"/>
         <field name="transactTime" id="60"  type="uint64"/>
         <field name="account"      id="1"   type="Account"/>
+        <field name="productType"  id="460" type="ProductTypeEnum"/>
     </sbe:message>
 
     <!-- MassQuote: FIX 35=i -->
@@ -178,12 +258,15 @@
         <field name="transactTime" id="60"  type="uint64"/>
         <group name="noQuoteEntries" id="295" dimensionType="groupSizeEncoding"
                description="Repeating group of quote entries">
-            <field name="quoteEntryId" id="299" type="QuoteID" description="Per-entry identifier"/>
-            <field name="symbol"       id="55"  type="Symbol"/>
-            <field name="bidPx"        id="132" type="int64" description="Bid price, fixed-point 10^-8"/>
-            <field name="offerPx"      id="133" type="int64" description="Offer price, fixed-point 10^-8"/>
-            <field name="bidSize"      id="134" type="int64" description="Bid quantity, fixed-point 10^-8"/>
-            <field name="offerSize"    id="135" type="int64" description="Offer quantity, fixed-point 10^-8"/>
+            <field name="quoteEntryId" id="299"   type="QuoteID" description="Per-entry identifier"/>
+            <field name="symbol"       id="55"    type="Symbol"/>
+            <field name="bidPx"        id="132"   type="int64" description="Bid price, fixed-point 10^-8"/>
+            <field name="offerPx"      id="133"   type="int64" description="Offer price, fixed-point 10^-8"/>
+            <field name="bidSize"      id="134"   type="int64" description="Bid quantity, fixed-point 10^-8"/>
+            <field name="offerSize"    id="135"   type="int64" description="Offer quantity, fixed-point 10^-8"/>
+            <field name="productType"  id="460"   type="ProductTypeEnum"/>
+            <field name="settlDate"    id="64"    type="SettlDate"/>
+            <field name="tenor"        id="10001" type="TenorEnum"/>
         </group>
     </sbe:message>
 
