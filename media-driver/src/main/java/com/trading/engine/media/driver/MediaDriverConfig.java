@@ -44,7 +44,11 @@ public final class MediaDriverConfig {
         props.load(in);
       }
     } catch (final IOException e) {
-      // Fall through to hard-coded defaults
+      System.err.println(
+          "Warning: Failed to load '"
+              + PROPERTIES_FILE
+              + "', using hard-coded defaults: "
+              + e.getMessage());
     }
 
     return new MediaDriverConfig(
@@ -72,11 +76,27 @@ public final class MediaDriverConfig {
       if (arg.startsWith("--aeron-dir=")) {
         aeronDir = arg.substring("--aeron-dir=".length());
       } else if (arg.startsWith("--threading-mode=")) {
-        threadingMode = ThreadingMode.valueOf(arg.substring("--threading-mode=".length()));
+        try {
+          threadingMode = ThreadingMode.valueOf(arg.substring("--threading-mode=".length()));
+        } catch (final IllegalArgumentException e) {
+          System.err.println(
+              "Invalid value for --threading-mode, using default: " + defaults.threadingMode());
+        }
       } else if (arg.startsWith("--term-buffer-length=")) {
-        termBufferLength = Integer.parseInt(arg.substring("--term-buffer-length=".length()));
+        try {
+          termBufferLength = Integer.parseInt(arg.substring("--term-buffer-length=".length()));
+        } catch (final NumberFormatException e) {
+          System.err.println(
+              "Invalid value for --term-buffer-length, using default: "
+                  + defaults.termBufferLength());
+        }
       } else if (arg.startsWith("--ipc-term-length=")) {
-        ipcTermLength = Integer.parseInt(arg.substring("--ipc-term-length=".length()));
+        try {
+          ipcTermLength = Integer.parseInt(arg.substring("--ipc-term-length=".length()));
+        } catch (final NumberFormatException e) {
+          System.err.println(
+              "Invalid value for --ipc-term-length, using default: " + defaults.ipcTermLength());
+        }
       } else if (arg.startsWith("--dir-delete-on-start=")) {
         dirDeleteOnStart = Boolean.parseBoolean(arg.substring("--dir-delete-on-start=".length()));
       }
