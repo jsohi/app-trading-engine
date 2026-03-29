@@ -6,6 +6,7 @@ dependencies {
     implementation(libs.aeron.driver)
     implementation(libs.aeron.archive)
     implementation(libs.agrona)
+    implementation(libs.log4j.api)
 }
 
 application {
