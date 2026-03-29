@@ -102,9 +102,13 @@ There is no traditional database. The Aeron Cluster log IS the database.
 Node restarts
      │
      ▼
-Load latest snapshot (seq 6)         ← write model only (OrderBook, RfqStateMachine,
-     │                                  AccountStore, PositionTracker, IdGenerator,
-     ▼                                  EventSequencer)
+Load latest snapshot (seq 6)
+     │
+     │  Write model only: OrderBook, RfqStateMachine,
+     │  AccountStore, PositionTracker, IdGenerator,
+     │  EventSequencer
+     │
+     ▼
 Replay events 7 → latest
      │
      ▼
@@ -170,7 +174,7 @@ public interface Projection {
 
 All projections implement this interface. The EventSequencer calls `onEvent` for each event in order. Projections decode the SBE message and update their internal state.
 
-**Note:** Projections do not have snapshot methods. They always recover by calling `reset()` followed by replaying all events from Aeron Archive position 0. Write-model snapshots (templates 200-206) are handled by `TradingClusteredService` directly, not via the Projection interface.
+**Note:** Projections do not have snapshot methods. They always recover by calling `reset()` followed by replaying all events from Aeron Archive position 0. Write-model snapshots (templates 200-206) are consumed exclusively by `TradingClusteredService` during restore — they never flow through projections.
 
 ## Consistency Model
 
@@ -243,4 +247,4 @@ Projections are stateless event consumers that rebuild entirely from the Aeron A
 - Aeron Archive log must **never be truncated** — projections depend on full replay
 - Adding a new projection is trivial: implement `Projection`, register, replay from 0
 - Recovery time is proportional to total event count (not just events since last snapshot)
-- For production systems with millions of events, consider the event archival strategy (APP-68) but keep the Archive intact
+- For production systems with millions of events, consider an event archival strategy (APP-68) that copies events to an external store, as the primary Aeron Archive must remain intact for full replay
