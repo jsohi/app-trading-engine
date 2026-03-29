@@ -2,13 +2,13 @@ package com.trading.engine.media.driver;
 
 import io.aeron.driver.MediaDriver;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /** Standalone JVM entry point for the Aeron Media Driver. */
 public final class MediaDriverLauncher {
 
-  private static final Logger LOG = LoggerFactory.getLogger(MediaDriverLauncher.class);
+  private static final Logger LOG = LogManager.getLogger(MediaDriverLauncher.class);
 
   private MediaDriverLauncher() {}
 

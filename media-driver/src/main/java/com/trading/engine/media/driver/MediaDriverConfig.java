@@ -4,14 +4,20 @@ import io.aeron.driver.ThreadingMode;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /** Configuration for the standalone Aeron Media Driver. */
 public final class MediaDriverConfig {
 
-  private static final Logger LOG = LoggerFactory.getLogger(MediaDriverConfig.class);
+  private static final Logger LOG = LogManager.getLogger(MediaDriverConfig.class);
   private static final String PROPERTIES_FILE = "media-driver.properties";
+
+  private static final String ARG_AERON_DIR = "--aeron-dir=";
+  private static final String ARG_THREADING_MODE = "--threading-mode=";
+  private static final String ARG_TERM_BUFFER_LENGTH = "--term-buffer-length=";
+  private static final String ARG_IPC_TERM_LENGTH = "--ipc-term-length=";
+  private static final String ARG_DIR_DELETE_ON_START = "--dir-delete-on-start=";
 
   private static final String DEFAULT_AERON_DIR = "/dev/shm/aeron-trading";
   private static final ThreadingMode DEFAULT_THREADING_MODE = ThreadingMode.SHARED;
@@ -105,37 +111,51 @@ public final class MediaDriverConfig {
     boolean dirDeleteOnStart = defaults.dirDeleteOnStart();
 
     for (final String arg : args) {
-      if (arg.startsWith("--aeron-dir=")) {
-        final String value = arg.substring("--aeron-dir=".length());
-        if (!value.isEmpty()) {
-          aeronDir = value;
-        } else {
-          LOG.warn("Empty value for --aeron-dir, using default: {}", defaults.aeronDir());
-        }
-      } else if (arg.startsWith("--threading-mode=")) {
-        try {
-          threadingMode = ThreadingMode.valueOf(arg.substring("--threading-mode=".length()));
-        } catch (final IllegalArgumentException e) {
-          LOG.warn(
-              "Invalid value for --threading-mode, using default: {}", defaults.threadingMode());
-        }
-      } else if (arg.startsWith("--term-buffer-length=")) {
-        try {
-          termBufferLength = Integer.parseInt(arg.substring("--term-buffer-length=".length()));
-        } catch (final NumberFormatException e) {
-          LOG.warn(
-              "Invalid value for --term-buffer-length, using default: {}",
-              defaults.termBufferLength());
-        }
-      } else if (arg.startsWith("--ipc-term-length=")) {
-        try {
-          ipcTermLength = Integer.parseInt(arg.substring("--ipc-term-length=".length()));
-        } catch (final NumberFormatException e) {
-          LOG.warn(
-              "Invalid value for --ipc-term-length, using default: {}", defaults.ipcTermLength());
-        }
-      } else if (arg.startsWith("--dir-delete-on-start=")) {
-        dirDeleteOnStart = Boolean.parseBoolean(arg.substring("--dir-delete-on-start=".length()));
+      final int eqIdx = arg.indexOf('=');
+      if (eqIdx < 0) {
+        continue;
+      }
+      final String key = arg.substring(0, eqIdx + 1);
+      final String value = arg.substring(eqIdx + 1);
+
+      switch (key) {
+        case ARG_AERON_DIR:
+          if (!value.isEmpty()) {
+            aeronDir = value;
+          } else {
+            LOG.warn("Empty value for --aeron-dir, using default: {}", defaults.aeronDir());
+          }
+          break;
+        case ARG_THREADING_MODE:
+          try {
+            threadingMode = ThreadingMode.valueOf(value);
+          } catch (final IllegalArgumentException e) {
+            LOG.warn(
+                "Invalid value for --threading-mode, using default: {}", defaults.threadingMode());
+          }
+          break;
+        case ARG_TERM_BUFFER_LENGTH:
+          try {
+            termBufferLength = Integer.parseInt(value);
+          } catch (final NumberFormatException e) {
+            LOG.warn(
+                "Invalid value for --term-buffer-length, using default: {}",
+                defaults.termBufferLength());
+          }
+          break;
+        case ARG_IPC_TERM_LENGTH:
+          try {
+            ipcTermLength = Integer.parseInt(value);
+          } catch (final NumberFormatException e) {
+            LOG.warn(
+                "Invalid value for --ipc-term-length, using default: {}", defaults.ipcTermLength());
+          }
+          break;
+        case ARG_DIR_DELETE_ON_START:
+          dirDeleteOnStart = Boolean.parseBoolean(value);
+          break;
+        default:
+          break;
       }
     }
 

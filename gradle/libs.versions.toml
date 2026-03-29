@@ -26,6 +26,7 @@ agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+log4j-api = { module = "org.apache.logging.log4j:log4j-api", version.ref = "log4j2" }
 log4j-core = { module = "org.apache.logging.log4j:log4j-core", version.ref = "log4j2" }
 log4j-slf4j2 = { module = "org.apache.logging.log4j:log4j-slf4j2-impl", version.ref = "log4j2" }
 disruptor = { module = "com.lmax:disruptor", version.ref = "disruptor" }
