@@ -40,9 +40,13 @@ public final class MediaDriverLauncher {
         .addShutdownHook(
             new Thread(
                 () -> {
-                  LOG.info("Shutting down Aeron Media Driver");
-                  driver.close();
-                  LOG.info("Aeron Media Driver closed");
+                  try {
+                    LOG.info("Shutting down Aeron Media Driver");
+                    driver.close();
+                    LOG.info("Aeron Media Driver closed");
+                  } catch (final Exception e) {
+                    LOG.error("Failed to cleanly shut down Aeron Media Driver", e);
+                  }
                 },
                 "media-driver-shutdown"));
 
