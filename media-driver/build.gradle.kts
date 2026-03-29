@@ -7,6 +7,8 @@ dependencies {
     implementation(libs.aeron.archive)
     implementation(libs.agrona)
     implementation(libs.log4j.api)
+    implementation(libs.log4j.core)
+    implementation(libs.disruptor)
 }
 
 application {
