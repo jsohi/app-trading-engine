@@ -22,7 +22,7 @@ val generateCodecs =
         systemProperty("sbe.output.dir", codecOutputDir.get().asFile.absolutePath)
         systemProperty("sbe.target.language", "Java")
         systemProperty("sbe.validation.stop.on.error", "true")
-        systemProperty("sbe.validation.xsd", "fpl/sbe.xsd")
+        systemProperty("sbe.validation.warnings.fatal", "true")
 
         args(schemaFile.asFile.absolutePath)
 
