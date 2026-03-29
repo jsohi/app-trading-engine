@@ -61,6 +61,8 @@ EvtSeqSnapshot      │ 206             │ snapshot            │ (internal)
 
 Snapshot templates 200-206 are for **write-model state only**. Projections do not use snapshots — they replay all events from Archive position 0 on recovery.
 
+**EvtSeqSnapshot (206) clarification:** The EventSequencer snapshot preserves the *write-side* next-sequence counter so the cluster does not reissue duplicate sequence numbers after restore. Projections ignore this snapshot — they replay all events from Archive position 0, using the sequence numbers already embedded in each event, and rebuild their own position tracking from scratch.
+
 Template IDs 112-119 are reserved for future reference data events.
 
 ### Projection Matrix
