@@ -119,7 +119,7 @@
             <validValue name="OrderCreated"        description="Order created">100</validValue>
             <validValue name="OrderRejected"       description="Order rejected">101</validValue>
             <validValue name="OrderFilled"         description="Order filled">102</validValue>
-            <validValue name="OrderCancelled"      description="Order cancelled">103</validValue>
+            <validValue name="OrderCanceled"      description="Order canceled">103</validValue>
             <validValue name="QuoteRequested"      description="Quote requested">104</validValue>
             <validValue name="QuoteCreated"        description="Quote created">105</validValue>
             <validValue name="QuoteRejected"       description="Quote rejected">106</validValue>
@@ -373,9 +373,9 @@
         </group>
     </sbe:message>
 
-    <!-- OrderCancelledEvent -->
-    <sbe:message name="OrderCancelledEvent" id="103"
-                 description="Emitted when an order is cancelled">
+    <!-- OrderCanceledEvent -->
+    <sbe:message name="OrderCanceledEvent" id="103"
+                 description="Emitted when an order is canceled">
         <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
         <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
         <field name="orderId"        id="37"    type="OrderID"/>
