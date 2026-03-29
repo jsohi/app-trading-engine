@@ -60,13 +60,15 @@ web-ui                — React + AG Grid browser UI (Node project)
 ### SBE Schema
 - Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55)
 - Schema changes to `trading-schema.xml` must be merged sequentially (no parallel merges)
-- Template IDs: commands 1-19, events 100-119, snapshots 200+
+- Template IDs: commands 1-19, events 100-119, snapshots 200-206 (200=SnapshotTaken, 201=Account, 202=OrderBook, 203=RfqState, 204=Position, 205=IdGenerator, 206=EventSequencer)
 
 ### Event Sourcing
 - Commands are validated and produce events
 - Events are the source of truth (immutable, sequenced)
 - Projections consume events to build read models
-- Snapshots taken periodically for fast recovery
+- Snapshots taken periodically for fast write-model recovery (cluster state only)
+- **Projections never snapshot** — they replay all events from Aeron Archive position 0 on recovery. Archive log is never truncated.
+- **RFQ snapshot recovery** — after restoring RfqStateMachine from snapshot, immediately expire any RFQ in REQUESTED/QUOTED state whose TTL has elapsed relative to recovery cluster timestamp
 
 ### Testing
 - Unit tests: `./gradlew :MODULE:test`

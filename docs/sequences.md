@@ -232,3 +232,5 @@ sequenceDiagram
 | Idempotent on bounce | Upsert semantics — re-loading same accounts is safe |
 | Snapshot recovery is transparent | Cluster restores from snapshot; orchestrator re-sends (idempotent) |
 | Account changes require restart | No hot-reload; restart ReferenceDataOrchestrator to pick up new accounts |
+| Projections replay from position 0 | No projection snapshots; Archive log never truncated |
+| Stale RFQs expired on recovery | RfqStateMachine checks TTL post-snapshot restore; emits QuoteExpired for elapsed RFQs |

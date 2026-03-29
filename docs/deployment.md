@@ -99,10 +99,19 @@ localhost
 └── publications/                # IPC publications
 
 /tmp/cluster-0/                  # Node 0 cluster directory
-├── recording-log/               # Aeron Archive recordings
+├── recording-log/               # Aeron Archive recordings (NEVER truncated)
 ├── consensus-module/            # Raft state
-└── snapshots/                   # Periodic state snapshots
+└── snapshots/                   # Periodic write-model snapshots (last 3 retained)
 ```
+
+## Archive Log Retention Policy
+
+The Aeron Archive log must **never be truncated**. Projections depend on replaying all events from position 0 on recovery (projections have no snapshots).
+
+**Disk planning:**
+- Estimate ~1 KB per event, 100K events/day = ~100 MB/day
+- For production, event archival (APP-68) copies events to an external durable store for EOD reconciliation, but the Archive itself remains intact
+- Snapshot retention is limited to the last 3 snapshots per node to control disk growth (configured via `ConsensusModule.Configuration`)
 
 ## Resource Requirements
 

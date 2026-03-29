@@ -52,7 +52,14 @@ AccountLoaded       │ 110             │ LoadAccount         │ (internal)
 AccountLoadRejected │ 111             │ LoadAccount         │ (internal)
 SnapshotTaken       │ 200             │ cluster timer       │ (internal)
 AccountSnapshot     │ 201             │ snapshot            │ (internal)
+OrderBookSnapshot   │ 202             │ snapshot            │ (internal)
+RfqStateSnapshot    │ 203             │ snapshot            │ (internal)
+PositionSnapshot    │ 204             │ snapshot            │ (internal)
+IdGeneratorSnapshot │ 205             │ snapshot            │ (internal)
+EvtSeqSnapshot      │ 206             │ snapshot            │ (internal)
 ```
+
+Snapshot templates 200-206 are for **write-model state only**. Projections do not use snapshots — they replay all events from Archive position 0 on recovery.
 
 Template IDs 112-119 are reserved for future reference data events.
 
