@@ -82,11 +82,11 @@ PriceRequested      │ 108 │       │          │       │         │    
 PriceReceived       │ 109 │       │          │       │         │      X
 AccountLoaded       │ 110 │       │          │       │    X    │      X
 AccountLoadRejected │ 111 │       │          │       │   (1)   │      X
-SnapshotTaken       │ 200 │       │          │       │         │      X
-AccountSnapshot     │ 201 │       │          │       │    X    │      X
 ```
 
 (1) AccountProjection consumes AccountLoadRejected for observability only (logging rejected account codes and reasons). It does NOT create an account record — any rejection is a fatal startup error that aborts the process before the system becomes operational.
+
+**Note:** Snapshot events (200-206) are not listed in the projection matrix. They are consumed exclusively by `TradingClusteredService` for write-model restore, not by read-side projections. `EventLogger` logs snapshot events for observability but does not treat them as projection state.
 
 ### Projection Views
 
