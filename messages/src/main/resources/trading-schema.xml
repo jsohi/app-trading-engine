@@ -343,6 +343,7 @@
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
         <field name="account"        id="1"     type="Account"/>
+        <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="text"           id="58"    type="Text"/>
     </sbe:message>
 
@@ -447,7 +448,7 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="account"        id="1"     type="Account"/>
-        <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
+        <field name="quoteRejectReason" id="300" type="QuoteRejectReasonEnum"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
     </sbe:message>
 
