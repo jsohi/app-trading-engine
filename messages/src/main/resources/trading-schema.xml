@@ -135,6 +135,7 @@
             <validValue name="UnknownSymbol"        description="Unknown symbol">1</validValue>
             <validValue name="InsufficientQuantity" description="Insufficient quantity">2</validValue>
             <validValue name="InvalidPrice"         description="Invalid price">3</validValue>
+            <!-- Value 4 reserved for future use (e.g., InvalidQuantity) -->
             <validValue name="DuplicateClOrdId"     description="Duplicate ClOrdId">5</validValue>
             <validValue name="QuoteNotFound"        description="Quote not found">6</validValue>
             <validValue name="QuoteExpired"         description="Quote expired">7</validValue>
@@ -421,7 +422,7 @@
         <field name="offerPx"        id="133"   type="int64" description="Offer price, fixed-point 10^-8"/>
         <field name="bidSize"        id="134"   type="int64" description="Bid quantity, fixed-point 10^-8"/>
         <field name="offerSize"      id="135"   type="int64" description="Offer quantity, fixed-point 10^-8"/>
-        <field name="validUntil"     id="10023" type="uint64" description="Quote expiry timestamp, epoch nanos"/>
+        <field name="validUntil"     id="62"    type="uint64" description="Quote expiry timestamp, epoch nanos"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
@@ -514,7 +515,7 @@
         <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
         <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
         <field name="accountId"      id="10024" type="int64"  description="Internal account identifier"/>
-        <field name="accountCode"    id="10025" type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="accountName"    id="10026" type="Text"/>
         <field name="status"         id="10027" type="AccountStatusEnum" description="Account status"/>
     </sbe:message>
@@ -524,16 +525,16 @@
                  description="Emitted when an account load is rejected">
         <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
         <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
-        <field name="accountCode"    id="10025" type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
         <field name="text"           id="58"    type="Text"/>
     </sbe:message>
 
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
 
-    <!-- SnapshotHeader -->
-    <sbe:message name="SnapshotHeader" id="200"
-                 description="Header written at the start of each snapshot">
+    <!-- SnapshotTaken -->
+    <sbe:message name="SnapshotTaken" id="200"
+                 description="Snapshot marker written at the start of each snapshot">
         <field name="lastSequenceNumber" id="10020" type="int64"  description="Last event sequence number included in snapshot"/>
         <field name="snapshotTimestamp"  id="10021" type="uint64" description="Cluster timestamp when snapshot was taken"/>
         <field name="snapshotVersion"    id="10028" type="uint32" description="Snapshot format version for compatibility"/>
