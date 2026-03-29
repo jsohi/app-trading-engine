@@ -64,6 +64,17 @@ stateDiagram-v2
 | Requested | 5s (configurable) | Transition to Expired, notify client |
 | Quoted | 30s (configurable) | Transition to Expired, notify client |
 
+### RFQ Recovery on Snapshot Restore
+
+After loading `RfqStateMachine` from `RfqStateSnapshot` (templateId 203), the cluster must handle stale RFQs that may have expired during downtime:
+
+1. Iterate all non-terminal RFQs (REQUESTED, QUOTED states)
+2. Compare each RFQ's `expiryTimestamp` against the recovery cluster timestamp
+3. **If expired:** emit `QuoteExpired` event, transition to EXPIRED state
+4. **If still valid:** re-register timer via `cluster.scheduleTimer(correlationId, expiryTimestamp)`
+
+This prevents zombie quotes from appearing active after recovery. Clients see QuoteExpired events for any quotes that timed out during the outage, rather than stale quotes that silently hang.
+
 ### Multi-Leg RFQ (Swap)
 
 Same state machine, but the `QuoteRequest` contains a `NoLegs` repeating group (near leg + far leg). The Pricing Service prices both legs and the cluster fills both atomically.

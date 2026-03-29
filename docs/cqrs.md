@@ -102,20 +102,25 @@ There is no traditional database. The Aeron Cluster log IS the database.
 Node restarts
      │
      ▼
-Load latest snapshot (seq 6)
-     │
-     ▼
+Load latest snapshot (seq 6)         ← write model only (OrderBook, RfqStateMachine,
+     │                                  AccountStore, PositionTracker, IdGenerator,
+     ▼                                  EventSequencer)
 Replay events 7 → latest
      │
      ▼
-Write model fully rebuilt         ← deterministic, same state
+Write model fully rebuilt            ← deterministic, same state
      │
      ▼
-Projections replay 1 → latest    ← read model fully rebuilt
+Fast-expire stale RFQs              ← any RFQ with elapsed TTL emits QuoteExpired
+     │
+     ▼
+Projections replay 0 → latest       ← read model rebuilt from Archive (no projection snapshots)
      │
      ▼
 Ready to serve
 ```
+
+**Design decision:** Projections have no snapshots. They always rebuild by replaying all events from Aeron Archive position 0. This means the Archive log must never be truncated. Trade-off: slower projection recovery vs. architectural simplicity and guaranteed correctness.
 
 ### Why Not a Database?
 
@@ -158,18 +163,14 @@ public interface Projection {
     void onEvent(DirectBuffer buffer, int offset, int length,
                  int templateId, long sequence, long timestamp);
 
-    // Called on snapshot restore
-    void onSnapshot(DirectBuffer buffer, int offset, int length);
-
-    // Called to take a snapshot
-    int snapshot(MutableDirectBuffer buffer, int offset);
-
     // Reset state (for replay from scratch)
     void reset();
 }
 ```
 
 All projections implement this interface. The EventSequencer calls `onEvent` for each event in order. Projections decode the SBE message and update their internal state.
+
+**Note:** Projections do not have snapshot methods. They always recover by calling `reset()` followed by replaying all events from Aeron Archive position 0. Write-model snapshots (templates 200-206) are handled by `TradingClusteredService` directly, not via the Projection interface.
 
 ## Consistency Model
 
@@ -227,3 +228,19 @@ public class TradeHistoryProjection implements Projection {
 ```
 
 Register it, replay, done. The audit trail was always there — you just weren't reading it yet.
+
+## Projection Recovery Guarantees
+
+Projections are stateless event consumers that rebuild entirely from the Aeron Archive event log:
+
+1. On recovery, each projection calls `reset()` to clear any in-memory state
+2. The EventSequencer replays all events from Archive position 0 in sequence order
+3. Each projection processes every event via `onEvent()`, rebuilding its read model
+4. No coordination between projections is needed — replay is deterministic
+
+**Implications:**
+
+- Aeron Archive log must **never be truncated** — projections depend on full replay
+- Adding a new projection is trivial: implement `Projection`, register, replay from 0
+- Recovery time is proportional to total event count (not just events since last snapshot)
+- For production systems with millions of events, consider the event archival strategy (APP-68) but keep the Archive intact

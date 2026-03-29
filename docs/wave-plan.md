@@ -1,6 +1,6 @@
 # Wave Plan
 
-13 waves, 66 issues (APP-5 – APP-70). Each wave gates the next via dependency order. See `AGENTS.md` for agent roles, prompts, and conflict resolution.
+13 waves, 68 issues (APP-5 – APP-72). Each wave gates the next via dependency order. See `AGENTS.md` for agent roles, prompts, and conflict resolution.
 
 ## Timeline
 
@@ -206,9 +206,9 @@ Full-stack Docker Compose and E2E WebSocket streaming test.
 
 ---
 
-### Wave 12 — Production Hardening (8 issues)
+### Wave 12 — Production Hardening (10 issues)
 
-Risk controls, FIX session lifecycle, benchmarks, and operational tooling.
+Risk controls, FIX session lifecycle, benchmarks, operational tooling, and snapshot hardening.
 
 | Issue  | Title |
 |--------|-------|
@@ -220,6 +220,8 @@ Risk controls, FIX session lifecycle, benchmarks, and operational tooling.
 | APP-67 | JMH microbenchmarks — order matching, SBE encode/decode, FIX translation |
 | APP-68 | Event archival — persist event log for EOD reconciliation and audit |
 | APP-69 | Drop-copy FIX session — trade reporting and audit trail |
+| APP-71 | Rolling restart procedure and snapshot version compatibility |
+| APP-72 | Position reconciliation report on startup recovery |
 
 ---
 
@@ -240,7 +242,7 @@ graph LR
     W8 --> W10["Wave 10<br/>Final Assembly<br/>4 issues"]
     W9 --> W10
     W10 --> W11
-    W11 --> W12["Wave 12<br/>Prod Hardening<br/>8 issues"]
+    W11 --> W12["Wave 12<br/>Prod Hardening<br/>10 issues"]
 ```
 
 ## Issue Count
@@ -259,5 +261,5 @@ graph LR
 | 9 | Observability | 4 |
 | 10 | Final Assembly | 4 |
 | 11 | Final Deliverable | 2 |
-| 12 | Production Hardening | 8 |
-| | **Total** | **66** |
+| 12 | Production Hardening | 10 |
+| | **Total** | **68** |
