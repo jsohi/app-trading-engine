@@ -4,10 +4,13 @@ import io.aeron.driver.ThreadingMode;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Configuration for the standalone Aeron Media Driver. */
 public final class MediaDriverConfig {
 
+  private static final Logger LOG = LoggerFactory.getLogger(MediaDriverConfig.class);
   private static final String PROPERTIES_FILE = "media-driver.properties";
 
   private static final String DEFAULT_AERON_DIR = "/dev/shm/aeron-trading";
@@ -44,11 +47,7 @@ public final class MediaDriverConfig {
         props.load(in);
       }
     } catch (final IOException e) {
-      System.err.println(
-          "Warning: Failed to load '"
-              + PROPERTIES_FILE
-              + "', using hard-coded defaults: "
-              + e.getMessage());
+      LOG.warn("Failed to load '{}', using hard-coded defaults", PROPERTIES_FILE, e);
     }
 
     return new MediaDriverConfig(
@@ -79,23 +78,23 @@ public final class MediaDriverConfig {
         try {
           threadingMode = ThreadingMode.valueOf(arg.substring("--threading-mode=".length()));
         } catch (final IllegalArgumentException e) {
-          System.err.println(
-              "Invalid value for --threading-mode, using default: " + defaults.threadingMode());
+          LOG.warn(
+              "Invalid value for --threading-mode, using default: {}", defaults.threadingMode());
         }
       } else if (arg.startsWith("--term-buffer-length=")) {
         try {
           termBufferLength = Integer.parseInt(arg.substring("--term-buffer-length=".length()));
         } catch (final NumberFormatException e) {
-          System.err.println(
-              "Invalid value for --term-buffer-length, using default: "
-                  + defaults.termBufferLength());
+          LOG.warn(
+              "Invalid value for --term-buffer-length, using default: {}",
+              defaults.termBufferLength());
         }
       } else if (arg.startsWith("--ipc-term-length=")) {
         try {
           ipcTermLength = Integer.parseInt(arg.substring("--ipc-term-length=".length()));
         } catch (final NumberFormatException e) {
-          System.err.println(
-              "Invalid value for --ipc-term-length, using default: " + defaults.ipcTermLength());
+          LOG.warn(
+              "Invalid value for --ipc-term-length, using default: {}", defaults.ipcTermLength());
         }
       } else if (arg.startsWith("--dir-delete-on-start=")) {
         dirDeleteOnStart = Boolean.parseBoolean(arg.substring("--dir-delete-on-start=".length()));
