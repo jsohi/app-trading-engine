@@ -50,13 +50,46 @@ public final class MediaDriverConfig {
       LOG.warn("Failed to load '{}', using hard-coded defaults", PROPERTIES_FILE, e);
     }
 
+    ThreadingMode threadingMode = DEFAULT_THREADING_MODE;
+    try {
+      threadingMode =
+          ThreadingMode.valueOf(props.getProperty("threading.mode", DEFAULT_THREADING_MODE.name()));
+    } catch (final IllegalArgumentException e) {
+      LOG.warn(
+          "Invalid threading.mode in '{}', using default: {}",
+          PROPERTIES_FILE,
+          DEFAULT_THREADING_MODE);
+    }
+
+    int termBufferLength = DEFAULT_TERM_BUFFER_LENGTH;
+    try {
+      termBufferLength =
+          Integer.parseInt(
+              props.getProperty("term.buffer.length", String.valueOf(DEFAULT_TERM_BUFFER_LENGTH)));
+    } catch (final NumberFormatException e) {
+      LOG.warn(
+          "Invalid term.buffer.length in '{}', using default: {}",
+          PROPERTIES_FILE,
+          DEFAULT_TERM_BUFFER_LENGTH);
+    }
+
+    int ipcTermLength = DEFAULT_IPC_TERM_LENGTH;
+    try {
+      ipcTermLength =
+          Integer.parseInt(
+              props.getProperty("ipc.term.length", String.valueOf(DEFAULT_IPC_TERM_LENGTH)));
+    } catch (final NumberFormatException e) {
+      LOG.warn(
+          "Invalid ipc.term.length in '{}', using default: {}",
+          PROPERTIES_FILE,
+          DEFAULT_IPC_TERM_LENGTH);
+    }
+
     return new MediaDriverConfig(
         props.getProperty("aeron.dir", DEFAULT_AERON_DIR),
-        ThreadingMode.valueOf(props.getProperty("threading.mode", DEFAULT_THREADING_MODE.name())),
-        Integer.parseInt(
-            props.getProperty("term.buffer.length", String.valueOf(DEFAULT_TERM_BUFFER_LENGTH))),
-        Integer.parseInt(
-            props.getProperty("ipc.term.length", String.valueOf(DEFAULT_IPC_TERM_LENGTH))),
+        threadingMode,
+        termBufferLength,
+        ipcTermLength,
         Boolean.parseBoolean(
             props.getProperty("dir.delete.on.start", String.valueOf(DEFAULT_DIR_DELETE_ON_START))));
   }
@@ -73,7 +106,12 @@ public final class MediaDriverConfig {
 
     for (final String arg : args) {
       if (arg.startsWith("--aeron-dir=")) {
-        aeronDir = arg.substring("--aeron-dir=".length());
+        final String value = arg.substring("--aeron-dir=".length());
+        if (!value.isEmpty()) {
+          aeronDir = value;
+        } else {
+          LOG.warn("Empty value for --aeron-dir, using default: {}", defaults.aeronDir());
+        }
       } else if (arg.startsWith("--threading-mode=")) {
         try {
           threadingMode = ThreadingMode.valueOf(arg.substring("--threading-mode=".length()));
