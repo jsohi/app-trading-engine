@@ -56,40 +56,11 @@ public final class MediaDriverConfig {
       LOG.warn("Failed to load '{}', using hard-coded defaults", PROPERTIES_FILE, e);
     }
 
-    ThreadingMode threadingMode = DEFAULT_THREADING_MODE;
-    try {
-      threadingMode =
-          ThreadingMode.valueOf(props.getProperty("threading.mode", DEFAULT_THREADING_MODE.name()));
-    } catch (final IllegalArgumentException e) {
-      LOG.warn(
-          "Invalid threading.mode in '{}', using default: {}",
-          PROPERTIES_FILE,
-          DEFAULT_THREADING_MODE);
-    }
-
-    int termBufferLength = DEFAULT_TERM_BUFFER_LENGTH;
-    try {
-      termBufferLength =
-          Integer.parseInt(
-              props.getProperty("term.buffer.length", String.valueOf(DEFAULT_TERM_BUFFER_LENGTH)));
-    } catch (final NumberFormatException e) {
-      LOG.warn(
-          "Invalid term.buffer.length in '{}', using default: {}",
-          PROPERTIES_FILE,
-          DEFAULT_TERM_BUFFER_LENGTH);
-    }
-
-    int ipcTermLength = DEFAULT_IPC_TERM_LENGTH;
-    try {
-      ipcTermLength =
-          Integer.parseInt(
-              props.getProperty("ipc.term.length", String.valueOf(DEFAULT_IPC_TERM_LENGTH)));
-    } catch (final NumberFormatException e) {
-      LOG.warn(
-          "Invalid ipc.term.length in '{}', using default: {}",
-          PROPERTIES_FILE,
-          DEFAULT_IPC_TERM_LENGTH);
-    }
+    final ThreadingMode threadingMode =
+        getEnumProperty(props, "threading.mode", DEFAULT_THREADING_MODE);
+    final int termBufferLength =
+        getIntProperty(props, "term.buffer.length", DEFAULT_TERM_BUFFER_LENGTH);
+    final int ipcTermLength = getIntProperty(props, "ipc.term.length", DEFAULT_IPC_TERM_LENGTH);
 
     return new MediaDriverConfig(
         props.getProperty("aeron.dir", DEFAULT_AERON_DIR),
@@ -127,29 +98,14 @@ public final class MediaDriverConfig {
           }
           break;
         case ARG_THREADING_MODE:
-          try {
-            threadingMode = ThreadingMode.valueOf(value);
-          } catch (final IllegalArgumentException e) {
-            LOG.warn(
-                "Invalid value for --threading-mode, using default: {}", defaults.threadingMode());
-          }
+          threadingMode = parseEnumArg(value, "--threading-mode", defaults.threadingMode());
           break;
         case ARG_TERM_BUFFER_LENGTH:
-          try {
-            termBufferLength = Integer.parseInt(value);
-          } catch (final NumberFormatException e) {
-            LOG.warn(
-                "Invalid value for --term-buffer-length, using default: {}",
-                defaults.termBufferLength());
-          }
+          termBufferLength =
+              parseIntArg(value, "--term-buffer-length", defaults.termBufferLength());
           break;
         case ARG_IPC_TERM_LENGTH:
-          try {
-            ipcTermLength = Integer.parseInt(value);
-          } catch (final NumberFormatException e) {
-            LOG.warn(
-                "Invalid value for --ipc-term-length, using default: {}", defaults.ipcTermLength());
-          }
+          ipcTermLength = parseIntArg(value, "--ipc-term-length", defaults.ipcTermLength());
           break;
         case ARG_DIR_DELETE_ON_START:
           dirDeleteOnStart = Boolean.parseBoolean(value);
@@ -181,6 +137,47 @@ public final class MediaDriverConfig {
 
   public boolean dirDeleteOnStart() {
     return dirDeleteOnStart;
+  }
+
+  private static int getIntProperty(
+      final Properties props, final String key, final int defaultValue) {
+    try {
+      return Integer.parseInt(props.getProperty(key, String.valueOf(defaultValue)));
+    } catch (final NumberFormatException e) {
+      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue);
+      return defaultValue;
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <E extends Enum<E>> E getEnumProperty(
+      final Properties props, final String key, final E defaultValue) {
+    try {
+      return (E) Enum.valueOf(defaultValue.getClass(), props.getProperty(key, defaultValue.name()));
+    } catch (final IllegalArgumentException e) {
+      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue);
+      return defaultValue;
+    }
+  }
+
+  private static int parseIntArg(final String value, final String argName, final int defaultValue) {
+    try {
+      return Integer.parseInt(value);
+    } catch (final NumberFormatException e) {
+      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
+      return defaultValue;
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <E extends Enum<E>> E parseEnumArg(
+      final String value, final String argName, final E defaultValue) {
+    try {
+      return (E) Enum.valueOf(defaultValue.getClass(), value);
+    } catch (final IllegalArgumentException e) {
+      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
+      return defaultValue;
+    }
   }
 
   @Override

@@ -29,10 +29,7 @@ public final class MediaDriverLauncher {
 
     final MediaDriver driver = MediaDriver.launch(ctx);
 
-    LOG.info(
-        "Aeron Media Driver started -- aeronDir={}, threadingMode={}",
-        config.aeronDir(),
-        config.threadingMode());
+    LOG.info("Aeron Media Driver started");
 
     final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
 
