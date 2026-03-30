@@ -47,8 +47,7 @@ public final class MediaDriverConfig {
   /** Load defaults from the classpath properties file. */
   public static MediaDriverConfig loadDefaults() {
     final Properties props = new Properties();
-    try (InputStream in =
-        MediaDriverConfig.class.getClassLoader().getResourceAsStream(PROPERTIES_FILE)) {
+    try (InputStream in = MediaDriverConfig.class.getResourceAsStream("/" + PROPERTIES_FILE)) {
       if (in != null) {
         props.load(in);
       }
