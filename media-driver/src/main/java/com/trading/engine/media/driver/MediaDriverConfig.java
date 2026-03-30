@@ -57,7 +57,7 @@ public final class MediaDriverConfig {
     }
 
     final ThreadingMode threadingMode =
-        getEnumProperty(props, "threading.mode", DEFAULT_THREADING_MODE);
+        getEnumProperty(props, "threading.mode", DEFAULT_THREADING_MODE, ThreadingMode.class);
     final int termBufferLength =
         getIntProperty(props, "term.buffer.length", DEFAULT_TERM_BUFFER_LENGTH);
     final int ipcTermLength = getIntProperty(props, "ipc.term.length", DEFAULT_IPC_TERM_LENGTH);
@@ -98,7 +98,9 @@ public final class MediaDriverConfig {
           }
           break;
         case ARG_THREADING_MODE:
-          threadingMode = parseEnumArg(value, "--threading-mode", defaults.threadingMode());
+          threadingMode =
+              parseEnumArg(
+                  value, "--threading-mode", defaults.threadingMode(), ThreadingMode.class);
           break;
         case ARG_TERM_BUFFER_LENGTH:
           termBufferLength =
@@ -108,9 +110,11 @@ public final class MediaDriverConfig {
           ipcTermLength = parseIntArg(value, "--ipc-term-length", defaults.ipcTermLength());
           break;
         case ARG_DIR_DELETE_ON_START:
-          dirDeleteOnStart = Boolean.parseBoolean(value);
+          dirDeleteOnStart =
+              parseBooleanArg(value, "--dir-delete-on-start", defaults.dirDeleteOnStart());
           break;
         default:
+          LOG.warn("Unknown argument: {}", arg);
           break;
       }
     }
@@ -149,11 +153,10 @@ public final class MediaDriverConfig {
     }
   }
 
-  @SuppressWarnings("unchecked")
   private static <E extends Enum<E>> E getEnumProperty(
-      final Properties props, final String key, final E defaultValue) {
+      final Properties props, final String key, final E defaultValue, final Class<E> enumClass) {
     try {
-      return (E) Enum.valueOf(defaultValue.getClass(), props.getProperty(key, defaultValue.name()));
+      return Enum.valueOf(enumClass, props.getProperty(key, defaultValue.name()));
     } catch (final IllegalArgumentException e) {
       LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue);
       return defaultValue;
@@ -169,15 +172,23 @@ public final class MediaDriverConfig {
     }
   }
 
-  @SuppressWarnings("unchecked")
   private static <E extends Enum<E>> E parseEnumArg(
-      final String value, final String argName, final E defaultValue) {
+      final String value, final String argName, final E defaultValue, final Class<E> enumClass) {
     try {
-      return (E) Enum.valueOf(defaultValue.getClass(), value);
+      return Enum.valueOf(enumClass, value);
     } catch (final IllegalArgumentException e) {
       LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
       return defaultValue;
     }
+  }
+
+  private static boolean parseBooleanArg(
+      final String value, final String argName, final boolean defaultValue) {
+    if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+      return Boolean.parseBoolean(value);
+    }
+    LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
+    return defaultValue;
   }
 
   @Override
