@@ -15,9 +15,11 @@ case "$cmd" in
       && deny 'No direct pushes to main — all changes must go via PRs'
 
     # Block implicit pushes (bare "git push" or "git push <remote>") when on main
+    # Strip options (--force, -u, etc.) before checking command structure
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)
     if [ "$branch" = "main" ]; then
-      echo "$cmd" | grep -qE -- '^git push([[:space:]]+\S+)?$' \
+      cmd_no_opts=$(echo "$cmd" | sed -E 's/ --?[^ ]+//g')
+      echo "$cmd_no_opts" | grep -qE -- '^git push([[:space:]]+[^[:space:]]+)?$' \
         && deny 'No direct pushes to main — all changes must go via PRs'
     fi
     ;;
@@ -40,8 +42,17 @@ case "$cmd" in
     ;;
 
   git\ branch\ *)
-    # Extract branch name, skipping any flags (--track, etc.)
-    name=$(echo "$cmd" | sed -E 's/^git branch //; s/--[^ ]+ *//g; s/ .*//')
+    # Skip non-creation commands (delete, move, list)
+    echo "$cmd" | grep -qE -- ' -[adDmMl]| --(all|delete|move|list)' && exit 0
+
+    # Find first non-flag argument (the branch name)
+    name=""
+    for arg in $(echo "$cmd" | sed 's/^git branch *//'); do
+      case "$arg" in -*) continue ;; esac
+      name=$arg
+      break
+    done
+
     [ -z "$name" ] && exit 0
     echo "$name" | grep -qE '^feat/app-[0-9]+-' \
       || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)'
