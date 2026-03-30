@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -uo pipefail
 # PreToolUse hook: enforce git conventions (branch naming, commit messages, push-to-main block)
 
 cmd=$(jq -r '.tool_input.command // ""')
@@ -43,7 +44,7 @@ case "$cmd" in
 
   git\ branch\ *)
     # Skip non-creation commands (delete, move, list)
-    echo "$cmd" | grep -qE -- ' -[adDmMl]| --(all|delete|move|list)' && exit 0
+    echo "$cmd" | grep -qE -- ' -[adDmMlcC]| --(all|delete|move|list|copy)' && exit 0
 
     # Find first non-flag argument (the branch name)
     name=""
@@ -58,3 +59,5 @@ case "$cmd" in
       || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)'
     ;;
 esac
+
+exit 0
