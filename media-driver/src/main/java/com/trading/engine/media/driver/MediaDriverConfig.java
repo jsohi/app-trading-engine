@@ -148,7 +148,7 @@ public final class MediaDriverConfig {
     try {
       return Integer.parseInt(props.getProperty(key, String.valueOf(defaultValue)));
     } catch (final NumberFormatException e) {
-      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue);
+      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue, e);
       return defaultValue;
     }
   }
@@ -158,7 +158,7 @@ public final class MediaDriverConfig {
     try {
       return Enum.valueOf(enumClass, props.getProperty(key, defaultValue.name()));
     } catch (final IllegalArgumentException e) {
-      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue);
+      LOG.warn("Invalid {} in '{}', using default: {}", key, PROPERTIES_FILE, defaultValue, e);
       return defaultValue;
     }
   }
@@ -167,7 +167,7 @@ public final class MediaDriverConfig {
     try {
       return Integer.parseInt(value);
     } catch (final NumberFormatException e) {
-      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
+      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue, e);
       return defaultValue;
     }
   }
@@ -177,7 +177,7 @@ public final class MediaDriverConfig {
     try {
       return Enum.valueOf(enumClass, value);
     } catch (final IllegalArgumentException e) {
-      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue);
+      LOG.warn("Invalid value for {}, using default: {}", argName, defaultValue, e);
       return defaultValue;
     }
   }
