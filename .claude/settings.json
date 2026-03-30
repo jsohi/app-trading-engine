@@ -1,18 +1,5 @@
 {
   "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cmd=$(jq -r '.tool_input.command // \"\"'); echo \"$cmd\" | grep -qE '^git push' || exit 0; pr_num=$(gh pr view --json number --jq .number 2>/dev/null) || exit 0; gh pr comment \"$pr_num\" --body '@gemini review' 2>/dev/null || true",
-            "timeout": 15,
-            "statusMessage": "Requesting Gemini review..."
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
