@@ -196,7 +196,7 @@
         <field name="tenor"        id="10001" type="TenorEnum"/>
         <field name="swapPoints"   id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — per-leg pricing">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legBidPx"     id="10004" type="int64" description="Custom: leg bid price, fixed-point 10^-8"/>
@@ -235,7 +235,7 @@
         <field name="settlDate"    id="64"    type="SettlDate"/>
         <field name="tenor"        id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — 0 for single-leg, 2 for swap">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legPrice"     id="10008" type="int64" description="Custom: leg order price, fixed-point 10^-8"/>
@@ -263,7 +263,7 @@
         <field name="settlDate"    id="64"    type="SettlDate"/>
         <field name="tenor"        id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — per-leg fill details">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legLastPx"    id="10009" type="int64" description="Custom: leg fill price, fixed-point 10^-8"/>
@@ -364,7 +364,7 @@
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — per-leg fill details">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legLastPx"    id="10009" type="int64" description="Custom: leg fill price, fixed-point 10^-8"/>
@@ -429,7 +429,7 @@
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — per-leg pricing">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legBidPx"     id="10004" type="int64" description="Custom: leg bid price, fixed-point 10^-8"/>
@@ -501,7 +501,7 @@
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
-               description="Swap legs — per-leg pricing">
+               description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legBidPx"     id="10004" type="int64" description="Custom: leg bid price, fixed-point 10^-8"/>
