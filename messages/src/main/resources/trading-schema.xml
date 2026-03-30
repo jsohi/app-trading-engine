@@ -119,7 +119,7 @@
             <validValue name="OrderCreated"        description="Order created">100</validValue>
             <validValue name="OrderRejected"       description="Order rejected">101</validValue>
             <validValue name="OrderFilled"         description="Order filled">102</validValue>
-            <validValue name="OrderCanceled"      description="Order canceled">103</validValue>
+            <validValue name="OrderCanceled"       description="Order canceled">103</validValue>
             <validValue name="QuoteRequested"      description="Quote requested">104</validValue>
             <validValue name="QuoteCreated"        description="Quote created">105</validValue>
             <validValue name="QuoteRejected"       description="Quote rejected">106</validValue>
@@ -135,7 +135,7 @@
             <validValue name="UnknownSymbol"        description="Unknown symbol">1</validValue>
             <validValue name="InsufficientQuantity" description="Insufficient quantity">2</validValue>
             <validValue name="InvalidPrice"         description="Invalid price">3</validValue>
-            <!-- Value 4 reserved for future use (e.g., InvalidQuantity) -->
+            <validValue name="InvalidQuantity"      description="Invalid quantity">4</validValue>
             <validValue name="DuplicateClOrdId"     description="Duplicate ClOrdId">5</validValue>
             <validValue name="QuoteNotFound"        description="Quote not found">6</validValue>
             <validValue name="QuoteExpired"         description="Quote expired">7</validValue>
@@ -326,7 +326,7 @@
         <field name="ordType"        id="40"    type="OrdTypeEnum"/>
         <field name="price"          id="44"    type="int64" presence="optional" description="Order price, fixed-point 10^-8 (null for market orders)"/>
         <field name="orderQty"       id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
-        <field name="quoteId"        id="117"   type="QuoteID" description="Reference to accepted quote (empty if not from RFQ)"/>
+        <field name="quoteId"        id="117"   type="QuoteID" presence="optional" description="Reference to accepted quote (null if not from RFQ)"/>
         <field name="account"        id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
@@ -450,6 +450,7 @@
         <field name="account"        id="1"     type="Account"/>
         <field name="quoteRejectReason" id="300" type="QuoteRejectReasonEnum"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
+        <field name="text"           id="58"    type="Text"/>
     </sbe:message>
 
     <!-- QuoteExpiredEvent -->
