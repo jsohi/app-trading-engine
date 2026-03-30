@@ -131,7 +131,7 @@
             <validValue name="SnapshotTaken"       description="Snapshot taken">200</validValue>
         </enum>
 
-        <enum name="RejectReasonEnum" encodingType="uint16" description="Domain rejection reason codes">
+        <enum name="RejectReasonEnum" encodingType="uint8" description="Domain rejection reason codes">
             <validValue name="UnknownSymbol"        description="Unknown symbol">1</validValue>
             <validValue name="InsufficientQuantity" description="Insufficient quantity">2</validValue>
             <validValue name="InvalidPrice"         description="Invalid price">3</validValue>
