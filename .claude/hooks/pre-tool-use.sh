@@ -19,7 +19,7 @@ case "$cmd" in
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)
     if [ "$branch" = "main" ]; then
       cmd_no_opts=$(echo "$cmd" | sed -E 's/ --?[^ ]+//g')
-      echo "$cmd_no_opts" | grep -qE -- '^git push([[:space:]]+[^[:space:]]+)?$' \
+      echo "$cmd_no_opts" | grep -qE -- '^git push([[:space:]]+[^[:space:]]+)?([[:space:]]+HEAD)?$' \
         && deny 'No direct pushes to main — all changes must go via PRs'
     fi
     ;;
