@@ -56,19 +56,43 @@
         </enum>
 
         <enum name="ExecTypeEnum" encodingType="uint8" description="FIX tag 150">
-            <validValue name="New"         description="New order">0</validValue>
-            <validValue name="PartialFill" description="Partial fill">1</validValue>
-            <validValue name="Fill"        description="Full fill">2</validValue>
-            <validValue name="Canceled"    description="Order canceled">4</validValue>
-            <validValue name="Rejected"   description="Order rejected">8</validValue>
+            <validValue name="New"            description="New order (0)">0</validValue>
+            <validValue name="PartialFill"    description="Partial fill (1, deprecated FIX 4.3+; use Trade)">1</validValue>
+            <validValue name="Fill"           description="Full fill (2, deprecated FIX 4.3+; use Trade)">2</validValue>
+            <validValue name="DoneForDay"     description="Done for day (3)">3</validValue>
+            <validValue name="Canceled"       description="Order canceled (4)">4</validValue>
+            <validValue name="Replaced"       description="Replaced (5) — for OrderCancelReplaceRequest 35=G">5</validValue>
+            <validValue name="PendingCancel"  description="Pending cancel (6)">6</validValue>
+            <validValue name="Stopped"        description="Stopped (7)">7</validValue>
+            <validValue name="Rejected"       description="Order rejected (8)">8</validValue>
+            <validValue name="Suspended"      description="Suspended (9)">9</validValue>
+            <validValue name="PendingNew"     description="Pending new (A=10)">10</validValue>
+            <validValue name="Calculated"     description="Calculated (B=11)">11</validValue>
+            <validValue name="Expired"        description="Expired (C=12) — quote/order TTL elapsed">12</validValue>
+            <validValue name="Restated"       description="Restated (D=13)">13</validValue>
+            <validValue name="PendingReplace" description="Pending replace (E=14)">14</validValue>
+            <validValue name="Trade"          description="Trade (F=15) — preferred over Fill/PartialFill in FIX 4.3+">15</validValue>
+            <validValue name="TradeCorrect"   description="Trade correct (G=16)">16</validValue>
+            <validValue name="TradeCancel"    description="Trade cancel (H=17) — bust">17</validValue>
+            <validValue name="OrderStatus"    description="Order status (I=18)">18</validValue>
         </enum>
 
         <enum name="OrdStatusEnum" encodingType="uint8" description="FIX tag 39">
-            <validValue name="New"              description="New">0</validValue>
-            <validValue name="PartiallyFilled"  description="Partially filled">1</validValue>
-            <validValue name="Filled"           description="Filled">2</validValue>
-            <validValue name="Canceled"         description="Canceled">4</validValue>
-            <validValue name="Rejected"         description="Rejected">8</validValue>
+            <validValue name="New"                description="New (0)">0</validValue>
+            <validValue name="PartiallyFilled"    description="Partially filled (1)">1</validValue>
+            <validValue name="Filled"             description="Filled (2)">2</validValue>
+            <validValue name="DoneForDay"         description="Done for day (3)">3</validValue>
+            <validValue name="Canceled"           description="Canceled (4)">4</validValue>
+            <validValue name="Replaced"           description="Replaced (5, deprecated; use ExecType=Replaced + ordStatus=New)">5</validValue>
+            <validValue name="PendingCancel"      description="Pending cancel (6)">6</validValue>
+            <validValue name="Stopped"            description="Stopped (7)">7</validValue>
+            <validValue name="Rejected"           description="Rejected (8)">8</validValue>
+            <validValue name="Suspended"          description="Suspended (9)">9</validValue>
+            <validValue name="PendingNew"         description="Pending new (A=10)">10</validValue>
+            <validValue name="Calculated"         description="Calculated (B=11)">11</validValue>
+            <validValue name="Expired"            description="Expired (C=12) — quote/order TTL elapsed">12</validValue>
+            <validValue name="AcceptedForBidding" description="Accepted for bidding (D=13)">13</validValue>
+            <validValue name="PendingReplace"     description="Pending replace (E=14)">14</validValue>
         </enum>
 
         <enum name="QuoteStatusEnum" encodingType="uint8" description="FIX tag 297">
