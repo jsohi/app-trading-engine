@@ -190,6 +190,11 @@
             <validValue name="Active"    description="Account is active">1</validValue>
         </enum>
 
+        <enum name="BooleanType" encodingType="uint8" description="Boolean encoding for SBE flag fields (FIX-style char 'Y'/'N' is mapped at the FIX-SBE translator boundary)">
+            <validValue name="False" description="False (0)">0</validValue>
+            <validValue name="True"  description="True (1)">1</validValue>
+        </enum>
+
         <enum name="EventTypeEnum" encodingType="uint16" description="Domain event type classifier">
             <validValue name="OrderCreated"        description="Order created">100</validValue>
             <validValue name="OrderRejected"       description="Order rejected">101</validValue>
@@ -489,6 +494,60 @@
         <field name="account"          id="1"   type="Account"/>
         <field name="transactTime"     id="60"  type="uint64"      description="Epoch nanos"/>
         <field name="text"             id="58"  type="Text"        description="Free-text reason"/>
+    </sbe:message>
+
+    <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
+
+    <!--
+        Pricing Service messages (APP-28). These messages flow over Aeron IPC between the cluster
+        and the standalone Pricing Service. They are NOT FIX wire messages; no FIX MsgType is mapped.
+        TemplateIds 50-99 are reserved for internal inter-process traffic.
+    -->
+
+    <!-- PriceRequest: cluster → pricing service -->
+    <sbe:message name="PriceRequest" id="50"
+                 description="Internal: cluster asks pricing service to price an RFQ">
+        <field name="quoteReqId"   id="131" type="QuoteReqID"/>
+        <field name="symbol"       id="55"  type="Symbol"/>
+        <field name="side"         id="54"  type="SideEnum"/>
+        <field name="orderQty"     id="38"  type="int64" description="Requested quantity, fixed-point 10^-8"/>
+        <field name="account"      id="1"   type="Account"/>
+        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- PriceResponse: pricing service → cluster -->
+    <sbe:message name="PriceResponse" id="51"
+                 description="Internal: pricing service returns a quote (or declines via accepted=False)">
+        <field name="quoteReqId"   id="131" type="QuoteReqID"/>
+        <field name="symbol"       id="55"  type="Symbol"/>
+        <field name="bidPx"        id="132" type="int64" description="Bid price, fixed-point 10^-8"/>
+        <field name="offerPx"      id="133" type="int64" description="Offer price, fixed-point 10^-8"/>
+        <field name="bidSize"      id="134" type="int64" description="Bid quantity, fixed-point 10^-8"/>
+        <field name="offerSize"    id="135" type="int64" description="Offer quantity, fixed-point 10^-8"/>
+        <field name="validUntil"   id="62"  type="uint64" description="Quote expiry, epoch nanos"/>
+        <field name="accepted"     id="10034" type="BooleanType" description="True if pricing service produced a quote; False = decline (e.g., unsupported symbol, market closed)"/>
+        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
+        <field name="text"         id="58"  type="Text" presence="optional" description="Optional explanation when accepted=False"/>
+    </sbe:message>
+
+    <!-- PriceValidationRequest: cluster → pricing service -->
+    <sbe:message name="PriceValidationRequest" id="52"
+                 description="Internal: cluster asks pricing service to validate an inbound order's price (e.g., AcceptQuote)">
+        <field name="quoteId"      id="117" type="QuoteID"/>
+        <field name="symbol"       id="55"  type="Symbol"/>
+        <field name="side"         id="54"  type="SideEnum"/>
+        <field name="price"        id="44"  type="int64" description="Order price to validate, fixed-point 10^-8"/>
+        <field name="orderQty"     id="38"  type="int64" description="Order quantity, fixed-point 10^-8"/>
+        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- PriceValidationResponse: pricing service → cluster -->
+    <sbe:message name="PriceValidationResponse" id="53"
+                 description="Internal: pricing service confirms (or rejects) an order price">
+        <field name="quoteId"      id="117" type="QuoteID"/>
+        <field name="valid"        id="10035" type="BooleanType" description="True if the order price is acceptable to the pricing service"/>
+        <field name="text"         id="58"  type="Text" description="Free-text rejection reason when valid=False; empty when valid=True"/>
+        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
     </sbe:message>
 
     <!-- ======================== Domain Event Messages (templateId 100-119) ======================== -->
