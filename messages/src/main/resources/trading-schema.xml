@@ -185,9 +185,16 @@
             <validValue name="BRK" description="Broken date (custom)">14</validValue>
         </enum>
 
-        <enum name="AccountStatusEnum" encodingType="uint8" description="Account status">
-            <validValue name="Suspended" description="Account is suspended">0</validValue>
-            <validValue name="Active"    description="Account is active">1</validValue>
+        <enum name="AccountStatusEnum" encodingType="uint8" description="Account status. APP-70 renumber: Active=0 (healthy is the zero value, matches the rest of the schema's 0=normal convention)">
+            <validValue name="Active"    description="Account is active and can trade">0</validValue>
+            <validValue name="Suspended" description="Account is suspended (no new orders or quotes)">1</validValue>
+            <validValue name="Closed"    description="Account is closed (terminal state)">2</validValue>
+        </enum>
+
+        <enum name="AccountTypeEnum" encodingType="uint8" description="Account type — distinguishes house, client, and market-maker accounts for risk and reporting">
+            <validValue name="House"        description="House (proprietary) account">0</validValue>
+            <validValue name="Client"       description="Client (customer) account">1</validValue>
+            <validValue name="MarketMaker"  description="Market-maker / liquidity-provider account">2</validValue>
         </enum>
 
         <enum name="BooleanType" encodingType="uint8" description="Boolean encoding for SBE flag fields (FIX-style char 'Y'/'N' is mapped at the FIX-SBE translator boundary)">
@@ -213,17 +220,20 @@
         </enum>
 
         <enum name="RejectReasonEnum" encodingType="uint8" description="Domain rejection reason codes">
-            <validValue name="UnknownSymbol"        description="Unknown symbol">1</validValue>
-            <validValue name="InsufficientQuantity" description="Insufficient quantity">2</validValue>
-            <validValue name="InvalidPrice"         description="Invalid price">3</validValue>
-            <validValue name="InvalidQuantity"      description="Invalid quantity">4</validValue>
-            <validValue name="DuplicateClOrdId"     description="Duplicate ClOrdId">5</validValue>
-            <validValue name="QuoteNotFound"        description="Quote not found">6</validValue>
-            <validValue name="QuoteExpired"         description="Quote expired">7</validValue>
-            <validValue name="OrderNotFound"        description="Order not found">8</validValue>
-            <validValue name="BookFull"             description="Order book full">9</validValue>
-            <validValue name="AccountNotFound"      description="Account not found">10</validValue>
-            <validValue name="AccountSuspended"     description="Account suspended">11</validValue>
+            <validValue name="UnknownSymbol"             description="Unknown symbol">1</validValue>
+            <validValue name="InsufficientQuantity"      description="Insufficient quantity">2</validValue>
+            <validValue name="InvalidPrice"              description="Invalid price">3</validValue>
+            <validValue name="InvalidQuantity"           description="Invalid quantity">4</validValue>
+            <validValue name="DuplicateClOrdId"          description="Duplicate ClOrdId">5</validValue>
+            <validValue name="QuoteNotFound"             description="Quote not found">6</validValue>
+            <validValue name="QuoteExpired"              description="Quote expired">7</validValue>
+            <validValue name="OrderNotFound"             description="Order not found">8</validValue>
+            <validValue name="BookFull"                  description="Order book full">9</validValue>
+            <validValue name="AccountNotFound"           description="Account not found">10</validValue>
+            <validValue name="AccountSuspended"          description="Account suspended">11</validValue>
+            <validValue name="AccountNoTradePermission"  description="Account does not have trade permission">12</validValue>
+            <validValue name="AccountNoQuotePermission"  description="Account does not have quote permission">13</validValue>
+            <validValue name="OrderExceedsMaxSize"       description="Order exceeds account's maxOrderSize">14</validValue>
         </enum>
     </types>
 
@@ -494,6 +504,22 @@
         <field name="account"          id="1"   type="Account"/>
         <field name="transactTime"     id="60"  type="uint64"      description="Epoch nanos"/>
         <field name="text"             id="58"  type="Text"        description="Free-text reason"/>
+    </sbe:message>
+
+    <!-- LoadAccount: internal command to load/reload an account into the cluster (templateId 11, no FIX MsgType — internal). Sent by the ReferenceDataOrchestrator at startup. -->
+    <sbe:message name="LoadAccount" id="11"
+                 description="Load (or reload) an account into the cluster's AccountStore. Internal command — no FIX MsgType.">
+        <field name="accountId"         id="10024" type="int64"           description="Internal numeric account identifier (unique)"/>
+        <field name="accountCode"       id="1"     type="Account"         description="Human-readable account code (FIX tag 1, char[16])"/>
+        <field name="accountName"       id="10026" type="Text"            description="Full account name"/>
+        <field name="accountType"       id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"      id="15"    type="Currency"        description="Account base currency (ISO 4217)"/>
+        <field name="status"            id="10027" type="AccountStatusEnum"/>
+        <field name="maxOrderSize"      id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"    id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="canTrade"          id="10032" type="BooleanType"     description="Whether the account is permitted to submit orders"/>
+        <field name="canRequestQuotes"  id="10033" type="BooleanType"     description="Whether the account is permitted to submit RFQs"/>
+        <field name="transactTime"      id="60"    type="uint64"          description="Epoch nanos"/>
     </sbe:message>
 
     <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
@@ -784,13 +810,19 @@
 
     <!-- AccountLoadedEvent -->
     <sbe:message name="AccountLoadedEvent" id="110"
-                 description="Emitted when an account is loaded into the system">
-        <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
-        <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
-        <field name="accountId"      id="10024" type="int64"  description="Internal account identifier"/>
-        <field name="accountCode"    id="1"     type="Account"/>
-        <field name="accountName"    id="10026" type="Text"/>
-        <field name="status"         id="10027" type="AccountStatusEnum" description="Account status"/>
+                 description="Emitted when an account is loaded into the system. Mirrors LoadAccount (templateId 11) for replay.">
+        <field name="sequenceNumber"     id="10020" type="int64"  description="Monotonic event sequence number"/>
+        <field name="timestamp"          id="10021" type="uint64" description="Cluster timestamp nanos"/>
+        <field name="accountId"          id="10024" type="int64"  description="Internal account identifier"/>
+        <field name="accountCode"        id="1"     type="Account"/>
+        <field name="accountName"        id="10026" type="Text"/>
+        <field name="accountType"        id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"       id="15"    type="Currency"/>
+        <field name="status"             id="10027" type="AccountStatusEnum" description="Account status"/>
+        <field name="maxOrderSize"       id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8"/>
+        <field name="maxDailyVolume"     id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8"/>
+        <field name="canTrade"           id="10032" type="BooleanType"/>
+        <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
     </sbe:message>
 
     <!-- AccountLoadRejectedEvent -->
