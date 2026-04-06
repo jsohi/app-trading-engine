@@ -26,9 +26,16 @@ case "$cmd" in
     ;;
 
   git\ commit*)
-    # Commit message must reference a Linear issue
-    echo "$cmd" | grep -qE 'APP-[0-9]+: ' \
-      || deny 'Commit message must start with APP-{N}: prefix (Linear issue required)'
+    # Commit message must start with APP-{N}: (matches .githooks/commit-msg ^APP-[0-9]+: )
+    msg=$(echo "$cmd" | grep -oE -- "-m[[:space:]]+([\"'])[^\"']*\\1" | head -1 | sed -E "s/^-m[[:space:]]+[\"']//; s/[\"']$//")
+    if [ -n "$msg" ]; then
+      echo "$msg" | grep -qE '^APP-[0-9]+: ' \
+        || deny 'Commit message must start with APP-{N}: prefix (Linear issue required)'
+    else
+      # No -m message (heredoc, editor, etc.) — fall back to whole-command grep
+      echo "$cmd" | grep -qE '(^|[^A-Za-z0-9])APP-[0-9]+: ' \
+        || deny 'Commit message must start with APP-{N}: prefix (Linear issue required)'
+    fi
 
     # Branch name must follow convention (unless on main for fixups)
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
