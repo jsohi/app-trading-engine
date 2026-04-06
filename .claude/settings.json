@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "ask": [
+      "Bash(gh pr merge:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -6,15 +11,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd=$(jq -r '.tool_input.command // \"\"'); deny() { printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; case \"$cmd\" in git\\ commit*) echo \"$cmd\" | grep -qE 'APP-[0-9]+: ' || deny 'Commit message must start with APP-{N}: prefix (Linear issue required)'; branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main); [ \"$branch\" = \"main\" ] || echo \"$branch\" | grep -qE '^feat/app-[0-9]+-' || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)';; git\\ checkout\\ -b\\ *|git\\ switch\\ -c\\ *) name=$(echo \"$cmd\" | sed -E 's/^git (checkout -b|switch -c) //; s/ .*//'); echo \"$name\" | grep -qE '^feat/app-[0-9]+-' || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)';; git\\ branch\\ [a-zA-Z]*) name=$(echo \"$cmd\" | sed -E 's/^git branch //; s/ .*//'); echo \"$name\" | grep -qE '^feat/app-[0-9]+-' || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)';; esac",
+            "command": ".claude/hooks/pre-tool-use.sh",
             "timeout": 5,
             "statusMessage": "Checking Linear issue convention..."
           },
           {
             "type": "prompt",
-            "prompt": "Check if this Bash command is a git commit or creates a new branch (git checkout -b, git branch <name>, git switch -c). If it is a git commit: verify the FULL command text contains 'APP-{N}: ' where N is a number (Linear issue reference) — note the commit message may span multiple lines in a heredoc. If it creates a new branch: verify the branch name matches 'feat/app-{N}-*' pattern. If the command is not related to git commits or branch creation, ALLOW it. If it violates the convention, BLOCK it with an explanation of the correct format. Command: $ARGUMENTS",
+            "prompt": "Check if this Bash command is: (1) a git push to main — if it pushes directly to main (e.g. 'git push origin main', or 'git push' while on main branch), BLOCK it with 'No direct pushes to main — all changes must go via PRs'. (2) a git commit — verify the FULL command text contains 'APP-{N}: ' where N is a number (Linear issue reference) — note the commit message may span multiple lines in a heredoc. (3) creates a new branch (git checkout -b, git branch <name>, git switch -c) — verify the branch name matches 'feat/app-{N}-*' pattern. If the command is not related to git push/commit/branch creation, ALLOW it. If it violates a convention, BLOCK it with an explanation. Command: $ARGUMENTS",
             "timeout": 10,
             "statusMessage": "Validating Linear issue convention (LLM)..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pr=$(gh pr view --json number -q .number 2>/dev/null); [ -n \"$pr\" ] && gh pr comment \"$pr\" --body \"@gemini review\" >/dev/null 2>&1; exit 0",
+            "if": "Bash(git push:*)",
+            "async": true,
+            "timeout": 30,
+            "statusMessage": "Requesting Gemini review on PR..."
           }
         ]
       }
