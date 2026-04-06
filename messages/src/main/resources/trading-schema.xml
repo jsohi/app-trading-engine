@@ -197,6 +197,12 @@
             <validValue name="MarketMaker"  description="Market-maker / liquidity-provider account">2</validValue>
         </enum>
 
+        <enum name="RfqStateEnum" encodingType="uint8" description="RFQ lifecycle state for snapshot serialization (terminal states Filled/Rejected/Expired are not snapshotted)">
+            <validValue name="Requested" description="QuoteRequest received, awaiting price">0</validValue>
+            <validValue name="Quoted"    description="Quote sent to client, awaiting accept">1</validValue>
+            <validValue name="Accepted"  description="Quote accepted, order being booked">2</validValue>
+        </enum>
+
         <enum name="BooleanType" encodingType="uint8" description="Boolean encoding for SBE flag fields (FIX-style char 'Y'/'N' is mapped at the FIX-SBE translator boundary)">
             <validValue name="False" description="False (0)">0</validValue>
             <validValue name="True"  description="True (1)">1</validValue>
@@ -852,12 +858,113 @@
 
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
 
-    <!-- SnapshotTaken -->
+    <!--
+        Snapshot convention (APP-70):
+        - SnapshotTaken (200) is the per-snapshot header, written first.
+        - Each store serializes one or more *Snapshot messages (201-206) containing
+          a single repeating group of records. Records are flat — no nested groups
+          except RfqStateSnapshot which carries an inner noLegs group for swaps.
+        - Projections never snapshot — they replay from Aeron Archive position 0.
+        - Templates 207-219 reserved for future stores.
+    -->
+
+    <!-- SnapshotTaken — header for each snapshot. Extended with store-count, byte-length, checksum (APP-70). -->
     <sbe:message name="SnapshotTaken" id="200"
-                 description="Snapshot marker written at the start of each snapshot">
+                 description="Snapshot marker written at the start of each snapshot. The store-count, total byte length, and checksum cover the subsequent *Snapshot messages and let the loader detect truncation or corruption.">
         <field name="lastSequenceNumber" id="10020" type="int64"  description="Last event sequence number included in snapshot"/>
         <field name="snapshotTimestamp"  id="10021" type="uint64" description="Cluster timestamp when snapshot was taken"/>
         <field name="snapshotVersion"    id="10028" type="uint32" description="Snapshot format version for compatibility"/>
+        <field name="storeCount"         id="10036" type="uint8"  description="Number of *Snapshot messages following this header"/>
+        <field name="totalByteLength"    id="10037" type="uint32" description="Total bytes of all subsequent snapshot messages (for sizing the loader buffer)"/>
+        <field name="checksum"           id="10038" type="uint32" description="CRC32C of all subsequent snapshot bytes (corruption detection)"/>
+    </sbe:message>
+
+    <!-- AccountSnapshot (201) — full account records for AccountStore restore -->
+    <sbe:message name="AccountSnapshot" id="201"
+                 description="Repeating group of full account records, used to restore AccountStore on cluster recovery">
+        <group name="noAccounts" id="10039" dimensionType="groupSizeEncoding"
+               description="One entry per account in the AccountStore">
+            <field name="accountId"          id="10024" type="int64"          description="Internal account identifier"/>
+            <field name="accountCode"        id="1"     type="Account"/>
+            <field name="accountName"        id="10026" type="Text"/>
+            <field name="accountType"        id="10029" type="AccountTypeEnum"/>
+            <field name="baseCurrency"       id="15"    type="Currency"/>
+            <field name="status"             id="10027" type="AccountStatusEnum"/>
+            <field name="maxOrderSize"       id="10030" type="int64"          description="Fixed-point 10^-8"/>
+            <field name="maxDailyVolume"     id="10031" type="int64"          description="Fixed-point 10^-8"/>
+            <field name="canTrade"           id="10032" type="BooleanType"/>
+            <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
+        </group>
+    </sbe:message>
+
+    <!-- OrderBookSnapshot (202) — non-terminal orders only -->
+    <sbe:message name="OrderBookSnapshot" id="202"
+                 description="Repeating group of active (non-terminal) orders, used to restore OrderBook on cluster recovery. Filled/Canceled/Rejected orders are not snapshotted; the OrderBook reconstructs terminal state by replaying events.">
+        <group name="noOrders" id="10040" dimensionType="groupSizeEncoding"
+               description="One entry per active order">
+            <field name="orderId"     id="37"  type="OrderID"/>
+            <field name="clOrdId"     id="11"  type="ClOrdID"/>
+            <field name="symbol"      id="55"  type="Symbol"/>
+            <field name="side"        id="54"  type="SideEnum"/>
+            <field name="price"       id="44"  type="int64"   description="Limit price, fixed-point 10^-8"/>
+            <field name="orderQty"    id="38"  type="int64"   description="Order quantity, fixed-point 10^-8"/>
+            <field name="leavesQty"   id="151" type="int64"   description="Remaining quantity, fixed-point 10^-8"/>
+            <field name="cumQty"      id="14"  type="int64"   description="Filled quantity, fixed-point 10^-8"/>
+            <field name="accountId"   id="10024" type="int64" description="Owning account (numeric ref)"/>
+            <field name="timestamp"   id="10021" type="uint64" description="Cluster timestamp at order creation"/>
+        </group>
+    </sbe:message>
+
+    <!-- RfqStateSnapshot (203) — non-terminal RFQs only. The state field uses RfqStateEnum (Requested/Quoted/Accepted). -->
+    <sbe:message name="RfqStateSnapshot" id="203"
+                 description="Repeating group of non-terminal RFQs from the RfqStateMachine. After restore the state machine immediately expires any RFQ whose TTL has elapsed relative to the recovery cluster timestamp.">
+        <group name="noRfqs" id="10041" dimensionType="groupSizeEncoding"
+               description="One entry per non-terminal RFQ">
+            <field name="quoteReqId"      id="131"   type="QuoteReqID"/>
+            <field name="state"           id="10042" type="RfqStateEnum"/>
+            <field name="quoteId"         id="117"   type="QuoteID"           description="Set when state ≥ Quoted; empty otherwise"/>
+            <field name="symbol"          id="55"    type="Symbol"/>
+            <field name="side"            id="54"    type="SideEnum"/>
+            <field name="quantity"        id="38"    type="int64"             description="Requested quantity, fixed-point 10^-8"/>
+            <field name="bidPrice"        id="132"   type="int64"             description="Bid price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="askPrice"        id="133"   type="int64"             description="Ask price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="expiryTimestamp" id="62"    type="uint64"            description="ValidUntilTime for the quote, epoch nanos"/>
+            <field name="productType"     id="10013" type="ProductTypeEnum"/>
+            <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+                   description="Per-leg state for swap RFQs (empty for single-leg). Mirrors the noLegs group in QuoteRequest.">
+                <field name="legSide"      id="624" type="SideEnum"/>
+                <field name="legSettlDate" id="588" type="SettlDate"/>
+                <field name="legOrderQty"  id="687" type="int64" description="Leg quantity, fixed-point 10^-8"/>
+            </group>
+        </group>
+    </sbe:message>
+
+    <!-- PositionSnapshot (204) — net positions per symbol -->
+    <sbe:message name="PositionSnapshot" id="204"
+                 description="Repeating group of net positions per symbol, used to restore the cluster PositionTracker on recovery">
+        <group name="noPositions" id="10043" dimensionType="groupSizeEncoding"
+               description="One entry per symbol with a non-zero position">
+            <field name="symbol"       id="55"    type="Symbol"/>
+            <field name="netQuantity"  id="10044" type="int64" description="Signed net quantity, fixed-point 10^-8"/>
+            <field name="avgPrice"     id="10045" type="int64" description="Volume-weighted average price, fixed-point 10^-8"/>
+            <field name="realizedPnl"  id="10046" type="int64" description="Realized P&amp;L for the day, fixed-point 10^-8"/>
+        </group>
+    </sbe:message>
+
+    <!-- IdGeneratorSnapshot (205) — counter state per generator instance (orderId, execId, quoteId, etc.) -->
+    <sbe:message name="IdGeneratorSnapshot" id="205"
+                 description="Repeating group of IdGenerator counter values keyed by prefix (e.g., 'ORD', 'EXE', 'QTE'). Required for deterministic ID assignment after recovery.">
+        <group name="noGenerators" id="10047" dimensionType="groupSizeEncoding"
+               description="One entry per IdGenerator instance">
+            <field name="prefix"  id="10048" type="Symbol" description="Generator prefix (reused Symbol type, char[8])"/>
+            <field name="counter" id="10049" type="int64"  description="Current counter value (next assigned id = counter + 1)"/>
+        </group>
+    </sbe:message>
+
+    <!-- EventSequencerSnapshot (206) — single record, the next sequence number to assign -->
+    <sbe:message name="EventSequencerSnapshot" id="206"
+                 description="EventSequencer state — the next sequence number to assign after recovery. Single-record (no group) since there is exactly one EventSequencer per cluster.">
+        <field name="nextSequence" id="10050" type="int64" description="Next event sequence number to assign"/>
     </sbe:message>
 
 </sbe:messageSchema>
