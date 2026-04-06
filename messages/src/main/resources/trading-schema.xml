@@ -301,7 +301,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <field name="validUntil"     id="62"    type="uint64" description="ValidUntilTime — quote expiry epoch nanos. Set from cluster ts + RFQ TTL."/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
@@ -347,7 +347,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
     </sbe:message>
 
@@ -368,7 +368,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Multileg legs (typically 2 for an FX swap: near + far, opposite sides)">
@@ -408,7 +408,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Replacement legs — full set, even unchanged ones (FIX semantics)">
@@ -449,7 +449,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -494,7 +494,7 @@
             <field name="settlDate"     id="64"    type="SettlDate"/>
             <field name="settlType"     id="63"    type="SettlTypeEnum" presence="optional"/>
             <field name="currency"      id="15"    type="Currency"/>
-            <field name="settlCurrency" id="120"   type="Currency" presence="optional"/>
+            <field name="settlCurrency" id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
             <field name="tenor"         id="10001" type="TenorEnum"/>
         </group>
     </sbe:message>
@@ -544,13 +544,13 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency"      presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency"      presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs (empty for single-leg). Mirrors QuoteRequest.noLegs so the pricing service can price both legs of a swap.">
@@ -625,7 +625,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
     </sbe:message>
 
@@ -661,7 +661,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -703,7 +703,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -735,7 +735,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
@@ -791,7 +791,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -841,8 +841,8 @@
         <field name="accountType"        id="10029" type="AccountTypeEnum"/>
         <field name="baseCurrency"       id="15"    type="Currency"/>
         <field name="status"             id="10027" type="AccountStatusEnum" description="Account status"/>
-        <field name="maxOrderSize"       id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8"/>
-        <field name="maxDailyVolume"     id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8"/>
+        <field name="maxOrderSize"       id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"     id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
         <field name="canTrade"           id="10032" type="BooleanType"/>
         <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
     </sbe:message>
@@ -891,7 +891,7 @@
         <field name="snapshotTimestamp"  id="10021" type="uint64" description="Cluster timestamp when snapshot was taken"/>
         <field name="snapshotVersion"    id="10028" type="uint32" description="Snapshot format version for compatibility"/>
         <field name="storeCount"         id="10036" type="uint8"  description="Number of *Snapshot messages following this header"/>
-        <field name="totalByteLength"    id="10037" type="uint32" description="Total bytes of all subsequent snapshot messages (for sizing the loader buffer)"/>
+        <field name="totalByteLength"    id="10037" type="uint64" description="Total bytes of all subsequent snapshot messages (for sizing the loader buffer). uint64 to future-proof against large OrderBook/PositionTracker snapshots."/>
         <field name="checksum"           id="10038" type="uint32" description="CRC32C of all subsequent snapshot bytes (corruption detection)"/>
     </sbe:message>
 
@@ -937,15 +937,22 @@
         <group name="noRfqs" id="10041" dimensionType="groupSizeEncoding"
                description="One entry per non-terminal RFQ">
             <field name="quoteReqId"      id="131"   type="QuoteReqID"/>
+            <field name="accountId"       id="10024" type="int64"             description="Owning account (numeric ref)"/>
             <field name="state"           id="10042" type="RfqStateEnum"/>
             <field name="quoteId"         id="117"   type="QuoteID"           description="Set when state ≥ Quoted; empty otherwise"/>
             <field name="symbol"          id="55"    type="Symbol"/>
             <field name="side"            id="54"    type="SideEnum"/>
-            <field name="quantity"        id="38"    type="int64"             description="Requested quantity, fixed-point 10^-8"/>
-            <field name="bidPrice"        id="132"   type="int64"             description="Bid price (set when state ≥ Quoted), fixed-point 10^-8"/>
-            <field name="askPrice"        id="133"   type="int64"             description="Ask price (set when state ≥ Quoted), fixed-point 10^-8"/>
-            <field name="expiryTimestamp" id="62"    type="uint64"            description="ValidUntilTime for the quote, epoch nanos"/>
+            <field name="orderQty"        id="38"    type="int64"             description="Requested quantity, fixed-point 10^-8"/>
+            <field name="bidPx"           id="132"   type="int64"             presence="optional" description="Bid price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="offerPx"         id="133"   type="int64"             presence="optional" description="Offer price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="validUntil"      id="62"    type="uint64"            description="ValidUntilTime for the quote, epoch nanos"/>
+            <field name="transactTime"    id="60"    type="uint64"            description="Original request time, epoch nanos"/>
             <field name="productType"     id="10013" type="ProductTypeEnum"/>
+            <field name="settlDate"       id="64"    type="SettlDate"/>
+            <field name="settlType"       id="63"    type="SettlTypeEnum"     presence="optional"/>
+            <field name="currency"        id="15"    type="Currency"/>
+            <field name="settlCurrency"   id="120"   type="Currency"          presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
+            <field name="tenor"           id="10001" type="TenorEnum"/>
             <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                    description="Per-leg state for swap RFQs (empty for single-leg). Mirrors QuoteRequest.noLegs so the full RfqStateMachine per-leg state is preserved across cluster recovery.">
                 <field name="legSide"       id="624"   type="SideEnum"/>
