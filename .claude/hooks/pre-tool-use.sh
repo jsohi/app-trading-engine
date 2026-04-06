@@ -11,8 +11,8 @@ deny() {
 
 case "$cmd" in
   git\ push*)
-    # Block explicit pushes targeting main (any remote, any refspec syntax)
-    echo "$cmd" | grep -qE -- '(:|[[:space:]])(refs/heads/)?main$' \
+    # Block explicit pushes targeting main (any remote, any refspec, force-prefix, trailing flags)
+    echo "$cmd" | grep -qE -- '(:|[[:space:]])[+]?(refs/heads/)?main([[:space:]]|$)' \
       && deny 'No direct pushes to main — all changes must go via PRs'
 
     # Block implicit pushes (bare "git push" or "git push <remote>") when on main
@@ -44,7 +44,14 @@ case "$cmd" in
     ;;
 
   git\ checkout\ -b\ *|git\ switch\ -c\ *)
-    name=$(echo "$cmd" | sed -E 's/^git (checkout -b|switch -c) //; s/ .*//')
+    # Find first non-flag argument (the branch name) — same parser as git\ branch\ * below
+    name=""
+    for arg in $(echo "$cmd" | sed -E 's/^git (checkout -b|switch -c) *//'); do
+      case "$arg" in -*) continue ;; esac
+      name=$arg
+      break
+    done
+    [ -z "$name" ] && exit 0
     echo "$name" | grep -qE '^feat/app-[0-9]+-' \
       || deny 'Branch name must match feat/app-{N}-* pattern (Linear issue required)'
     ;;
