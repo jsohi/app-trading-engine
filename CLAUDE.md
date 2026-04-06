@@ -61,6 +61,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 - Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55)
 - Schema changes to `trading-schema.xml` must be merged sequentially (no parallel merges)
 - Template IDs: commands 1-19, events 100-119, snapshots 200-206 (200=SnapshotTaken, 201=Account, 202=OrderBook, 203=RfqState, 204=Position, 205=IdGenerator, 206=EventSequencer)
+- **Pre-production: do NOT bump `version` or `semanticVersion` on `<sbe:messageSchema>`.** Both stay pinned at the current values (`version="2"`, `semanticVersion="0.2.0"`) for the entire dev phase. Make breaking changes freely — there are no deployed consumers to preserve compatibility for. The first version bump happens only when we cut the first production release. Do not use `sinceVersion="..."` on new fields either; just add them.
 
 ### Event Sourcing
 - Commands are validated and produce events
