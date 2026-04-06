@@ -36,7 +36,7 @@
         <type name="OrigClOrdID"    primitiveType="char" length="20" description="Original client order identifier"/>
         <type name="SettlDate"      primitiveType="char" length="8"  description="Settlement date YYYYMMDD (FIX tag 64)"/>
         <type name="Currency"       primitiveType="char" length="3"  description="ISO 4217 currency code (FIX tag 15 / 120 / 556)"/>
-        <type name="SecurityType"   primitiveType="char" length="8"  description="FIX SecurityType / LegSecurityType string (FIX tag 167 / 609) — e.g. FXSPOT, FXFWD, FXSWAP, FXNDF"/>
+        <type name="SecurityType"   primitiveType="char" length="16" description="FIX SecurityType / LegSecurityType string (FIX tag 167 / 609) — e.g. FXSPOT, FXFWD, FXSWAP, FXNDF, COMMON_STOCK, CORPORATE_BOND. char[16] to fit cross-asset values."/>
         <type name="CFICode"        primitiveType="char" length="6"  description="ISO 10962 Classification of Financial Instruments code (FIX tag 461 / 608)"/>
         <type name="LegRefID"       primitiveType="char" length="20" description="Cross-reference id for a multileg leg (FIX tag 654)"/>
 
@@ -117,9 +117,9 @@
             <validValue name="Other"                                 description="Other reason (99)">99</validValue>
         </enum>
 
-        <enum name="CxlRejResponseToEnum" encodingType="uint8" description="FIX tag 434 — message that the cancel reject is responding to (ASCII codepoints)">
-            <validValue name="OrderCancelRequest"        description="OrderCancelRequest 35=F ('1'=49)">49</validValue>
-            <validValue name="OrderCancelReplaceRequest" description="OrderCancelReplaceRequest 35=G ('2'=50)">50</validValue>
+        <enum name="CxlRejResponseToEnum" encodingType="uint8" description="FIX tag 434 — message that the cancel reject is responding to. Tag 434 is `int` in FIX 4.4 (NOT char), so the SBE values match the FIX wire integers directly.">
+            <validValue name="OrderCancelRequest"        description="OrderCancelRequest 35=F">1</validValue>
+            <validValue name="OrderCancelReplaceRequest" description="OrderCancelReplaceRequest 35=G">2</validValue>
         </enum>
 
         <enum name="QuoteRejectReasonEnum" encodingType="uint8" description="FIX tag 300">
@@ -131,19 +131,19 @@
             <validValue name="Other"             description="Other reason">99</validValue>
         </enum>
 
-        <enum name="SettlTypeEnum" encodingType="uint8" description="FIX tag 63 — settlement type. Values are ASCII codepoints to match FIX wire format.">
-            <validValue name="Regular"        description="Regular / FX Spot ('0'=48)">48</validValue>
-            <validValue name="Cash"           description="Cash ('1'=49)">49</validValue>
-            <validValue name="NextDay"        description="Next Day / Tomorrow ('2'=50)">50</validValue>
-            <validValue name="TPlus2"         description="T+2 ('3'=51)">51</validValue>
-            <validValue name="TPlus3"         description="T+3 ('4'=52)">52</validValue>
-            <validValue name="TPlus4"         description="T+4 ('5'=53)">53</validValue>
-            <validValue name="Future"         description="Future ('6'=54)">54</validValue>
-            <validValue name="WhenAndIfIssued" description="When And If Issued ('7'=55)">55</validValue>
-            <validValue name="SellersOption"  description="Sellers Option ('8'=56)">56</validValue>
-            <validValue name="TPlus5"         description="T+5 ('9'=57)">57</validValue>
-            <validValue name="BrokenDate"     description="Broken Date ('B'=66) — FX with non-standard date">66</validValue>
-            <validValue name="FXSpotNextDay"  description="FX Spot Next Day ('C'=67)">67</validValue>
+        <enum name="SettlTypeEnum" encodingType="uint8" description="FIX tag 63 — settlement type. Logical ordinals; the FIX-SBE translator maps to/from the FIX char wire values ('0'-'9', 'B', 'C').">
+            <validValue name="Regular"         description="Regular / FX Spot — FIX '0'">0</validValue>
+            <validValue name="Cash"            description="Cash — FIX '1'">1</validValue>
+            <validValue name="NextDay"         description="Next Day / Tomorrow — FIX '2'">2</validValue>
+            <validValue name="TPlus2"          description="T+2 — FIX '3'">3</validValue>
+            <validValue name="TPlus3"          description="T+3 — FIX '4'">4</validValue>
+            <validValue name="TPlus4"          description="T+4 — FIX '5'">5</validValue>
+            <validValue name="Future"          description="Future — FIX '6'">6</validValue>
+            <validValue name="WhenAndIfIssued" description="When And If Issued — FIX '7'">7</validValue>
+            <validValue name="SellersOption"   description="Sellers Option — FIX '8'">8</validValue>
+            <validValue name="TPlus5"          description="T+5 — FIX '9'">9</validValue>
+            <validValue name="BrokenDate"      description="Broken Date — FIX 'B' (FX with non-standard date)">10</validValue>
+            <validValue name="FXSpotNextDay"   description="FX Spot Next Day — FIX 'C'">11</validValue>
         </enum>
 
         <enum name="ProductTypeEnum" encodingType="uint8" description="Custom FX product classification">
@@ -363,7 +363,7 @@
             <field name="legRatioQty"     id="623"   type="int64"         description="Leg ratio relative to package, fixed-point 10^-8"/>
             <field name="legTenor"        id="10002" type="TenorEnum"     description="Custom: leg tenor period"/>
             <field name="legOrderQty"     id="687"   type="int64"         description="Leg quantity, fixed-point 10^-8"/>
-            <field name="legPrice"        id="10008" type="int64"         description="Custom: leg order price, fixed-point 10^-8"/>
+            <field name="legPrice"        id="566"   type="int64"         description="Leg order price, fixed-point 10^-8 (FIX LegPrice)"/>
         </group>
     </sbe:message>
 
@@ -403,7 +403,7 @@
             <field name="legRatioQty"     id="623"   type="int64"     description="Leg ratio relative to package, fixed-point 10^-8"/>
             <field name="legTenor"        id="10002" type="TenorEnum"/>
             <field name="legOrderQty"     id="687"   type="int64"     description="Leg quantity, fixed-point 10^-8"/>
-            <field name="legPrice"        id="10008" type="int64"     description="Custom: leg order price, fixed-point 10^-8"/>
+            <field name="legPrice"        id="566"   type="int64"     description="Leg order price, fixed-point 10^-8 (FIX LegPrice)"/>
         </group>
     </sbe:message>
 
@@ -435,7 +435,7 @@
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
             <field name="legCurrency"  id="556"   type="Currency"/>
-            <field name="legLastPx"    id="10009" type="int64" description="Custom: leg fill price, fixed-point 10^-8"/>
+            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8 (FIX LegLastPx)"/>
             <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8"/>
             <field name="legLeavesQty" id="10011" type="int64" description="Custom: leg remaining quantity, fixed-point 10^-8"/>
             <field name="legCumQty"    id="10012" type="int64" description="Custom: leg cumulative filled quantity, fixed-point 10^-8"/>
@@ -562,7 +562,7 @@
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
             <field name="legCurrency"  id="556"   type="Currency"/>
-            <field name="legLastPx"    id="10009" type="int64" description="Custom: leg fill price, fixed-point 10^-8"/>
+            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8 (FIX LegLastPx)"/>
             <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8"/>
             <field name="legLeavesQty" id="10011" type="int64" description="Custom: leg remaining quantity, fixed-point 10^-8"/>
             <field name="legCumQty"    id="10012" type="int64" description="Custom: leg cumulative filled quantity, fixed-point 10^-8"/>
