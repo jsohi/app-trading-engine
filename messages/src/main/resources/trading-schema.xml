@@ -218,6 +218,7 @@
         <field name="productType"  id="10013"   type="ProductTypeEnum"/>
         <field name="settlDate"    id="64"    type="SettlDate"/>
         <field name="tenor"        id="10001" type="TenorEnum"/>
+        <field name="validUntil"   id="62"    type="uint64" description="ValidUntilTime — quote expiry epoch nanos. Set from cluster ts + RFQ TTL."/>
         <field name="swapPoints"   id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
