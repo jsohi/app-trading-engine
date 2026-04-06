@@ -36,7 +36,7 @@
         <type name="OrigClOrdID"    primitiveType="char" length="20" description="Original client order identifier"/>
         <type name="SettlDate"      primitiveType="char" length="8"  description="Settlement date YYYYMMDD (FIX tag 64)"/>
         <type name="Currency"       primitiveType="char" length="3"  description="ISO 4217 currency code (FIX tag 15 / 120 / 556)"/>
-        <type name="SecurityType"   primitiveType="char" length="16" description="FIX SecurityType / LegSecurityType string (FIX tag 167 / 609) — e.g. FXSPOT, FXFWD, FXSWAP, FXNDF, COMMON_STOCK, CORPORATE_BOND. char[16] to fit cross-asset values."/>
+        <type name="SecurityType"   primitiveType="char" length="16" description="FIX SecurityType / LegSecurityType string (FIX tag 167 / 609). char[16] accommodates the longest standard FIX 4.4 values (CORPORATE_BOND=14, COMMON_STOCK=12)."/>
         <type name="CFICode"        primitiveType="char" length="6"  description="ISO 10962 Classification of Financial Instruments code (FIX tag 461 / 608)"/>
         <type name="LegRefID"       primitiveType="char" length="20" description="Cross-reference id for a multileg leg (FIX tag 654)"/>
 
@@ -117,7 +117,7 @@
             <validValue name="Other"                                 description="Other reason (99)">99</validValue>
         </enum>
 
-        <enum name="CxlRejResponseToEnum" encodingType="uint8" description="FIX tag 434 — message that the cancel reject is responding to. Tag 434 is `int` in FIX 4.4 (NOT char), so the SBE values match the FIX wire integers directly.">
+        <enum name="CxlRejResponseToEnum" encodingType="uint8" description="FIX tag 434 — message that the cancel reject is responding to. Tag 434 is FIX int, so SBE values are the wire integers.">
             <validValue name="OrderCancelRequest"        description="OrderCancelRequest 35=F">1</validValue>
             <validValue name="OrderCancelReplaceRequest" description="OrderCancelReplaceRequest 35=G">2</validValue>
         </enum>
@@ -363,7 +363,7 @@
             <field name="legRatioQty"     id="623"   type="int64"         description="Leg ratio relative to package, fixed-point 10^-8"/>
             <field name="legTenor"        id="10002" type="TenorEnum"     description="Custom: leg tenor period"/>
             <field name="legOrderQty"     id="687"   type="int64"         description="Leg quantity, fixed-point 10^-8"/>
-            <field name="legPrice"        id="566"   type="int64"         description="Leg order price, fixed-point 10^-8 (FIX LegPrice)"/>
+            <field name="legPrice"        id="566"   type="int64"         description="Leg order price, fixed-point 10^-8"/>
         </group>
     </sbe:message>
 
@@ -403,7 +403,7 @@
             <field name="legRatioQty"     id="623"   type="int64"     description="Leg ratio relative to package, fixed-point 10^-8"/>
             <field name="legTenor"        id="10002" type="TenorEnum"/>
             <field name="legOrderQty"     id="687"   type="int64"     description="Leg quantity, fixed-point 10^-8"/>
-            <field name="legPrice"        id="566"   type="int64"     description="Leg order price, fixed-point 10^-8 (FIX LegPrice)"/>
+            <field name="legPrice"        id="566"   type="int64"     description="Leg order price, fixed-point 10^-8"/>
         </group>
     </sbe:message>
 
@@ -435,8 +435,8 @@
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
             <field name="legCurrency"  id="556"   type="Currency"/>
-            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8 (FIX LegLastPx)"/>
-            <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8"/>
+            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8"/>
+            <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8 (FIX 5.0 SP2 has tag 1418 LegLastQty; not adopted — schema is FIX 4.4)"/>
             <field name="legLeavesQty" id="10011" type="int64" description="Custom: leg remaining quantity, fixed-point 10^-8"/>
             <field name="legCumQty"    id="10012" type="int64" description="Custom: leg cumulative filled quantity, fixed-point 10^-8"/>
         </group>
@@ -562,8 +562,8 @@
             <field name="legSettlDate" id="588"   type="SettlDate"/>
             <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
             <field name="legCurrency"  id="556"   type="Currency"/>
-            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8 (FIX LegLastPx)"/>
-            <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8"/>
+            <field name="legLastPx"    id="637"   type="int64" description="Leg fill price, fixed-point 10^-8"/>
+            <field name="legLastQty"   id="10010" type="int64" description="Custom: leg fill quantity, fixed-point 10^-8 (FIX 5.0 SP2 has tag 1418 LegLastQty; not adopted — schema is FIX 4.4)"/>
             <field name="legLeavesQty" id="10011" type="int64" description="Custom: leg remaining quantity, fixed-point 10^-8"/>
             <field name="legCumQty"    id="10012" type="int64" description="Custom: leg cumulative filled quantity, fixed-point 10^-8"/>
         </group>
