@@ -39,6 +39,7 @@
         <type name="SecurityType"   primitiveType="char" length="16" description="FIX SecurityType / LegSecurityType string (FIX tag 167 / 609). char[16] accommodates the longest standard FIX 4.4 values (CORPORATE_BOND=14, COMMON_STOCK=12)."/>
         <type name="CFICode"        primitiveType="char" length="6"  description="ISO 10962 Classification of Financial Instruments code (FIX tag 461 / 608)"/>
         <type name="LegRefID"       primitiveType="char" length="20" description="Cross-reference id for a multileg leg (FIX tag 654)"/>
+        <type name="IdPrefix"       primitiveType="char" length="8"  description="IdGenerator key (e.g., 'ORD', 'EXE', 'QTE'); used by IdGeneratorSnapshot to keep prefix-state per generator instance"/>
 
         <!-- Enums -->
         <enum name="SideEnum" encodingType="uint8" description="FIX tag 54">
@@ -122,7 +123,7 @@
             <validValue name="OrderCancelReplaceRequest" description="OrderCancelReplaceRequest 35=G">2</validValue>
         </enum>
 
-        <enum name="QuoteRejectReasonEnum" encodingType="uint8" description="FIX tag 300">
+        <enum name="QuoteRejectReasonEnum" encodingType="uint8" nullValue="255" description="FIX tag 300 — values 1..5,99. nullValue=255 sentinel for use as optional enum field; producers must explicitly write 255 when leaving the field unset since SBE does not auto-initialise enum bytes.">
             <validValue name="UnknownSymbol"     description="Unknown symbol">1</validValue>
             <validValue name="ExchangeClosed"    description="Exchange closed">2</validValue>
             <validValue name="QuoteExceedsLimit" description="Quote exceeds limit">3</validValue>
@@ -131,7 +132,7 @@
             <validValue name="Other"             description="Other reason">99</validValue>
         </enum>
 
-        <enum name="SettlTypeEnum" encodingType="uint8" description="FIX tag 63 — settlement type. Logical ordinals; the FIX-SBE translator maps to/from the FIX char wire values ('0'-'9', 'B', 'C').">
+        <enum name="SettlTypeEnum" encodingType="uint8" nullValue="255" description="FIX tag 63 — settlement type. Logical ordinals; the FIX-SBE translator maps to/from the FIX char wire values ('0'-'9', 'B', 'C'). nullValue=255 sentinel disambiguates 'unset' from Regular(0) when used as an optional field; producers must explicitly write 255 since SBE does not auto-initialise enum bytes.">
             <validValue name="Regular"         description="Regular / FX Spot — FIX '0'">0</validValue>
             <validValue name="Cash"            description="Cash — FIX '1'">1</validValue>
             <validValue name="NextDay"         description="Next Day / Tomorrow — FIX '2'">2</validValue>
@@ -185,9 +186,27 @@
             <validValue name="BRK" description="Broken date (custom)">14</validValue>
         </enum>
 
-        <enum name="AccountStatusEnum" encodingType="uint8" description="Account status">
-            <validValue name="Suspended" description="Account is suspended">0</validValue>
-            <validValue name="Active"    description="Account is active">1</validValue>
+        <enum name="AccountStatusEnum" encodingType="uint8" description="Account status (Active=0 — the zero value is the healthy default)">
+            <validValue name="Active"    description="Account is active and can trade">0</validValue>
+            <validValue name="Suspended" description="Account is suspended (no new orders or quotes)">1</validValue>
+            <validValue name="Closed"    description="Account is closed (terminal state)">2</validValue>
+        </enum>
+
+        <enum name="AccountTypeEnum" encodingType="uint8" description="Account type — distinguishes house, client, and market-maker accounts for risk and reporting">
+            <validValue name="House"        description="House (proprietary) account">0</validValue>
+            <validValue name="Client"       description="Client (customer) account">1</validValue>
+            <validValue name="MarketMaker"  description="Market-maker / liquidity-provider account">2</validValue>
+        </enum>
+
+        <enum name="RfqStateEnum" encodingType="uint8" description="RFQ lifecycle state for snapshot serialization (terminal states Filled/Rejected/Expired are not snapshotted)">
+            <validValue name="Requested" description="QuoteRequest received, awaiting price">0</validValue>
+            <validValue name="Quoted"    description="Quote sent to client, awaiting accept">1</validValue>
+            <validValue name="Accepted"  description="Quote accepted, order being booked">2</validValue>
+        </enum>
+
+        <enum name="BooleanType" encodingType="uint8" description="Boolean encoding for SBE flag fields (FIX-style char 'Y'/'N' is mapped at the FIX-SBE translator boundary)">
+            <validValue name="False" description="False (0)">0</validValue>
+            <validValue name="True"  description="True (1)">1</validValue>
         </enum>
 
         <enum name="EventTypeEnum" encodingType="uint16" description="Domain event type classifier">
@@ -207,18 +226,21 @@
             <validValue name="SnapshotTaken"       description="Snapshot taken">200</validValue>
         </enum>
 
-        <enum name="RejectReasonEnum" encodingType="uint8" description="Domain rejection reason codes">
-            <validValue name="UnknownSymbol"        description="Unknown symbol">1</validValue>
-            <validValue name="InsufficientQuantity" description="Insufficient quantity">2</validValue>
-            <validValue name="InvalidPrice"         description="Invalid price">3</validValue>
-            <validValue name="InvalidQuantity"      description="Invalid quantity">4</validValue>
-            <validValue name="DuplicateClOrdId"     description="Duplicate ClOrdId">5</validValue>
-            <validValue name="QuoteNotFound"        description="Quote not found">6</validValue>
-            <validValue name="QuoteExpired"         description="Quote expired">7</validValue>
-            <validValue name="OrderNotFound"        description="Order not found">8</validValue>
-            <validValue name="BookFull"             description="Order book full">9</validValue>
-            <validValue name="AccountNotFound"      description="Account not found">10</validValue>
-            <validValue name="AccountSuspended"     description="Account suspended">11</validValue>
+        <enum name="RejectReasonEnum" encodingType="uint8" nullValue="255" description="Domain rejection reason codes — values 1..14. nullValue=255 sentinel for use as optional enum field; producers must explicitly write 255 when leaving the field unset since SBE does not auto-initialise enum bytes.">
+            <validValue name="UnknownSymbol"             description="Unknown symbol">1</validValue>
+            <validValue name="InsufficientQuantity"      description="Insufficient quantity">2</validValue>
+            <validValue name="InvalidPrice"              description="Invalid price">3</validValue>
+            <validValue name="InvalidQuantity"           description="Invalid quantity">4</validValue>
+            <validValue name="DuplicateClOrdId"          description="Duplicate ClOrdId">5</validValue>
+            <validValue name="QuoteNotFound"             description="Quote not found">6</validValue>
+            <validValue name="QuoteExpired"              description="Quote expired">7</validValue>
+            <validValue name="OrderNotFound"             description="Order not found">8</validValue>
+            <validValue name="BookFull"                  description="Order book full">9</validValue>
+            <validValue name="AccountNotFound"           description="Account not found">10</validValue>
+            <validValue name="AccountSuspended"          description="Account suspended">11</validValue>
+            <validValue name="AccountNoTradePermission"  description="Account does not have trade permission">12</validValue>
+            <validValue name="AccountNoQuotePermission"  description="Account does not have quote permission">13</validValue>
+            <validValue name="OrderExceedsMaxSize"       description="Order exceeds account's maxOrderSize">14</validValue>
         </enum>
     </types>
 
@@ -242,13 +264,13 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
-        <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional" description="FIX SettlType — qualifies the settlement convention. Optional: zero/null = unset."/>
+        <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"      description="ISO 4217 base/dealt currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency"      presence="optional" description="ISO 4217 settlement currency (differs from currency for NDFs). Optional: empty = same as currency."/>
+        <field name="settlCurrency"  id="120"   type="Currency"      description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"     description="Custom: standard tenor period"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -279,7 +301,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <field name="validUntil"     id="62"    type="uint64" description="ValidUntilTime — quote expiry epoch nanos. Set from cluster ts + RFQ TTL."/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
@@ -320,12 +342,12 @@
         <field name="orderQty"       id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
     </sbe:message>
 
@@ -341,12 +363,12 @@
         <field name="orderQty"       id="38"    type="int64" description="Package quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Multileg legs (typically 2 for an FX swap: near + far, opposite sides)">
@@ -381,12 +403,12 @@
         <field name="orderQty"       id="38"    type="int64"       description="Package quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64"      description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Replacement legs — full set, even unchanged ones (FIX semantics)">
@@ -427,7 +449,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -450,7 +472,7 @@
         <field name="symbol"       id="55"  type="Symbol"/>
         <field name="side"         id="54"  type="SideEnum"/>
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
-        <field name="account"      id="1"   type="Account"/>
+        <field name="accountCode"  id="1"   type="Account"/>
         <field name="productType"  id="10013" type="ProductTypeEnum"/>
     </sbe:message>
 
@@ -458,7 +480,7 @@
     <sbe:message name="MassQuote" id="7" semanticType="i"
                  description="Mass quote with multiple quote entries">
         <field name="quoteId"      id="117" type="QuoteID" description="Unique mass quote identifier"/>
-        <field name="account"      id="1"   type="Account"/>
+        <field name="accountCode"  id="1"   type="Account"/>
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
         <group name="noQuoteEntries" id="295" dimensionType="groupSizeEncoding"
                description="Repeating group of quote entries">
@@ -472,7 +494,7 @@
             <field name="settlDate"     id="64"    type="SettlDate"/>
             <field name="settlType"     id="63"    type="SettlTypeEnum" presence="optional"/>
             <field name="currency"      id="15"    type="Currency"/>
-            <field name="settlCurrency" id="120"   type="Currency" presence="optional"/>
+            <field name="settlCurrency" id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
             <field name="tenor"         id="10001" type="TenorEnum"/>
         </group>
     </sbe:message>
@@ -486,9 +508,126 @@
         <field name="ordStatus"        id="39"  type="OrdStatusEnum" description="Current order status (or Rejected if unknown)"/>
         <field name="cxlRejResponseTo" id="434" type="CxlRejResponseToEnum"/>
         <field name="cxlRejReason"     id="102" type="CxlRejReasonEnum"/>
-        <field name="account"          id="1"   type="Account"/>
+        <field name="accountCode"      id="1"   type="Account"/>
         <field name="transactTime"     id="60"  type="uint64"      description="Epoch nanos"/>
         <field name="text"             id="58"  type="Text"        description="Free-text reason"/>
+    </sbe:message>
+
+    <!-- LoadAccount: internal command to load/reload an account into the cluster (templateId 11, no FIX MsgType — internal). Sent by the ReferenceDataOrchestrator at startup. -->
+    <sbe:message name="LoadAccount" id="11"
+                 description="Load (or reload) an account into the cluster's AccountStore. Internal command — no FIX MsgType.">
+        <field name="accountId"         id="10024" type="int64"/>
+        <field name="accountCode"       id="1"     type="Account"/>
+        <field name="accountName"       id="10026" type="Text"/>
+        <field name="accountType"       id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"      id="15"    type="Currency"/>
+        <field name="status"            id="10027" type="AccountStatusEnum"/>
+        <field name="maxOrderSize"      id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"    id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="canTrade"          id="10032" type="BooleanType"/>
+        <field name="canRequestQuotes"  id="10033" type="BooleanType"/>
+        <field name="transactTime"      id="60"    type="uint64"          description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
+
+    <!--
+        Pricing Service messages (APP-28). These messages flow over Aeron IPC between the cluster
+        and the standalone Pricing Service. They are NOT FIX wire messages; no FIX MsgType is mapped.
+        TemplateIds 50-99 are reserved for internal inter-process traffic.
+    -->
+
+    <!-- PriceRequest: cluster → pricing service -->
+    <sbe:message name="PriceRequest" id="50"
+                 description="Internal: cluster asks pricing service to price an RFQ. Carries the full FX context (productType, settlement, currency, tenor) so the pricing service can price spots, forwards, and swaps without consulting the cluster again.">
+        <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
+        <field name="symbol"         id="55"    type="Symbol"/>
+        <field name="side"           id="54"    type="SideEnum"/>
+        <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
+        <field name="accountCode"    id="1"     type="Account"/>
+        <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
+        <field name="productType"    id="10013" type="ProductTypeEnum"/>
+        <field name="settlDate"      id="64"    type="SettlDate"/>
+        <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
+        <field name="currency"       id="15"    type="Currency"/>
+        <field name="settlCurrency"  id="120"   type="Currency"      description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
+        <field name="tenor"          id="10001" type="TenorEnum"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs (empty for single-leg). Mirrors QuoteRequest.noLegs so the pricing service can price both legs of a swap.">
+            <field name="legSide"       id="624"   type="SideEnum"/>
+            <field name="legSettlDate"  id="588"   type="SettlDate"/>
+            <field name="legSettlType"  id="587"   type="SettlTypeEnum" presence="optional"/>
+            <field name="legCurrency"   id="556"   type="Currency"/>
+            <field name="legTenor"      id="10002" type="TenorEnum"/>
+            <field name="legOrderQty"   id="687"   type="int64" description="Leg quantity, fixed-point 10^-8"/>
+        </group>
+    </sbe:message>
+
+    <!-- PriceResponse: pricing service → cluster -->
+    <sbe:message name="PriceResponse" id="51"
+                 description="Internal: pricing service returns a quote (or declines via accepted=False)">
+        <field name="quoteReqId"   id="131" type="QuoteReqID"/>
+        <field name="symbol"            id="55"  type="Symbol"/>
+        <field name="bidPx"             id="132" type="int64"  presence="optional" description="Bid price, fixed-point 10^-8 (null when accepted=False)"/>
+        <field name="offerPx"           id="133" type="int64"  presence="optional" description="Offer price, fixed-point 10^-8 (null when accepted=False)"/>
+        <field name="bidSize"           id="134" type="int64"  presence="optional" description="Bid quantity, fixed-point 10^-8 (null when accepted=False)"/>
+        <field name="offerSize"         id="135" type="int64"  presence="optional" description="Offer quantity, fixed-point 10^-8 (null when accepted=False)"/>
+        <field name="validUntil"        id="62"  type="uint64" presence="optional" description="Quote expiry, epoch nanos (null when accepted=False)"/>
+        <field name="accepted"          id="10034" type="BooleanType" description="True if pricing service produced a quote; False = decline (e.g., unsupported symbol, market closed)"/>
+        <field name="quoteRejectReason" id="300"   type="QuoteRejectReasonEnum" presence="optional" description="Structured decline reason when accepted=False"/>
+        <field name="transactTime"      id="60"  type="uint64" description="Epoch nanos"/>
+        <field name="text"              id="58"  type="Text" description="Explanation when accepted=False; empty when accepted=True"/>
+        <field name="productType"       id="10013" type="ProductTypeEnum"/>
+        <field name="swapPoints"        id="10003" type="int64" presence="optional" description="Custom: far price - near price for swap pricing, fixed-point 10^-8"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Per-leg pricing for swap quotes (empty for single-leg). Mirrors PriceReceivedEvent.noLegs and Quote.noLegs so the cluster can construct the outbound Quote without re-deriving leg prices.">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
+            <field name="legCurrency"  id="556"   type="Currency"/>
+            <field name="legBidPx"     id="10004" type="int64" description="Custom: leg bid price, fixed-point 10^-8"/>
+            <field name="legOfferPx"   id="10005" type="int64" description="Custom: leg offer price, fixed-point 10^-8"/>
+            <field name="legBidSize"   id="10006" type="int64" description="Custom: leg bid size, fixed-point 10^-8"/>
+            <field name="legOfferSize" id="10007" type="int64" description="Custom: leg offer size, fixed-point 10^-8"/>
+        </group>
+    </sbe:message>
+
+    <!-- PriceValidationRequest: cluster → pricing service -->
+    <sbe:message name="PriceValidationRequest" id="52"
+                 description="Internal: cluster asks pricing service to validate an inbound order's price (e.g., AcceptQuote). Carries the full order context — account, FX product context (productType, settlDate/Type, currency pair, tenor), and per-leg detail — so the pricer can apply account-specific tiering and leg-level checks for swaps.">
+        <field name="quoteId"       id="117"   type="QuoteID"/>
+        <field name="symbol"        id="55"    type="Symbol"/>
+        <field name="side"          id="54"    type="SideEnum"/>
+        <field name="price"         id="44"    type="int64" presence="optional" description="Order price to validate, fixed-point 10^-8 (null for market orders — mirrors NewOrderSingle/NewOrderMultileg)"/>
+        <field name="orderQty"      id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
+        <field name="accountCode"   id="1"     type="Account"/>
+        <field name="transactTime"  id="60"    type="uint64" description="Epoch nanos"/>
+        <field name="productType"   id="10013" type="ProductTypeEnum"/>
+        <field name="settlDate"     id="64"    type="SettlDate"/>
+        <field name="settlType"     id="63"    type="SettlTypeEnum" presence="optional"/>
+        <field name="currency"      id="15"    type="Currency"/>
+        <field name="settlCurrency" id="120"   type="Currency"      description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
+        <field name="tenor"         id="10001" type="TenorEnum"/>
+        <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+               description="Swap legs (empty for single-leg). Full FX leg context — mirrors PriceRequest.noLegs plus the legPrice that validation needs.">
+            <field name="legSide"      id="624"   type="SideEnum"/>
+            <field name="legSettlDate" id="588"   type="SettlDate"/>
+            <field name="legSettlType" id="587"   type="SettlTypeEnum" presence="optional"/>
+            <field name="legCurrency"  id="556"   type="Currency"/>
+            <field name="legTenor"     id="10002" type="TenorEnum"/>
+            <field name="legPrice"     id="566"   type="int64" presence="optional" description="Leg order price, fixed-point 10^-8 (null for market legs — symmetry with parent price)"/>
+            <field name="legOrderQty"  id="687"   type="int64" description="Leg quantity, fixed-point 10^-8"/>
+        </group>
+    </sbe:message>
+
+    <!-- PriceValidationResponse: pricing service → cluster -->
+    <sbe:message name="PriceValidationResponse" id="53"
+                 description="Internal: pricing service confirms (or rejects) an order price. The structured `reason` field lets the cluster emit a specific OrderRejectedEvent reason code on validation failure rather than a generic reject.">
+        <field name="quoteId"      id="117" type="QuoteID"/>
+        <field name="valid"        id="10035" type="BooleanType" description="True if the order price is acceptable to the pricing service"/>
+        <field name="rejectReason" id="10022" type="RejectReasonEnum" presence="optional" description="Structured rejection reason when valid=False"/>
+        <field name="text"         id="58"  type="Text" description="Free-text rejection reason when valid=False; empty when valid=True"/>
+        <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
     </sbe:message>
 
     <!-- ======================== Domain Event Messages (templateId 100-119) ======================== -->
@@ -512,13 +651,13 @@
         <field name="ordType"        id="40"    type="OrdTypeEnum"/>
         <field name="price"          id="44"    type="int64" presence="optional" description="Order price, fixed-point 10^-8 (null for market orders)"/>
         <field name="orderQty"       id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
-        <field name="quoteId"        id="117"   type="QuoteID" presence="optional" description="Reference to accepted quote (null if not from RFQ)"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="quoteId"        id="117"   type="QuoteID" description="Reference to accepted quote; empty bytes if not from RFQ"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
     </sbe:message>
 
@@ -531,7 +670,7 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="text"           id="58"    type="Text"/>
     </sbe:message>
@@ -554,7 +693,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -591,12 +730,12 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -618,7 +757,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="bidPx"          id="132"   type="int64" description="Bid price, fixed-point 10^-8"/>
         <field name="offerPx"        id="133"   type="int64" description="Offer price, fixed-point 10^-8"/>
         <field name="bidSize"        id="134"   type="int64" description="Bid quantity, fixed-point 10^-8"/>
@@ -628,7 +767,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <field name="swapPoints"     id="10003" type="int64" presence="optional" description="Custom: far price - near price, fixed-point 10^-8 (swap only)"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
@@ -652,7 +791,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="quoteRejectReason" id="300" type="QuoteRejectReasonEnum"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="text"           id="58"    type="Text"/>
@@ -667,7 +806,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
     </sbe:message>
 
@@ -684,7 +823,7 @@
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
         <field name="currency"       id="15"    type="Currency"/>
-        <field name="settlCurrency"  id="120"   type="Currency" presence="optional"/>
+        <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
@@ -725,13 +864,20 @@
 
     <!-- AccountLoadedEvent -->
     <sbe:message name="AccountLoadedEvent" id="110"
-                 description="Emitted when an account is loaded into the system">
-        <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
-        <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
-        <field name="accountId"      id="10024" type="int64"  description="Internal account identifier"/>
-        <field name="accountCode"    id="1"     type="Account"/>
-        <field name="accountName"    id="10026" type="Text"/>
-        <field name="status"         id="10027" type="AccountStatusEnum" description="Account status"/>
+                 description="Emitted when an account is loaded into the system. Mirrors LoadAccount (templateId 11) for replay.">
+        <field name="sequenceNumber"     id="10020" type="int64"  description="Monotonic event sequence number"/>
+        <field name="timestamp"          id="10021" type="uint64" description="Cluster timestamp nanos"/>
+        <field name="accountId"          id="10024" type="int64"  description="Internal account identifier"/>
+        <field name="accountCode"        id="1"     type="Account"/>
+        <field name="accountName"        id="10026" type="Text"/>
+        <field name="accountType"        id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"       id="15"    type="Currency"/>
+        <field name="status"             id="10027" type="AccountStatusEnum" description="Account status"/>
+        <field name="maxOrderSize"       id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"     id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="canTrade"           id="10032" type="BooleanType"/>
+        <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
+        <field name="transactTime"       id="60"    type="uint64" description="Original LoadAccount transactTime (epoch nanos)"/>
     </sbe:message>
 
     <!-- AccountLoadRejectedEvent -->
@@ -755,18 +901,141 @@
         <field name="ordStatus"        id="39"    type="OrdStatusEnum"/>
         <field name="cxlRejResponseTo" id="434"   type="CxlRejResponseToEnum"/>
         <field name="cxlRejReason"     id="102"   type="CxlRejReasonEnum"/>
-        <field name="account"          id="1"     type="Account"/>
+        <field name="accountCode"      id="1"     type="Account"/>
         <field name="text"             id="58"    type="Text"/>
     </sbe:message>
 
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
 
-    <!-- SnapshotTaken -->
+    <!--
+        Snapshot convention (APP-70):
+        - SnapshotTaken (200) is the per-snapshot header, written first.
+        - Each store serializes one or more *Snapshot messages (201-206) containing
+          a single repeating group of records. Records are flat — no nested groups
+          except RfqStateSnapshot which carries an inner noLegs group for swaps.
+        - Projections never snapshot — they replay from Aeron Archive position 0.
+        - Templates 207-219 reserved for future stores.
+    -->
+
+    <!-- SnapshotTaken — header for each snapshot. Extended with store-count, byte-length, checksum (APP-70). -->
     <sbe:message name="SnapshotTaken" id="200"
-                 description="Snapshot marker written at the start of each snapshot">
+                 description="Snapshot marker written at the start of each snapshot. The store-count, total byte length, and checksum cover the subsequent *Snapshot messages and let the loader detect truncation or corruption.">
         <field name="lastSequenceNumber" id="10020" type="int64"  description="Last event sequence number included in snapshot"/>
         <field name="snapshotTimestamp"  id="10021" type="uint64" description="Cluster timestamp when snapshot was taken"/>
         <field name="snapshotVersion"    id="10028" type="uint32" description="Snapshot format version for compatibility"/>
+        <field name="storeCount"         id="10036" type="uint8"  description="Number of *Snapshot messages following this header"/>
+        <field name="totalByteLength"    id="10037" type="uint64" description="Total bytes of all subsequent snapshot messages (for sizing the loader buffer)"/>
+        <field name="checksum"           id="10038" type="uint32" description="CRC32C of all subsequent snapshot bytes (corruption detection)"/>
+    </sbe:message>
+
+    <!-- AccountSnapshot (201) — full account records for AccountStore restore -->
+    <sbe:message name="AccountSnapshot" id="201"
+                 description="Repeating group of full account records, used to restore AccountStore on cluster recovery">
+        <group name="noAccounts" id="10039" dimensionType="groupSizeEncoding"
+               description="One entry per account in the AccountStore">
+            <field name="accountId"          id="10024" type="int64"          description="Internal account identifier"/>
+            <field name="accountCode"        id="1"     type="Account"/>
+            <field name="accountName"        id="10026" type="Text"/>
+            <field name="accountType"        id="10029" type="AccountTypeEnum"/>
+            <field name="baseCurrency"       id="15"    type="Currency"/>
+            <field name="status"             id="10027" type="AccountStatusEnum"/>
+            <field name="maxOrderSize"       id="10030" type="int64"          description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
+            <field name="maxDailyVolume"     id="10031" type="int64"          description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
+            <field name="canTrade"           id="10032" type="BooleanType"/>
+            <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
+        </group>
+    </sbe:message>
+
+    <!-- OrderBookSnapshot (202) — non-terminal orders only -->
+    <sbe:message name="OrderBookSnapshot" id="202"
+                 description="Repeating group of active (non-terminal) orders, used to restore OrderBook on cluster recovery. Filled/Canceled/Rejected orders are not snapshotted; the OrderBook reconstructs terminal state by replaying events.">
+        <group name="noOrders" id="73" dimensionType="groupSizeEncoding"
+               description="One entry per active order (FIX NoOrders)">
+            <field name="orderId"     id="37"    type="OrderID"/>
+            <field name="clOrdId"     id="11"    type="ClOrdID"/>
+            <field name="symbol"      id="55"    type="Symbol"/>
+            <field name="side"        id="54"    type="SideEnum"/>
+            <field name="ordType"     id="40"    type="OrdTypeEnum"      description="Limit/Market/etc. Required so the matching engine can correctly age restored orders."/>
+            <field name="timeInForce" id="59"    type="TimeInForceEnum"  description="Day/GTC/IOC/FOK. Required so restored orders honour their original TIF semantics."/>
+            <field name="price"       id="44"    type="int64" presence="optional" description="Limit price, fixed-point 10^-8. Optional — null for Market orders."/>
+            <field name="orderQty"    id="38"    type="int64"  description="Order quantity, fixed-point 10^-8"/>
+            <field name="leavesQty"   id="151"   type="int64"  description="Remaining quantity, fixed-point 10^-8"/>
+            <field name="cumQty"      id="14"    type="int64"  description="Filled quantity, fixed-point 10^-8"/>
+            <field name="accountId"   id="10024" type="int64"  description="Owning account (numeric ref)"/>
+            <field name="timestamp"   id="10021" type="uint64" description="Cluster timestamp at order creation"/>
+        </group>
+    </sbe:message>
+
+    <!-- RfqStateSnapshot (203) — non-terminal RFQs only. The state field uses RfqStateEnum (Requested/Quoted/Accepted). -->
+    <sbe:message name="RfqStateSnapshot" id="203"
+                 description="Repeating group of non-terminal RFQs from the RfqStateMachine. After restore the state machine immediately expires any RFQ whose TTL has elapsed relative to the recovery cluster timestamp.">
+        <group name="noRfqs" id="10041" dimensionType="groupSizeEncoding"
+               description="One entry per non-terminal RFQ">
+            <field name="quoteReqId"      id="131"   type="QuoteReqID"/>
+            <field name="accountId"       id="10024" type="int64"             description="Owning account (numeric ref)"/>
+            <field name="state"           id="10042" type="RfqStateEnum"/>
+            <field name="quoteId"         id="117"   type="QuoteID"           description="Set when state ≥ Quoted; empty otherwise"/>
+            <field name="symbol"          id="55"    type="Symbol"/>
+            <field name="side"            id="54"    type="SideEnum"/>
+            <field name="orderQty"        id="38"    type="int64"             description="Requested quantity, fixed-point 10^-8"/>
+            <field name="bidPx"           id="132"   type="int64"             presence="optional" description="Bid price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="offerPx"         id="133"   type="int64"             presence="optional" description="Offer price (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="bidSize"         id="134"   type="int64"             presence="optional" description="Bid quantity (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="offerSize"       id="135"   type="int64"             presence="optional" description="Offer quantity (set when state ≥ Quoted), fixed-point 10^-8"/>
+            <field name="lastPx"          id="31"    type="int64"             presence="optional" description="Locked-in price when the client accepted (single-leg Accepted state), fixed-point 10^-8"/>
+            <field name="swapPoints"      id="10003" type="int64"             presence="optional" description="Custom: far price - near price for swap RFQs, fixed-point 10^-8"/>
+            <field name="validUntil"      id="62"    type="uint64"            description="ValidUntilTime for the quote, epoch nanos"/>
+            <field name="transactTime"    id="60"    type="uint64"            description="Original request time, epoch nanos"/>
+            <field name="productType"     id="10013" type="ProductTypeEnum"/>
+            <field name="settlDate"       id="64"    type="SettlDate"/>
+            <field name="settlType"       id="63"    type="SettlTypeEnum"     presence="optional"/>
+            <field name="currency"        id="15"    type="Currency"/>
+            <field name="settlCurrency"   id="120"   type="Currency"          description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
+            <field name="tenor"           id="10001" type="TenorEnum"/>
+            <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
+                   description="Per-leg state for swap RFQs (empty for single-leg). Carries QuoteRequest-style leg identity AND the per-leg prices/sizes that the RfqStateMachine holds for Quoted/Accepted states — so a swap RFQ mid-flight can be fully restored across cluster recovery.">
+                <field name="legSide"       id="624"   type="SideEnum"/>
+                <field name="legSettlDate"  id="588"   type="SettlDate"/>
+                <field name="legSettlType"  id="587"   type="SettlTypeEnum" presence="optional"/>
+                <field name="legCurrency"   id="556"   type="Currency"/>
+                <field name="legTenor"      id="10002" type="TenorEnum"/>
+                <field name="legOrderQty"   id="687"   type="int64"         description="Leg quantity, fixed-point 10^-8"/>
+                <field name="legPrice"      id="566"   type="int64" presence="optional" description="Validated leg price in Accepted state (FIX LegPrice), fixed-point 10^-8"/>
+                <field name="legBidPx"      id="10004" type="int64" presence="optional" description="Leg bid price sent to client in Quoted state, fixed-point 10^-8"/>
+                <field name="legOfferPx"    id="10005" type="int64" presence="optional" description="Leg offer price sent to client in Quoted state, fixed-point 10^-8"/>
+                <field name="legBidSize"    id="10006" type="int64" presence="optional" description="Leg bid size in Quoted state, fixed-point 10^-8"/>
+                <field name="legOfferSize"  id="10007" type="int64" presence="optional" description="Leg offer size in Quoted state, fixed-point 10^-8"/>
+            </group>
+        </group>
+    </sbe:message>
+
+    <!-- PositionSnapshot (204) — net positions per (account, symbol) pair -->
+    <sbe:message name="PositionSnapshot" id="204"
+                 description="Repeating group of net positions used to restore the cluster PositionTracker on recovery. Positions are keyed by (accountId, symbol) — one entry per unique pair with a non-zero position.">
+        <group name="noPositions" id="10043" dimensionType="groupSizeEncoding"
+               description="One entry per (account, symbol) with a non-zero position">
+            <field name="accountId"    id="10024" type="int64" description="Owning account (numeric ref)"/>
+            <field name="symbol"       id="55"    type="Symbol"/>
+            <field name="netQuantity"  id="10044" type="int64" description="Signed net quantity, fixed-point 10^-8"/>
+            <field name="avgPrice"     id="10045" type="int64" description="Volume-weighted average price, fixed-point 10^-8"/>
+            <field name="realizedPnl"  id="10046" type="int64" description="Realized P&amp;L for the day, fixed-point 10^-8"/>
+        </group>
+    </sbe:message>
+
+    <!-- IdGeneratorSnapshot (205) — counter state per generator instance (orderId, execId, quoteId, etc.) -->
+    <sbe:message name="IdGeneratorSnapshot" id="205"
+                 description="Repeating group of IdGenerator counter values keyed by prefix (e.g., 'ORD', 'EXE', 'QTE'). Required for deterministic ID assignment after recovery.">
+        <group name="noGenerators" id="10047" dimensionType="groupSizeEncoding"
+               description="One entry per IdGenerator instance">
+            <field name="prefix"  id="10048" type="IdPrefix" description="Generator prefix (e.g., 'ORD', 'EXE', 'QTE')"/>
+            <field name="counter" id="10049" type="int64"  description="Current counter value (next assigned id = counter + 1)"/>
+        </group>
+    </sbe:message>
+
+    <!-- EventSequencerSnapshot (206) — single record, the next sequence number to assign -->
+    <sbe:message name="EventSequencerSnapshot" id="206"
+                 description="EventSequencer state — the next sequence number to assign after recovery. Single-record (no group) since there is exactly one EventSequencer per cluster.">
+        <field name="nextSequence" id="10050" type="int64" description="Next event sequence number to assign"/>
     </sbe:message>
 
 </sbe:messageSchema>
