@@ -63,6 +63,20 @@ public final class IdGenerator {
               + " to fit IdPrefix char[8] in IdGeneratorSnapshot (205), was "
               + prefix.length());
     }
+    // SBE char[8] is 8 *bytes*, not 8 UTF-16 code units. Reject any non-ASCII char so the
+    // String length check above is also a byte-length check, and the rendered id is safe to
+    // copy into SBE OrderID/ExecID/ClOrdID fields (also char[N] = N bytes).
+    for (int i = 0; i < prefix.length(); i++) {
+      char c = prefix.charAt(i);
+      if (c >= 0x80) {
+        throw new IllegalArgumentException(
+            "prefix must be ASCII (chars < 0x80) so its byte length matches String length; "
+                + "non-ASCII char 0x"
+                + Integer.toHexString(c)
+                + " at index "
+                + i);
+      }
+    }
     this.prefix = prefix;
     this.buf = new char[prefix.length() + 1 + DIGITS];
     prefix.getChars(0, prefix.length(), buf, 0);
