@@ -55,7 +55,7 @@ public final class IdGenerator {
   private final String prefix;
 
   /**
-   * Pre-allocated render buffer holding the prefix bytes + '-' + 9 digit positions. Reused across
+   * Pre-allocated render buffer holding the prefix bytes + '-' + 11 digit positions. Reused across
    * every {@link #nextInto} / {@link #next} call — no per-call allocation.
    */
   private final byte[] bytes;
@@ -108,7 +108,7 @@ public final class IdGenerator {
   }
 
   /**
-   * Total byte length of an id rendered by this generator: {@code prefix.length() + 1 + 9}. Stable
+   * Total byte length of an id rendered by this generator: {@code prefix.length() + 1 + 11}. Stable
    * for the lifetime of this instance — useful for SBE field sizing and bounds checks.
    */
   public int idByteLength() {
