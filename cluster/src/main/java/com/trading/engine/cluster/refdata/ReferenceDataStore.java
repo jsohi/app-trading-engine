@@ -56,9 +56,13 @@ public interface ReferenceDataStore {
 
   /**
    * Restore state from one snapshot SBE message at {@code src[offset..]}. The caller has already
-   * verified that the message's templateId matches {@link #snapshotTemplateId()}. Implementations
-   * should NOT call {@link #clear()} themselves — the registry has already cleared the store before
-   * fragment replay starts.
+   * verified that the message's templateId matches {@link #snapshotTemplateId()}.
+   *
+   * <p>Implementations MUST be self-sufficient: call {@link #clear()} (or otherwise drop all
+   * pre-existing state) at the start so that restoring a smaller / empty snapshot over a populated
+   * store doesn't leave orphan rows behind. The registry's {@link ReferenceDataRegistry#resetAll}
+   * also clears every store before replay, but defensive clearing here keeps {@code restoreFrom}
+   * safe to call standalone (e.g. from a unit test or a future single-store recovery path).
    *
    * @return number of bytes consumed, including the SBE header
    */

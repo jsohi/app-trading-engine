@@ -107,6 +107,23 @@ class CurrencyStoreTest {
   }
 
   @Test
+  void putRejectsMismatchedPackedKey() {
+    // Defensive tripwire: passing a packedKey that doesn't match state.ccyCode bytes is a
+    // caller bug that would silently re-key the record after a snapshot round-trip.
+    final CurrencyStore store = new CurrencyStore();
+    final CurrencyState state = makeState("USD", 840, 2);
+    final int wrongKey = CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R');
+    assertThrows(IllegalArgumentException.class, () -> store.put(wrongKey, state));
+  }
+
+  @Test
+  void putRejectsNullState() {
+    final CurrencyStore store = new CurrencyStore();
+    final int key = CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D');
+    assertThrows(NullPointerException.class, () -> store.put(key, null));
+  }
+
+  @Test
   void upsertOverwrites() {
     final CurrencyStore store = new CurrencyStore();
     final int key = CurrencyStore.packCode((byte) 'J', (byte) 'P', (byte) 'Y');

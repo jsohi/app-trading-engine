@@ -46,9 +46,16 @@ class RefDataIntegrationTest {
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
 
     // ----- Step 1: load USD currency -----
+    // Use distinct non-zero transactTimes per record so the snapshot round-trip below would
+    // visibly fail if any store dropped the field on the encode/decode path (regression
+    // protection for the gemini round-3 transactTime fix).
+    final long usdTime = 1_700_000_000_001L;
+    final long acmeTime = 1_700_000_000_002L;
+    final long rlTime = 1_700_000_000_003L;
+
     final MutableDirectBuffer src = new ExpandableArrayBuffer(512);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(512);
-    int srcLength = encodeLoadCurrency(src, "USD", 840, "United States Dollar", 2);
+    int srcLength = encodeLoadCurrency(src, "USD", 840, "United States Dollar", 2, usdTime);
     int eventLength = dispatch(registry, src, srcLength, eventDst, 1L, 1_000_000_000L);
 
     // Verify CurrencyLoadedEvent.
@@ -58,7 +65,7 @@ class RefDataIntegrationTest {
     assertEquals(1, currencyStore.size());
 
     // ----- Step 2: load ACME account with baseCurrency=USD (FK satisfied) -----
-    srcLength = encodeLoadAccount(src, 100L, "ACME", "Acme Inc", "USD");
+    srcLength = encodeLoadAccount(src, 100L, "ACME", "Acme Inc", "USD", acmeTime);
     eventLength = dispatch(registry, src, srcLength, eventDst, 2L, 2_000_000_000L);
 
     header.wrap(eventDst, 0);
@@ -67,7 +74,7 @@ class RefDataIntegrationTest {
     assertNotNull(accountStore.get(100L));
 
     // ----- Step 3: load risk limit for accountId 100 -----
-    srcLength = encodeLoadRiskLimit(src, 100L, 1_000_00000000L, 0L, 10_000_00000000L, 50L);
+    srcLength = encodeLoadRiskLimit(src, 100L, 1_000_00000000L, 0L, 10_000_00000000L, 50L, rlTime);
     eventLength = dispatch(registry, src, srcLength, eventDst, 3L, 3_000_000_000L);
 
     header.wrap(eventDst, 0);
@@ -107,10 +114,12 @@ class RefDataIntegrationTest {
         restoredCurrency.get(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'));
     assertNotNull(usd);
     assertEquals(840, usd.isoNumeric());
+    assertEquals(usdTime, usd.transactTime());
 
     final AccountState acme = restoredAccount.get(100L);
     assertNotNull(acme);
     assertEquals(100L, acme.accountId());
+    assertEquals(acmeTime, acme.transactTime());
 
     final UnsafeBuffer codeBuf = new UnsafeBuffer(new byte[] {'A', 'C', 'M', 'E'});
     final AccountState byCode = restoredAccount.getByCode(codeBuf, 0, 4);
@@ -121,6 +130,7 @@ class RefDataIntegrationTest {
     assertNotNull(rl);
     assertEquals(1_000_00000000L, rl.maxOrderSize());
     assertEquals(50L, rl.maxDailyLossBps());
+    assertEquals(rlTime, rl.transactTime());
   }
 
   @Test
@@ -162,7 +172,8 @@ class RefDataIntegrationTest {
       final String code,
       final int isoNumeric,
       final String name,
-      final int decimals) {
+      final int decimals,
+      final long transactTime) {
     final MessageHeaderEncoder header = new MessageHeaderEncoder();
     final LoadCurrencyEncoder enc = new LoadCurrencyEncoder();
     enc.wrapAndApplyHeader(dst, 0, header);
@@ -172,8 +183,17 @@ class RefDataIntegrationTest {
     enc.decimals((short) decimals);
     enc.currencyClass(CurrencyClassEnum.Fiat);
     enc.status(AccountStatusEnum.Active);
-    enc.transactTime(0L);
+    enc.transactTime(transactTime);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  private static int encodeLoadCurrency(
+      final MutableDirectBuffer dst,
+      final String code,
+      final int isoNumeric,
+      final String name,
+      final int decimals) {
+    return encodeLoadCurrency(dst, code, isoNumeric, name, decimals, 0L);
   }
 
   private static int encodeLoadAccount(
@@ -181,7 +201,8 @@ class RefDataIntegrationTest {
       final long accountId,
       final String code,
       final String name,
-      final String baseCcy) {
+      final String baseCcy,
+      final long transactTime) {
     final MessageHeaderEncoder header = new MessageHeaderEncoder();
     final LoadAccountEncoder enc = new LoadAccountEncoder();
     enc.wrapAndApplyHeader(dst, 0, header);
@@ -195,8 +216,17 @@ class RefDataIntegrationTest {
     enc.status(AccountStatusEnum.Active);
     enc.complianceStatus(ComplianceStatusEnum.OK);
     enc.capabilities(AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ);
-    enc.transactTime(0L);
+    enc.transactTime(transactTime);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  private static int encodeLoadAccount(
+      final MutableDirectBuffer dst,
+      final long accountId,
+      final String code,
+      final String name,
+      final String baseCcy) {
+    return encodeLoadAccount(dst, accountId, code, name, baseCcy, 0L);
   }
 
   private static int encodeLoadRiskLimit(
@@ -206,6 +236,18 @@ class RefDataIntegrationTest {
       final long maxOrderNotional,
       final long maxDailyVolume,
       final long maxDailyLossBps) {
+    return encodeLoadRiskLimit(
+        dst, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, maxDailyLossBps, 0L);
+  }
+
+  private static int encodeLoadRiskLimit(
+      final MutableDirectBuffer dst,
+      final long accountId,
+      final long maxOrderSize,
+      final long maxOrderNotional,
+      final long maxDailyVolume,
+      final long maxDailyLossBps,
+      final long transactTime) {
     final MessageHeaderEncoder header = new MessageHeaderEncoder();
     final LoadRiskLimitEncoder enc = new LoadRiskLimitEncoder();
     enc.wrapAndApplyHeader(dst, 0, header);
@@ -215,7 +257,7 @@ class RefDataIntegrationTest {
     enc.maxDailyVolume(maxDailyVolume);
     enc.maxDailyLossBps(maxDailyLossBps);
     enc.status(AccountStatusEnum.Active);
-    enc.transactTime(0L);
+    enc.transactTime(transactTime);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
 
