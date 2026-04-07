@@ -90,6 +90,16 @@ class IdGeneratorTest {
   }
 
   @Test
+  void rejectsNonAsciiPrefix() {
+    // SBE char[8] is 8 BYTES; a non-ASCII char would inflate byte length even when
+    // String.length() is within the cap, so the prefix must be ASCII-only.
+    assertThrows(IllegalArgumentException.class, () -> new IdGenerator("ORDé"));
+    assertThrows(IllegalArgumentException.class, () -> new IdGenerator("注文")); // 2 CJK chars
+    assertThrows(IllegalArgumentException.class, () -> new IdGenerator("A\u0080")); // boundary
+    new IdGenerator("A\u007F"); // 0x7F is the highest valid ASCII — must not throw
+  }
+
+  @Test
   void rejectsCounterExhaustion() {
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
