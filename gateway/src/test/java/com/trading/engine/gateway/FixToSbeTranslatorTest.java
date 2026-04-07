@@ -233,7 +233,7 @@ class FixToSbeTranslatorTest {
   // ===========================================================================
 
   @Test
-  void roundTripNewOrderMultilegSingleLeg() {
+  void roundTripNewOrderMultilegTwoLegs() {
     com.trading.engine.fix.builder.NewOrderMultilegEncoder enc =
         new com.trading.engine.fix.builder.NewOrderMultilegEncoder();
     enc.header().senderCompID("CLIENT").targetCompID("EXCH").msgSeqNum(1);
@@ -249,13 +249,17 @@ class FixToSbeTranslatorTest {
     enc.currency("EUR");
     enc.settlCurrency("USD");
 
-    // Single-leg test for now — Artio's 2-leg multileg encoding via the chained
-    // instrumentLeg().legSide(...) pattern needs more investigation. The translator's
-    // leg-handling correctness is exercised by roundTripMultilegOrderCancelReplace below.
-    com.trading.engine.fix.builder.NewOrderMultilegEncoder.LegsGroupEncoder leg1 = enc.legsGroup(1);
+    // Artio's LegsGroupEncoder.next() returns a *new* LegsGroupEncoder (linked-list pattern).
+    // Each leg gets its own encoder instance; the local variable must be re-bound on each
+    // advance — same fix applied to SbeToFixTranslator's leg loops.
+    com.trading.engine.fix.builder.NewOrderMultilegEncoder.LegsGroupEncoder leg1 = enc.legsGroup(2);
     leg1.instrumentLeg().legSymbol("EURUSD").legSide('1').legCurrency("EUR");
     leg1.instrumentLeg().legRatioQty(new DecimalFloat(1L, 0));
     leg1.legPrice(new DecimalFloat(11_000L, 4));
+    com.trading.engine.fix.builder.NewOrderMultilegEncoder.LegsGroupEncoder leg2 = leg1.next();
+    leg2.instrumentLeg().legSymbol("EURUSD").legSide('2').legCurrency("USD");
+    leg2.instrumentLeg().legRatioQty(new DecimalFloat(1L, 0));
+    leg2.legPrice(new DecimalFloat(11_005L, 4));
 
     MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
     long encoded = enc.encode(wire, 0);
@@ -291,11 +295,15 @@ class FixToSbeTranslatorTest {
     assertEquals("USD", trimSbeString(sbe.settlCurrency()));
 
     com.trading.engine.messages.sbe.NewOrderMultilegDecoder.NoLegsDecoder legs = sbe.noLegs();
-    assertEquals(1, legs.count());
+    assertEquals(2, legs.count());
     legs.next();
     assertEquals(SideEnum.Buy, legs.legSide());
     assertEquals("EUR", trimSbeString(legs.legCurrency()));
     assertEquals(110_000_000L, legs.legPrice());
+    legs.next();
+    assertEquals(SideEnum.Sell, legs.legSide());
+    assertEquals("USD", trimSbeString(legs.legCurrency()));
+    assertEquals(110_050_000L, legs.legPrice());
   }
 
   // ===========================================================================

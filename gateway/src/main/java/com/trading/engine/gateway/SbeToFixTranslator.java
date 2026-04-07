@@ -1,9 +1,15 @@
 package com.trading.engine.gateway;
 
 import com.trading.engine.fix.builder.ExecutionReportEncoder;
+import com.trading.engine.fix.builder.OrderCancelRejectEncoder;
+import com.trading.engine.fix.builder.QuoteEncoder;
+import com.trading.engine.messages.sbe.CxlRejReasonEnum;
+import com.trading.engine.messages.sbe.CxlRejResponseToEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
+import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.QuoteDecoder;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import java.util.concurrent.TimeUnit;
@@ -41,10 +47,10 @@ import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
  * message naming the field. The gateway is expected to catch and surface as a session-level FIX
  * reject. {@code NULL_VAL} on a required field is treated as a fatal cluster bug and throws.
  *
- * <p><b>Multileg out of scope for this commit.</b> The {@code noLegs} repeating group on
- * ExecutionReport is not yet handled — the cluster's leg-level fills are ignored at the FIX
- * boundary until a follow-up commit lands. APP-13 (FixGateway) only needs the single-leg path for
- * the basic FIX NOS → ExecutionReport flow.
+ * <p><b>Multileg.</b> ExecutionReport and Quote both translate the {@code noLegs} repeating group
+ * (FX swap fills and FX swap quotes). Per-leg scratch buffers are sliced from a single
+ * pre-allocated byte array of size {@link #MAX_LEGS}; messages exceeding {@code MAX_LEGS} legs
+ * throw {@link IllegalStateException}.
  */
 public final class SbeToFixTranslator {
 
@@ -72,6 +78,53 @@ public final class SbeToFixTranslator {
   private final byte[] erSettlCurrency =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlCurrencyLength()];
 
+  // Quote leg-level char fields (per-leg sliced — same MAX_LEGS rationale as ER):
+  private static final int Q_LEG_SETTL_DATE_LEN =
+      com.trading.engine.messages.sbe.QuoteDecoder.NoLegsDecoder.legSettlDateLength();
+  private static final int Q_LEG_CURRENCY_LEN =
+      com.trading.engine.messages.sbe.QuoteDecoder.NoLegsDecoder.legCurrencyLength();
+  private final byte[] qLegSettlDate = new byte[MAX_LEGS * Q_LEG_SETTL_DATE_LEN];
+  private final byte[] qLegCurrency = new byte[MAX_LEGS * Q_LEG_CURRENCY_LEN];
+
+  // Quote char fields:
+  private final byte[] qQuoteReqId =
+      new byte[com.trading.engine.messages.sbe.QuoteDecoder.quoteReqIdLength()];
+  private final byte[] qQuoteId =
+      new byte[com.trading.engine.messages.sbe.QuoteDecoder.quoteIdLength()];
+  private final byte[] qSymbol =
+      new byte[com.trading.engine.messages.sbe.QuoteDecoder.symbolLength()];
+  private final byte[] qText = new byte[com.trading.engine.messages.sbe.QuoteDecoder.textLength()];
+  private final byte[] qSettlDate =
+      new byte[com.trading.engine.messages.sbe.QuoteDecoder.settlDateLength()];
+  private final byte[] qCurrency =
+      new byte[com.trading.engine.messages.sbe.QuoteDecoder.currencyLength()];
+  // SettlCurrency intentionally absent — not in stock FIX 4.4 Quote(35=S). See translateQuote.
+
+  // ExecutionReport leg-level char fields. Sized for up to MAX_LEGS legs sharing the buffer
+  // contiguously: leg N uses [N*FIELD_LEN, (N+1)*FIELD_LEN). This is the per-leg-per-field
+  // pattern needed because Artio's leg encoder setters store a *reference* to the byte array
+  // and read it during encode(); two legs sharing the same byte[] offset would alias.
+  private static final int MAX_LEGS = 8;
+
+  private static final int ER_LEG_SETTL_DATE_LEN =
+      com.trading.engine.messages.sbe.ExecutionReportDecoder.NoLegsDecoder.legSettlDateLength();
+  private static final int ER_LEG_CURRENCY_LEN =
+      com.trading.engine.messages.sbe.ExecutionReportDecoder.NoLegsDecoder.legCurrencyLength();
+  private final byte[] erLegSettlDate = new byte[MAX_LEGS * ER_LEG_SETTL_DATE_LEN];
+  private final byte[] erLegCurrency = new byte[MAX_LEGS * ER_LEG_CURRENCY_LEN];
+
+  // OrderCancelReject char fields:
+  private final byte[] ocrOrderId =
+      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.orderIdLength()];
+  private final byte[] ocrClOrdId =
+      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.clOrdIdLength()];
+  private final byte[] ocrOrigClOrdId =
+      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.origClOrdIdLength()];
+  private final byte[] ocrAccount =
+      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.accountCodeLength()];
+  private final byte[] ocrText =
+      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.textLength()];
+
   /**
    * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
    * char fields applies to {@link UtcTimestampEncoder#buffer()}: it's the encoder's internal buffer
@@ -80,6 +133,19 @@ public final class SbeToFixTranslator {
    * FIX UTC timestamp formats up to nanosecond precision (27 chars).
    */
   private final byte[] erTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for OrderCancelReject. */
+  private final byte[] ocrTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for Quote.transactTime. */
+  private final byte[] qTransactTime = new byte[32];
+
+  /**
+   * Same per-field rationale as {@link #erTransactTime}, for Quote.validUntilTime — needs its own
+   * buffer because it's encoded by the same {@link #tsEnc} as {@link #qTransactTime} during the
+   * same translateQuote call, and the second encodeFrom() would overwrite the first.
+   */
+  private final byte[] qValidUntilTime = new byte[32];
 
   /** Reusable DecimalFloat for FIX decimal field setters. */
   private final DecimalFloat dec = new DecimalFloat();
@@ -181,7 +247,259 @@ public final class SbeToFixTranslator {
     }
 
     // productType / tenor — APP-45 (custom tags 10013/10001 not in stock FIX 4.4)
-    // noLegs group — deferred, see class Javadoc
+
+    // noLegs repeating group — for FX swap fills, the cluster reports per-leg execution
+    // details. We map every leg's standard FIX 4.4 fields. The trading-engine custom leg
+    // quantities (legLastQty=10010, legLeavesQty=10011, legCumQty=10012) are not in stock
+    // FIX 4.4 and stay as APP-45 work; the standard legLastPx still propagates so a fill
+    // count and last-trade price can round-trip even without the custom quantities.
+    final ExecutionReportDecoder.NoLegsDecoder noLegs = sbe.noLegs();
+    final int legCount = noLegs.count();
+    if (legCount > MAX_LEGS) {
+      throw new IllegalStateException(
+          "ExecutionReport noLegs count " + legCount + " exceeds MAX_LEGS=" + MAX_LEGS);
+    }
+    if (legCount > 0) {
+      // Artio's LegsGroupEncoder.next() returns a *new* LegsGroupEncoder (linked-list
+      // pattern), NOT a self-reference. Each leg has its own encoder instance; advancing
+      // means re-binding the local variable to next().
+      ExecutionReportEncoder.LegsGroupEncoder leg = fix.legsGroup(legCount);
+      int legIdx = 0;
+      while (noLegs.hasNext()) {
+        noLegs.next();
+        if (legIdx > 0) {
+          leg = leg.next();
+        }
+        // legSide (no NULL_VAL guard — required at the leg level when present)
+        if (noLegs.legSide() != SideEnum.NULL_VAL) {
+          leg.instrumentLeg().legSide(mapSide(noLegs.legSide()));
+        }
+        // legSettlDate — sliced into per-leg offset of erLegSettlDate
+        final int sdOffset = legIdx * ER_LEG_SETTL_DATE_LEN;
+        noLegs.getLegSettlDate(erLegSettlDate, sdOffset);
+        final int sdTrim = trimNulls(erLegSettlDate, sdOffset, ER_LEG_SETTL_DATE_LEN);
+        if (sdTrim > 0) {
+          leg.legSettlDate(erLegSettlDate, sdOffset, sdTrim);
+        }
+        // legSettlType — optional
+        if (noLegs.legSettlType() != SettlTypeEnum.NULL_VAL) {
+          leg.legSettlType(mapSettlTypeToFix(noLegs.legSettlType()));
+        }
+        // legCurrency — sliced into per-leg offset of erLegCurrency
+        final int curOffset = legIdx * ER_LEG_CURRENCY_LEN;
+        noLegs.getLegCurrency(erLegCurrency, curOffset);
+        final int curTrim = trimNulls(erLegCurrency, curOffset, ER_LEG_CURRENCY_LEN);
+        if (curTrim > 0) {
+          leg.instrumentLeg().legCurrency(erLegCurrency, curOffset, curTrim);
+        }
+        // legLastPx — required at fill time. SBE uses Long.MIN_VALUE as the null sentinel.
+        if (noLegs.legLastPx() != ExecutionReportDecoder.NoLegsDecoder.legLastPxNullValue()) {
+          FixedPoint.toDecimalFloat(noLegs.legLastPx(), dec);
+          leg.legLastPx(dec);
+        }
+        // legLastQty / legLeavesQty / legCumQty — APP-45 (custom tags)
+        legIdx++;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // OrderCancelReject (35=9)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE OrderCancelReject into the supplied Artio FIX 4.4 encoder. Caller wraps {@code
+   * sbe} over the decoded message and populates the FIX session header on {@code fix}.
+   */
+  public void translateOrderCancelReject(
+      OrderCancelRejectDecoder sbe, OrderCancelRejectEncoder fix) {
+    // orderID — required (per FIX 4.4 OCR spec)
+    sbe.getOrderId(ocrOrderId, 0);
+    fix.orderID(ocrOrderId, 0, trimNulls(ocrOrderId));
+
+    // clOrdID — required
+    sbe.getClOrdId(ocrClOrdId, 0);
+    fix.clOrdID(ocrClOrdId, 0, trimNulls(ocrClOrdId));
+
+    // origClOrdID — required
+    sbe.getOrigClOrdId(ocrOrigClOrdId, 0);
+    fix.origClOrdID(ocrOrigClOrdId, 0, trimNulls(ocrOrigClOrdId));
+
+    // ordStatus — required
+    fix.ordStatus(mapOrdStatus(sbe.ordStatus()));
+
+    // cxlRejResponseTo — required, char on the wire
+    fix.cxlRejResponseTo(mapCxlRejResponseTo(sbe.cxlRejResponseTo()));
+
+    // cxlRejReason — optional in FIX, int on the wire
+    if (sbe.cxlRejReason() != CxlRejReasonEnum.NULL_VAL) {
+      fix.cxlRejReason(mapCxlRejReason(sbe.cxlRejReason()));
+    }
+
+    // account — optional
+    sbe.getAccountCode(ocrAccount, 0);
+    int trimmed = trimNulls(ocrAccount);
+    if (trimmed > 0) {
+      fix.account(ocrAccount, 0, trimmed);
+    }
+
+    // transactTime — required
+    int tsLen = tsEnc.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, ocrTransactTime, 0, tsLen);
+    fix.transactTime(ocrTransactTime, 0, tsLen);
+
+    // text — optional
+    sbe.getText(ocrText, 0);
+    trimmed = trimNulls(ocrText);
+    if (trimmed > 0) {
+      fix.text(ocrText, 0, trimmed);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Quote (35=S)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE Quote into the supplied Artio FIX 4.4 encoder. Caller wraps {@code sbe} over
+   * the decoded message and populates the FIX session header on {@code fix}.
+   *
+   * <p>The SBE {@code quoteStatus} field is informational only — FIX 4.4 Quote(35=S) has no
+   * QuoteStatus tag (that lives on QuoteStatusReport 35=AI), so the field is dropped at the
+   * boundary. The {@code noLegs} repeating group IS translated (for FX swap quotes); per-leg char
+   * fields use sliced scratch buffers from {@link #qLegSettlDate}/{@link #qLegCurrency}.
+   */
+  public void translateQuote(QuoteDecoder sbe, QuoteEncoder fix) {
+    // quoteReqID — optional
+    sbe.getQuoteReqId(qQuoteReqId, 0);
+    int trimmed = trimNulls(qQuoteReqId);
+    if (trimmed > 0) {
+      fix.quoteReqID(qQuoteReqId, 0, trimmed);
+    }
+
+    // quoteID — required
+    sbe.getQuoteId(qQuoteId, 0);
+    fix.quoteID(qQuoteId, 0, trimNulls(qQuoteId));
+
+    // symbol — required, via Instrument component
+    sbe.getSymbol(qSymbol, 0);
+    fix.instrument().symbol(qSymbol, 0, trimNulls(qSymbol));
+
+    // side — optional in FIX 4.4 Quote
+    if (sbe.side() != SideEnum.NULL_VAL) {
+      fix.side(mapSide(sbe.side()));
+    }
+
+    // bidPx, offerPx, bidSize, offerSize — all optional. NULL_VAL is encoded as Long.MIN_VALUE
+    // by the SBE generator.
+    if (sbe.bidPx() != QuoteDecoder.bidPxNullValue()) {
+      FixedPoint.toDecimalFloat(sbe.bidPx(), dec);
+      fix.bidPx(dec);
+    }
+    if (sbe.offerPx() != QuoteDecoder.offerPxNullValue()) {
+      FixedPoint.toDecimalFloat(sbe.offerPx(), dec);
+      fix.offerPx(dec);
+    }
+    if (sbe.bidSize() != QuoteDecoder.bidSizeNullValue()) {
+      FixedPoint.toDecimalFloat(sbe.bidSize(), dec);
+      fix.bidSize(dec);
+    }
+    if (sbe.offerSize() != QuoteDecoder.offerSizeNullValue()) {
+      FixedPoint.toDecimalFloat(sbe.offerSize(), dec);
+      fix.offerSize(dec);
+    }
+
+    // transactTime — required
+    int tsLen = tsEnc.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, qTransactTime, 0, tsLen);
+    fix.transactTime(qTransactTime, 0, tsLen);
+
+    // validUntilTime — optional. SBE uint64 nanos; FIX 4.4 ASCII UTC timestamp.
+    if (sbe.validUntil() != QuoteDecoder.validUntilNullValue()) {
+      int vtLen = tsEnc.encodeFrom(sbe.validUntil(), TimeUnit.NANOSECONDS);
+      System.arraycopy(tsEnc.buffer(), 0, qValidUntilTime, 0, vtLen);
+      fix.validUntilTime(qValidUntilTime, 0, vtLen);
+    }
+
+    // text — optional
+    sbe.getText(qText, 0);
+    trimmed = trimNulls(qText);
+    if (trimmed > 0) {
+      fix.text(qText, 0, trimmed);
+    }
+
+    // settlType — optional
+    if (sbe.settlType() != SettlTypeEnum.NULL_VAL) {
+      fix.settlType(mapSettlTypeToFix(sbe.settlType()));
+    }
+
+    // settlDate — optional
+    sbe.getSettlDate(qSettlDate, 0);
+    trimmed = trimNulls(qSettlDate);
+    if (trimmed > 0) {
+      fix.settlDate(qSettlDate, 0, trimmed);
+    }
+
+    // currency — optional
+    sbe.getCurrency(qCurrency, 0);
+    trimmed = trimNulls(qCurrency);
+    if (trimmed > 0) {
+      fix.currency(qCurrency, 0, trimmed);
+    }
+
+    // settlCurrency — not in stock FIX 4.4 Quote(35=S); the SBE field is dropped at the
+    // boundary. APP-45 will add a custom tag if/when needed.
+
+    // productType / tenor / swapPoints — APP-45 (custom tags 10001/10003/10013)
+
+    // noLegs repeating group — for FX swap quotes the cluster sends per-leg pricing.
+    // Custom leg sizes (legBidSize/legOfferSize) are SBE-only and don't exist in stock
+    // FIX 4.4 NoLegs; standard fields (side/settl/currency/legBidPx/legOfferPx) propagate.
+    final QuoteDecoder.NoLegsDecoder qLegs = sbe.noLegs();
+    final int qLegCount = qLegs.count();
+    if (qLegCount > MAX_LEGS) {
+      throw new IllegalStateException(
+          "Quote noLegs count " + qLegCount + " exceeds MAX_LEGS=" + MAX_LEGS);
+    }
+    if (qLegCount > 0) {
+      // Same Artio linked-list pattern as ER above.
+      QuoteEncoder.LegsGroupEncoder leg = fix.legsGroup(qLegCount);
+      int legIdx = 0;
+      while (qLegs.hasNext()) {
+        qLegs.next();
+        if (legIdx > 0) {
+          leg = leg.next();
+        }
+        if (qLegs.legSide() != SideEnum.NULL_VAL) {
+          leg.instrumentLeg().legSide(mapSide(qLegs.legSide()));
+        }
+        final int sdOffset = legIdx * Q_LEG_SETTL_DATE_LEN;
+        qLegs.getLegSettlDate(qLegSettlDate, sdOffset);
+        final int sdTrim = trimNulls(qLegSettlDate, sdOffset, Q_LEG_SETTL_DATE_LEN);
+        if (sdTrim > 0) {
+          leg.legSettlDate(qLegSettlDate, sdOffset, sdTrim);
+        }
+        if (qLegs.legSettlType() != SettlTypeEnum.NULL_VAL) {
+          leg.legSettlType(mapSettlTypeToFix(qLegs.legSettlType()));
+        }
+        final int curOffset = legIdx * Q_LEG_CURRENCY_LEN;
+        qLegs.getLegCurrency(qLegCurrency, curOffset);
+        final int curTrim = trimNulls(qLegCurrency, curOffset, Q_LEG_CURRENCY_LEN);
+        if (curTrim > 0) {
+          leg.instrumentLeg().legCurrency(qLegCurrency, curOffset, curTrim);
+        }
+        if (qLegs.legBidPx() != QuoteDecoder.NoLegsDecoder.legBidPxNullValue()) {
+          FixedPoint.toDecimalFloat(qLegs.legBidPx(), dec);
+          leg.legBidPx(dec);
+        }
+        if (qLegs.legOfferPx() != QuoteDecoder.NoLegsDecoder.legOfferPxNullValue()) {
+          FixedPoint.toDecimalFloat(qLegs.legOfferPx(), dec);
+          leg.legOfferPx(dec);
+        }
+        // legBidSize / legOfferSize — not in stock FIX 4.4 Quote.NoLegs; SBE-only.
+        legIdx++;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -199,6 +517,19 @@ public final class SbeToFixTranslator {
       len--;
     }
     return len;
+  }
+
+  /**
+   * Slice variant of {@link #trimNulls(byte[])} — finds the non-null prefix of the {@code [offset,
+   * offset+length)} window inside {@code field}. Used by leg-level scratch buffers that pack
+   * multiple legs contiguously into a single byte array.
+   */
+  private static int trimNulls(byte[] field, int offset, int length) {
+    int end = length;
+    while (end > 0 && field[offset + end - 1] == 0) {
+      end--;
+    }
+    return end;
   }
 
   // ---------------------------------------------------------------------------
@@ -256,6 +587,30 @@ public final class SbeToFixTranslator {
       case AcceptedForBidding -> 'D';
       case PendingReplace -> 'E';
       default -> throw new IllegalStateException("Unsupported SBE OrdStatus for FIX wire: " + sbe);
+    };
+  }
+
+  private static char mapCxlRejResponseTo(CxlRejResponseToEnum sbe) {
+    return switch (sbe) {
+      case OrderCancelRequest -> '1';
+      case OrderCancelReplaceRequest -> '2';
+      default ->
+          throw new IllegalStateException("Unsupported SBE CxlRejResponseTo for FIX wire: " + sbe);
+    };
+  }
+
+  private static int mapCxlRejReason(CxlRejReasonEnum sbe) {
+    return switch (sbe) {
+      case TooLateToCancel -> 0;
+      case UnknownOrder -> 1;
+      case BrokerOption -> 2;
+      case OrderAlreadyInPendingStatus -> 3;
+      case UnableToProcessOrderMassCancelRequest -> 4;
+      case OrigOrdModTime -> 5;
+      case DuplicateClOrdID -> 6;
+      case Other -> 99;
+      default ->
+          throw new IllegalStateException("Unsupported SBE CxlRejReason for FIX wire: " + sbe);
     };
   }
 
