@@ -79,7 +79,7 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
 
       final long accountId = group.accountId();
       group.getAccountCode(codeScratch, 0);
-      final int codeLength = trimTrailingZeros(codeScratch, CODE_LENGTH);
+      final int codeLength = RefDataUtils.trimTrailingZeros(codeScratch, CODE_LENGTH);
 
       if (accountId <= 0L) {
         written +=
@@ -157,7 +157,7 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
       state.setAccountCode(codeScratch, 0, codeLength);
       state.setAcctIdSource(group.acctIdSource());
       group.getAccountName(nameScratch, 0);
-      state.setAccountName(nameScratch, 0, trimTrailingZeros(nameScratch, NAME_LENGTH));
+      state.setAccountName(nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
       state.setAccountType(group.accountType());
       state.setBaseCurrency(ccy0, ccy1, ccy2);
       state.setStatus(group.status());
@@ -209,13 +209,5 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
     rejectedEncoder.rejectReason(reason);
     rejectedEncoder.text(text);
     return MessageHeaderEncoder.ENCODED_LENGTH + rejectedEncoder.encodedLength();
-  }
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }
