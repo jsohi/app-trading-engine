@@ -1,11 +1,13 @@
 package com.trading.engine.gateway;
 
+import com.trading.engine.fix.decoder_flyweight.MassQuoteDecoder;
 import com.trading.engine.fix.decoder_flyweight.MultilegOrderCancelReplaceRequestDecoder;
 import com.trading.engine.fix.decoder_flyweight.NewOrderMultilegDecoder;
 import com.trading.engine.fix.decoder_flyweight.NewOrderSingleDecoder;
 import com.trading.engine.fix.decoder_flyweight.OrderCancelRequestDecoder;
 import com.trading.engine.fix.decoder_flyweight.QuoteRequestDecoder;
 import com.trading.engine.messages.sbe.CancelOrderRequestEncoder;
+import com.trading.engine.messages.sbe.MassQuoteEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.MultilegOrderCancelReplaceEncoder;
 import com.trading.engine.messages.sbe.NewOrderMultilegEncoder;
@@ -69,6 +71,7 @@ public final class FixToSbeTranslator {
   private final CancelOrderRequestEncoder cor = new CancelOrderRequestEncoder();
   private final MultilegOrderCancelReplaceEncoder mocr = new MultilegOrderCancelReplaceEncoder();
   private final QuoteRequestEncoder qr = new QuoteRequestEncoder();
+  private final MassQuoteEncoder mq = new MassQuoteEncoder();
 
   /**
    * Artio's UTC-timestamp decoder is stateless on the read path; one per instance is sufficient.
@@ -516,6 +519,106 @@ public final class FixToSbeTranslator {
     qr.noLegsCount(0); // APP-47
 
     return MessageHeaderEncoder.ENCODED_LENGTH + qr.encodedLength();
+  }
+
+  // ---------------------------------------------------------------------------
+  // MassQuote (35=i)
+  //
+  // FIX 4.4 nests entries inside QuoteSets: noQuoteSets[N] → each set has noQuoteEntries[M].
+  // The SBE schema flattens that into a single noQuoteEntries group on MassQuote. We do a
+  // two-pass walk: first pass sums the total entry count across all sets, then we open the
+  // SBE group with that count and walk again, copying every inner entry into the flat group.
+  // Both walks reuse Artio's flyweight iterators (no allocation).
+  // ---------------------------------------------------------------------------
+
+  /** Translate a FIX 4.4 MassQuote (35=i) into an SBE {@code MassQuoteEncoder}. */
+  public int translateMassQuote(MassQuoteDecoder fix, MutableDirectBuffer sbe, int offset) {
+    mq.wrapAndApplyHeader(sbe, offset, header);
+
+    mq.putQuoteId(
+        padFromChars(fix.quoteID(), fix.quoteIDLength(), MassQuoteEncoder.quoteIdLength()), 0);
+    mq.putAccountCode(
+        fix.hasAccount()
+            ? padFromChars(fix.account(), fix.accountLength(), MassQuoteEncoder.accountCodeLength())
+            : padNull(MassQuoteEncoder.accountCodeLength()),
+        0);
+    // FIX MassQuote has no top-level transactTime; it lives on QuoteSet entries. We default to 0.
+    mq.transactTime(0L);
+
+    // First pass: sum the inner-group counts.
+    int totalEntries = 0;
+    final MassQuoteDecoder.QuoteSetsGroupIterator setsIter1 = fix.quoteSetsGroupIterator();
+    while (setsIter1.hasNext()) {
+      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter1.next();
+      totalEntries += set.noQuoteEntriesGroupCounter();
+    }
+
+    // Second pass: open the flat SBE group and copy each FIX entry.
+    final MassQuoteEncoder.NoQuoteEntriesEncoder sbeEntries = mq.noQuoteEntriesCount(totalEntries);
+    final MassQuoteDecoder.QuoteSetsGroupIterator setsIter2 = fix.quoteSetsGroupIterator();
+    while (setsIter2.hasNext()) {
+      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter2.next();
+      final MassQuoteDecoder.QuoteSetsGroupDecoder.QuoteEntriesGroupIterator entriesIter =
+          set.quoteEntriesGroupIterator();
+      while (entriesIter.hasNext()) {
+        final MassQuoteDecoder.QuoteSetsGroupDecoder.QuoteEntriesGroupDecoder entry =
+            entriesIter.next();
+        sbeEntries.next();
+        sbeEntries.putQuoteEntryId(
+            padFromChars(
+                entry.quoteEntryID(),
+                entry.quoteEntryIDLength(),
+                MassQuoteEncoder.NoQuoteEntriesEncoder.quoteEntryIdLength()),
+            0);
+        sbeEntries.putSymbol(
+            padFromChars(
+                entry.symbol(),
+                entry.symbolLength(),
+                MassQuoteEncoder.NoQuoteEntriesEncoder.symbolLength()),
+            0);
+        sbeEntries.bidPx(
+            entry.hasBidPx()
+                ? FixedPoint.toInt64(entry.bidPx())
+                : MassQuoteEncoder.NoQuoteEntriesEncoder.bidPxNullValue());
+        sbeEntries.offerPx(
+            entry.hasOfferPx()
+                ? FixedPoint.toInt64(entry.offerPx())
+                : MassQuoteEncoder.NoQuoteEntriesEncoder.offerPxNullValue());
+        sbeEntries.bidSize(
+            entry.hasBidSize()
+                ? FixedPoint.toInt64(entry.bidSize())
+                : MassQuoteEncoder.NoQuoteEntriesEncoder.bidSizeNullValue());
+        sbeEntries.offerSize(
+            entry.hasOfferSize()
+                ? FixedPoint.toInt64(entry.offerSize())
+                : MassQuoteEncoder.NoQuoteEntriesEncoder.offerSizeNullValue());
+        sbeEntries.productType(ProductTypeEnum.NULL_VAL); // APP-45
+        sbeEntries.putSettlDate(
+            entry.hasSettlDate()
+                ? padFromBytes(
+                    entry.settlDate(),
+                    entry.settlDateLength(),
+                    MassQuoteEncoder.NoQuoteEntriesEncoder.settlDateLength())
+                : padNull(MassQuoteEncoder.NoQuoteEntriesEncoder.settlDateLength()),
+            0);
+        // SettlType not in stock FIX 4.4 MassQuote QuoteEntry — APP-45
+        sbeEntries.settlType(SettlTypeEnum.NULL_VAL);
+        sbeEntries.putCurrency(
+            entry.hasCurrency()
+                ? padFromChars(
+                    entry.currency(),
+                    entry.currencyLength(),
+                    MassQuoteEncoder.NoQuoteEntriesEncoder.currencyLength())
+                : padNull(MassQuoteEncoder.NoQuoteEntriesEncoder.currencyLength()),
+            0);
+        // settlCurrency not in stock FIX 4.4 MassQuote QuoteEntry — APP-45
+        sbeEntries.putSettlCurrency(
+            padNull(MassQuoteEncoder.NoQuoteEntriesEncoder.settlCurrencyLength()), 0);
+        sbeEntries.tenor(TenorEnum.NULL_VAL); // APP-45
+      }
+    }
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + mq.encodedLength();
   }
 
   // ---------------------------------------------------------------------------

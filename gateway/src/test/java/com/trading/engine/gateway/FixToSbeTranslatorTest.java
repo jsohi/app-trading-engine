@@ -416,6 +416,103 @@ class FixToSbeTranslatorTest {
     assertEquals(110_100_000L, sbe.price());
   }
 
+  // ===========================================================================
+  // MassQuote (35=i) — FIX nested groups → SBE flat group
+  // ===========================================================================
+
+  @Test
+  void roundTripMassQuoteWithFlattening() {
+    com.trading.engine.fix.builder.MassQuoteEncoder enc =
+        new com.trading.engine.fix.builder.MassQuoteEncoder();
+    enc.header().senderCompID("MM").targetCompID("EXCH").msgSeqNum(1);
+    enc.header().sendingTime("20260407-12:00:00".getBytes());
+    enc.quoteID("MQ-1");
+    enc.account("ACCT-MM");
+
+    // 2 sets × 2 entries = 4 entries flattened on the SBE side.
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder set1 =
+        enc.quoteSetsGroup(2);
+    set1.quoteSetID("S1");
+    set1.totNoQuoteEntries(2);
+    set1.underlyingInstrument().underlyingSymbol("EUR"); // FIX requires it; SBE drops it
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder.QuoteEntriesGroupEncoder
+        entry11 = set1.quoteEntriesGroup(2);
+    entry11.quoteEntryID("E11").instrument().symbol("EURUSD");
+    entry11.bidPx(new DecimalFloat(11_000L, 4));
+    entry11.offerPx(new DecimalFloat(11_005L, 4));
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder.QuoteEntriesGroupEncoder
+        entry12 = entry11.next();
+    entry12.quoteEntryID("E12").instrument().symbol("GBPUSD");
+    entry12.bidPx(new DecimalFloat(12_500L, 4));
+    entry12.offerPx(new DecimalFloat(12_510L, 4));
+
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder set2 = set1.next();
+    set2.quoteSetID("S2");
+    set2.totNoQuoteEntries(2);
+    set2.underlyingInstrument().underlyingSymbol("USD");
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder.QuoteEntriesGroupEncoder
+        entry21 = set2.quoteEntriesGroup(2);
+    entry21.quoteEntryID("E21").instrument().symbol("USDJPY");
+    entry21.bidPx(new DecimalFloat(150_00L, 2));
+    entry21.offerPx(new DecimalFloat(150_05L, 2));
+    com.trading.engine.fix.builder.MassQuoteEncoder.QuoteSetsGroupEncoder.QuoteEntriesGroupEncoder
+        entry22 = entry21.next();
+    entry22.quoteEntryID("E22").instrument().symbol("AUDUSD");
+    entry22.bidPx(new DecimalFloat(6_500L, 4));
+    entry22.offerPx(new DecimalFloat(6_510L, 4));
+
+    MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
+    long encoded = enc.encode(wire, 0);
+    int wireOffset = (int) (encoded >>> 32);
+    int wireLen = (int) encoded;
+
+    com.trading.engine.fix.decoder_flyweight.MassQuoteDecoder dec =
+        new com.trading.engine.fix.decoder_flyweight.MassQuoteDecoder();
+    dec.decode(wire, wireOffset, wireLen);
+
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(1024);
+    int len = new FixToSbeTranslator().translateMassQuote(dec, sbeBuf, 0);
+    assertTrue(len > 0);
+
+    MessageHeaderDecoder hdr = new MessageHeaderDecoder();
+    hdr.wrap(sbeBuf, 0);
+    assertEquals(com.trading.engine.messages.sbe.MassQuoteEncoder.TEMPLATE_ID, hdr.templateId());
+
+    com.trading.engine.messages.sbe.MassQuoteDecoder sbe =
+        new com.trading.engine.messages.sbe.MassQuoteDecoder();
+    sbe.wrap(sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdr.blockLength(), hdr.version());
+    assertEquals("MQ-1", trimSbeString(sbe.quoteId()));
+    assertEquals("ACCT-MM", trimSbeString(sbe.accountCode()));
+
+    com.trading.engine.messages.sbe.MassQuoteDecoder.NoQuoteEntriesDecoder entries =
+        sbe.noQuoteEntries();
+    assertEquals(4, entries.count(), "FIX 2 sets × 2 entries should flatten to 4 SBE entries");
+
+    entries.next();
+    assertEquals("E11", trimSbeString(entries.quoteEntryId()));
+    assertEquals("EURUSD", trimSbeString(entries.symbol()));
+    assertEquals(110_000_000L, entries.bidPx());
+    assertEquals(110_050_000L, entries.offerPx());
+
+    entries.next();
+    assertEquals("E12", trimSbeString(entries.quoteEntryId()));
+    assertEquals("GBPUSD", trimSbeString(entries.symbol()));
+    assertEquals(125_000_000L, entries.bidPx());
+    assertEquals(125_100_000L, entries.offerPx());
+
+    entries.next();
+    assertEquals("E21", trimSbeString(entries.quoteEntryId()));
+    assertEquals("USDJPY", trimSbeString(entries.symbol()));
+    assertEquals(15000_000_000L, entries.bidPx()); // 150.00 → 15_000_000_000
+    assertEquals(15005_000_000L, entries.offerPx());
+
+    entries.next();
+    assertEquals("E22", trimSbeString(entries.quoteEntryId()));
+    assertEquals("AUDUSD", trimSbeString(entries.symbol()));
+    assertEquals(65_000_000L, entries.bidPx()); // 0.6500 → 65_000_000
+    assertEquals(65_100_000L, entries.offerPx());
+  }
+
   /** SBE asString() returns null-padded fixed-length strings; trim trailing nulls. */
   private static String trimSbeString(String s) {
     int end = s.length();
