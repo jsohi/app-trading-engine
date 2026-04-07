@@ -21,11 +21,12 @@ import org.agrona.collections.Object2ObjectHashMap;
 public final class OrderBook {
 
   /**
-   * Initial capacity for the underlying map. 65,536 entries is roughly 2 MB of references (well
-   * within an L2/L3 cache footprint for a 3-node cluster) and covers a busy FX RFQ working set
-   * without rehash. Re-tune when the matching engine lands.
+   * Initial capacity for the underlying map. Sized so the working set can grow to ~87,000 active
+   * orders before {@link Object2ObjectHashMap} triggers a rehash (capacity × default load factor
+   * 0.67). 131,072 slots × 2 parallel arrays (keys + values) × 8 bytes/ref ≈ 2 MB — comfortably
+   * inside an L2/L3 cache footprint for a 3-node cluster. Re-tune when the matching engine lands.
    */
-  public static final int INITIAL_CAPACITY = 65_536;
+  public static final int INITIAL_CAPACITY = 131_072;
 
   private final Object2ObjectHashMap<String, OrderState> ordersById =
       new Object2ObjectHashMap<>(INITIAL_CAPACITY, Hashing.DEFAULT_LOAD_FACTOR);
