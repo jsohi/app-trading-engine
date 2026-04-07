@@ -195,11 +195,8 @@ public final class ByteArrayKey {
     if (this.length != other.length) {
       return false;
     }
-    for (int i = 0; i < length; i++) {
-      if (this.data[i] != other.data[i]) {
-        return false;
-      }
-    }
-    return true;
+    // Arrays.mismatch is a JVM intrinsic on modern HotSpot — significantly faster than a
+    // byte-by-byte loop, especially for the 16-byte account-code keys we use here.
+    return java.util.Arrays.mismatch(this.data, 0, this.length, other.data, 0, other.length) < 0;
   }
 }

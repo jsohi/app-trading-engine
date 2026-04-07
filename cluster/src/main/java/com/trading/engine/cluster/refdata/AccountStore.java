@@ -208,14 +208,17 @@ public final class AccountStore implements ReferenceDataStore {
         group.next();
         group.accountId(state.accountId());
         group.parentAccountId(state.parentAccountId());
-        // Pad accountCode to fixed 16 bytes (Account char[16]).
-        for (int j = 0; j < MAX_ACCOUNT_CODE_LENGTH; j++) {
-          codeScratch[j] = j < state.accountCodeLength() ? state.accountCodeByte(j) : (byte) 0;
+        // Pad accountCode to fixed 16 bytes (Account char[16]) — System.arraycopy + Arrays.fill
+        // is faster than a byte-loop and lets the JIT/intrinsics shine.
+        final int codeLen = state.copyAccountCodeTo(codeScratch, 0);
+        if (codeLen < MAX_ACCOUNT_CODE_LENGTH) {
+          java.util.Arrays.fill(codeScratch, codeLen, MAX_ACCOUNT_CODE_LENGTH, (byte) 0);
         }
         group.putAccountCode(codeScratch, 0);
         group.acctIdSource(state.acctIdSource());
-        for (int j = 0; j < NAME_LENGTH; j++) {
-          nameScratch[j] = j < state.accountNameLength() ? state.accountNameByte(j) : (byte) 0;
+        final int nameLen = state.copyAccountNameTo(nameScratch, 0);
+        if (nameLen < NAME_LENGTH) {
+          java.util.Arrays.fill(nameScratch, nameLen, NAME_LENGTH, (byte) 0);
         }
         group.putAccountName(nameScratch, 0);
         group.accountType(state.accountType());

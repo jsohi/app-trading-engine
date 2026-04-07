@@ -171,14 +171,16 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
     loadedEncoder.timestamp(clusterTimestampNanos);
     loadedEncoder.accountId(accountId);
     loadedEncoder.parentAccountId(state.parentAccountId());
-    // Re-pad the code to fixed 16 bytes for the wire.
-    for (int i = 0; i < CODE_LENGTH; i++) {
-      codeScratch[i] = i < codeLength ? state.accountCodeByte(i) : (byte) 0;
+    // Re-pad the code to fixed 16 bytes for the wire (System.arraycopy + Arrays.fill).
+    state.copyAccountCodeTo(codeScratch, 0);
+    if (codeLength < CODE_LENGTH) {
+      java.util.Arrays.fill(codeScratch, codeLength, CODE_LENGTH, (byte) 0);
     }
     loadedEncoder.putAccountCode(codeScratch, 0);
     loadedEncoder.acctIdSource(state.acctIdSource());
-    for (int i = 0; i < NAME_LENGTH; i++) {
-      nameScratch[i] = i < state.accountNameLength() ? state.accountNameByte(i) : (byte) 0;
+    final int storedNameLen = state.copyAccountNameTo(nameScratch, 0);
+    if (storedNameLen < NAME_LENGTH) {
+      java.util.Arrays.fill(nameScratch, storedNameLen, NAME_LENGTH, (byte) 0);
     }
     loadedEncoder.putAccountName(nameScratch, 0);
     loadedEncoder.accountType(state.accountType());

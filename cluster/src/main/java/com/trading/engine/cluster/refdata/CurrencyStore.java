@@ -171,10 +171,10 @@ public final class CurrencyStore implements ReferenceDataStore {
         group.next();
         group.putCcyCode(state.ccyCodeByte(0), state.ccyCodeByte(1), state.ccyCodeByte(2));
         group.isoNumeric(state.isoNumeric());
-        // Pad name to fixed 64 bytes — the live name length is implied by trailing-zero
-        // convention used elsewhere in the schema (Text type is fixed-length, zero-padded).
-        for (int j = 0; j < NAME_LENGTH; j++) {
-          scratchName[j] = j < state.nameLength() ? state.nameByte(j) : (byte) 0;
+        // Pad name to fixed 64 bytes (System.arraycopy + Arrays.fill).
+        final int nameLen = state.copyNameTo(scratchName, 0);
+        if (nameLen < NAME_LENGTH) {
+          java.util.Arrays.fill(scratchName, nameLen, NAME_LENGTH, (byte) 0);
         }
         group.putName(scratchName, 0);
         group.decimals((short) state.decimals());
