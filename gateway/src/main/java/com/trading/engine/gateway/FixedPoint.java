@@ -34,11 +34,19 @@ import uk.co.real_logic.artio.fields.ReadOnlyDecimalFloat;
  */
 public final class FixedPoint {
 
-  /** Implicit scale factor of the cluster's int64 representation: {@code 10^8}. */
-  public static final long PRICE_SCALE = 100_000_000L;
-
   /** Decimal places carried in the int64 fixed-point form. */
   public static final int FIXED_POINT_SCALE = 8;
+
+  /** Implicit scale factor of the cluster's int64 representation: {@code 10^FIXED_POINT_SCALE}. */
+  public static final long PRICE_SCALE = pow10(FIXED_POINT_SCALE);
+
+  private static long pow10(int n) {
+    long r = 1L;
+    for (int i = 0; i < n; i++) {
+      r *= 10L;
+    }
+    return r;
+  }
 
   // 10^0 .. 10^18 — covers every shift the converter can produce on a long.
   private static final long[] POW10 = {
@@ -76,10 +84,10 @@ public final class FixedPoint {
     final int scale = fix.scale();
     final long value = fix.value();
     final int shift = FIXED_POINT_SCALE - scale;
-    // Single bounds check covers both directions: shift ranges from FIXED_POINT_SCALE (when
-    // scale=0) down to potentially very negative (when an untrusted FIX wire carries scale=27+).
-    // Math.abs handles |Long.MIN_VALUE| safely here because shift is an int and scale is bounded
-    // by Artio's parser to a non-negative int.
+    // Single explicit range check covers both shift directions. Avoids Math.abs because
+    // Math.abs(Integer.MIN_VALUE) returns a negative value (would be a footgun even though
+    // shift can't realistically reach that here — Artio's parser bounds scale to a positive
+    // int well below INT_MAX).
     if (shift <= -POW10.length || shift >= POW10.length) {
       throw new IllegalStateException("FIX decimal scale out of supported range: scale=" + scale);
     }

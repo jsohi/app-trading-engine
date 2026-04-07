@@ -38,8 +38,12 @@ val generateFixCodecs =
         inputs.file(fixDictionary)
         outputs.dir(fixCodecDir)
 
-        // CodecGenerationTool args: <output dir> <semicolon-separated dictionary paths>
-        args(fixCodecDir.get().asFile.absolutePath, fixDictionary.asFile.absolutePath)
+        // CodecGenerationTool args: <output dir> <semicolon-separated dictionary paths>.
+        // Resolve the lazy `fixCodecDir` provider inside doFirst so the path isn't materialised
+        // at configuration time — this keeps Gradle's configuration cache happy.
+        doFirst {
+            args(fixCodecDir.get().asFile.absolutePath, fixDictionary.asFile.absolutePath)
+        }
 
         // Enable flyweight (zero-allocation) decoder mode and place generated classes
         // under our package.
