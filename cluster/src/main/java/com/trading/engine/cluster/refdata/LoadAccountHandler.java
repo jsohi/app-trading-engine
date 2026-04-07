@@ -81,7 +81,7 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
 
     final long accountId = decoder.accountId();
     decoder.getAccountCode(codeScratch, 0);
-    final int codeLength = trimTrailingZeros(codeScratch, CODE_LENGTH);
+    final int codeLength = RefDataUtils.trimTrailingZeros(codeScratch, CODE_LENGTH);
 
     if (accountId <= 0L) {
       return emitRejected(
@@ -156,7 +156,7 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
     state.setAccountCode(codeScratch, 0, codeLength);
     state.setAcctIdSource(decoder.acctIdSource());
     decoder.getAccountName(nameScratch, 0);
-    state.setAccountName(nameScratch, 0, trimTrailingZeros(nameScratch, NAME_LENGTH));
+    state.setAccountName(nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
     state.setAccountType(decoder.accountType());
     state.setBaseCurrency(ccy0, ccy1, ccy2);
     state.setStatus(decoder.status());
@@ -209,13 +209,5 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
     rejectedEncoder.rejectReason(reason);
     rejectedEncoder.text(text);
     return MessageHeaderEncoder.ENCODED_LENGTH + rejectedEncoder.encodedLength();
-  }
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }

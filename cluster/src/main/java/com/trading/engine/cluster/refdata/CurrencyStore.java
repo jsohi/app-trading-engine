@@ -235,7 +235,7 @@ public final class CurrencyStore implements ReferenceDataStore {
       state.setIsoNumeric(group.isoNumeric());
       // Decode the name into the reusable scratch buffer (no per-record allocation).
       group.getName(scratchName, 0);
-      state.setName(scratchName, 0, trimTrailingZeros(scratchName, NAME_LENGTH));
+      state.setName(scratchName, 0, RefDataUtils.trimTrailingZeros(scratchName, NAME_LENGTH));
       state.setDecimals(group.decimals());
       state.setCurrencyClass(group.currencyClass());
       state.setStatus(group.status());
@@ -244,14 +244,5 @@ public final class CurrencyStore implements ReferenceDataStore {
     }
 
     return MessageHeaderDecoder.ENCODED_LENGTH + snapshotDecoder.encodedLength();
-  }
-
-  /** Trim trailing zero-padding from the first {@code upToLength} bytes of a buffer. */
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }

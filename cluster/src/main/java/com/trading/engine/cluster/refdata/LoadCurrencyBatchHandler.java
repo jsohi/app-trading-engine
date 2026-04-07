@@ -126,7 +126,7 @@ public final class LoadCurrencyBatchHandler implements ReferenceDataBatchLoader 
 
       final CurrencyClassEnum currencyClass = group.currencyClass();
       final int nameRead = group.getName(scratchName, 0);
-      final int nameLength = trimTrailingZeros(scratchName, nameRead);
+      final int nameLength = RefDataUtils.trimTrailingZeros(scratchName, nameRead);
 
       // Upsert.
       final int packedKey = CurrencyStore.packCode(b0, b1, b2);
@@ -182,13 +182,5 @@ public final class LoadCurrencyBatchHandler implements ReferenceDataBatchLoader 
 
   private static boolean isUpperAlpha(final byte b) {
     return b >= 'A' && b <= 'Z';
-  }
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }

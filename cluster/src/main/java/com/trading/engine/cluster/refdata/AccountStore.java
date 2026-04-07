@@ -257,10 +257,10 @@ public final class AccountStore implements ReferenceDataStore {
       state.setAccountId(group.accountId());
       state.setParentAccountId(group.parentAccountId());
       group.getAccountCode(codeScratch, 0);
-      state.setAccountCode(codeScratch, 0, trimTrailingZeros(codeScratch, MAX_ACCOUNT_CODE_LENGTH));
+      state.setAccountCode(codeScratch, 0, RefDataUtils.trimTrailingZeros(codeScratch, MAX_ACCOUNT_CODE_LENGTH));
       state.setAcctIdSource(group.acctIdSource());
       group.getAccountName(nameScratch, 0);
-      state.setAccountName(nameScratch, 0, trimTrailingZeros(nameScratch, NAME_LENGTH));
+      state.setAccountName(nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
       state.setAccountType(group.accountType());
       state.setBaseCurrency(group.baseCurrency(0), group.baseCurrency(1), group.baseCurrency(2));
       state.setStatus(group.status());
@@ -271,13 +271,5 @@ public final class AccountStore implements ReferenceDataStore {
     }
 
     return MessageHeaderDecoder.ENCODED_LENGTH + snapshotDecoder.encodedLength();
-  }
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }

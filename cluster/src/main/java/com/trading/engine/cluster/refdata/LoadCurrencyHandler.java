@@ -117,7 +117,7 @@ public final class LoadCurrencyHandler implements ReferenceDataLoader {
     // Read the name into the scratch buffer once (no String allocation). scratchName now holds
     // the 64-byte fixed-length name field; we keep it pristine for the rest of this method.
     decoder.getName(scratchName, 0);
-    final int nameLength = trimTrailingZeros(scratchName, NAME_LENGTH);
+    final int nameLength = RefDataUtils.trimTrailingZeros(scratchName, NAME_LENGTH);
 
     // Upsert. If the code already exists, mutate the existing CurrencyState in place (no
     // allocation). Otherwise allocate one (startup-only path, allowed).
@@ -171,13 +171,5 @@ public final class LoadCurrencyHandler implements ReferenceDataLoader {
 
   private static boolean isUpperAlpha(final byte b) {
     return b >= 'A' && b <= 'Z';
-  }
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
   }
 }
