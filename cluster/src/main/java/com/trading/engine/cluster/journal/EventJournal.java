@@ -120,7 +120,13 @@ public final class EventJournal {
    * <ul>
    *   <li>{@code seqNo >= 1} — {@code 0} is reserved as the "unused slot" sentinel inside {@link
    *       EventEntry}
+   *   <li>{@code seqNo > highestSequence()} when the journal is non-empty — sequences must be
+   *       strictly monotonic. Out-of-order or duplicate sequence numbers would corrupt the eviction
+   *       math and the lookup index. (The producer side, {@link
+   *       com.trading.engine.cluster.sequencer.EventSequencer}, already guarantees this — the check
+   *       is a defensive tripwire to catch caller bugs.)
    *   <li>{@code srcLength >= 0}
+   *   <li>{@code srcLength <= EventEntry.MAX_PAYLOAD_LENGTH}
    * </ul>
    *
    * @param seqNo sequence number assigned by {@link
@@ -133,6 +139,13 @@ public final class EventJournal {
   public void append(long seqNo, int eventType, DirectBuffer src, int srcOffset, int srcLength) {
     if (seqNo < 1L) {
       throw new IllegalArgumentException("EventJournal seqNo must be >= 1, was " + seqNo);
+    }
+    if (size > 0 && seqNo <= highestSequence) {
+      throw new IllegalArgumentException(
+          "EventJournal seqNo must be strictly monotonic: highest was "
+              + highestSequence
+              + " but got "
+              + seqNo);
     }
     if (srcLength < 0) {
       throw new IllegalArgumentException("EventJournal srcLength must be >= 0, was " + srcLength);

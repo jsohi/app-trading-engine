@@ -93,6 +93,17 @@ class EventJournalTest {
   }
 
   @Test
+  void appendRejectsNonMonotonicSeqNo() {
+    EventJournal j = new EventJournal(16);
+    appendAscii(j, 5L, 100, "e5");
+    UnsafeBuffer src = new UnsafeBuffer(new byte[] {1});
+    // Equal to highest — duplicate, must be rejected.
+    assertThrows(IllegalArgumentException.class, () -> j.append(5L, 100, src, 0, 1));
+    // Below highest — out of order, must be rejected.
+    assertThrows(IllegalArgumentException.class, () -> j.append(3L, 100, src, 0, 1));
+  }
+
+  @Test
   void appendAcceptsZeroLengthPayload() {
     EventJournal j = new EventJournal(16);
     UnsafeBuffer src = new UnsafeBuffer(new byte[0]);
