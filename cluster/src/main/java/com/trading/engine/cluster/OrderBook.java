@@ -12,15 +12,20 @@ import org.agrona.collections.Object2ObjectHashMap;
  * java.util.*}-collections rule.
  *
  * <p>The map is pre-sized to {@link #INITIAL_CAPACITY} to avoid rehash-induced latency spikes in
- * the cluster duty cycle. Sized for typical active-order working sets — when the matching engine
- * lands this should be re-tuned (or made configurable) against measured book depth.
+ * the cluster duty cycle. Sized for a busy FX RFQ working set; when the matching engine lands this
+ * should be made constructor-configurable so each venue/instrument can tune it against measured
+ * book depth.
  *
  * <p>Not thread-safe — single-threaded cluster duty cycle only.
  */
 public final class OrderBook {
 
-  /** Initial capacity for the underlying map; sized to avoid rehash in normal operation. */
-  public static final int INITIAL_CAPACITY = 1024;
+  /**
+   * Initial capacity for the underlying map. 65,536 entries is roughly 2 MB of references (well
+   * within an L2/L3 cache footprint for a 3-node cluster) and covers a busy FX RFQ working set
+   * without rehash. Re-tune when the matching engine lands.
+   */
+  public static final int INITIAL_CAPACITY = 65_536;
 
   private final Object2ObjectHashMap<String, OrderState> ordersById =
       new Object2ObjectHashMap<>(INITIAL_CAPACITY, Hashing.DEFAULT_LOAD_FACTOR);
