@@ -78,6 +78,34 @@ public final class ByteArrayKey {
     return new ByteArrayKey(copy, length);
   }
 
+  /**
+   * Defensive copy with a backing capacity larger than the live length. Useful for stores that keep
+   * a per-record key alive across upserts and may need to grow the live bytes (e.g., {@link
+   * AccountStore}'s sidecar map allocates each key with the max account-code capacity so a re-load
+   * with a longer code can mutate the key in place via {@link #set(byte[], int, int)} without
+   * re-allocating).
+   *
+   * @param capacity backing array size; must be {@code >= length}
+   */
+  public static ByteArrayKey copyOfWithCapacity(
+      final byte[] src, final int offset, final int length, final int capacity) {
+    if (src == null) {
+      throw new NullPointerException("src must not be null");
+    }
+    if (offset < 0 || length < 0 || offset + length > src.length) {
+      throw new IndexOutOfBoundsException(
+          "offset=" + offset + " length=" + length + " src.length=" + src.length);
+    }
+    if (capacity < length) {
+      throw new IllegalArgumentException("capacity " + capacity + " must be >= length " + length);
+    }
+    final byte[] backing = new byte[capacity];
+    if (length > 0) {
+      System.arraycopy(src, offset, backing, 0, length);
+    }
+    return new ByteArrayKey(backing, length);
+  }
+
   /** Defensive copy from a {@link DirectBuffer} slice. */
   public static ByteArrayKey copyOf(final DirectBuffer src, final int offset, final int length) {
     if (src == null) {

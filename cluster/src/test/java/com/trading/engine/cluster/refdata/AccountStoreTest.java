@@ -113,6 +113,40 @@ class AccountStoreTest {
   }
 
   @Test
+  void upsertWithLoaderAliasingPattern_secondaryIndexStaysClean() {
+    // Regression test for the critical aliasing bug gemini caught: the loader pattern is
+    //   AccountState s = store.get(id);   // returns the same instance the store holds
+    //   s.setAccountCode(NEW_BYTES);      // mutates the stored instance in place
+    //   store.put(s);                     // put() must still find the OLD code in the
+    //                                     // secondary index and remove it
+    // The previous implementation captured the "old" code from the stored instance after
+    // mutation — by then `previous == s` had the new bytes, so the wrong byCode entry was
+    // removed and the OLD code stayed indexed forever (silent secondary-index leak).
+    final AccountStore store = new AccountStore();
+    store.put(makeState(42L, "ORIG", "Acme", "USD"));
+
+    // Loader pattern: fetch the existing state, mutate it in place, call put.
+    final AccountState fetched = store.get(42L);
+    assertNotNull(fetched);
+    final byte[] newCodeBytes = "RENAMED".getBytes();
+    fetched.setAccountCode(newCodeBytes, 0, newCodeBytes.length);
+    store.put(fetched);
+
+    // Old code MUST be gone from the secondary index.
+    final UnsafeBuffer orig = new UnsafeBuffer(new byte[] {'O', 'R', 'I', 'G'});
+    assertNull(
+        store.getByCode(orig, 0, 4),
+        "old code 'ORIG' must not still resolve after the loader mutation + put");
+
+    // New code MUST resolve and point at the same accountId.
+    final UnsafeBuffer renamed = new UnsafeBuffer(newCodeBytes);
+    final AccountState foundByNew = store.getByCode(renamed, 0, 7);
+    assertNotNull(foundByNew);
+    assertEquals(42L, foundByNew.accountId());
+    assertEquals(1, store.size());
+  }
+
+  @Test
   void clearEmptiesBothIndexes() {
     final AccountStore store = new AccountStore();
     store.put(makeState(1L, "ACME", "Acme", "USD"));

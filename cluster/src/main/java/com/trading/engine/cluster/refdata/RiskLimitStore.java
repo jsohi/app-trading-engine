@@ -130,16 +130,22 @@ public final class RiskLimitStore implements ReferenceDataStore {
     return MessageHeaderDecoder.ENCODED_LENGTH + snapshotDecoder.encodedLength();
   }
 
+  /**
+   * O(N log N) sort via {@link java.util.Arrays#sort(long[])}. Snapshot path is allowed to allocate
+   * the temporary array.
+   */
   private static void sortLongAscending(final LongArrayList list) {
     final int n = list.size();
-    for (int i = 1; i < n; i++) {
-      final long key = list.getLong(i);
-      int j = i - 1;
-      while (j >= 0 && list.getLong(j) > key) {
-        list.setLong(j + 1, list.getLong(j));
-        j--;
-      }
-      list.setLong(j + 1, key);
+    if (n <= 1) {
+      return;
+    }
+    final long[] tmp = new long[n];
+    for (int i = 0; i < n; i++) {
+      tmp[i] = list.getLong(i);
+    }
+    java.util.Arrays.sort(tmp);
+    for (int i = 0; i < n; i++) {
+      list.setLong(i, tmp[i]);
     }
   }
 }

@@ -199,20 +199,15 @@ public final class CurrencyStore implements ReferenceDataStore {
     while (group.hasNext()) {
       group.next();
       final CurrencyState state = new CurrencyState();
-      // Read fixed 3-byte code via the indexed accessor (no allocation, no String).
+      // Read the 3-byte code via primitive accessors (no allocation, no String).
       final byte b0 = group.ccyCode(0);
       final byte b1 = group.ccyCode(1);
       final byte b2 = group.ccyCode(2);
-      // Reuse the same scratch array (single-threaded restore path, allocation OK either way).
-      scratchName[0] = b0;
-      scratchName[1] = b1;
-      scratchName[2] = b2;
-      state.setCcyCode(scratchName, 0);
+      state.setCcyCode(b0, b1, b2);
       state.setIsoNumeric(group.isoNumeric());
-      // Decode name into a fresh byte[] (the snapshot path is allowed to allocate).
-      final byte[] nameBytes = new byte[NAME_LENGTH];
-      group.getName(nameBytes, 0);
-      state.setName(nameBytes, 0, computeTrimmedLength(nameBytes));
+      // Decode the name into the reusable scratch buffer (no per-record allocation).
+      group.getName(scratchName, 0);
+      state.setName(scratchName, 0, trimTrailingZeros(scratchName, NAME_LENGTH));
       state.setDecimals(group.decimals());
       state.setCurrencyClass(group.currencyClass());
       state.setStatus(group.status());
@@ -223,9 +218,9 @@ public final class CurrencyStore implements ReferenceDataStore {
     return MessageHeaderDecoder.ENCODED_LENGTH + snapshotDecoder.encodedLength();
   }
 
-  /** Trim trailing zero-padding from a fixed-length char field. */
-  private static int computeTrimmedLength(final byte[] bytes) {
-    int len = bytes.length;
+  /** Trim trailing zero-padding from the first {@code upToLength} bytes of a buffer. */
+  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
+    int len = upToLength;
     while (len > 0 && bytes[len - 1] == 0) {
       len--;
     }
@@ -233,19 +228,21 @@ public final class CurrencyStore implements ReferenceDataStore {
   }
 
   /**
-   * In-place ascending sort of an {@link IntArrayList}. Insertion sort for small N (typical < 200
-   * currencies).
+   * O(N log N) sort via {@link java.util.Arrays#sort(int[])}. Snapshot path is allowed to allocate
+   * the temporary array.
    */
   private static void sortKeysAscending(final IntArrayList keys) {
     final int n = keys.size();
-    for (int i = 1; i < n; i++) {
-      final int key = keys.getInt(i);
-      int j = i - 1;
-      while (j >= 0 && keys.getInt(j) > key) {
-        keys.setInt(j + 1, keys.getInt(j));
-        j--;
-      }
-      keys.setInt(j + 1, key);
+    if (n <= 1) {
+      return;
+    }
+    final int[] tmp = new int[n];
+    for (int i = 0; i < n; i++) {
+      tmp[i] = keys.getInt(i);
+    }
+    java.util.Arrays.sort(tmp);
+    for (int i = 0; i < n; i++) {
+      keys.setInt(i, tmp[i]);
     }
   }
 }

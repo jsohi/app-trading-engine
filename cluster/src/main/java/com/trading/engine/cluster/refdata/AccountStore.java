@@ -53,6 +53,16 @@ public final class AccountStore implements ReferenceDataStore {
   private final Object2ObjectHashMap<ByteArrayKey, AccountState> byCode =
       new Object2ObjectHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR);
 
+  /**
+   * Sidecar map: accountId → the ByteArrayKey that lives in {@link #byCode} for that account.
+   * Decouples the secondary-index key bytes from {@link AccountState#accountCode}, so when a loader
+   * mutates the state's accountCode in place, the key here still holds the OLD bytes and can be
+   * used to remove the stale {@link #byCode} entry. Also lets us REUSE the same {@link
+   * ByteArrayKey} instance across upserts of the same account — no per-put allocation.
+   */
+  private final Long2ObjectHashMap<ByteArrayKey> codeKeyByAccountId =
+      new Long2ObjectHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR);
+
   /** Reusable lookup probe — mutated in place by {@link #getByCode}. NEVER inserted. */
   private final ByteArrayKey lookupKey = ByteArrayKey.emptyForLookup(MAX_ACCOUNT_CODE_LENGTH);
 
@@ -80,6 +90,7 @@ public final class AccountStore implements ReferenceDataStore {
   public void clear() {
     byId.clear();
     byCode.clear();
+    codeKeyByAccountId.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -125,12 +136,26 @@ public final class AccountStore implements ReferenceDataStore {
   // ---------------------------------------------------------------------------
 
   /**
-   * Insert or overwrite an account. Updates BOTH indexes atomically. If an existing account with
-   * the same {@code accountId} has a different {@code accountCode}, the old code's secondary index
-   * entry is removed first.
+   * Insert or overwrite an account. Updates BOTH indexes atomically. Zero allocation on the
+   * overwrite path; one-time {@link ByteArrayKey} allocation on first insert per account.
    *
-   * <p>The new account-code bytes are defensively copied into a fresh {@link ByteArrayKey} for the
-   * secondary index so the map remains independent of any reused source buffer.
+   * <p><b>Aliasing-safety</b> (the previously-broken case): the loader pattern is "fetch existing
+   * AccountState from {@link #get(long)}, mutate its accountCode in place, then call {@code put}".
+   * By the time this method runs, {@code state.accountCode} already holds the NEW bytes — the OLD
+   * bytes are gone. We avoid relying on {@code state} for the old bytes by keeping the
+   * secondary-index key in the {@link #codeKeyByAccountId} sidecar map. The sidecar's {@link
+   * ByteArrayKey} is a separate object whose {@code data} byte[] is independent of {@code
+   * state.accountCode}, so it still holds the OLD bytes when we remove from {@link #byCode}.
+   *
+   * <p><b>Sequence:</b>
+   *
+   * <ol>
+   *   <li>Look up the existing {@link ByteArrayKey} in the sidecar map.
+   *   <li>If present, remove the {@link #byCode} entry using that key (still holds OLD bytes).
+   *   <li>Read the NEW bytes out of {@code state.accountCode}.
+   *   <li>Mutate the existing key in place (or allocate a fresh one on first insert).
+   *   <li>Re-insert into {@link #byCode} with the same value reference and the now-new key.
+   * </ol>
    *
    * <p>Caller is responsible for rejecting duplicate-code-different-id at validation time (via
    * {@link LoadAccountHandler}); this method assumes the caller has already verified that no other
@@ -140,33 +165,23 @@ public final class AccountStore implements ReferenceDataStore {
    */
   public void put(final AccountState state) {
     final long accountId = state.accountId();
-    final AccountState previous = byId.get(accountId);
-    if (previous != null) {
-      // Remove the previous secondary-index entry. Use the reusable lookup probe — single-
-      // threaded cluster duty cycle, no contention.
-      copyStateCodeIntoLookupKey(previous);
-      byCode.remove(lookupKey);
+    ByteArrayKey codeKey = codeKeyByAccountId.get(accountId);
+    if (codeKey != null) {
+      // Existing entry — remove from byCode using the OLD bytes (still in codeKey, NOT in
+      // state.accountCode which the loader has already mutated to the NEW bytes).
+      byCode.remove(codeKey);
+      // Mutate the existing key in place to the NEW bytes (zero allocation).
+      final int len = state.copyAccountCodeTo(codeScratch, 0);
+      codeKey.set(codeScratch, 0, len);
+    } else {
+      // First insert — allocate one ByteArrayKey for this account, sized to the max account
+      // code length so subsequent upserts with a longer code can mutate the key in place.
+      final int len = state.copyAccountCodeTo(codeScratch, 0);
+      codeKey = ByteArrayKey.copyOfWithCapacity(codeScratch, 0, len, MAX_ACCOUNT_CODE_LENGTH);
+      codeKeyByAccountId.put(accountId, codeKey);
     }
     byId.put(accountId, state);
-    // Defensive-copy the code into a fresh ByteArrayKey for stable map identity.
-    copyStateCodeIntoCodeScratch(state);
-    final ByteArrayKey insertKey = ByteArrayKey.copyOf(codeScratch, 0, state.accountCodeLength());
-    byCode.put(insertKey, state);
-  }
-
-  private void copyStateCodeIntoLookupKey(final AccountState state) {
-    final int len = state.accountCodeLength();
-    for (int i = 0; i < len; i++) {
-      codeScratch[i] = state.accountCodeByte(i);
-    }
-    lookupKey.set(codeScratch, 0, len);
-  }
-
-  private void copyStateCodeIntoCodeScratch(final AccountState state) {
-    final int len = state.accountCodeLength();
-    for (int i = 0; i < len; i++) {
-      codeScratch[i] = state.accountCodeByte(i);
-    }
+    byCode.put(codeKey, state);
   }
 
   // ---------------------------------------------------------------------------
@@ -254,17 +269,24 @@ public final class AccountStore implements ReferenceDataStore {
     return len;
   }
 
-  /** In-place ascending sort of a {@link LongArrayList} (insertion sort, fine for typical N). */
+  /**
+   * In-place ascending sort of a {@link LongArrayList} via {@link java.util.Arrays#sort(long[])} —
+   * O(N log N), critical for the start-of-day snapshot path where N can reach 50k+ accounts.
+   * Allocates one {@code long[]} of size N; snapshot path is allowed to allocate per the project's
+   * CLAUDE.md exemption.
+   */
   private static void sortLongAscending(final LongArrayList list) {
     final int n = list.size();
-    for (int i = 1; i < n; i++) {
-      final long key = list.getLong(i);
-      int j = i - 1;
-      while (j >= 0 && list.getLong(j) > key) {
-        list.setLong(j + 1, list.getLong(j));
-        j--;
-      }
-      list.setLong(j + 1, key);
+    if (n <= 1) {
+      return;
+    }
+    final long[] tmp = new long[n];
+    for (int i = 0; i < n; i++) {
+      tmp[i] = list.getLong(i);
+    }
+    java.util.Arrays.sort(tmp);
+    for (int i = 0; i < n; i++) {
+      list.setLong(i, tmp[i]);
     }
   }
 }

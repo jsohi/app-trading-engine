@@ -179,17 +179,19 @@ public final class ReferenceDataRegistry {
     return written;
   }
 
-  /** Insertion sort for the typically-small list of registered store template ids. */
+  /** O(N log N) sort via {@link java.util.Arrays#sort(int[])}. */
   private static void sortAscending(final IntArrayList list) {
     final int n = list.size();
-    for (int i = 1; i < n; i++) {
-      final int key = list.getInt(i);
-      int j = i - 1;
-      while (j >= 0 && list.getInt(j) > key) {
-        list.setInt(j + 1, list.getInt(j));
-        j--;
-      }
-      list.setInt(j + 1, key);
+    if (n <= 1) {
+      return;
+    }
+    final int[] tmp = new int[n];
+    for (int i = 0; i < n; i++) {
+      tmp[i] = list.getInt(i);
+    }
+    java.util.Arrays.sort(tmp);
+    for (int i = 0; i < n; i++) {
+      list.setInt(i, tmp[i]);
     }
   }
 
