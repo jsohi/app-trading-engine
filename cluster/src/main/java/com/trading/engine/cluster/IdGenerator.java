@@ -1,5 +1,6 @@
 package com.trading.engine.cluster;
 
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -22,9 +23,9 @@ import org.agrona.MutableDirectBuffer;
  * the counter and writes the rendered id ASCII bytes directly into a caller-provided buffer. This
  * is the only entry point cluster command handlers should call.
  *
- * <p><b>Diagnostic API:</b> {@link #next()} returns a {@code String} for tests, logging, and
- * tooling. It allocates one {@code String} per call and <b>must not</b> be called from the cluster
- * main path.
+ * <p><b>Diagnostic API:</b> {@code next()} returns a {@code String} for tests in the same package.
+ * Visibility is package-private so subpackage handlers and external modules cannot reach it; the
+ * cluster main path has only one option, which is the zero-allocation flyweight above.
  */
 public final class IdGenerator {
 
@@ -122,13 +123,17 @@ public final class IdGenerator {
   }
 
   /**
-   * <b>Diagnostic API — not for the cluster main path.</b> Increment the counter and return the
-   * next id as a {@code String}. Allocates exactly one {@code String}. Use {@link
-   * #nextInto(MutableDirectBuffer, int)} from cluster command handlers.
+   * <b>Diagnostic API — package-private to keep it off the cluster main path.</b> Increment the
+   * counter and return the next id as a {@code String}. Allocates exactly one {@code String}. Use
+   * {@link #nextInto(MutableDirectBuffer, int)} from cluster command handlers.
+   *
+   * <p>Visibility is intentionally package-private so only tests and other classes in {@code
+   * com.trading.engine.cluster} can call it. Subpackage command handlers and external modules will
+   * get a compile error if they reach for it instead of {@code nextInto}.
    *
    * @throws IllegalStateException if the counter would exceed {@link #MAX_COUNTER}
    */
-  public String next() {
+  String next() {
     renderNextId();
     return new String(bytes, StandardCharsets.US_ASCII);
   }
@@ -163,18 +168,21 @@ public final class IdGenerator {
 
   /**
    * Serialize the counter into {@code buffer} at {@code offset}. Writes exactly {@link
-   * #SNAPSHOT_LENGTH} bytes.
+   * #SNAPSHOT_LENGTH} bytes in little-endian order to match {@code trading-schema.xml}'s {@code
+   * byteOrder="littleEndian"} declaration so snapshot bytes survive cross-architecture transfer
+   * (e.g., disaster-recovery copies between hosts).
    */
   public void saveTo(MutableDirectBuffer buffer, int offset) {
-    buffer.putLong(offset, counter);
+    buffer.putLong(offset, counter, ByteOrder.LITTLE_ENDIAN);
   }
 
   /**
    * Restore the counter from {@code buffer} at {@code offset}. After restore, the next call to
-   * {@link #next()} or {@link #nextInto} returns id {@code counter + 1}.
+   * {@link #next()} or {@link #nextInto} returns id {@code counter + 1}. Reads in little-endian
+   * order to match {@link #saveTo}.
    */
   public void loadFrom(DirectBuffer buffer, int offset) {
-    long restored = buffer.getLong(offset);
+    long restored = buffer.getLong(offset, ByteOrder.LITTLE_ENDIAN);
     if (restored < 0L || restored > MAX_COUNTER) {
       throw new IllegalStateException(
           "IdGenerator snapshot counter out of range for prefix '" + prefix + "': " + restored);
