@@ -1,5 +1,6 @@
 package com.trading.engine.cluster;
 
+import java.nio.charset.StandardCharsets;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 
@@ -17,13 +18,13 @@ import org.agrona.MutableDirectBuffer;
  *   <li>Counter state is part of cluster state and survives failover via snapshot
  * </ul>
  *
- * <p>Allocation: each call to {@link #next()} performs exactly one {@code String} allocation. The
- * id text is rendered into a pre-allocated {@code char[]} so no intermediate {@code StringBuilder}
- * or {@code Long.toString} garbage is produced.
+ * <p><b>Hot-path API:</b> {@link #nextInto(MutableDirectBuffer, int)}. Zero allocation — increments
+ * the counter and writes the rendered id ASCII bytes directly into a caller-provided buffer. This
+ * is the only entry point cluster command handlers should call.
  *
- * <p>The counter is a {@code long} but the rendered id width is fixed at 9 digits, supporting up to
- * 999,999,999 ids per generator instance. Exceeding this throws {@link IllegalStateException}; a
- * wider id format would silently break replay determinism for any consumer that parses the id.
+ * <p><b>Diagnostic API:</b> {@link #next()} returns a {@code String} for tests, logging, and
+ * tooling. It allocates one {@code String} per call and <b>must not</b> be called from the cluster
+ * main path.
  */
 public final class IdGenerator {
 
@@ -45,12 +46,19 @@ public final class IdGenerator {
   public static final int MAX_PREFIX_LENGTH = 8;
 
   private final String prefix;
-  private final char[] buf;
+
+  /**
+   * Pre-allocated render buffer holding the prefix bytes + '-' + 9 digit positions. Reused across
+   * every {@link #nextInto} / {@link #next} call — no per-call allocation.
+   */
+  private final byte[] bytes;
+
   private final int digitsStart;
   private long counter;
 
   /**
-   * @param prefix non-empty id prefix, e.g., {@code "ORD"}. Stored verbatim — case is preserved.
+   * @param prefix non-empty ASCII id prefix, e.g., {@code "ORD"}. Stored verbatim — case is
+   *     preserved.
    */
   public IdGenerator(String prefix) {
     if (prefix == null || prefix.isEmpty()) {
@@ -78,9 +86,11 @@ public final class IdGenerator {
       }
     }
     this.prefix = prefix;
-    this.buf = new char[prefix.length() + 1 + DIGITS];
-    prefix.getChars(0, prefix.length(), buf, 0);
-    buf[prefix.length()] = '-';
+    this.bytes = new byte[prefix.length() + 1 + DIGITS];
+    for (int i = 0; i < prefix.length(); i++) {
+      this.bytes[i] = (byte) prefix.charAt(i); // safe — ASCII validated above
+    }
+    this.bytes[prefix.length()] = (byte) '-';
     this.digitsStart = prefix.length() + 1;
     this.counter = 0L;
   }
@@ -91,30 +101,61 @@ public final class IdGenerator {
   }
 
   /**
-   * Increment the counter and return the next id as {@code "PREFIX-NNNNNNNNN"}. Allocates exactly
-   * one {@code String}.
+   * Total byte length of an id rendered by this generator: {@code prefix.length() + 1 + 9}. Stable
+   * for the lifetime of this instance — useful for SBE field sizing and bounds checks.
+   */
+  public int idByteLength() {
+    return bytes.length;
+  }
+
+  /**
+   * <b>Hot-path API.</b> Increment the counter and write the rendered id ASCII bytes into {@code
+   * dst} starting at {@code offset}. Zero allocation.
+   *
+   * @return number of bytes written ({@link #idByteLength()})
+   * @throws IllegalStateException if the counter would exceed {@link #MAX_COUNTER}
+   */
+  public int nextInto(MutableDirectBuffer dst, int offset) {
+    renderNextId();
+    dst.putBytes(offset, bytes);
+    return bytes.length;
+  }
+
+  /**
+   * <b>Diagnostic API — not for the cluster main path.</b> Increment the counter and return the
+   * next id as a {@code String}. Allocates exactly one {@code String}. Use {@link
+   * #nextInto(MutableDirectBuffer, int)} from cluster command handlers.
    *
    * @throws IllegalStateException if the counter would exceed {@link #MAX_COUNTER}
    */
   public String next() {
+    renderNextId();
+    return new String(bytes, StandardCharsets.US_ASCII);
+  }
+
+  /**
+   * Increment the counter and render the digits into the pre-allocated {@link #bytes} buffer.
+   * Shared by both {@link #nextInto} and {@link #next}; mutates only the digit positions, the
+   * prefix and hyphen are written once at construction.
+   */
+  private void renderNextId() {
     if (counter >= MAX_COUNTER) {
       throw new IllegalStateException(
           "IdGenerator counter exhausted for prefix '" + prefix + "' at " + counter);
     }
-    // Counter is bounded by MAX_COUNTER (999_999_999), which fits in an int — use int
-    // arithmetic in the render loop to avoid the cost of long division/modulo.
+    // Counter is bounded by MAX_COUNTER (999_999_999) — fits in an int, so int arithmetic is
+    // cheaper than long div/mod.
     int n = (int) ++counter;
     for (int i = DIGITS - 1; i >= 0; i--) {
-      buf[digitsStart + i] = (char) ('0' + (n % 10));
+      bytes[digitsStart + i] = (byte) ('0' + (n % 10));
       n /= 10;
     }
-    return new String(buf);
   }
 
   /**
-   * Current counter value; the next id returned by {@link #next()} will encode {@code counter + 1}.
-   * Returns 0 before any call to {@link #next()}, or after {@link #loadFrom} restores a snapshot
-   * taken before any id was assigned.
+   * Current counter value; the next id returned by {@link #next()} or {@link #nextInto} will encode
+   * {@code counter + 1}. Returns 0 before any call to next, or after {@link #loadFrom} restores a
+   * snapshot taken before any id was assigned.
    */
   public long currentCounter() {
     return counter;
@@ -130,7 +171,7 @@ public final class IdGenerator {
 
   /**
    * Restore the counter from {@code buffer} at {@code offset}. After restore, the next call to
-   * {@link #next()} returns id {@code counter + 1}.
+   * {@link #next()} or {@link #nextInto} returns id {@code counter + 1}.
    */
   public void loadFrom(DirectBuffer buffer, int offset) {
     long restored = buffer.getLong(offset);
