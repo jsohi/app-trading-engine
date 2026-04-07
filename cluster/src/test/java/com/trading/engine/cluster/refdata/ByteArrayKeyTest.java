@@ -152,4 +152,36 @@ class ByteArrayKeyTest {
   void constructorRejectsNull() {
     assertThrows(NullPointerException.class, () -> new ByteArrayKey(null));
   }
+
+  /**
+   * Demonstrates why {@link ByteArrayKey} is preferred over {@link UnsafeBuffer} for the secondary
+   * index, even though Agrona's UnsafeBuffer DOES implement content-based hashCode in 2.4.0+. The
+   * key reason is <b>defensive-copy ownership</b>: an UnsafeBuffer holds a reference to the source
+   * byte[], so if that source is reused (the SBE message buffer the cluster recycles per command),
+   * the inserted "key" silently changes its content and corrupts the map. ByteArrayKey copies bytes
+   * into its own backing array on insert, decoupling the map's keys from the message buffer
+   * lifecycle.
+   */
+  @Test
+  void byteArrayKeyDecouplesMapFromSourceBufferLifecycle() {
+    // Simulate a reusable SBE message buffer.
+    final byte[] reusableSource = new byte[] {'A', 'C', 'M', 'E'};
+
+    // Insertion path: defensive copy. The map key is independent of the source.
+    final org.agrona.collections.Object2ObjectHashMap<ByteArrayKey, String> map =
+        new org.agrona.collections.Object2ObjectHashMap<>();
+    map.put(ByteArrayKey.copyOf(reusableSource, 0, 4), "acme");
+
+    // Reuse the source buffer for a different account code (e.g. cluster received a new
+    // command and reused its scratch buffer).
+    reusableSource[0] = 'B';
+    reusableSource[1] = 'I';
+    reusableSource[2] = 'G';
+    reusableSource[3] = 'X';
+
+    // The original map entry is still findable — the inserted key was a copy, not a view.
+    assertEquals("acme", map.get(new ByteArrayKey(new byte[] {'A', 'C', 'M', 'E'})));
+    // And the new bytes don't accidentally find the old entry.
+    assertNull(map.get(new ByteArrayKey(reusableSource)));
+  }
 }

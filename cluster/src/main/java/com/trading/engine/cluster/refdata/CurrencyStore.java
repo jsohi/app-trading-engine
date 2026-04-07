@@ -70,6 +70,9 @@ public final class CurrencyStore implements ReferenceDataStore {
     byCode.clear();
   }
 
+  /** Sentinel returned by {@link #packCodeOrInvalid} when any byte is outside A-Z. */
+  public static final int INVALID_PACKED_CODE = -1;
+
   /**
    * Pack a 3-byte ASCII code into a single int. Validates that all three bytes are uppercase A-Z.
    * Returns the packed key.
@@ -81,6 +84,23 @@ public final class CurrencyStore implements ReferenceDataStore {
     requireUpperAlpha(b1);
     requireUpperAlpha(b2);
     return ((b0 & 0xFF) << 16) | ((b1 & 0xFF) << 8) | (b2 & 0xFF);
+  }
+
+  /**
+   * Non-throwing variant of {@link #packCode(byte, byte, byte)} for hot-path callers that need to
+   * branch on validity rather than catch an exception. Returns {@link #INVALID_PACKED_CODE} when
+   * any byte is outside A-Z; the sentinel is unreachable as a real packed code because negative
+   * ints are never produced by the bit-pack formula.
+   */
+  public static int packCodeOrInvalid(final byte b0, final byte b1, final byte b2) {
+    if (!isUpperAlpha(b0) || !isUpperAlpha(b1) || !isUpperAlpha(b2)) {
+      return INVALID_PACKED_CODE;
+    }
+    return ((b0 & 0xFF) << 16) | ((b1 & 0xFF) << 8) | (b2 & 0xFF);
+  }
+
+  private static boolean isUpperAlpha(final byte b) {
+    return b >= 'A' && b <= 'Z';
   }
 
   /** Pack the first 3 bytes at {@code src[offset..]} into a key. */

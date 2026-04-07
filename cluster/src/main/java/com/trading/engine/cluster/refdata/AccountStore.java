@@ -21,11 +21,13 @@ import org.agrona.collections.Object2ObjectHashMap;
  * {@code accountId} on the order path. {@link #get(long)} is the hot path; {@link
  * #getByCode(DirectBuffer, int, int)} is the cold path.
  *
- * <p><b>Secondary index implementation.</b> Uses {@link ByteArrayKey} (content-hashing wrapper)
- * rather than Agrona's {@code UnsafeBuffer} as the map key, because UnsafeBuffer inherits {@code
- * Object} identity-based hashing — the textbook Agrona gotcha. The hot-path lookup uses a single
- * reusable probe key ({@link #lookupKey}) mutated in place; insertions use fresh defensive-copy
- * {@link ByteArrayKey} instances so the map is independent of the source bytes.
+ * <p><b>Secondary index implementation.</b> Uses {@link ByteArrayKey} (defensive-copy wrapper)
+ * rather than Agrona's {@code UnsafeBuffer} as the map key. UnsafeBuffer DOES content-hash in
+ * Agrona 2.4.0+, but it holds a reference to the source byte[] — using a slice of a recycled SBE
+ * buffer as a key would silently corrupt the map when the source is reused. The hot-path lookup
+ * uses a single reusable probe key ({@link #lookupKey}) mutated in place; insertions use fresh
+ * defensive-copy {@link ByteArrayKey} instances so the map remains independent of any reused
+ * buffer's lifecycle.
  *
  * <p><b>Snapshot determinism.</b> {@link #snapshotTo} iterates a sorted {@link LongArrayList} of
  * {@code accountId}s for deterministic byte output (Agrona hash-map iteration order is not
@@ -132,7 +134,9 @@ public final class AccountStore implements ReferenceDataStore {
    *
    * <p>Caller is responsible for rejecting duplicate-code-different-id at validation time (via
    * {@link LoadAccountHandler}); this method assumes the caller has already verified that no other
-   * accountId already owns the new code.
+   * accountId already owns the new code. {@link #restoreFrom} also calls this method but trusts the
+   * snapshot bytes — snapshots are produced by {@link #snapshotTo} on a previously validated state,
+   * so duplicate codes cannot be present in a well-formed snapshot.
    */
   public void put(final AccountState state) {
     final long accountId = state.accountId();

@@ -108,20 +108,8 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
       final byte ccy1 = group.baseCurrency(1);
       final byte ccy2 = group.baseCurrency(2);
       if (currencyStore != null) {
-        try {
-          final int packed = CurrencyStore.packCode(ccy0, ccy1, ccy2);
-          if (!currencyStore.contains(packed)) {
-            written +=
-                emitRejected(
-                    eventDst,
-                    eventDstOffset + written,
-                    seqNo++,
-                    clusterTimestampNanos,
-                    RejectReasonEnum.UnknownCurrency,
-                    "baseCurrency not in CurrencyStore");
-            continue;
-          }
-        } catch (final IllegalArgumentException e) {
+        final int packed = CurrencyStore.packCodeOrInvalid(ccy0, ccy1, ccy2);
+        if (packed == CurrencyStore.INVALID_PACKED_CODE) {
           written +=
               emitRejected(
                   eventDst,
@@ -130,6 +118,17 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
                   clusterTimestampNanos,
                   RejectReasonEnum.InvalidCurrencyCode,
                   "baseCurrency must be 3 uppercase ASCII letters");
+          continue;
+        }
+        if (!currencyStore.contains(packed)) {
+          written +=
+              emitRejected(
+                  eventDst,
+                  eventDstOffset + written,
+                  seqNo++,
+                  clusterTimestampNanos,
+                  RejectReasonEnum.UnknownCurrency,
+                  "baseCurrency not in CurrencyStore");
           continue;
         }
       }
