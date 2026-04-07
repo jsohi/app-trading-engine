@@ -57,6 +57,11 @@ subprojects {
 
     tasks.withType<Test> {
         useJUnitPlatform()
+        // Agrona's UnsafeApi requires access to jdk.internal.misc on JDK 17+
+        jvmArgs(
+            "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        )
     }
 
     tasks.withType<JacocoReport> {
