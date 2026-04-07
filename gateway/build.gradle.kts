@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation(project(":messages"))
+    implementation(project(":fix-codecs"))
     implementation(libs.aeron.cluster)
     implementation(libs.artio.core)
     implementation(libs.agrona)

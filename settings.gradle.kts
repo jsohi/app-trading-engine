@@ -4,6 +4,7 @@ include(
     "cluster",
     "event-logger",
     "fix-client-bridge",
+    "fix-codecs",
     "gateway",
     "integration-tests",
     "launcher",
