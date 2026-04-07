@@ -222,6 +222,9 @@ public final class EventConsumer implements FragmentHandler {
    * @throws IllegalStateException if called before {@link #start}
    */
   public int poll(final int fragmentLimit) {
+    if (closed) {
+      throw new IllegalStateException("EventConsumer is closed");
+    }
     if (!started) {
       throw new IllegalStateException("EventConsumer.poll called before start()");
     }
@@ -230,9 +233,10 @@ public final class EventConsumer implements FragmentHandler {
 
   /**
    * Close the subscription and mark the consumer terminal. Idempotent — safe to call multiple times
-   * or without {@link #start}. After {@link #close} the consumer cannot be restarted; construct a
-   * new instance if a fresh consumer is needed. Zeros the ingress counter and the per-projection
-   * tracking so stray post-close reads return consistent zeros.
+   * or without {@link #start}. After {@link #close} the consumer cannot be restarted, registered
+   * to, polled, or {@link #reset} — every state-mutating method throws or returns the "missing"
+   * fallback. Construct a new instance if a fresh consumer is needed. Drops both the dispatch table
+   * and the per-projection tracking so stray post-close reads return consistent zeros.
    */
   public void close() {
     if (subscription != null) {
@@ -244,8 +248,10 @@ public final class EventConsumer implements FragmentHandler {
     ingressSequence = 0L;
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    // close() is terminal — clear the per-projection map outright. Subsequent
-    // lastProcessedSequence(projection) reads return 0L via the MISSING_SEQUENCE fallback.
+    // close() is terminal — drop both maps outright. Subsequent
+    // lastProcessedSequence(projection) reads return 0L via the MISSING_SEQUENCE fallback, and
+    // any caller that tries to register / poll / reset gets a clear IllegalStateException.
+    dispatchTable.clear();
     lastSeqByProjection.clear();
   }
 
@@ -278,6 +284,8 @@ public final class EventConsumer implements FragmentHandler {
       return;
     }
     headerDecoder.wrap(buffer, offset);
+    // SBE blockLength is a uint16 (range 0..65535) widened to int — the addition with
+    // ENCODED_LENGTH (8) cannot overflow and the result cannot be negative.
     final int blockLength = headerDecoder.blockLength();
     if (length < MessageHeaderDecoder.ENCODED_LENGTH + blockLength) {
       truncatedFragmentDropCount++;
@@ -358,19 +366,28 @@ public final class EventConsumer implements FragmentHandler {
 
   /**
    * Reset the ingress counter, drop counters, and per-projection tracking to zero, then call {@link
-   * Projection#reset()} on every distinct registered projection (dedup by identity — a projection
-   * registered for multiple eventTypes is only reset once). Used before a full Aeron Archive replay
-   * to rebuild all projections. Must be called on the same thread as {@link #poll} (typically the
-   * poll thread, between polls) so that the reset writes are visible before the next dispatch.
+   * Projection#reset()} on every distinct registered projection. Used before a full Aeron Archive
+   * replay to rebuild all projections. Legal before {@link #start} (a no-op for the counters and
+   * projection set, since nothing is registered yet). Rejected after {@link #close} — once
+   * terminal, the consumer cannot resurrect projection state.
+   *
+   * <p>Must be called on the same thread as {@link #poll} (typically the poll thread, between
+   * polls) so the reset writes are visible before the next dispatch. Dedup across projections
+   * registered for multiple eventTypes is implicit: {@link #lastSeqByProjection}'s key set IS the
+   * set of distinct registered projections (populated by {@link #seedLastSeqMap}), so iterating it
+   * gives one reset per projection at no extra bookkeeping cost.
+   *
+   * @throws IllegalStateException if called after {@link #close}
    */
   public void reset() {
+    if (closed) {
+      throw new IllegalStateException("EventConsumer is closed");
+    }
     ingressSequence = 0L;
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    // The lastSeqByProjection key set IS the set of distinct registered projections (seeded by
-    // start() / markStartedForTest()). Calling seedLastSeqMap() here makes reset() valid even
-    // before start(). Iterating the key set gives us free dedup — no scratch array, no
-    // quadratic scan.
+    // Re-seed first so reset() is valid before start() (where lastSeqByProjection is still
+    // empty). seedLastSeqMap is idempotent — only puts missing keys.
     seedLastSeqMap();
     for (final Projection p : lastSeqByProjection.keySet()) {
       lastSeqByProjection.put(p, 0L);

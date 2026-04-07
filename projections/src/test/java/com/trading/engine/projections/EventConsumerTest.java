@@ -272,6 +272,42 @@ class EventConsumerTest {
     assertEquals(0L, c.lastProcessedSequence());
   }
 
+  @Test
+  void pollAfterCloseThrowsClosedNotBeforeStart() {
+    final EventConsumer c = new EventConsumer();
+    c.close();
+    final IllegalStateException ex = assertThrows(IllegalStateException.class, () -> c.poll(10));
+    assertTrue(
+        ex.getMessage().contains("closed"), "expected 'closed' diagnostic, got " + ex.getMessage());
+  }
+
+  @Test
+  void resetAfterCloseThrows() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    c.close();
+    assertThrows(IllegalStateException.class, c::reset);
+    // The projection's reset() must NOT have been called by the failed reset attempt.
+    assertEquals(0, p.resets);
+  }
+
+  @Test
+  void resetBeforeStartIsValidAndResetsRegisteredProjections() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    // No start() call — reset() should still be safe and should call p.reset() exactly once.
+    c.reset();
+    assertEquals(1, p.resets);
+    assertEquals(0L, c.lastProcessedSequence());
+    // After the seed in reset(), the consumer's per-projection tracking is populated;
+    // subsequent dispatch updates work correctly.
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    assertEquals(1, p.count);
+    assertEquals(1L, c.lastProcessedSequence(p));
+  }
+
   // ---------------------------------------------------------------------------
   // Payload slice correctness
   // ---------------------------------------------------------------------------
