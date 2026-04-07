@@ -169,6 +169,60 @@ class FixToSbeTranslatorTest {
   }
 
   @Test
+  void rejectsSettlDateExceedingSbeCapacity() {
+    // SBE settlDate is char[8]. Pass a 9-char SettlDate via the FIX byte[] path; translator
+    // must throw rather than silently truncate. Mirrors rejectsClOrdIDExceedingSbeCapacity but
+    // exercises padFromBytes (byte[] source) instead of padFromChars (char[] source).
+    DecimalFloat price = new DecimalFloat(11_000L, 4);
+    DecimalFloat qty = new DecimalFloat(1L, 0);
+    NewOrderSingleDecoder fix =
+        encodeAndDecodeNos(
+            "ORD-1",
+            "EURUSD",
+            '1',
+            '2',
+            price,
+            qty,
+            '0',
+            null,
+            null,
+            null,
+            (char) 0,
+            "20260409X"); // 9 chars > 8-char SBE settlDate
+
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
+    assertThrows(
+        IllegalStateException.class,
+        () -> new FixToSbeTranslator().translateNewOrderSingle(fix, sbeBuf, 0));
+  }
+
+  @Test
+  void rejectsClOrdIDExceedingSbeCapacity() {
+    // SBE clOrdId is char[20]. Pass a 21-char ClOrdID; translator must throw rather than
+    // silently truncate (which would corrupt the identifier and break order matching).
+    DecimalFloat qty = new DecimalFloat(1L, 0);
+    NewOrderSingleDecoder fix =
+        encodeAndDecodeNos(
+            "ORDER-TOO-LONG-FOR-SBE",
+            "EURUSD",
+            '1',
+            '1',
+            null,
+            qty,
+            '0',
+            null,
+            null,
+            null,
+            (char) 0,
+            null);
+
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
+    assertThrows(
+        IllegalStateException.class,
+        () -> new FixToSbeTranslator().translateNewOrderSingle(fix, sbeBuf, 0));
+  }
+
+  @Test
   void rejectsUnsupportedSide() {
     DecimalFloat qty = new DecimalFloat(1L, 0);
     NewOrderSingleDecoder fix =

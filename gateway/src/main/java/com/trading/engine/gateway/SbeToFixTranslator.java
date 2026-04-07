@@ -32,16 +32,17 @@ import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
  * per-thread instance, and the cost of constructing the instance is paid once at startup, after
  * which every {@code translateXxx} call is zero-allocation.
  *
- * <p><b>Allocation.</b> Zero allocation on every method. The SBE decoder's {@code getXxx(byte[],
- * int)} accessors copy char fields into <em>per-field</em> dedicated instance {@code byte[]}
- * scratch buffers (one per char field per message type), and the trailing null bytes are stripped
- * before handing the actual length to the Artio encoder's {@code xxx(byte[], int, int)} setter.
- * Per-field buffers are required because Artio's non-{@code AsCopy} setters store a
- * <em>reference</em> to the byte array and only read it when {@code encode()} is called — a single
- * shared scratch would be silently overwritten between fields. The {@code AsCopy} variants would
- * allocate per call, violating the zero-allocation rule. Numeric fields flow through {@link
- * FixedPoint#toDecimalFloat} into a single shared {@link DecimalFloat}. Timestamps flow through a
- * single shared {@link UtcTimestampEncoder}.
+ * <p><b>Allocation.</b> Zero allocation on every method. (The single {@code java.util.concurrent
+ * .TimeUnit} reference is enum-constant access, not a {@code java.util.*} collection.) The SBE
+ * decoder's {@code getXxx(byte[], int)} accessors copy char fields into <em>per-field</em>
+ * dedicated instance {@code byte[]} scratch buffers (one per char field per message type), and the
+ * trailing null bytes are stripped before handing the actual length to the Artio encoder's {@code
+ * xxx(byte[], int, int)} setter. Per-field buffers are required because Artio's non-{@code AsCopy}
+ * setters store a <em>reference</em> to the byte array and only read it when {@code encode()} is
+ * called — a single shared scratch would be silently overwritten between fields. The {@code AsCopy}
+ * variants would allocate per call, violating the zero-allocation rule. Numeric fields flow through
+ * {@link FixedPoint#toDecimalFloat} into a single shared {@link DecimalFloat}. Timestamps flow
+ * through a single shared {@link UtcTimestampEncoder}.
  *
  * <p><b>Errors.</b> Unmapped enum values throw {@link IllegalStateException} with a string-literal
  * message naming the field. The gateway is expected to catch and surface as a session-level FIX
@@ -104,6 +105,13 @@ public final class SbeToFixTranslator {
   // contiguously: leg N uses [N*FIELD_LEN, (N+1)*FIELD_LEN). This is the per-leg-per-field
   // pattern needed because Artio's leg encoder setters store a *reference* to the byte array
   // and read it during encode(); two legs sharing the same byte[] offset would alias.
+  //
+  // MAX_LEGS=8 covers the FX product universe the engine actually speaks: spot (1 leg),
+  // forward (1 leg), swap (2 legs near + far), butterfly/condor strategies (3-4 legs), and
+  // headroom for exotic option spreads up to 8 legs. The SBE schema doesn't bound noLegs at
+  // the type level; this is an engine-side cap that the translator's `legCount > MAX_LEGS`
+  // guard enforces. Bumping it just means widening the per-leg scratch arrays — no protocol
+  // change. Out-of-bound messages throw IllegalStateException at the boundary.
   private static final int MAX_LEGS = 8;
 
   private static final int ER_LEG_SETTL_DATE_LEN =
@@ -198,9 +206,23 @@ public final class SbeToFixTranslator {
     FixedPoint.toDecimalFloat(sbe.cumQty(), dec);
     fix.cumQty(dec);
 
-    // avgPx — required (FIX 4.4 ER), but SBE allows null on Rejected. If absent, write 0.
+    // avgPx — required by FIX 4.4 ER, but SBE allows null on non-fill ExecTypes (New,
+    // Rejected, Canceled, etc.) where there's nothing yet to average. For those statuses we
+    // emit avgPx=0 to satisfy the wire-level required-field check. For fill-bearing
+    // ExecTypes (PartialFill, Fill, Trade*) a null avgPx is a CLUSTER BUG: shipping a "filled
+    // at zero" execution downstream would corrupt P&L tracking and audit trails. Throw at
+    // the boundary instead.
     long avg = sbe.avgPx();
     if (avg == ExecutionReportDecoder.avgPxNullValue()) {
+      final ExecTypeEnum execType = sbe.execType();
+      if (execType == ExecTypeEnum.PartialFill
+          || execType == ExecTypeEnum.Fill
+          || execType == ExecTypeEnum.Trade
+          || execType == ExecTypeEnum.TradeCorrect
+          || execType == ExecTypeEnum.TradeCancel) {
+        throw new IllegalStateException(
+            "ExecutionReport with fill-bearing execType has null avgPx: " + execType);
+      }
       avg = 0L;
     }
     FixedPoint.toDecimalFloat(avg, dec);

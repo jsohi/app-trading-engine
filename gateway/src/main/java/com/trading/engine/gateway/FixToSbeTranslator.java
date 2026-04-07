@@ -56,11 +56,36 @@ public final class FixToSbeTranslator {
 
   /**
    * Scratch buffer for char-array conversions. Sized to comfortably exceed the largest SBE char
-   * field in {@code trading-schema.xml} (largest is 20 bytes for clOrdId). The {@link
-   * #padFromChars} / {@link #padFromBytes} helpers guard against any future field that exceeds the
-   * buffer.
+   * field in {@code trading-schema.xml} (largest is 20 bytes for clOrdId/origClOrdId/etc.). Both
+   * the class-init {@code static {}} block below AND the per-call guards in {@link #padFromChars} /
+   * {@link #padFromBytes} / {@link #padNull} enforce {@code dstLen <= SCRATCH_LEN}. The static
+   * block is belt-and-braces against common-case fields; the runtime check is the safety net for
+   * fields the static block doesn't enumerate.
    */
   private static final int SCRATCH_LEN = 64;
+
+  // Class-init sanity check on the most common SBE char fields. This is intentionally NOT
+  // exhaustive (there are ~30 distinct char fields across all message types and groups) — the
+  // pad helpers below also runtime-check `dstLen > SCRATCH_LEN` so a future schema change that
+  // widens any field will throw a clean IllegalStateException at the call site, not AIOOBE.
+  static {
+    final int max =
+        Math.max(
+            NewOrderSingleEncoder.clOrdIdLength(),
+            Math.max(
+                NewOrderMultilegEncoder.clOrdIdLength(),
+                Math.max(
+                    MultilegOrderCancelReplaceEncoder.clOrdIdLength(),
+                    Math.max(
+                        CancelOrderRequestEncoder.origClOrdIdLength(),
+                        Math.max(
+                            QuoteRequestEncoder.quoteReqIdLength(),
+                            MassQuoteEncoder.quoteIdLength())))));
+    if (max > SCRATCH_LEN) {
+      throw new ExceptionInInitializerError(
+          "FixToSbeTranslator SCRATCH_LEN=" + SCRATCH_LEN + " too small for SBE field " + max);
+    }
+  }
 
   private final byte[] chars = new byte[SCRATCH_LEN];
 
@@ -445,43 +470,48 @@ public final class FixToSbeTranslator {
             fix.quoteReqID(), fix.quoteReqIDLength(), QuoteRequestEncoder.quoteReqIdLength()),
         0);
 
+    // FIX QuoteRequest has no top-level symbol/side/qty/account/transactTime — they all live
+    // inside the NoRelatedSym group. Walk the iterator once and copy from the first entry into
+    // the SBE flat layout.
     final QuoteRequestDecoder.RelatedSymGroupIterator iter = fix.relatedSymGroupIterator();
     if (iter.hasNext()) {
-      final QuoteRequestDecoder.RelatedSymGroupDecoder firstRelatedSym = iter.next();
+      final QuoteRequestDecoder.RelatedSymGroupDecoder rs = iter.next();
       qr.putSymbol(
-          padFromChars(
-              firstRelatedSym.symbol(),
-              firstRelatedSym.symbolLength(),
-              QuoteRequestEncoder.symbolLength()),
-          0);
-      qr.side(firstRelatedSym.hasSide() ? mapSide(firstRelatedSym.side()) : SideEnum.NULL_VAL);
+          padFromChars(rs.symbol(), rs.symbolLength(), QuoteRequestEncoder.symbolLength()), 0);
+      qr.side(rs.hasSide() ? mapSide(rs.side()) : SideEnum.NULL_VAL);
       qr.orderQty(
-          firstRelatedSym.hasOrderQty()
-              ? FixedPoint.toInt64(firstRelatedSym.orderQty())
+          rs.hasOrderQty()
+              ? FixedPoint.toInt64(rs.orderQty())
               : QuoteRequestEncoder.orderQtyNullValue());
       qr.putSettlDate(
-          firstRelatedSym.hasSettlDate()
+          rs.hasSettlDate()
               ? padFromBytes(
-                  firstRelatedSym.settlDate(),
-                  firstRelatedSym.settlDateLength(),
-                  QuoteRequestEncoder.settlDateLength())
+                  rs.settlDate(), rs.settlDateLength(), QuoteRequestEncoder.settlDateLength())
               : padNull(QuoteRequestEncoder.settlDateLength()),
           0);
-      qr.settlType(
-          firstRelatedSym.hasSettlType()
-              ? mapSettlType(firstRelatedSym.settlType())
-              : SettlTypeEnum.NULL_VAL);
+      qr.settlType(rs.hasSettlType() ? mapSettlType(rs.settlType()) : SettlTypeEnum.NULL_VAL);
       qr.putCurrency(
-          firstRelatedSym.hasCurrency()
+          rs.hasCurrency()
               ? padFromChars(
-                  firstRelatedSym.currency(),
-                  firstRelatedSym.currencyLength(),
-                  QuoteRequestEncoder.currencyLength())
+                  rs.currency(), rs.currencyLength(), QuoteRequestEncoder.currencyLength())
               : padNull(QuoteRequestEncoder.currencyLength()),
           0);
       // Stock FIX 4.4 QuoteRequest's NoRelatedSym group has no SettlCurrency tag — APP-45 will
       // wire the trading-engine custom tag once the dictionary extension lands.
       qr.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
+      qr.putAccountCode(
+          rs.hasAccount()
+              ? padFromChars(
+                  rs.account(), rs.accountLength(), QuoteRequestEncoder.accountCodeLength())
+              : padNull(QuoteRequestEncoder.accountCodeLength()),
+          0);
+      // Use the SBE null sentinel rather than 0L (epoch-zero) when transactTime is absent.
+      // 0L on the wire would silently look like a valid 1970-01-01 timestamp downstream and
+      // confuse audit/replay tooling.
+      qr.transactTime(
+          rs.hasTransactTime()
+              ? utcTs.decodeNanos(rs.transactTime(), rs.transactTimeLength())
+              : QuoteRequestEncoder.transactTimeNullValue());
     } else {
       qr.putSymbol(padNull(QuoteRequestEncoder.symbolLength()), 0);
       qr.side(SideEnum.NULL_VAL);
@@ -490,29 +520,8 @@ public final class FixToSbeTranslator {
       qr.settlType(SettlTypeEnum.NULL_VAL);
       qr.putCurrency(padNull(QuoteRequestEncoder.currencyLength()), 0);
       qr.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
-    }
-
-    // FIX QuoteRequest has no top-level Account/TransactTime; both live inside the
-    // NoRelatedSym group. We re-fetch the iterator here (cheap, single instance is reused).
-    final QuoteRequestDecoder.RelatedSymGroupIterator iter2 = fix.relatedSymGroupIterator();
-    if (iter2.hasNext()) {
-      final QuoteRequestDecoder.RelatedSymGroupDecoder firstRelatedSym2 = iter2.next();
-      qr.putAccountCode(
-          firstRelatedSym2.hasAccount()
-              ? padFromChars(
-                  firstRelatedSym2.account(),
-                  firstRelatedSym2.accountLength(),
-                  QuoteRequestEncoder.accountCodeLength())
-              : padNull(QuoteRequestEncoder.accountCodeLength()),
-          0);
-      qr.transactTime(
-          firstRelatedSym2.hasTransactTime()
-              ? utcTs.decodeNanos(
-                  firstRelatedSym2.transactTime(), firstRelatedSym2.transactTimeLength())
-              : 0L);
-    } else {
       qr.putAccountCode(padNull(QuoteRequestEncoder.accountCodeLength()), 0);
-      qr.transactTime(0L);
+      qr.transactTime(QuoteRequestEncoder.transactTimeNullValue());
     }
     qr.productType(ProductTypeEnum.NULL_VAL); // APP-45
     qr.tenor(TenorEnum.NULL_VAL); // APP-45
@@ -542,8 +551,10 @@ public final class FixToSbeTranslator {
             ? padFromChars(fix.account(), fix.accountLength(), MassQuoteEncoder.accountCodeLength())
             : padNull(MassQuoteEncoder.accountCodeLength()),
         0);
-    // FIX MassQuote has no top-level transactTime; it lives on QuoteSet entries. We default to 0.
-    mq.transactTime(0L);
+    // FIX MassQuote has no top-level transactTime; it lives on QuoteSet entries. Use the SBE
+    // null sentinel rather than 0L (epoch-zero) so downstream tooling can distinguish "missing"
+    // from a real 1970-01-01 timestamp. APP-45 may pull from the first set's value.
+    mq.transactTime(MassQuoteEncoder.transactTimeNullValue());
 
     // First pass: sum the inner-group counts. NOTE Artio's `quoteSetsGroupIterator()` returns
     // the SAME cached iterator instance both times (the accessor calls reset() and returns
@@ -630,18 +641,34 @@ public final class FixToSbeTranslator {
   }
 
   // ---------------------------------------------------------------------------
-  // Char-array helpers (zero-allocation, share the static CHARS scratch buffer)
+  // Char-array helpers (zero-allocation, share the per-instance `chars` scratch buffer)
   // ---------------------------------------------------------------------------
+
+  // The class-init `static {}` block above provides belt-and-braces validation against the
+  // common-case clOrdId/quoteId fields, but there are ~30 distinct SBE char fields the
+  // translator can write across all message types and the static block doesn't enumerate all
+  // of them. The runtime `dstLen > SCRATCH_LEN` check below is a single int compare on the
+  // cold path of helper invocation — JIT inlines it away from the cumulative cost of the
+  // ASCII→byte copy loop — and prevents AIOOBE / silent corruption if any future schema
+  // change widens an SBE char field beyond the scratch buffer without anyone updating the
+  // static block.
 
   private byte[] padFromChars(char[] src, int srcLen, int dstLen) {
     if (dstLen > SCRATCH_LEN) {
       throw new IllegalStateException("SBE field exceeds scratch buffer: " + dstLen);
     }
-    final int copy = Math.min(srcLen, dstLen);
-    for (int i = 0; i < copy; i++) {
+    // Throw on overflow rather than silently truncating: in a trading system, truncating a
+    // ClOrdID or Symbol leaks beyond the gateway as a corrupted identifier that prevents the
+    // client from matching its execution back to the original order. Better to reject the
+    // message at the boundary than to ship a broken one downstream.
+    if (srcLen > dstLen) {
+      throw new IllegalStateException(
+          "FIX field length " + srcLen + " exceeds SBE field capacity " + dstLen);
+    }
+    for (int i = 0; i < srcLen; i++) {
       chars[i] = (byte) src[i];
     }
-    for (int i = copy; i < dstLen; i++) {
+    for (int i = srcLen; i < dstLen; i++) {
       chars[i] = 0;
     }
     return chars;
@@ -651,9 +678,13 @@ public final class FixToSbeTranslator {
     if (dstLen > SCRATCH_LEN) {
       throw new IllegalStateException("SBE field exceeds scratch buffer: " + dstLen);
     }
-    final int copy = Math.min(srcLen, dstLen);
-    System.arraycopy(src, 0, chars, 0, copy);
-    for (int i = copy; i < dstLen; i++) {
+    // Same overflow contract as padFromChars — never silently truncate identifier-like fields.
+    if (srcLen > dstLen) {
+      throw new IllegalStateException(
+          "FIX field length " + srcLen + " exceeds SBE field capacity " + dstLen);
+    }
+    System.arraycopy(src, 0, chars, 0, srcLen);
+    for (int i = srcLen; i < dstLen; i++) {
       chars[i] = 0;
     }
     return chars;
