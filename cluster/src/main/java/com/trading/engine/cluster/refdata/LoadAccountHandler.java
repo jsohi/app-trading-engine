@@ -104,24 +104,14 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
           "accountCode must be non-empty");
     }
 
-    // Base currency FK validation (only if a CurrencyStore is wired).
+    // Base currency FK validation (only if a CurrencyStore is wired). Use the non-throwing
+    // packCodeOrInvalid so a malformed wire byte is a branch, not an exception allocation.
     final byte ccy0 = decoder.baseCurrency(0);
     final byte ccy1 = decoder.baseCurrency(1);
     final byte ccy2 = decoder.baseCurrency(2);
     if (currencyStore != null) {
-      try {
-        final int packed = CurrencyStore.packCode(ccy0, ccy1, ccy2);
-        if (!currencyStore.contains(packed)) {
-          return emitRejected(
-              eventDst,
-              eventDstOffset,
-              sequenceNumber,
-              clusterTimestampNanos,
-              codeScratch,
-              RejectReasonEnum.UnknownCurrency,
-              "baseCurrency not in CurrencyStore");
-        }
-      } catch (final IllegalArgumentException e) {
+      final int packed = CurrencyStore.packCodeOrInvalid(ccy0, ccy1, ccy2);
+      if (packed == CurrencyStore.INVALID_PACKED_CODE) {
         return emitRejected(
             eventDst,
             eventDstOffset,
@@ -130,6 +120,16 @@ public final class LoadAccountHandler implements ReferenceDataLoader {
             codeScratch,
             RejectReasonEnum.InvalidCurrencyCode,
             "baseCurrency must be 3 uppercase ASCII letters");
+      }
+      if (!currencyStore.contains(packed)) {
+        return emitRejected(
+            eventDst,
+            eventDstOffset,
+            sequenceNumber,
+            clusterTimestampNanos,
+            codeScratch,
+            RejectReasonEnum.UnknownCurrency,
+            "baseCurrency not in CurrencyStore");
       }
     }
 

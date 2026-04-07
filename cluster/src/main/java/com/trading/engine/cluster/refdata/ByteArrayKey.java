@@ -3,16 +3,18 @@ package com.trading.engine.cluster.refdata;
 import org.agrona.DirectBuffer;
 
 /**
- * Heap-resident wrapper around a {@code byte[]} with <b>content-based</b> {@link #hashCode()} and
- * {@link #equals(Object)}. Designed to be used as a hash-map key in stores like {@link
- * AccountStore}'s code secondary index, where the natural key is a slice of an SBE message field (a
- * fixed-length char array such as {@code Account char[16]}).
+ * Heap-resident wrapper around a {@code byte[]} with content-based {@link #hashCode()} and {@link
+ * #equals(Object)}. Designed to be used as a hash-map key in stores like {@link AccountStore}'s
+ * code secondary index, where the natural key is a slice of an SBE message field (a fixed-length
+ * char array such as {@code Account char[16]}).
  *
- * <p><b>Why this exists.</b> Agrona's {@link org.agrona.concurrent.UnsafeBuffer UnsafeBuffer} does
- * not implement content-based {@code hashCode}/{@code equals} reliably across the way we'd want to
- * use it as a map key (the inherited {@code Object} identity is used for hashing, which means two
- * buffers wrapping the same bytes hash to different values). The textbook fix is to copy the bytes
- * into a stable wrapper with content-based hashing — that's this class.
+ * <p><b>Why this exists.</b> Agrona's {@link org.agrona.concurrent.UnsafeBuffer UnsafeBuffer}
+ * <i>does</i> implement content-based hashing, but using it directly as a map key is unsafe in the
+ * cluster duty cycle because UnsafeBuffer holds a reference to the source byte[] — it doesn't own
+ * its bytes. When the cluster recycles its per-command scratch buffers, the inserted "key" silently
+ * changes content and corrupts the map. {@code ByteArrayKey} solves this by taking a <b>defensive
+ * copy</b> of the bytes on insert, so the map key is independent of any source buffer's lifecycle.
+ * The cached {@link #hashCode()} (FNV-1a) is a secondary benefit — repeated lookups don't re-hash.
  *
  * <p><b>Two usage modes.</b>
  *

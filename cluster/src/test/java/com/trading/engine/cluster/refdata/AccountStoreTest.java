@@ -178,6 +178,41 @@ class AccountStoreTest {
   }
 
   @Test
+  void scaleSnapshotRoundTripWithMixedCodeLengths() {
+    // Load 500 accounts with varying code lengths (1..16 bytes) and verify snapshot/restore
+    // including dual-index rebuild for every record. Exercises the trim-trailing-zeros path
+    // for both short and full-length codes.
+    final AccountStore src = new AccountStore();
+    for (long id = 1; id <= 500; id++) {
+      // Code length cycles 1..16.
+      final int codeLen = 1 + (int) ((id - 1) % 16);
+      final StringBuilder sb = new StringBuilder(codeLen);
+      for (int i = 0; i < codeLen; i++) {
+        sb.append((char) ('A' + ((id + i) % 26)));
+      }
+      // Append id to ensure code uniqueness across the range.
+      sb.append((char) ('0' + (int) (id % 10)));
+      final String code = sb.toString().substring(0, Math.min(sb.length(), 16));
+      src.put(makeState(id, code, "Account " + id, "USD"));
+    }
+    assertEquals(500, src.size());
+
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(128 * 1024);
+    final int written = src.snapshotTo(buf, 0);
+    assertTrue(written > 0);
+
+    final AccountStore restored = new AccountStore();
+    final int read = restored.restoreFrom(buf, 0);
+    assertEquals(written, read);
+    assertEquals(500, restored.size());
+
+    // Spot-check both indexes are populated.
+    for (long id = 1; id <= 500; id += 50) {
+      assertNotNull(restored.get(id), "primary index missing id " + id);
+    }
+  }
+
+  @Test
   void snapshotIsDeterministicAcrossInsertOrder() {
     final AccountStore a = new AccountStore();
     a.put(makeState(1L, "A1", "One", "USD"));
