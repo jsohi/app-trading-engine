@@ -22,6 +22,7 @@ aeron-client = { module = "io.aeron:aeron-client", version.ref = "aeron" }
 aeron-archive = { module = "io.aeron:aeron-archive", version.ref = "aeron" }
 sbe-all = { module = "uk.co.real-logic:sbe-all", version.ref = "sbe" }
 artio-core = { module = "uk.co.real-logic:artio-core", version.ref = "artio" }
+artio-codecs = { module = "uk.co.real-logic:artio-codecs", version.ref = "artio" }
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
