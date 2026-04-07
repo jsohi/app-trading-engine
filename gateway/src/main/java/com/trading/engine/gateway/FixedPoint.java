@@ -37,17 +37,6 @@ public final class FixedPoint {
   /** Decimal places carried in the int64 fixed-point form. */
   public static final int FIXED_POINT_SCALE = 8;
 
-  /** Implicit scale factor of the cluster's int64 representation: {@code 10^FIXED_POINT_SCALE}. */
-  public static final long PRICE_SCALE = pow10(FIXED_POINT_SCALE);
-
-  private static long pow10(int n) {
-    long r = 1L;
-    for (int i = 0; i < n; i++) {
-      r *= 10L;
-    }
-    return r;
-  }
-
   // 10^0 .. 10^18 — covers every shift the converter can produce on a long.
   private static final long[] POW10 = {
     1L,
@@ -71,14 +60,19 @@ public final class FixedPoint {
     1_000_000_000_000_000_000L,
   };
 
+  /** Implicit scale factor of the cluster's int64 representation: {@code 10^FIXED_POINT_SCALE}. */
+  public static final long PRICE_SCALE = POW10[FIXED_POINT_SCALE];
+
   private FixedPoint() {}
 
   /**
    * Convert an Artio {@link ReadOnlyDecimalFloat} ({@code value × 10^-scale}) to a 10^-8 scaled
    * long.
    *
-   * <p>Throws {@link IllegalStateException} on lossy conversion (FIX precision finer than 10^-8)
-   * and {@link ArithmeticException} on multiplication overflow. Zero allocation.
+   * <p>Throws {@link IllegalArgumentException} when the FIX scale is outside the supported range,
+   * {@link ArithmeticException} on lossy conversion (FIX precision finer than 10^-8) <em>or</em> on
+   * multiplication overflow (matches the convention of {@link Math#multiplyExact}). Zero
+   * allocation.
    */
   public static long toInt64(ReadOnlyDecimalFloat fix) {
     final int scale = fix.scale();
@@ -89,14 +83,15 @@ public final class FixedPoint {
     // shift can't realistically reach that here — Artio's parser bounds scale to a positive
     // int well below INT_MAX).
     if (shift <= -POW10.length || shift >= POW10.length) {
-      throw new IllegalStateException("FIX decimal scale out of supported range: scale=" + scale);
+      throw new IllegalArgumentException(
+          "FIX decimal scale out of supported range: scale=" + scale);
     }
     if (shift >= 0) {
       return Math.multiplyExact(value, POW10[shift]);
     }
     final long divisor = POW10[-shift];
     if (value % divisor != 0L) {
-      throw new IllegalStateException(
+      throw new ArithmeticException(
           "Lossy FIX→fixed-point conversion: value=" + value + " scale=" + scale);
     }
     return value / divisor;

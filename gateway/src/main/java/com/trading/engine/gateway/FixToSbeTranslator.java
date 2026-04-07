@@ -21,20 +21,25 @@ import org.agrona.MutableDirectBuffer;
 import uk.co.real_logic.artio.fields.UtcTimestampDecoder;
 
 /**
- * Stateless translator from Artio FIX 4.4 decoders (flyweight) to SBE encoders. Each public method
- * writes a complete SBE message (header + body) into the caller-supplied buffer at the given offset
- * and returns the total encoded length in bytes.
+ * Translator from Artio FIX 4.4 decoders (flyweight) to SBE encoders. Each public method writes a
+ * complete SBE message (header + body) into the caller-supplied buffer at the given offset and
+ * returns the total encoded length in bytes.
  *
- * <p><b>Threading.</b> This class is single-threaded by contract. It owns {@code static final} SBE
- * encoder flyweights, an Artio {@link UtcTimestampDecoder}, and a single {@code byte[]} scratch
- * buffer that are reused across calls. The gateway invokes the translator from one duty-cycle
- * thread per ingress publication; do not call concurrently.
+ * <p><b>Threading.</b> This class is <em>not</em> thread-safe. Each instance owns mutable flyweight
+ * encoders, a {@link UtcTimestampDecoder}, and a {@code byte[]} scratch buffer that are reused
+ * across calls; concurrent invocations on the same instance would corrupt them. The gateway is
+ * expected to construct one {@code FixToSbeTranslator} per ingress duty-cycle thread (typically one
+ * per FIX session worker) and never share an instance across threads.
  *
- * <p><b>Allocation.</b> Zero allocation on every method. No {@code new}, no boxing, no {@code
- * String}, no streams, no captured lambdas. Char-array fields are copied from the FIX flyweight
- * {@code char[]} into the shared {@link #CHARS} scratch byte buffer, padded with {@code \0}, and
- * then handed to the SBE encoder's {@code putXxx(byte[], int)} setter. Decimal prices flow through
- * {@link FixedPoint}.
+ * <p>The instance-based design is the standard Aeron/Artio pattern: per-thread state lives on a
+ * per-thread instance, and the cost of constructing the instance is paid once at startup, after
+ * which every {@code translateXxx} call is zero-allocation.
+ *
+ * <p><b>Allocation.</b> Zero allocation on every translator method. No {@code new}, no boxing, no
+ * {@code String}, no streams, no captured lambdas. Char-array fields are copied from the FIX
+ * flyweight {@code char[]} into the per-instance {@link #chars} scratch byte buffer, padded with
+ * {@code \0}, and then handed to the SBE encoder's {@code putXxx(byte[], int)} setter. Decimal
+ * prices flow through {@link FixedPoint}.
  *
  * <p><b>Errors.</b> Unmapped enum values throw {@link IllegalStateException} with a string-literal
  * message naming the field. The gateway is expected to catch and convert to a session-level FIX
@@ -55,21 +60,22 @@ public final class FixToSbeTranslator {
    */
   private static final int SCRATCH_LEN = 64;
 
-  private static final byte[] CHARS = new byte[SCRATCH_LEN];
+  private final byte[] chars = new byte[SCRATCH_LEN];
 
   // SBE encoders are stateful flyweights — wrap() resets them on every call.
-  private static final MessageHeaderEncoder HEADER = new MessageHeaderEncoder();
-  private static final NewOrderSingleEncoder NOS = new NewOrderSingleEncoder();
-  private static final NewOrderMultilegEncoder NOM = new NewOrderMultilegEncoder();
-  private static final CancelOrderRequestEncoder COR = new CancelOrderRequestEncoder();
-  private static final MultilegOrderCancelReplaceEncoder MOCR =
-      new MultilegOrderCancelReplaceEncoder();
-  private static final QuoteRequestEncoder QR = new QuoteRequestEncoder();
+  private final MessageHeaderEncoder header = new MessageHeaderEncoder();
+  private final NewOrderSingleEncoder nos = new NewOrderSingleEncoder();
+  private final NewOrderMultilegEncoder nom = new NewOrderMultilegEncoder();
+  private final CancelOrderRequestEncoder cor = new CancelOrderRequestEncoder();
+  private final MultilegOrderCancelReplaceEncoder mocr = new MultilegOrderCancelReplaceEncoder();
+  private final QuoteRequestEncoder qr = new QuoteRequestEncoder();
 
-  // Artio's UTC-timestamp decoder is stateless; one shared instance is safe.
-  private static final UtcTimestampDecoder UTC_TS = new UtcTimestampDecoder(false);
+  /**
+   * Artio's UTC-timestamp decoder is stateless on the read path; one per instance is sufficient.
+   */
+  private final UtcTimestampDecoder utcTs = new UtcTimestampDecoder(false);
 
-  private FixToSbeTranslator() {}
+  public FixToSbeTranslator() {}
 
   // ---------------------------------------------------------------------------
   // NewOrderSingle (35=D)
@@ -80,43 +86,43 @@ public final class FixToSbeTranslator {
    *
    * @return total encoded length (header + body) in bytes
    */
-  public static int translateNewOrderSingle(
+  public int translateNewOrderSingle(
       NewOrderSingleDecoder fix, MutableDirectBuffer sbe, int offset) {
-    NOS.wrapAndApplyHeader(sbe, offset, HEADER);
+    nos.wrapAndApplyHeader(sbe, offset, header);
 
-    NOS.putClOrdId(
+    nos.putClOrdId(
         padFromChars(fix.clOrdID(), fix.clOrdIDLength(), NewOrderSingleEncoder.clOrdIdLength()), 0);
-    NOS.putQuoteId(padNull(NewOrderSingleEncoder.quoteIdLength()), 0);
-    NOS.putSymbol(
+    nos.putQuoteId(padNull(NewOrderSingleEncoder.quoteIdLength()), 0);
+    nos.putSymbol(
         padFromChars(fix.symbol(), fix.symbolLength(), NewOrderSingleEncoder.symbolLength()), 0);
-    NOS.side(mapSide(fix.side()));
-    NOS.ordType(mapOrdType(fix.ordType()));
-    NOS.price(
+    nos.side(mapSide(fix.side()));
+    nos.ordType(mapOrdType(fix.ordType()));
+    nos.price(
         fix.hasPrice() ? FixedPoint.toInt64(fix.price()) : NewOrderSingleEncoder.priceNullValue());
-    NOS.orderQty(FixedPoint.toInt64(fix.orderQty()));
-    NOS.timeInForce(fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
-    NOS.transactTime(UTC_TS.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    NOS.putAccountCode(
+    nos.orderQty(FixedPoint.toInt64(fix.orderQty()));
+    nos.timeInForce(fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
+    nos.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
+    nos.putAccountCode(
         fix.hasAccount()
             ? padFromChars(
                 fix.account(), fix.accountLength(), NewOrderSingleEncoder.accountCodeLength())
             : padNull(NewOrderSingleEncoder.accountCodeLength()),
         0);
-    NOS.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    NOS.putSettlDate(
+    nos.productType(ProductTypeEnum.NULL_VAL); // APP-45
+    nos.putSettlDate(
         fix.hasSettlDate()
             ? padFromBytes(
                 fix.settlDate(), fix.settlDateLength(), NewOrderSingleEncoder.settlDateLength())
             : padNull(NewOrderSingleEncoder.settlDateLength()),
         0);
-    NOS.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
-    NOS.putCurrency(
+    nos.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
+    nos.putCurrency(
         fix.hasCurrency()
             ? padFromChars(
                 fix.currency(), fix.currencyLength(), NewOrderSingleEncoder.currencyLength())
             : padNull(NewOrderSingleEncoder.currencyLength()),
         0);
-    NOS.putSettlCurrency(
+    nos.putSettlCurrency(
         fix.hasSettlCurrency()
             ? padFromChars(
                 fix.settlCurrency(),
@@ -124,9 +130,9 @@ public final class FixToSbeTranslator {
                 NewOrderSingleEncoder.settlCurrencyLength())
             : padNull(NewOrderSingleEncoder.settlCurrencyLength()),
         0);
-    NOS.tenor(TenorEnum.NULL_VAL); // APP-45
+    nos.tenor(TenorEnum.NULL_VAL); // APP-45
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + NOS.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + nos.encodedLength();
   }
 
   // ---------------------------------------------------------------------------
@@ -137,50 +143,57 @@ public final class FixToSbeTranslator {
    * Translate a FIX 4.4 NewOrderMultileg (35=AB) into an SBE {@code NewOrderMultilegEncoder}
    * including its noLegs repeating group.
    */
-  public static int translateNewOrderMultileg(
+  public int translateNewOrderMultileg(
       NewOrderMultilegDecoder fix, MutableDirectBuffer sbe, int offset) {
-    NOM.wrapAndApplyHeader(sbe, offset, HEADER);
+    nom.wrapAndApplyHeader(sbe, offset, header);
 
-    NOM.putClOrdId(
+    nom.putClOrdId(
         padFromChars(fix.clOrdID(), fix.clOrdIDLength(), NewOrderMultilegEncoder.clOrdIdLength()),
         0);
-    NOM.putQuoteId(padNull(NewOrderMultilegEncoder.quoteIdLength()), 0);
-    NOM.putSymbol(
+    nom.putQuoteId(padNull(NewOrderMultilegEncoder.quoteIdLength()), 0);
+    nom.putSymbol(
         padFromChars(fix.symbol(), fix.symbolLength(), NewOrderMultilegEncoder.symbolLength()), 0);
-    NOM.side(mapSide(fix.side()));
-    NOM.ordType(mapOrdType(fix.ordType()));
-    NOM.price(
+    nom.side(mapSide(fix.side()));
+    nom.ordType(mapOrdType(fix.ordType()));
+    nom.price(
         fix.hasPrice()
             ? FixedPoint.toInt64(fix.price())
             : NewOrderMultilegEncoder.priceNullValue());
-    NOM.orderQty(FixedPoint.toInt64(fix.orderQty()));
-    NOM.timeInForce(fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
-    NOM.transactTime(UTC_TS.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    NOM.putAccountCode(
+    nom.orderQty(FixedPoint.toInt64(fix.orderQty()));
+    nom.timeInForce(fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
+    nom.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
+    nom.putAccountCode(
         fix.hasAccount()
             ? padFromChars(
                 fix.account(), fix.accountLength(), NewOrderMultilegEncoder.accountCodeLength())
             : padNull(NewOrderMultilegEncoder.accountCodeLength()),
         0);
-    NOM.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    NOM.putSettlDate(
+    nom.productType(ProductTypeEnum.NULL_VAL); // APP-45
+    nom.putSettlDate(
         fix.hasSettlDate()
             ? padFromBytes(
                 fix.settlDate(), fix.settlDateLength(), NewOrderMultilegEncoder.settlDateLength())
             : padNull(NewOrderMultilegEncoder.settlDateLength()),
         0);
-    NOM.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
-    NOM.putCurrency(
+    nom.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
+    nom.putCurrency(
         fix.hasCurrency()
             ? padFromChars(
                 fix.currency(), fix.currencyLength(), NewOrderMultilegEncoder.currencyLength())
             : padNull(NewOrderMultilegEncoder.currencyLength()),
         0);
-    NOM.putSettlCurrency(padNull(NewOrderMultilegEncoder.settlCurrencyLength()), 0);
-    NOM.tenor(TenorEnum.NULL_VAL); // APP-45
+    nom.putSettlCurrency(
+        fix.hasSettlCurrency()
+            ? padFromChars(
+                fix.settlCurrency(),
+                fix.settlCurrencyLength(),
+                NewOrderMultilegEncoder.settlCurrencyLength())
+            : padNull(NewOrderMultilegEncoder.settlCurrencyLength()),
+        0);
+    nom.tenor(TenorEnum.NULL_VAL); // APP-45
 
     final int legCount = fix.noLegsGroupCounter();
-    final NewOrderMultilegEncoder.NoLegsEncoder legs = NOM.noLegsCount(legCount);
+    final NewOrderMultilegEncoder.NoLegsEncoder legs = nom.noLegsCount(legCount);
     final NewOrderMultilegDecoder.LegsGroupIterator iter = fix.legsGroupIterator();
     while (iter.hasNext()) {
       final NewOrderMultilegDecoder.LegsGroupDecoder leg = iter.next();
@@ -222,7 +235,7 @@ public final class FixToSbeTranslator {
               : NewOrderMultilegEncoder.NoLegsEncoder.legPriceNullValue());
     }
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + NOM.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + nom.encodedLength();
   }
 
   // ---------------------------------------------------------------------------
@@ -232,33 +245,33 @@ public final class FixToSbeTranslator {
   /**
    * Translate a FIX 4.4 OrderCancelRequest (35=F) into an SBE {@code CancelOrderRequestEncoder}.
    */
-  public static int translateOrderCancelRequest(
+  public int translateOrderCancelRequest(
       OrderCancelRequestDecoder fix, MutableDirectBuffer sbe, int offset) {
-    COR.wrapAndApplyHeader(sbe, offset, HEADER);
+    cor.wrapAndApplyHeader(sbe, offset, header);
 
-    COR.putOrigClOrdId(
+    cor.putOrigClOrdId(
         padFromChars(
             fix.origClOrdID(),
             fix.origClOrdIDLength(),
             CancelOrderRequestEncoder.origClOrdIdLength()),
         0);
-    COR.putClOrdId(
+    cor.putClOrdId(
         padFromChars(fix.clOrdID(), fix.clOrdIDLength(), CancelOrderRequestEncoder.clOrdIdLength()),
         0);
-    COR.putSymbol(
+    cor.putSymbol(
         padFromChars(fix.symbol(), fix.symbolLength(), CancelOrderRequestEncoder.symbolLength()),
         0);
-    COR.side(mapSide(fix.side()));
-    COR.transactTime(UTC_TS.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    COR.putAccountCode(
+    cor.side(mapSide(fix.side()));
+    cor.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
+    cor.putAccountCode(
         fix.hasAccount()
             ? padFromChars(
                 fix.account(), fix.accountLength(), CancelOrderRequestEncoder.accountCodeLength())
             : padNull(CancelOrderRequestEncoder.accountCodeLength()),
         0);
-    COR.productType(ProductTypeEnum.NULL_VAL); // APP-45
+    cor.productType(ProductTypeEnum.NULL_VAL); // APP-45
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + COR.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + cor.encodedLength();
   }
 
   // ---------------------------------------------------------------------------
@@ -269,37 +282,37 @@ public final class FixToSbeTranslator {
    * Translate a FIX 4.4 MultilegOrderCancelReplaceRequest (35=AC) into an SBE {@code
    * MultilegOrderCancelReplaceEncoder} including its noLegs repeating group.
    */
-  public static int translateMultilegOrderCancelReplace(
+  public int translateMultilegOrderCancelReplace(
       MultilegOrderCancelReplaceRequestDecoder fix, MutableDirectBuffer sbe, int offset) {
-    MOCR.wrapAndApplyHeader(sbe, offset, HEADER);
+    mocr.wrapAndApplyHeader(sbe, offset, header);
 
-    MOCR.putOrigClOrdId(
+    mocr.putOrigClOrdId(
         padFromChars(
             fix.origClOrdID(),
             fix.origClOrdIDLength(),
             MultilegOrderCancelReplaceEncoder.origClOrdIdLength()),
         0);
-    MOCR.putOrderId(padNull(MultilegOrderCancelReplaceEncoder.orderIdLength()), 0);
-    MOCR.putClOrdId(
+    mocr.putOrderId(padNull(MultilegOrderCancelReplaceEncoder.orderIdLength()), 0);
+    mocr.putClOrdId(
         padFromChars(
             fix.clOrdID(), fix.clOrdIDLength(), MultilegOrderCancelReplaceEncoder.clOrdIdLength()),
         0);
-    MOCR.putQuoteId(padNull(MultilegOrderCancelReplaceEncoder.quoteIdLength()), 0);
-    MOCR.putSymbol(
+    mocr.putQuoteId(padNull(MultilegOrderCancelReplaceEncoder.quoteIdLength()), 0);
+    mocr.putSymbol(
         padFromChars(
             fix.symbol(), fix.symbolLength(), MultilegOrderCancelReplaceEncoder.symbolLength()),
         0);
-    MOCR.side(mapSide(fix.side()));
-    MOCR.ordType(mapOrdType(fix.ordType()));
-    MOCR.price(
+    mocr.side(mapSide(fix.side()));
+    mocr.ordType(mapOrdType(fix.ordType()));
+    mocr.price(
         fix.hasPrice()
             ? FixedPoint.toInt64(fix.price())
             : MultilegOrderCancelReplaceEncoder.priceNullValue());
-    MOCR.orderQty(FixedPoint.toInt64(fix.orderQty()));
-    MOCR.timeInForce(
+    mocr.orderQty(FixedPoint.toInt64(fix.orderQty()));
+    mocr.timeInForce(
         fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
-    MOCR.transactTime(UTC_TS.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    MOCR.putAccountCode(
+    mocr.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
+    mocr.putAccountCode(
         fix.hasAccount()
             ? padFromChars(
                 fix.account(),
@@ -307,8 +320,8 @@ public final class FixToSbeTranslator {
                 MultilegOrderCancelReplaceEncoder.accountCodeLength())
             : padNull(MultilegOrderCancelReplaceEncoder.accountCodeLength()),
         0);
-    MOCR.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    MOCR.putSettlDate(
+    mocr.productType(ProductTypeEnum.NULL_VAL); // APP-45
+    mocr.putSettlDate(
         fix.hasSettlDate()
             ? padFromBytes(
                 fix.settlDate(),
@@ -316,13 +329,27 @@ public final class FixToSbeTranslator {
                 MultilegOrderCancelReplaceEncoder.settlDateLength())
             : padNull(MultilegOrderCancelReplaceEncoder.settlDateLength()),
         0);
-    MOCR.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
-    MOCR.putCurrency(padNull(MultilegOrderCancelReplaceEncoder.currencyLength()), 0);
-    MOCR.putSettlCurrency(padNull(MultilegOrderCancelReplaceEncoder.settlCurrencyLength()), 0);
-    MOCR.tenor(TenorEnum.NULL_VAL); // APP-45
+    mocr.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
+    mocr.putCurrency(
+        fix.hasCurrency()
+            ? padFromChars(
+                fix.currency(),
+                fix.currencyLength(),
+                MultilegOrderCancelReplaceEncoder.currencyLength())
+            : padNull(MultilegOrderCancelReplaceEncoder.currencyLength()),
+        0);
+    mocr.putSettlCurrency(
+        fix.hasSettlCurrency()
+            ? padFromChars(
+                fix.settlCurrency(),
+                fix.settlCurrencyLength(),
+                MultilegOrderCancelReplaceEncoder.settlCurrencyLength())
+            : padNull(MultilegOrderCancelReplaceEncoder.settlCurrencyLength()),
+        0);
+    mocr.tenor(TenorEnum.NULL_VAL); // APP-45
 
     final int legCount = fix.noLegsGroupCounter();
-    final MultilegOrderCancelReplaceEncoder.NoLegsEncoder legs = MOCR.noLegsCount(legCount);
+    final MultilegOrderCancelReplaceEncoder.NoLegsEncoder legs = mocr.noLegsCount(legCount);
     final MultilegOrderCancelReplaceRequestDecoder.LegsGroupIterator iter = fix.legsGroupIterator();
     while (iter.hasNext()) {
       final MultilegOrderCancelReplaceRequestDecoder.LegsGroupDecoder leg = iter.next();
@@ -365,7 +392,7 @@ public final class FixToSbeTranslator {
               : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legPriceNullValue());
     }
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + MOCR.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + mocr.encodedLength();
   }
 
   // ---------------------------------------------------------------------------
@@ -378,11 +405,10 @@ public final class FixToSbeTranslator {
   // ---------------------------------------------------------------------------
 
   /** Translate a FIX 4.4 QuoteRequest (35=R) into an SBE {@code QuoteRequestEncoder}. */
-  public static int translateQuoteRequest(
-      QuoteRequestDecoder fix, MutableDirectBuffer sbe, int offset) {
-    QR.wrapAndApplyHeader(sbe, offset, HEADER);
+  public int translateQuoteRequest(QuoteRequestDecoder fix, MutableDirectBuffer sbe, int offset) {
+    qr.wrapAndApplyHeader(sbe, offset, header);
 
-    QR.putQuoteReqId(
+    qr.putQuoteReqId(
         padFromChars(
             fix.quoteReqID(), fix.quoteReqIDLength(), QuoteRequestEncoder.quoteReqIdLength()),
         0);
@@ -390,18 +416,18 @@ public final class FixToSbeTranslator {
     final QuoteRequestDecoder.RelatedSymGroupIterator iter = fix.relatedSymGroupIterator();
     if (iter.hasNext()) {
       final QuoteRequestDecoder.RelatedSymGroupDecoder firstRelatedSym = iter.next();
-      QR.putSymbol(
+      qr.putSymbol(
           padFromChars(
               firstRelatedSym.symbol(),
               firstRelatedSym.symbolLength(),
               QuoteRequestEncoder.symbolLength()),
           0);
-      QR.side(firstRelatedSym.hasSide() ? mapSide(firstRelatedSym.side()) : SideEnum.NULL_VAL);
-      QR.orderQty(
+      qr.side(firstRelatedSym.hasSide() ? mapSide(firstRelatedSym.side()) : SideEnum.NULL_VAL);
+      qr.orderQty(
           firstRelatedSym.hasOrderQty()
               ? FixedPoint.toInt64(firstRelatedSym.orderQty())
               : QuoteRequestEncoder.orderQtyNullValue());
-      QR.putSettlDate(
+      qr.putSettlDate(
           firstRelatedSym.hasSettlDate()
               ? padFromBytes(
                   firstRelatedSym.settlDate(),
@@ -409,11 +435,11 @@ public final class FixToSbeTranslator {
                   QuoteRequestEncoder.settlDateLength())
               : padNull(QuoteRequestEncoder.settlDateLength()),
           0);
-      QR.settlType(
+      qr.settlType(
           firstRelatedSym.hasSettlType()
               ? mapSettlType(firstRelatedSym.settlType())
               : SettlTypeEnum.NULL_VAL);
-      QR.putCurrency(
+      qr.putCurrency(
           firstRelatedSym.hasCurrency()
               ? padFromChars(
                   firstRelatedSym.currency(),
@@ -423,64 +449,64 @@ public final class FixToSbeTranslator {
           0);
       // Stock FIX 4.4 QuoteRequest's NoRelatedSym group has no SettlCurrency tag — APP-45 will
       // wire the trading-engine custom tag once the dictionary extension lands.
-      QR.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
+      qr.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
     } else {
-      QR.putSymbol(padNull(QuoteRequestEncoder.symbolLength()), 0);
-      QR.side(SideEnum.NULL_VAL);
-      QR.orderQty(QuoteRequestEncoder.orderQtyNullValue());
-      QR.putSettlDate(padNull(QuoteRequestEncoder.settlDateLength()), 0);
-      QR.settlType(SettlTypeEnum.NULL_VAL);
-      QR.putCurrency(padNull(QuoteRequestEncoder.currencyLength()), 0);
-      QR.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
+      qr.putSymbol(padNull(QuoteRequestEncoder.symbolLength()), 0);
+      qr.side(SideEnum.NULL_VAL);
+      qr.orderQty(QuoteRequestEncoder.orderQtyNullValue());
+      qr.putSettlDate(padNull(QuoteRequestEncoder.settlDateLength()), 0);
+      qr.settlType(SettlTypeEnum.NULL_VAL);
+      qr.putCurrency(padNull(QuoteRequestEncoder.currencyLength()), 0);
+      qr.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
     }
 
-    QR.putAccountCode(padNull(QuoteRequestEncoder.accountCodeLength()), 0);
-    QR.transactTime(0L); // FIX QuoteRequest has no top-level transactTime
-    QR.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    QR.tenor(TenorEnum.NULL_VAL); // APP-45
-    QR.noLegsCount(0); // APP-47
+    qr.putAccountCode(padNull(QuoteRequestEncoder.accountCodeLength()), 0);
+    qr.transactTime(0L); // FIX QuoteRequest has no top-level transactTime
+    qr.productType(ProductTypeEnum.NULL_VAL); // APP-45
+    qr.tenor(TenorEnum.NULL_VAL); // APP-45
+    qr.noLegsCount(0); // APP-47
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + QR.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + qr.encodedLength();
   }
 
   // ---------------------------------------------------------------------------
   // Char-array helpers (zero-allocation, share the static CHARS scratch buffer)
   // ---------------------------------------------------------------------------
 
-  private static byte[] padFromChars(char[] src, int srcLen, int dstLen) {
+  private byte[] padFromChars(char[] src, int srcLen, int dstLen) {
     if (dstLen > SCRATCH_LEN) {
       throw new IllegalStateException("SBE field exceeds scratch buffer: " + dstLen);
     }
     final int copy = Math.min(srcLen, dstLen);
     for (int i = 0; i < copy; i++) {
-      CHARS[i] = (byte) src[i];
+      chars[i] = (byte) src[i];
     }
     for (int i = copy; i < dstLen; i++) {
-      CHARS[i] = 0;
+      chars[i] = 0;
     }
-    return CHARS;
+    return chars;
   }
 
-  private static byte[] padFromBytes(byte[] src, int srcLen, int dstLen) {
+  private byte[] padFromBytes(byte[] src, int srcLen, int dstLen) {
     if (dstLen > SCRATCH_LEN) {
       throw new IllegalStateException("SBE field exceeds scratch buffer: " + dstLen);
     }
     final int copy = Math.min(srcLen, dstLen);
-    System.arraycopy(src, 0, CHARS, 0, copy);
+    System.arraycopy(src, 0, chars, 0, copy);
     for (int i = copy; i < dstLen; i++) {
-      CHARS[i] = 0;
+      chars[i] = 0;
     }
-    return CHARS;
+    return chars;
   }
 
-  private static byte[] padNull(int dstLen) {
+  private byte[] padNull(int dstLen) {
     if (dstLen > SCRATCH_LEN) {
       throw new IllegalStateException("SBE field exceeds scratch buffer: " + dstLen);
     }
     for (int i = 0; i < dstLen; i++) {
-      CHARS[i] = 0;
+      chars[i] = 0;
     }
-    return CHARS;
+    return chars;
   }
 
   // ---------------------------------------------------------------------------

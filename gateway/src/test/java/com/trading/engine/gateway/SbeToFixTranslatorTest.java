@@ -52,7 +52,7 @@ class SbeToFixTranslatorTest {
     HeaderEncoder hdr = fix.header();
     hdr.senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
     hdr.sendingTime("20260407-12:00:00".getBytes());
-    SbeToFixTranslator.translateExecutionReport(sbeDec, fix);
+    new SbeToFixTranslator().translateExecutionReport(sbeDec, fix);
 
     // Encode FIX to wire and decode it back via Artio's decoder; assert key fields.
     MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
@@ -112,9 +112,9 @@ class SbeToFixTranslatorTest {
     hdr.senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
     hdr.sendingTime("20260407-12:00:00".getBytes());
 
+    SbeToFixTranslator translator = new SbeToFixTranslator();
     assertThrows(
-        IllegalStateException.class,
-        () -> SbeToFixTranslator.translateExecutionReport(sbeDec, fix));
+        IllegalStateException.class, () -> translator.translateExecutionReport(sbeDec, fix));
   }
 
   // -------------------------------------------------------------------------

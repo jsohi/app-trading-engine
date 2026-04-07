@@ -55,8 +55,10 @@ class FixedPointTest {
   @Test
   void rejectsLossyConversion() {
     // FIX precision finer than 10^-8 (9 decimal places) → must throw, never silently truncate.
+    // ArithmeticException matches Math.multiplyExact's overflow convention and Java's
+    // RoundingMode.UNNECESSARY semantics.
     DecimalFloat fix = new DecimalFloat(123_456_789L, 9);
-    assertThrows(IllegalStateException.class, () -> FixedPoint.toInt64(fix));
+    assertThrows(ArithmeticException.class, () -> FixedPoint.toInt64(fix));
   }
 
   @Test
@@ -64,7 +66,7 @@ class FixedPointTest {
     // Java's negative-modulo preserves the sign of the dividend, so -123_456_789 % 10 == -9
     // → non-zero → throws. Pins that the lossy check works for both signs.
     DecimalFloat fix = new DecimalFloat(-123_456_789L, 9);
-    assertThrows(IllegalStateException.class, () -> FixedPoint.toInt64(fix));
+    assertThrows(ArithmeticException.class, () -> FixedPoint.toInt64(fix));
   }
 
   @Test
@@ -83,9 +85,9 @@ class FixedPointTest {
 
   @Test
   void scaleOutOfSupportedRangeThrows() {
-    // scale=27 → shift=-19, |shift| >= POW10.length → IllegalStateException, NOT AIOOBE.
+    // scale=27 → shift=-19, |shift| >= POW10.length → IllegalArgumentException, NOT AIOOBE.
     DecimalFloat fix = new DecimalFloat(1L, 27);
-    assertThrows(IllegalStateException.class, () -> FixedPoint.toInt64(fix));
+    assertThrows(IllegalArgumentException.class, () -> FixedPoint.toInt64(fix));
   }
 
   @Test

@@ -11,17 +11,23 @@ import uk.co.real_logic.artio.fields.DecimalFloat;
 import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
 
 /**
- * Stateless translator from SBE decoders to Artio FIX 4.4 encoders. Each public method consumes an
- * SBE decoder positioned over a complete message and writes the field values into a caller-supplied
+ * Translator from SBE decoders to Artio FIX 4.4 encoders. Each public method consumes an SBE
+ * decoder positioned over a complete message and writes the field values into a caller-supplied
  * Artio encoder. The caller is responsible for the Artio session header (sender, target, seq num,
  * sending time) and for calling {@code encode()} on the resulting FIX message.
  *
- * <p><b>Threading.</b> Single-threaded by contract. The translator owns {@code static final}
- * scratch buffers and a {@link DecimalFloat} that are reused across calls. The gateway invokes the
- * translator from one egress duty-cycle thread per outbound publication; do not call concurrently.
+ * <p><b>Threading.</b> This class is <em>not</em> thread-safe. Each instance owns mutable scratch
+ * buffers, a {@link DecimalFloat}, and a {@link UtcTimestampEncoder} that are reused across calls;
+ * concurrent invocations on the same instance would corrupt them. The gateway is expected to
+ * construct one {@code SbeToFixTranslator} per egress duty-cycle thread (typically one per FIX
+ * session worker) and never share an instance across threads.
+ *
+ * <p>The instance-based design is the standard Aeron/Artio pattern: per-thread state lives on a
+ * per-thread instance, and the cost of constructing the instance is paid once at startup, after
+ * which every {@code translateXxx} call is zero-allocation.
  *
  * <p><b>Allocation.</b> Zero allocation on every method. The SBE decoder's {@code getXxx(byte[],
- * int)} accessors copy char fields into <em>per-field</em> dedicated {@code static final byte[]}
+ * int)} accessors copy char fields into <em>per-field</em> dedicated instance {@code byte[]}
  * scratch buffers (one per char field per message type), and the trailing null bytes are stripped
  * before handing the actual length to the Artio encoder's {@code xxx(byte[], int, int)} setter.
  * Per-field buffers are required because Artio's non-{@code AsCopy} setters store a
@@ -49,30 +55,30 @@ public final class SbeToFixTranslator {
   // zero-allocation rule. So each char field gets its own byte[] sized to the SBE field length.
   //
   // ExecutionReport char fields:
-  private static final byte[] ER_ORDER_ID =
+  private final byte[] erOrderId =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.orderIdLength()];
-  private static final byte[] ER_EXEC_ID =
+  private final byte[] erExecId =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.execIdLength()];
-  private static final byte[] ER_CL_ORD_ID =
+  private final byte[] erClOrdId =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.clOrdIdLength()];
-  private static final byte[] ER_SYMBOL =
+  private final byte[] erSymbol =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.symbolLength()];
-  private static final byte[] ER_TEXT =
+  private final byte[] erText =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.textLength()];
-  private static final byte[] ER_SETTL_DATE =
+  private final byte[] erSettlDate =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlDateLength()];
-  private static final byte[] ER_CURRENCY =
+  private final byte[] erCurrency =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.currencyLength()];
-  private static final byte[] ER_SETTL_CURRENCY =
+  private final byte[] erSettlCurrency =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlCurrencyLength()];
 
   /** Reusable DecimalFloat for FIX decimal field setters. */
-  private static final DecimalFloat DEC = new DecimalFloat();
+  private final DecimalFloat dec = new DecimalFloat();
 
   /** Reusable UTC timestamp encoder for transactTime fields. */
-  private static final UtcTimestampEncoder TS_ENC = new UtcTimestampEncoder();
+  private final UtcTimestampEncoder tsEnc = new UtcTimestampEncoder();
 
-  private SbeToFixTranslator() {}
+  public SbeToFixTranslator() {}
 
   // ---------------------------------------------------------------------------
   // ExecutionReport (35=8)
@@ -83,19 +89,18 @@ public final class SbeToFixTranslator {
    * wrapped {@code sbe} over a complete decoded ExecutionReport message and must populate the FIX
    * session header on {@code fix} before calling {@code encode}.
    */
-  public static void translateExecutionReport(
-      ExecutionReportDecoder sbe, ExecutionReportEncoder fix) {
+  public void translateExecutionReport(ExecutionReportDecoder sbe, ExecutionReportEncoder fix) {
     // orderID — required. SBE field is null-padded; trim before passing to FIX.
-    sbe.getOrderId(ER_ORDER_ID, 0);
-    fix.orderID(ER_ORDER_ID, 0, trimNulls(ER_ORDER_ID));
+    sbe.getOrderId(erOrderId, 0);
+    fix.orderID(erOrderId, 0, trimNulls(erOrderId));
 
     // execID — required
-    sbe.getExecId(ER_EXEC_ID, 0);
-    fix.execID(ER_EXEC_ID, 0, trimNulls(ER_EXEC_ID));
+    sbe.getExecId(erExecId, 0);
+    fix.execID(erExecId, 0, trimNulls(erExecId));
 
     // clOrdID — required (per FIX 4.4 ER spec)
-    sbe.getClOrdId(ER_CL_ORD_ID, 0);
-    fix.clOrdID(ER_CL_ORD_ID, 0, trimNulls(ER_CL_ORD_ID));
+    sbe.getClOrdId(erClOrdId, 0);
+    fix.clOrdID(erClOrdId, 0, trimNulls(erClOrdId));
 
     // execType — required, full enum exhaustion
     fix.execType(mapExecType(sbe.execType()));
@@ -104,37 +109,37 @@ public final class SbeToFixTranslator {
     fix.ordStatus(mapOrdStatus(sbe.ordStatus()));
 
     // symbol — required
-    sbe.getSymbol(ER_SYMBOL, 0);
-    fix.instrument().symbol(ER_SYMBOL, 0, trimNulls(ER_SYMBOL));
+    sbe.getSymbol(erSymbol, 0);
+    fix.instrument().symbol(erSymbol, 0, trimNulls(erSymbol));
 
     // side — required
     fix.side(mapSide(sbe.side()));
 
     // leavesQty — required
-    FixedPoint.toDecimalFloat(sbe.leavesQty(), DEC);
-    fix.leavesQty(DEC);
+    FixedPoint.toDecimalFloat(sbe.leavesQty(), dec);
+    fix.leavesQty(dec);
 
     // cumQty — required
-    FixedPoint.toDecimalFloat(sbe.cumQty(), DEC);
-    fix.cumQty(DEC);
+    FixedPoint.toDecimalFloat(sbe.cumQty(), dec);
+    fix.cumQty(dec);
 
     // avgPx — required (FIX 4.4 ER), but SBE allows null on Rejected. If absent, write 0.
     long avg = sbe.avgPx();
     if (avg == ExecutionReportDecoder.avgPxNullValue()) {
       avg = 0L;
     }
-    FixedPoint.toDecimalFloat(avg, DEC);
-    fix.avgPx(DEC);
+    FixedPoint.toDecimalFloat(avg, dec);
+    fix.avgPx(dec);
 
     // transactTime — required. SBE is uint64 epoch nanos; encode as Artio's UTC timestamp ASCII.
-    int tsLen = TS_ENC.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
-    fix.transactTime(TS_ENC.buffer(), 0, tsLen);
+    int tsLen = tsEnc.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
+    fix.transactTime(tsEnc.buffer(), 0, tsLen);
 
     // text — optional
-    sbe.getText(ER_TEXT, 0);
-    int trimmed = trimNulls(ER_TEXT);
+    sbe.getText(erText, 0);
+    int trimmed = trimNulls(erText);
     if (trimmed > 0) {
-      fix.text(ER_TEXT, 0, trimmed);
+      fix.text(erText, 0, trimmed);
     }
 
     // settlType — optional
@@ -143,24 +148,24 @@ public final class SbeToFixTranslator {
     }
 
     // settlDate — optional
-    sbe.getSettlDate(ER_SETTL_DATE, 0);
-    trimmed = trimNulls(ER_SETTL_DATE);
+    sbe.getSettlDate(erSettlDate, 0);
+    trimmed = trimNulls(erSettlDate);
     if (trimmed > 0) {
-      fix.settlDate(ER_SETTL_DATE, 0, trimmed);
+      fix.settlDate(erSettlDate, 0, trimmed);
     }
 
     // currency — optional
-    sbe.getCurrency(ER_CURRENCY, 0);
-    trimmed = trimNulls(ER_CURRENCY);
+    sbe.getCurrency(erCurrency, 0);
+    trimmed = trimNulls(erCurrency);
     if (trimmed > 0) {
-      fix.currency(ER_CURRENCY, 0, trimmed);
+      fix.currency(erCurrency, 0, trimmed);
     }
 
     // settlCurrency — optional
-    sbe.getSettlCurrency(ER_SETTL_CURRENCY, 0);
-    trimmed = trimNulls(ER_SETTL_CURRENCY);
+    sbe.getSettlCurrency(erSettlCurrency, 0);
+    trimmed = trimNulls(erSettlCurrency);
     if (trimmed > 0) {
-      fix.settlCurrency(ER_SETTL_CURRENCY, 0, trimmed);
+      fix.settlCurrency(erSettlCurrency, 0, trimmed);
     }
 
     // productType / tenor — APP-45 (custom tags 10013/10001 not in stock FIX 4.4)
