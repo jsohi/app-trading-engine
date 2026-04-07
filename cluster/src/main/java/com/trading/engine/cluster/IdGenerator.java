@@ -35,6 +35,13 @@ public final class IdGenerator {
 
   private static final int DIGITS = 9;
 
+  /**
+   * Maximum prefix length so that the rendered id ({@code prefix + '-' + 9 digits}) fits the
+   * 20-char {@code OrderID} / {@code ExecID} / {@code ClOrdID} SBE fields in {@code
+   * trading-schema.xml}.
+   */
+  public static final int MAX_PREFIX_LENGTH = 10;
+
   private final String prefix;
   private final char[] buf;
   private final int digitsStart;
@@ -46,6 +53,13 @@ public final class IdGenerator {
   public IdGenerator(String prefix) {
     if (prefix == null || prefix.isEmpty()) {
       throw new IllegalArgumentException("prefix must be non-empty");
+    }
+    if (prefix.length() > MAX_PREFIX_LENGTH) {
+      throw new IllegalArgumentException(
+          "prefix length must be <= "
+              + MAX_PREFIX_LENGTH
+              + " so rendered id fits 20-char SBE OrderID/ExecID/ClOrdID fields, was "
+              + prefix.length());
     }
     this.prefix = prefix;
     this.buf = new char[prefix.length() + 1 + DIGITS];
