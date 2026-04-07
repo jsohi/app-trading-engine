@@ -305,13 +305,17 @@ class SbeToFixTranslatorTest {
     assertEquals('3', fixDec.settlType()); // TPlus2
     assertEquals("20260409", fixDec.settlDateAsString());
     // Cover the optional non-null branches that the translator skips on NULL_VAL. Artio
-    // normalises trailing zeros differently for different magnitudes; just confirm the
-    // round-tripped real-unit value is right rather than asserting a specific (value,scale).
-    long bidSizeReal = fixDec.bidSize().value() * (long) Math.pow(10, -fixDec.bidSize().scale());
-    assertEquals(1_000_000L, bidSizeReal);
-    long offerSizeReal =
-        fixDec.offerSize().value() * (long) Math.pow(10, -fixDec.offerSize().scale());
-    assertEquals(1_000_000L, offerSizeReal);
+    // normalises trailing zeros differently for different magnitudes, so assert against the
+    // unambiguous BigDecimal real value rather than (value, scale) — and use longValueExact
+    // (not floating-point) so the assertion is robust to either scale direction.
+    assertEquals(
+        1_000_000L,
+        java.math.BigDecimal.valueOf(fixDec.bidSize().value(), fixDec.bidSize().scale())
+            .longValueExact());
+    assertEquals(
+        1_000_000L,
+        java.math.BigDecimal.valueOf(fixDec.offerSize().value(), fixDec.offerSize().scale())
+            .longValueExact());
     assertTrue(fixDec.validUntilTimeLength() > 0);
   }
 

@@ -545,19 +545,27 @@ public final class FixToSbeTranslator {
     // FIX MassQuote has no top-level transactTime; it lives on QuoteSet entries. We default to 0.
     mq.transactTime(0L);
 
-    // First pass: sum the inner-group counts.
+    // First pass: sum the inner-group counts. NOTE Artio's `quoteSetsGroupIterator()` returns
+    // the SAME cached iterator instance both times (the accessor calls reset() and returns
+    // `this`), so the second pass below re-uses it after a fresh reset — no allocation, but the
+    // two locals are aliases.
     int totalEntries = 0;
-    final MassQuoteDecoder.QuoteSetsGroupIterator setsIter1 = fix.quoteSetsGroupIterator();
-    while (setsIter1.hasNext()) {
-      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter1.next();
-      totalEntries += set.noQuoteEntriesGroupCounter();
+    MassQuoteDecoder.QuoteSetsGroupIterator setsIter = fix.quoteSetsGroupIterator();
+    while (setsIter.hasNext()) {
+      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter.next();
+      // Mirror Artio's own defensive pattern — a QuoteSet with zero entries is legal per FIX
+      // and the unguarded counter accessor throws when validation is enabled.
+      if (set.hasNoQuoteEntriesGroupCounter()) {
+        totalEntries += set.noQuoteEntriesGroupCounter();
+      }
     }
 
-    // Second pass: open the flat SBE group and copy each FIX entry.
+    // Second pass: open the flat SBE group and copy each FIX entry. fix.quoteSetsGroupIterator()
+    // call resets the same cached iterator so we can walk again.
     final MassQuoteEncoder.NoQuoteEntriesEncoder sbeEntries = mq.noQuoteEntriesCount(totalEntries);
-    final MassQuoteDecoder.QuoteSetsGroupIterator setsIter2 = fix.quoteSetsGroupIterator();
-    while (setsIter2.hasNext()) {
-      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter2.next();
+    setsIter = fix.quoteSetsGroupIterator();
+    while (setsIter.hasNext()) {
+      final MassQuoteDecoder.QuoteSetsGroupDecoder set = setsIter.next();
       final MassQuoteDecoder.QuoteSetsGroupDecoder.QuoteEntriesGroupIterator entriesIter =
           set.quoteEntriesGroupIterator();
       while (entriesIter.hasNext()) {
