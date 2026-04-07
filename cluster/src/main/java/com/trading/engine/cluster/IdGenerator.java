@@ -8,8 +8,10 @@ import org.agrona.MutableDirectBuffer;
 /**
  * Deterministic, single-threaded sequential id generator used by the cluster service.
  *
- * <p>Produces ids of the form {@code "PREFIX-NNNNNNNNN"} (9 zero-padded decimal digits) where
+ * <p>Produces ids of the form {@code "PREFIX-NNNNNNNNNNN"} (11 zero-padded decimal digits) where
  * {@code PREFIX} is supplied at construction (e.g., {@code "ORD"}, {@code "EXE"}, {@code "QTE"}).
+ * 11 digits gives ~100 billion ids per generator instance — sufficient headroom for a multi-year
+ * cluster lifetime even at sustained million-orders-per-second peak load.
  *
  * <p>Determinism guarantees required for Aeron Cluster log replay:
  *
@@ -29,20 +31,24 @@ import org.agrona.MutableDirectBuffer;
  */
 public final class IdGenerator {
 
-  /** Maximum counter value renderable as 9 zero-padded digits. */
-  public static final long MAX_COUNTER = 999_999_999L;
+  /**
+   * Maximum counter value renderable as 11 zero-padded digits. ~100 billion ids gives a multi-year
+   * lifetime per generator instance even at sustained million-orders-per-second peak load — ample
+   * headroom across cluster restarts since the counter survives via snapshot.
+   */
+  public static final long MAX_COUNTER = 99_999_999_999L;
 
   /** Number of bytes written by {@link #saveTo(MutableDirectBuffer, int)}. */
   public static final int SNAPSHOT_LENGTH = Long.BYTES;
 
-  private static final int DIGITS = 9;
+  private static final int DIGITS = 11;
 
   /**
    * Maximum prefix length. Bound by the {@code IdPrefix} SBE type ({@code char[8]} in {@code
    * trading-schema.xml}), which is the key field of {@code IdGeneratorSnapshot} (205). A longer
    * prefix would silently truncate on snapshot save and break replay determinism on recovery. At
-   * length 8 the rendered id is {@code "XXXXXXXX-NNNNNNNNN"} (18 chars), well under the 20-char
-   * {@code OrderID} / {@code ExecID} / {@code ClOrdID} SBE field limit.
+   * length 8 the rendered id is {@code "XXXXXXXX-NNNNNNNNNNN"} (20 chars) — exactly fills the
+   * 20-char {@code OrderID} / {@code ExecID} / {@code ClOrdID} SBE field limit.
    */
   public static final int MAX_PREFIX_LENGTH = 8;
 
@@ -148,11 +154,11 @@ public final class IdGenerator {
       throw new IllegalStateException(
           "IdGenerator counter exhausted for prefix '" + prefix + "' at " + counter);
     }
-    // Counter is bounded by MAX_COUNTER (999_999_999) — fits in an int, so int arithmetic is
-    // cheaper than long div/mod.
-    int n = (int) ++counter;
+    // 100B exceeds Integer.MAX_VALUE, so the render loop runs in long arithmetic. Long div/mod
+    // on a register-resident value is still ~10ns; the lifetime headroom is worth it.
+    long n = ++counter;
     for (int i = DIGITS - 1; i >= 0; i--) {
-      bytes[digitsStart + i] = (byte) ('0' + (n % 10));
+      bytes[digitsStart + i] = (byte) ('0' + (int) (n % 10));
       n /= 10;
     }
   }
