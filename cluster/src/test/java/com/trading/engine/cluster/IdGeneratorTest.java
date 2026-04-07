@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.nio.charset.StandardCharsets;
 import org.agrona.ExpandableArrayBuffer;
 import org.junit.jupiter.api.Test;
 
@@ -87,6 +88,60 @@ class IdGeneratorTest {
     assertEquals(IdGenerator.MAX_PREFIX_LENGTH, eightChars.length());
     new IdGenerator(eightChars); // must not throw
     assertThrows(IllegalArgumentException.class, () -> new IdGenerator(eightChars + "I"));
+  }
+
+  @Test
+  void nextIntoWritesAsciiBytesAtOffset() {
+    IdGenerator gen = new IdGenerator("ORD");
+    ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
+
+    int len1 = gen.nextInto(buffer, 4); // start at offset 4 to verify offset honored
+    assertEquals(13, len1); // "ORD-000000001" = 13 bytes
+    assertEquals(13, gen.idByteLength());
+    assertEquals("ORD-000000001", readAscii(buffer, 4, len1));
+
+    int len2 = gen.nextInto(buffer, 20);
+    assertEquals(13, len2);
+    assertEquals("ORD-000000002", readAscii(buffer, 20, len2));
+
+    // The earlier write at offset 4 must NOT have been clobbered by the second call.
+    assertEquals("ORD-000000001", readAscii(buffer, 4, len1));
+  }
+
+  @Test
+  void nextIntoAndNextShareCounter() {
+    // Both APIs advance the same counter — interleaved use stays sequential.
+    IdGenerator gen = new IdGenerator("ORD");
+    ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
+    assertEquals("ORD-000000001", gen.next());
+    gen.nextInto(buffer, 0);
+    assertEquals("ORD-000000002", readAscii(buffer, 0, gen.idByteLength()));
+    assertEquals("ORD-000000003", gen.next());
+  }
+
+  @Test
+  void nextIntoRejectsCounterExhaustion() {
+    IdGenerator gen = new IdGenerator("ORD");
+    ExpandableArrayBuffer snapshot = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
+    snapshot.putLong(0, IdGenerator.MAX_COUNTER);
+    gen.loadFrom(snapshot, 0);
+
+    ExpandableArrayBuffer dst = new ExpandableArrayBuffer(64);
+    assertThrows(IllegalStateException.class, () -> gen.nextInto(dst, 0));
+    assertEquals(IdGenerator.MAX_COUNTER, gen.currentCounter()); // counter unchanged on failure
+  }
+
+  @Test
+  void idByteLengthMatchesPrefix() {
+    assertEquals(13, new IdGenerator("ORD").idByteLength()); // 3 + 1 + 9
+    assertEquals(11, new IdGenerator("E").idByteLength()); // 1 + 1 + 9
+    assertEquals(18, new IdGenerator("ABCDEFGH").idByteLength()); // 8 + 1 + 9
+  }
+
+  private static String readAscii(ExpandableArrayBuffer buffer, int offset, int length) {
+    byte[] dst = new byte[length];
+    buffer.getBytes(offset, dst);
+    return new String(dst, StandardCharsets.US_ASCII);
   }
 
   @Test
