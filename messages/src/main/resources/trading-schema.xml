@@ -264,7 +264,7 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
@@ -342,7 +342,7 @@
         <field name="orderQty"       id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
@@ -363,7 +363,7 @@
         <field name="orderQty"       id="38"    type="int64" description="Package quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64" description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
@@ -403,7 +403,7 @@
         <field name="orderQty"       id="38"    type="int64"       description="Package quantity, fixed-point 10^-8"/>
         <field name="timeInForce"    id="59"    type="TimeInForceEnum"/>
         <field name="transactTime"   id="60"    type="uint64"      description="Epoch nanos"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
@@ -472,7 +472,7 @@
         <field name="symbol"       id="55"  type="Symbol"/>
         <field name="side"         id="54"  type="SideEnum"/>
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
-        <field name="account"      id="1"   type="Account"/>
+        <field name="accountCode"  id="1"   type="Account"/>
         <field name="productType"  id="10013" type="ProductTypeEnum"/>
     </sbe:message>
 
@@ -480,7 +480,7 @@
     <sbe:message name="MassQuote" id="7" semanticType="i"
                  description="Mass quote with multiple quote entries">
         <field name="quoteId"      id="117" type="QuoteID" description="Unique mass quote identifier"/>
-        <field name="account"      id="1"   type="Account"/>
+        <field name="accountCode"  id="1"   type="Account"/>
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
         <group name="noQuoteEntries" id="295" dimensionType="groupSizeEncoding"
                description="Repeating group of quote entries">
@@ -508,7 +508,7 @@
         <field name="ordStatus"        id="39"  type="OrdStatusEnum" description="Current order status (or Rejected if unknown)"/>
         <field name="cxlRejResponseTo" id="434" type="CxlRejResponseToEnum"/>
         <field name="cxlRejReason"     id="102" type="CxlRejReasonEnum"/>
-        <field name="account"          id="1"   type="Account"/>
+        <field name="accountCode"      id="1"   type="Account"/>
         <field name="transactTime"     id="60"  type="uint64"      description="Epoch nanos"/>
         <field name="text"             id="58"  type="Text"        description="Free-text reason"/>
     </sbe:message>
@@ -577,6 +577,7 @@
         <field name="quoteRejectReason" id="300"   type="QuoteRejectReasonEnum" presence="optional" description="Structured decline reason when accepted=False"/>
         <field name="transactTime"      id="60"  type="uint64" description="Epoch nanos"/>
         <field name="text"              id="58"  type="Text" presence="optional" description="Optional explanation when accepted=False"/>
+        <field name="productType"       id="10013" type="ProductTypeEnum"/>
         <field name="swapPoints"        id="10003" type="int64" presence="optional" description="Custom: far price - near price for swap pricing, fixed-point 10^-8"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Per-leg pricing for swap quotes (empty for single-leg). Mirrors PriceReceivedEvent.noLegs and Quote.noLegs so the cluster can construct the outbound Quote without re-deriving leg prices.">
@@ -642,7 +643,7 @@
         <field name="price"          id="44"    type="int64" presence="optional" description="Order price, fixed-point 10^-8 (null for market orders)"/>
         <field name="orderQty"       id="38"    type="int64" description="Order quantity, fixed-point 10^-8"/>
         <field name="quoteId"        id="117"   type="QuoteID" presence="optional" description="Reference to accepted quote (null if not from RFQ)"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
@@ -660,7 +661,7 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="text"           id="58"    type="Text"/>
     </sbe:message>
@@ -720,7 +721,7 @@
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
         <field name="orderQty"       id="38"    type="int64" description="Requested quantity, fixed-point 10^-8"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="settlDate"      id="64"    type="SettlDate"/>
         <field name="settlType"      id="63"    type="SettlTypeEnum" presence="optional"/>
@@ -747,7 +748,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="bidPx"          id="132"   type="int64" description="Bid price, fixed-point 10^-8"/>
         <field name="offerPx"        id="133"   type="int64" description="Offer price, fixed-point 10^-8"/>
         <field name="bidSize"        id="134"   type="int64" description="Bid quantity, fixed-point 10^-8"/>
@@ -781,7 +782,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="quoteRejectReason" id="300" type="QuoteRejectReasonEnum"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="text"           id="58"    type="Text"/>
@@ -796,7 +797,7 @@
         <field name="quoteReqId"     id="131"   type="QuoteReqID"/>
         <field name="symbol"         id="55"    type="Symbol"/>
         <field name="side"           id="54"    type="SideEnum"/>
-        <field name="account"        id="1"     type="Account"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
     </sbe:message>
 
@@ -891,7 +892,7 @@
         <field name="ordStatus"        id="39"    type="OrdStatusEnum"/>
         <field name="cxlRejResponseTo" id="434"   type="CxlRejResponseToEnum"/>
         <field name="cxlRejReason"     id="102"   type="CxlRejReasonEnum"/>
-        <field name="account"          id="1"     type="Account"/>
+        <field name="accountCode"      id="1"     type="Account"/>
         <field name="text"             id="58"    type="Text"/>
     </sbe:message>
 
