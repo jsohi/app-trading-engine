@@ -198,6 +198,30 @@
             <validValue name="MarketMaker"  description="Market-maker / liquidity-provider account">2</validValue>
         </enum>
 
+        <enum name="AcctIDSourceEnum" encodingType="uint8" description="FIX tag 660 — identifies the scheme of the account identifier so the same account can carry multiple external identifiers">
+            <validValue name="Internal" description="Internal identifier (default)">0</validValue>
+            <validValue name="BIC"      description="BIC (Bank Identifier Code, ISO 9362)">1</validValue>
+            <validValue name="SID"      description="SID code">2</validValue>
+            <validValue name="TFM"      description="TFM (Transfer Funds Module)">3</validValue>
+            <validValue name="OMGEO"    description="OMGEO Alert ID">4</validValue>
+            <validValue name="DTCC"     description="DTCC code">5</validValue>
+            <validValue name="Other"    description="Other (99)">99</validValue>
+        </enum>
+
+        <enum name="ComplianceStatusEnum" encodingType="uint8" description="Compliance / KYC summary status, kept separate from administrative AccountStatusEnum so the cluster can suspend trading on compliance grounds without disturbing operational state">
+            <validValue name="OK"             description="Compliance checks passed (default)">0</validValue>
+            <validValue name="PendingReview"  description="Awaiting compliance review">1</validValue>
+            <validValue name="Suspended"      description="Suspended on compliance grounds">2</validValue>
+            <validValue name="Blocked"        description="Hard block (sanctions, AML)">3</validValue>
+        </enum>
+
+        <enum name="CurrencyClassEnum" encodingType="uint8" description="Currency class — distinguishes fiat from metals (XAU/XAG), crypto, and IMF SDR / fund codes. Replaces a simple isFx boolean since 'every fiat is FX' makes that flag redundant.">
+            <validValue name="Fiat"   description="Fiat sovereign currency (USD, EUR, JPY, …)">0</validValue>
+            <validValue name="Metal"  description="Precious metal (XAU, XAG, XPT, XPD)">1</validValue>
+            <validValue name="Crypto" description="Cryptocurrency (BTC, ETH, USDT, …)">2</validValue>
+            <validValue name="Fund"   description="IMF SDR / fund code (XDR)">3</validValue>
+        </enum>
+
         <enum name="RfqStateEnum" encodingType="uint8" description="RFQ lifecycle state for snapshot serialization (terminal states Filled/Rejected/Expired are not snapshotted)">
             <validValue name="Requested" description="QuoteRequest received, awaiting price">0</validValue>
             <validValue name="Quoted"    description="Quote sent to client, awaiting accept">1</validValue>
@@ -220,10 +244,14 @@
             <validValue name="QuoteExpired"        description="Quote expired">107</validValue>
             <validValue name="PriceRequested"      description="Price requested">108</validValue>
             <validValue name="PriceReceived"       description="Price received">109</validValue>
-            <validValue name="AccountLoaded"       description="Account loaded">110</validValue>
-            <validValue name="AccountLoadRejected" description="Account load rejected">111</validValue>
-            <validValue name="OrderCancelRejected" description="Order cancel rejected">112</validValue>
-            <validValue name="SnapshotTaken"       description="Snapshot taken">200</validValue>
+            <validValue name="AccountLoaded"        description="Account loaded">110</validValue>
+            <validValue name="AccountLoadRejected"  description="Account load rejected">111</validValue>
+            <validValue name="OrderCancelRejected"  description="Order cancel rejected">112</validValue>
+            <validValue name="CurrencyLoaded"       description="Currency loaded">113</validValue>
+            <validValue name="CurrencyLoadRejected" description="Currency load rejected">114</validValue>
+            <validValue name="RiskLimitLoaded"      description="Risk limit loaded">115</validValue>
+            <validValue name="RiskLimitLoadRejected" description="Risk limit load rejected">116</validValue>
+            <validValue name="SnapshotTaken"        description="Snapshot taken">200</validValue>
         </enum>
 
         <enum name="RejectReasonEnum" encodingType="uint8" nullValue="255" description="Domain rejection reason codes — values 1..14. nullValue=255 sentinel for use as optional enum field; producers must explicitly write 255 when leaving the field unset since SBE does not auto-initialise enum bytes.">
@@ -241,6 +269,11 @@
             <validValue name="AccountNoTradePermission"  description="Account does not have trade permission">12</validValue>
             <validValue name="AccountNoQuotePermission"  description="Account does not have quote permission">13</validValue>
             <validValue name="OrderExceedsMaxSize"       description="Order exceeds account's maxOrderSize">14</validValue>
+            <validValue name="DuplicateAccountCode"      description="Duplicate accountCode loaded under a different accountId">15</validValue>
+            <validValue name="UnknownCurrency"           description="Currency code not found in CurrencyStore">16</validValue>
+            <validValue name="InvalidCurrencyCode"       description="Currency code is not 3 ASCII uppercase letters">17</validValue>
+            <validValue name="InvalidAccountId"          description="Account id is non-positive">18</validValue>
+            <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
         </enum>
     </types>
 
@@ -513,20 +546,110 @@
         <field name="text"             id="58"  type="Text"        description="Free-text reason"/>
     </sbe:message>
 
-    <!-- LoadAccount: internal command to load/reload an account into the cluster (templateId 11, no FIX MsgType — internal). Sent by the ReferenceDataOrchestrator at startup. -->
+    <!--
+        Reference-data load commands (templateIds 11-19).
+
+        Industry-standard split (vs. APP-58's literal spec):
+        - AccountStore stores identity + capabilities only.
+        - RiskLimitStore stores per-account trading limits separately. Limits change on a
+          different cadence than account master data, support hierarchical scoping in the
+          future, and split per CME Globex Credit Controls / Eurex T7 / exchange-core
+          conventions.
+        - CurrencyStore is a separate ISO 4217 master. Pip definition and settlement days
+          deliberately live on the future CurrencyPairStore (per FX trading convention —
+          pip is per-pair, not per-currency).
+
+        Each "single" command has a matching "Batch" command for start-of-day bulk loads
+        (50k single commands × consensus round-trip = thrashing; batch is mandatory).
+    -->
+
+    <!-- LoadAccount (11) — single account upsert. Identity + capabilities only; risk limits via LoadRiskLimit. -->
     <sbe:message name="LoadAccount" id="11"
-                 description="Load (or reload) an account into the cluster's AccountStore. Internal command — no FIX MsgType.">
-        <field name="accountId"         id="10024" type="int64"/>
-        <field name="accountCode"       id="1"     type="Account"/>
-        <field name="accountName"       id="10026" type="Text"/>
-        <field name="accountType"       id="10029" type="AccountTypeEnum"/>
-        <field name="baseCurrency"      id="15"    type="Currency"/>
-        <field name="status"            id="10027" type="AccountStatusEnum"/>
-        <field name="maxOrderSize"      id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyVolume"    id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="canTrade"          id="10032" type="BooleanType"/>
-        <field name="canRequestQuotes"  id="10033" type="BooleanType"/>
-        <field name="transactTime"      id="60"    type="uint64"          description="Epoch nanos"/>
+                 description="Load (or reload) one account into the cluster's AccountStore. Internal command — no FIX MsgType.">
+        <field name="accountId"        id="10024" type="int64"             description="Internal account identifier (primary key)"/>
+        <field name="parentAccountId"  id="10040" type="int64"             description="Parent account id for give-up arrangements (FIX 453 NoPartyIDs flow); 0 = no parent"/>
+        <field name="accountCode"      id="1"     type="Account"           description="External account code (FIX tag 1)"/>
+        <field name="acctIdSource"     id="660"   type="AcctIDSourceEnum"  description="FIX tag 660 — scheme of the external code (Internal/BIC/SID/…)"/>
+        <field name="accountName"      id="10026" type="Text"/>
+        <field name="accountType"      id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"     id="15"    type="Currency"          description="ISO 4217 base currency; must exist in CurrencyStore"/>
+        <field name="status"           id="10027" type="AccountStatusEnum" description="Administrative status (Active/Suspended/Closed)"/>
+        <field name="complianceStatus" id="10041" type="ComplianceStatusEnum" description="Compliance / KYC summary; separate from administrative status"/>
+        <field name="capabilities"     id="10042" type="uint64"            description="Capabilities bitfield: bit 0 = CAN_TRADE, bit 1 = CAN_RFQ, bits 2..63 reserved for future capabilities (CAN_SHORT, CAN_MARGIN, …)"/>
+        <field name="transactTime"     id="60"    type="uint64"            description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- LoadAccountBatch (12) — batch account upsert. Repeating group of records sharing one consensus round-trip. -->
+    <sbe:message name="LoadAccountBatch" id="12"
+                 description="Bulk load N accounts in one consensus round-trip. Used at start-of-day to load 10k–50k client accounts without thrashing the replicated log.">
+        <field name="transactTime" id="60" type="uint64" description="Epoch nanos for the whole batch"/>
+        <group name="noAccounts" id="10039" dimensionType="groupSizeEncoding"
+               description="One entry per account in the batch">
+            <field name="accountId"        id="10024" type="int64"/>
+            <field name="parentAccountId"  id="10040" type="int64"/>
+            <field name="accountCode"      id="1"     type="Account"/>
+            <field name="acctIdSource"     id="660"   type="AcctIDSourceEnum"/>
+            <field name="accountName"      id="10026" type="Text"/>
+            <field name="accountType"      id="10029" type="AccountTypeEnum"/>
+            <field name="baseCurrency"     id="15"    type="Currency"/>
+            <field name="status"           id="10027" type="AccountStatusEnum"/>
+            <field name="complianceStatus" id="10041" type="ComplianceStatusEnum"/>
+            <field name="capabilities"     id="10042" type="uint64"/>
+        </group>
+    </sbe:message>
+
+    <!-- LoadCurrency (13) — single ISO 4217 currency upsert. Pip & settlement deliberately omitted (belong on CurrencyPairStore). -->
+    <sbe:message name="LoadCurrency" id="13"
+                 description="Load (or reload) one ISO 4217 currency into the cluster's CurrencyStore. Identity + decimals + class only — pip and settlement days live on a future CurrencyPairStore since they are per-pair, not per-currency.">
+        <field name="ccyCode"       id="15"    type="Currency"          description="ISO 4217 alpha-3 code (FIX tag 15), uppercase ASCII; primary key"/>
+        <field name="isoNumeric"    id="10043" type="uint16"            description="ISO 4217 numeric code (e.g., USD=840, JPY=392)"/>
+        <field name="name"          id="10026" type="Text"              description="Display name (e.g., 'United States Dollar')"/>
+        <field name="decimals"      id="10044" type="uint8"             description="Minor unit decimals (USD=2, JPY=0, KWD=3); ≤ 18"/>
+        <field name="currencyClass" id="10045" type="CurrencyClassEnum" description="FIAT / METAL / CRYPTO / FUND"/>
+        <field name="status"        id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for currency lifecycle"/>
+        <field name="transactTime"  id="60"    type="uint64"            description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- LoadCurrencyBatch (14) — batch currency upsert. -->
+    <sbe:message name="LoadCurrencyBatch" id="14"
+                 description="Bulk load N currencies in one consensus round-trip.">
+        <field name="transactTime" id="60" type="uint64"/>
+        <group name="noCurrencies" id="10046" dimensionType="groupSizeEncoding"
+               description="One entry per currency in the batch">
+            <field name="ccyCode"       id="15"    type="Currency"/>
+            <field name="isoNumeric"    id="10043" type="uint16"/>
+            <field name="name"          id="10026" type="Text"/>
+            <field name="decimals"      id="10044" type="uint8"/>
+            <field name="currencyClass" id="10045" type="CurrencyClassEnum"/>
+            <field name="status"        id="10027" type="AccountStatusEnum"/>
+        </group>
+    </sbe:message>
+
+    <!-- LoadRiskLimit (15) — single per-account risk limit upsert. accountId must exist in AccountStore. -->
+    <sbe:message name="LoadRiskLimit" id="15"
+                 description="Load (or reload) one risk-limit record into the cluster's RiskLimitStore. accountId must already exist in AccountStore. Flat per-account limits in this PR; hierarchical (firm/desk/trader) is a follow-up.">
+        <field name="accountId"        id="10024" type="int64"             description="Foreign key to AccountStore"/>
+        <field name="maxOrderSize"     id="10030" type="int64"             description="Max single-order quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxOrderNotional" id="10047" type="int64"             description="Max single-order notional value (price × qty), fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"   id="10031" type="int64"             description="Max daily aggregate quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyLossBps"  id="10048" type="uint32"            description="Max intraday loss in basis points (0 = unlimited)"/>
+        <field name="status"           id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for risk-limit lifecycle"/>
+        <field name="transactTime"     id="60"    type="uint64"            description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- LoadRiskLimitBatch (16) — batch risk-limit upsert. -->
+    <sbe:message name="LoadRiskLimitBatch" id="16"
+                 description="Bulk load N risk-limit records in one consensus round-trip.">
+        <field name="transactTime" id="60" type="uint64"/>
+        <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding"
+               description="One entry per risk-limit record in the batch">
+            <field name="accountId"        id="10024" type="int64"/>
+            <field name="maxOrderSize"     id="10030" type="int64"/>
+            <field name="maxOrderNotional" id="10047" type="int64"/>
+            <field name="maxDailyVolume"   id="10031" type="int64"/>
+            <field name="maxDailyLossBps"  id="10048" type="uint32"/>
+            <field name="status"           id="10027" type="AccountStatusEnum"/>
+        </group>
     </sbe:message>
 
     <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
@@ -862,22 +985,22 @@
         </group>
     </sbe:message>
 
-    <!-- AccountLoadedEvent -->
+    <!-- AccountLoadedEvent (110) — mirrors LoadAccount (id 11), with sequence number + cluster timestamp prepended for replay. -->
     <sbe:message name="AccountLoadedEvent" id="110"
-                 description="Emitted when an account is loaded into the system. Mirrors LoadAccount (templateId 11) for replay.">
-        <field name="sequenceNumber"     id="10020" type="int64"  description="Monotonic event sequence number"/>
-        <field name="timestamp"          id="10021" type="uint64" description="Cluster timestamp nanos"/>
-        <field name="accountId"          id="10024" type="int64"  description="Internal account identifier"/>
-        <field name="accountCode"        id="1"     type="Account"/>
-        <field name="accountName"        id="10026" type="Text"/>
-        <field name="accountType"        id="10029" type="AccountTypeEnum"/>
-        <field name="baseCurrency"       id="15"    type="Currency"/>
-        <field name="status"             id="10027" type="AccountStatusEnum" description="Account status"/>
-        <field name="maxOrderSize"       id="10030" type="int64"           description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyVolume"     id="10031" type="int64"           description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="canTrade"           id="10032" type="BooleanType"/>
-        <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
-        <field name="transactTime"       id="60"    type="uint64" description="Original LoadAccount transactTime (epoch nanos)"/>
+                 description="Emitted when an account is loaded into AccountStore. Mirrors LoadAccount field set.">
+        <field name="sequenceNumber"   id="10020" type="int64"             description="Monotonic event sequence number"/>
+        <field name="timestamp"        id="10021" type="uint64"            description="Cluster timestamp nanos"/>
+        <field name="accountId"        id="10024" type="int64"/>
+        <field name="parentAccountId"  id="10040" type="int64"/>
+        <field name="accountCode"      id="1"     type="Account"/>
+        <field name="acctIdSource"     id="660"   type="AcctIDSourceEnum"/>
+        <field name="accountName"      id="10026" type="Text"/>
+        <field name="accountType"      id="10029" type="AccountTypeEnum"/>
+        <field name="baseCurrency"     id="15"    type="Currency"/>
+        <field name="status"           id="10027" type="AccountStatusEnum"/>
+        <field name="complianceStatus" id="10041" type="ComplianceStatusEnum"/>
+        <field name="capabilities"     id="10042" type="uint64"/>
+        <field name="transactTime"     id="60"    type="uint64"            description="Original LoadAccount transactTime (epoch nanos)"/>
     </sbe:message>
 
     <!-- AccountLoadRejectedEvent -->
@@ -905,6 +1028,54 @@
         <field name="text"             id="58"    type="Text"/>
     </sbe:message>
 
+    <!-- CurrencyLoadedEvent (113) — mirrors LoadCurrency, prepended with sequenceNumber + cluster timestamp. -->
+    <sbe:message name="CurrencyLoadedEvent" id="113"
+                 description="Emitted when a currency is loaded into CurrencyStore.">
+        <field name="sequenceNumber" id="10020" type="int64"             description="Monotonic event sequence number"/>
+        <field name="timestamp"      id="10021" type="uint64"            description="Cluster timestamp nanos"/>
+        <field name="ccyCode"        id="15"    type="Currency"/>
+        <field name="isoNumeric"     id="10043" type="uint16"/>
+        <field name="name"           id="10026" type="Text"/>
+        <field name="decimals"       id="10044" type="uint8"/>
+        <field name="currencyClass"  id="10045" type="CurrencyClassEnum"/>
+        <field name="status"         id="10027" type="AccountStatusEnum"/>
+        <field name="transactTime"   id="60"    type="uint64"            description="Original LoadCurrency transactTime"/>
+    </sbe:message>
+
+    <!-- CurrencyLoadRejectedEvent (114) -->
+    <sbe:message name="CurrencyLoadRejectedEvent" id="114"
+                 description="Emitted when a currency load is rejected (validation or duplicate).">
+        <field name="sequenceNumber" id="10020" type="int64"            description="Monotonic event sequence number"/>
+        <field name="timestamp"      id="10021" type="uint64"           description="Cluster timestamp nanos"/>
+        <field name="ccyCode"        id="15"    type="Currency"/>
+        <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
+        <field name="text"           id="58"    type="Text"             description="Free-text reason"/>
+    </sbe:message>
+
+    <!-- RiskLimitLoadedEvent (115) — mirrors LoadRiskLimit. -->
+    <sbe:message name="RiskLimitLoadedEvent" id="115"
+                 description="Emitted when a risk-limit record is loaded into RiskLimitStore.">
+        <field name="sequenceNumber"   id="10020" type="int64"             description="Monotonic event sequence number"/>
+        <field name="timestamp"        id="10021" type="uint64"            description="Cluster timestamp nanos"/>
+        <field name="accountId"        id="10024" type="int64"/>
+        <field name="maxOrderSize"     id="10030" type="int64"/>
+        <field name="maxOrderNotional" id="10047" type="int64"/>
+        <field name="maxDailyVolume"   id="10031" type="int64"/>
+        <field name="maxDailyLossBps"  id="10048" type="uint32"/>
+        <field name="status"           id="10027" type="AccountStatusEnum"/>
+        <field name="transactTime"     id="60"    type="uint64"            description="Original LoadRiskLimit transactTime"/>
+    </sbe:message>
+
+    <!-- RiskLimitLoadRejectedEvent (116) -->
+    <sbe:message name="RiskLimitLoadRejectedEvent" id="116"
+                 description="Emitted when a risk-limit load is rejected (FK violation, negative limit, …).">
+        <field name="sequenceNumber" id="10020" type="int64"            description="Monotonic event sequence number"/>
+        <field name="timestamp"      id="10021" type="uint64"           description="Cluster timestamp nanos"/>
+        <field name="accountId"      id="10024" type="int64"            description="Target account (may be 0 if invalid)"/>
+        <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
+        <field name="text"           id="58"    type="Text"             description="Free-text reason"/>
+    </sbe:message>
+
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
 
     <!--
@@ -928,21 +1099,25 @@
         <field name="checksum"           id="10038" type="uint32" description="CRC32C of all subsequent snapshot bytes (corruption detection)"/>
     </sbe:message>
 
-    <!-- AccountSnapshot (201) — full account records for AccountStore restore -->
+    <!--
+        AccountSnapshot (201) — repeating group of full account records.
+        Records are written in ascending accountId order so snapshot output is deterministic
+        across JVM versions (Agrona hashmap iteration order is not guaranteed stable).
+    -->
     <sbe:message name="AccountSnapshot" id="201"
-                 description="Repeating group of full account records, used to restore AccountStore on cluster recovery">
+                 description="Repeating group of full account records, used to restore AccountStore on cluster recovery. Records are ordered by accountId.">
         <group name="noAccounts" id="10039" dimensionType="groupSizeEncoding"
                description="One entry per account in the AccountStore">
-            <field name="accountId"          id="10024" type="int64"          description="Internal account identifier"/>
-            <field name="accountCode"        id="1"     type="Account"/>
-            <field name="accountName"        id="10026" type="Text"/>
-            <field name="accountType"        id="10029" type="AccountTypeEnum"/>
-            <field name="baseCurrency"       id="15"    type="Currency"/>
-            <field name="status"             id="10027" type="AccountStatusEnum"/>
-            <field name="maxOrderSize"       id="10030" type="int64"          description="Max single-order notional, fixed-point 10^-8 (0 = unlimited)"/>
-            <field name="maxDailyVolume"     id="10031" type="int64"          description="Max daily aggregate volume, fixed-point 10^-8 (0 = unlimited)"/>
-            <field name="canTrade"           id="10032" type="BooleanType"/>
-            <field name="canRequestQuotes"   id="10033" type="BooleanType"/>
+            <field name="accountId"        id="10024" type="int64"/>
+            <field name="parentAccountId"  id="10040" type="int64"/>
+            <field name="accountCode"      id="1"     type="Account"/>
+            <field name="acctIdSource"     id="660"   type="AcctIDSourceEnum"/>
+            <field name="accountName"      id="10026" type="Text"/>
+            <field name="accountType"      id="10029" type="AccountTypeEnum"/>
+            <field name="baseCurrency"     id="15"    type="Currency"/>
+            <field name="status"           id="10027" type="AccountStatusEnum"/>
+            <field name="complianceStatus" id="10041" type="ComplianceStatusEnum"/>
+            <field name="capabilities"     id="10042" type="uint64"/>
         </group>
     </sbe:message>
 
@@ -1036,6 +1211,37 @@
     <sbe:message name="EventSequencerSnapshot" id="206"
                  description="EventSequencer state — the next sequence number to assign after recovery. Single-record (no group) since there is exactly one EventSequencer per cluster.">
         <field name="nextSequence" id="10050" type="int64" description="Next event sequence number to assign"/>
+    </sbe:message>
+
+    <!--
+        Template id 207 reserved for EventJournalSnapshot (APP-21, when the cluster framework
+        in APP-8 wraps EventJournal's raw bytes in an SBE template).
+    -->
+
+    <!-- CurrencySnapshot (208) — repeating group of currencies, ordered by ccyCode for determinism -->
+    <sbe:message name="CurrencySnapshot" id="208"
+                 description="Repeating group of full ISO 4217 currency records, used to restore CurrencyStore on cluster recovery. Records are ordered by ccyCode (lex ASCII) for deterministic snapshot output.">
+        <group name="noCurrencies" id="10046" dimensionType="groupSizeEncoding">
+            <field name="ccyCode"       id="15"    type="Currency"/>
+            <field name="isoNumeric"    id="10043" type="uint16"/>
+            <field name="name"          id="10026" type="Text"/>
+            <field name="decimals"      id="10044" type="uint8"/>
+            <field name="currencyClass" id="10045" type="CurrencyClassEnum"/>
+            <field name="status"        id="10027" type="AccountStatusEnum"/>
+        </group>
+    </sbe:message>
+
+    <!-- RiskLimitSnapshot (209) — repeating group of risk limits, ordered by accountId -->
+    <sbe:message name="RiskLimitSnapshot" id="209"
+                 description="Repeating group of full risk-limit records, used to restore RiskLimitStore on cluster recovery. Records are ordered by accountId for deterministic snapshot output.">
+        <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding">
+            <field name="accountId"        id="10024" type="int64"/>
+            <field name="maxOrderSize"     id="10030" type="int64"/>
+            <field name="maxOrderNotional" id="10047" type="int64"/>
+            <field name="maxDailyVolume"   id="10031" type="int64"/>
+            <field name="maxDailyLossBps"  id="10048" type="uint32"/>
+            <field name="status"           id="10027" type="AccountStatusEnum"/>
+        </group>
     </sbe:message>
 
 </sbe:messageSchema>
