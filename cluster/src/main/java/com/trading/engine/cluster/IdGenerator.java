@@ -36,11 +36,13 @@ public final class IdGenerator {
   private static final int DIGITS = 9;
 
   /**
-   * Maximum prefix length so that the rendered id ({@code prefix + '-' + 9 digits}) fits the
-   * 20-char {@code OrderID} / {@code ExecID} / {@code ClOrdID} SBE fields in {@code
-   * trading-schema.xml}.
+   * Maximum prefix length. Bound by the {@code IdPrefix} SBE type ({@code char[8]} in {@code
+   * trading-schema.xml}), which is the key field of {@code IdGeneratorSnapshot} (205). A longer
+   * prefix would silently truncate on snapshot save and break replay determinism on recovery. At
+   * length 8 the rendered id is {@code "XXXXXXXX-NNNNNNNNN"} (18 chars), well under the 20-char
+   * {@code OrderID} / {@code ExecID} / {@code ClOrdID} SBE field limit.
    */
-  public static final int MAX_PREFIX_LENGTH = 10;
+  public static final int MAX_PREFIX_LENGTH = 8;
 
   private final String prefix;
   private final char[] buf;
@@ -58,7 +60,7 @@ public final class IdGenerator {
       throw new IllegalArgumentException(
           "prefix length must be <= "
               + MAX_PREFIX_LENGTH
-              + " so rendered id fits 20-char SBE OrderID/ExecID/ClOrdID fields, was "
+              + " to fit IdPrefix char[8] in IdGeneratorSnapshot (205), was "
               + prefix.length());
     }
     this.prefix = prefix;
@@ -85,9 +87,11 @@ public final class IdGenerator {
       throw new IllegalStateException(
           "IdGenerator counter exhausted for prefix '" + prefix + "' at " + counter);
     }
-    long n = ++counter;
+    // Counter is bounded by MAX_COUNTER (999_999_999), which fits in an int — use int
+    // arithmetic in the render loop to avoid the cost of long division/modulo.
+    int n = (int) ++counter;
     for (int i = DIGITS - 1; i >= 0; i--) {
-      buf[digitsStart + i] = (char) ('0' + (int) (n % 10));
+      buf[digitsStart + i] = (char) ('0' + (n % 10));
       n /= 10;
     }
     return new String(buf);

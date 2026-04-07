@@ -7,7 +7,8 @@ import org.agrona.collections.Object2ObjectHashMap;
  * In-memory book of active orders keyed by exchange order id.
  *
  * <p>Minimal placeholder for the matching-engine work in later waves: provides only insert and
- * lookup. Backed by Agrona's {@link Object2ObjectHashMap} (no boxing) per the cluster's no-{@code
+ * lookup. Backed by Agrona's {@link Object2ObjectHashMap} (no per-entry allocations — unlike {@code
+ * java.util.HashMap} which allocates a {@code Map.Entry} per put) per the cluster's no-{@code
  * java.util.*}-collections rule.
  *
  * <p>The map is pre-sized to {@link #INITIAL_CAPACITY} to avoid rehash-induced latency spikes in

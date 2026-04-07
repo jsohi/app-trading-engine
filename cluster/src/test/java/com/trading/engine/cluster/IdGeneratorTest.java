@@ -81,11 +81,12 @@ class IdGeneratorTest {
 
   @Test
   void rejectsOverlongPrefix() {
-    // 10 chars is the boundary: "XXXXXXXXXX-NNNNNNNNN" = 20, fits SBE OrderID/ExecID/ClOrdID
-    String tenChars = "ABCDEFGHIJ";
-    assertEquals(IdGenerator.MAX_PREFIX_LENGTH, tenChars.length());
-    new IdGenerator(tenChars); // must not throw
-    assertThrows(IllegalArgumentException.class, () -> new IdGenerator(tenChars + "K"));
+    // 8 chars is the boundary — the IdPrefix SBE type is char[8] in IdGeneratorSnapshot (205);
+    // a longer prefix would silently truncate on snapshot save and break recovery determinism.
+    String eightChars = "ABCDEFGH";
+    assertEquals(IdGenerator.MAX_PREFIX_LENGTH, eightChars.length());
+    new IdGenerator(eightChars); // must not throw
+    assertThrows(IllegalArgumentException.class, () -> new IdGenerator(eightChars + "I"));
   }
 
   @Test
