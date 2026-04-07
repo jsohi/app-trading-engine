@@ -23,3 +23,10 @@ configurations.runtimeClasspath {
 application {
     mainClass.set("com.trading.engine.gateway.GatewayMain")
 }
+
+// Forward the opt-in -DrunAllocTests=true system property to the test JVM so the
+// NoAllocationTest tripwire can read it. The test is gated behind @EnabledIfSystemProperty
+// because GC counts are flaky on shared CI; local runs need the explicit opt-in.
+tasks.test {
+    systemProperty("runAllocTests", System.getProperty("runAllocTests", "false"))
+}
