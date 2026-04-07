@@ -41,11 +41,13 @@ class EventSequencerTest {
     assertEquals(42L, src.currentSequence());
 
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(EventSequencer.SNAPSHOT_LENGTH);
-    int written = src.snapshotTo(buffer, 0);
+    int written = src.saveTo(buffer, 0);
     assertEquals(EventSequencer.SNAPSHOT_LENGTH, written);
+    // Serialized form is next-to-assign (counter + 1), matching SBE schema nextSequence.
+    assertEquals(43L, buffer.getLong(0, ByteOrder.LITTLE_ENDIAN));
 
     EventSequencer restored = new EventSequencer();
-    restored.restoreFrom(buffer, 0);
+    restored.loadFrom(buffer, 0);
     assertEquals(42L, restored.currentSequence());
     assertEquals(43L, restored.nextSequence());
   }
@@ -57,10 +59,10 @@ class EventSequencerTest {
       src.nextSequence();
     }
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-    src.snapshotTo(buffer, 16);
+    src.saveTo(buffer, 16);
 
     EventSequencer restored = new EventSequencer();
-    restored.restoreFrom(buffer, 16);
+    restored.loadFrom(buffer, 16);
     assertEquals(7L, restored.currentSequence());
     assertEquals(8L, restored.nextSequence());
   }
@@ -80,26 +82,32 @@ class EventSequencerTest {
   }
 
   @Test
-  void rejectsNegativeSnapshotCounter() {
+  void rejectsInvalidSnapshotNextSequence() {
     EventSequencer seq = new EventSequencer();
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(EventSequencer.SNAPSHOT_LENGTH);
+
+    buffer.putLong(0, 0L, ByteOrder.LITTLE_ENDIAN);
+    assertThrows(IllegalStateException.class, () -> seq.loadFrom(buffer, 0));
+
     buffer.putLong(0, -1L, ByteOrder.LITTLE_ENDIAN);
-    assertThrows(IllegalStateException.class, () -> seq.restoreFrom(buffer, 0));
+    assertThrows(IllegalStateException.class, () -> seq.loadFrom(buffer, 0));
 
     buffer.putLong(0, Long.MIN_VALUE, ByteOrder.LITTLE_ENDIAN);
-    assertThrows(IllegalStateException.class, () -> seq.restoreFrom(buffer, 0));
+    assertThrows(IllegalStateException.class, () -> seq.loadFrom(buffer, 0));
   }
 
   @Test
   void roundTripAtZeroFreshInstance() {
     // Fresh sequencer (counter=0) round-trips and stays fresh: first nextSequence() still
-    // returns 1. Pins the "unassigned" sentinel across snapshot.
+    // returns 1. Pins the "unassigned" sentinel across snapshot — saveTo writes 1
+    // (next-to-assign), loadFrom restores counter=0.
     EventSequencer src = new EventSequencer();
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(EventSequencer.SNAPSHOT_LENGTH);
-    src.snapshotTo(buffer, 0);
+    src.saveTo(buffer, 0);
+    assertEquals(1L, buffer.getLong(0, ByteOrder.LITTLE_ENDIAN));
 
     EventSequencer restored = new EventSequencer();
-    restored.restoreFrom(buffer, 0);
+    restored.loadFrom(buffer, 0);
     assertEquals(0L, restored.currentSequence());
     assertEquals(1L, restored.nextSequence());
   }

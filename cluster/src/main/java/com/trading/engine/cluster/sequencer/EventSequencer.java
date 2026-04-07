@@ -21,20 +21,17 @@ import org.agrona.MutableDirectBuffer;
  *       (~292,000 years at 1M events/sec), so no exhaustion guard is needed
  * </ul>
  *
- * <p>Snapshot state survives failover via {@link #snapshotTo}/{@link #restoreFrom}. The raw counter
- * is written in little-endian order to match {@code trading-schema.xml}'s {@code
- * byteOrder="littleEndian"} declaration so snapshot bytes survive cross-architecture transfer
- * (e.g., disaster-recovery copies between hosts).
- *
- * <p>Internal state is the "last assigned" counter, matching {@code IdGenerator}. The SBE {@code
- * EventSequencerSnapshot.nextSequence} field in the schema is named "next to assign"; that
- * translation (encode {@code counter + 1}, decode {@code restored - 1}) happens at the SBE
- * encoder/decoder call site, not here — {@link #snapshotTo}/{@link #restoreFrom} write/read the raw
- * counter long directly.
+ * <p>Snapshot state survives failover via {@link #saveTo}/{@link #loadFrom}. The serialized form is
+ * the <em>next sequence to assign</em> (i.e. {@code counter + 1}), matching the SBE schema field
+ * {@code EventSequencerSnapshot.nextSequence} (template 206) so a future SBE encode/decode call
+ * site can write/read the long directly without translation. The value is written in little-endian
+ * order to match {@code trading-schema.xml}'s {@code byteOrder="littleEndian"} declaration so
+ * snapshot bytes survive cross-architecture transfer (e.g., disaster-recovery copies between
+ * hosts).
  */
 public final class EventSequencer {
 
-  /** Number of bytes written by {@link #snapshotTo(MutableDirectBuffer, int)}. */
+  /** Number of bytes written by {@link #saveTo(MutableDirectBuffer, int)}. */
   public static final int SNAPSHOT_LENGTH = Long.BYTES;
 
   /** Last assigned sequence number (0 = nothing assigned yet). */
@@ -61,27 +58,28 @@ public final class EventSequencer {
   }
 
   /**
-   * Serialize the counter into {@code buffer} at {@code offset}. Writes exactly {@link
-   * #SNAPSHOT_LENGTH} bytes in little-endian order.
+   * Serialize the next sequence number to be assigned ({@code counter + 1}) into {@code buffer} at
+   * {@code offset}. Writes exactly {@link #SNAPSHOT_LENGTH} bytes in little-endian order to match
+   * the {@code EventSequencerSnapshot.nextSequence} SBE schema field.
    *
    * @return number of bytes written ({@link #SNAPSHOT_LENGTH})
    */
-  public int snapshotTo(MutableDirectBuffer buffer, int offset) {
-    buffer.putLong(offset, counter, ByteOrder.LITTLE_ENDIAN);
+  public int saveTo(MutableDirectBuffer buffer, int offset) {
+    buffer.putLong(offset, counter + 1L, ByteOrder.LITTLE_ENDIAN);
     return SNAPSHOT_LENGTH;
   }
 
   /**
-   * Restore the counter from {@code buffer} at {@code offset}. After restore the next call to
-   * {@link #nextSequence()} returns {@code counter + 1}. Rejects negative values — a valid snapshot
-   * counter is always >= 0.
+   * Restore the next sequence number to be assigned from {@code buffer} at {@code offset}. After
+   * restore, the next call to {@link #nextSequence()} returns the restored value. Rejects values
+   * {@code < 1} — a valid next sequence is always {@code >= 1}.
    */
-  public void restoreFrom(DirectBuffer buffer, int offset) {
-    long restored = buffer.getLong(offset, ByteOrder.LITTLE_ENDIAN);
-    if (restored < 0L) {
+  public void loadFrom(DirectBuffer buffer, int offset) {
+    long nextSequence = buffer.getLong(offset, ByteOrder.LITTLE_ENDIAN);
+    if (nextSequence < 1L) {
       throw new IllegalStateException(
-          "EventSequencer snapshot counter must be >= 0, was " + restored);
+          "EventSequencer snapshot nextSequence must be >= 1, was " + nextSequence);
     }
-    this.counter = restored;
+    this.counter = nextSequence - 1L;
   }
 }
