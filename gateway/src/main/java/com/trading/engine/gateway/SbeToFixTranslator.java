@@ -108,10 +108,11 @@ public final class SbeToFixTranslator {
   //
   // MAX_LEGS=8 covers the FX product universe the engine actually speaks: spot (1 leg),
   // forward (1 leg), swap (2 legs near + far), butterfly/condor strategies (3-4 legs), and
-  // headroom for exotic option spreads up to 8 legs. The SBE schema doesn't bound noLegs at
-  // the type level; this is an engine-side cap that the translator's `legCount > MAX_LEGS`
-  // guard enforces. Bumping it just means widening the per-leg scratch arrays — no protocol
-  // change. Out-of-bound messages throw IllegalStateException at the boundary.
+  // headroom for exotic option spreads up to 8 legs. The SBE schema's noLegs group type-level
+  // bound is `numInGroup=uint16` (65535) — far above any realistic usage — so this is an
+  // engine-side cap, not a protocol cap. The `legCount > MAX_LEGS` guard in each leg loop
+  // throws IllegalStateException at the boundary; bumping the cap just means widening the
+  // per-leg scratch arrays.
   private static final int MAX_LEGS = 8;
 
   private static final int ER_LEG_SETTL_DATE_LEN =
@@ -207,21 +208,21 @@ public final class SbeToFixTranslator {
     fix.cumQty(dec);
 
     // avgPx — required by FIX 4.4 ER, but SBE allows null on non-fill ExecTypes (New,
-    // Rejected, Canceled, etc.) where there's nothing yet to average. For those statuses we
-    // emit avgPx=0 to satisfy the wire-level required-field check. For fill-bearing
-    // ExecTypes (PartialFill, Fill, Trade*) a null avgPx is a CLUSTER BUG: shipping a "filled
-    // at zero" execution downstream would corrupt P&L tracking and audit trails. Throw at
-    // the boundary instead.
+    // Rejected, Canceled, etc.) where there's nothing yet to average. The cross-field
+    // invariant is simpler and stricter than gating on ExecType: if cumQty > 0, avgPx must
+    // be populated regardless of which ExecType the cluster chose. Shipping a "filled at
+    // zero" execution downstream would corrupt P&L tracking and audit trails. Throw at the
+    // boundary if the invariant is violated; otherwise emit avgPx=0 (satisfies the FIX
+    // wire-level required-field check for the no-fill statuses).
     long avg = sbe.avgPx();
     if (avg == ExecutionReportDecoder.avgPxNullValue()) {
-      final ExecTypeEnum execType = sbe.execType();
-      if (execType == ExecTypeEnum.PartialFill
-          || execType == ExecTypeEnum.Fill
-          || execType == ExecTypeEnum.Trade
-          || execType == ExecTypeEnum.TradeCorrect
-          || execType == ExecTypeEnum.TradeCancel) {
+      if (sbe.cumQty() != 0L) {
         throw new IllegalStateException(
-            "ExecutionReport with fill-bearing execType has null avgPx: " + execType);
+            "ExecutionReport has cumQty="
+                + sbe.cumQty()
+                + " but null avgPx (execType="
+                + sbe.execType()
+                + ")");
       }
       avg = 0L;
     }

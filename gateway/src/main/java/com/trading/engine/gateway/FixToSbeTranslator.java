@@ -505,9 +505,13 @@ public final class FixToSbeTranslator {
                   rs.account(), rs.accountLength(), QuoteRequestEncoder.accountCodeLength())
               : padNull(QuoteRequestEncoder.accountCodeLength()),
           0);
-      // Use the SBE null sentinel rather than 0L (epoch-zero) when transactTime is absent.
+      // Use the SBE null sentinel (Long.MAX_VALUE for uint64 — see QuoteRequestEncoder
+      // .transactTimeNullValue()) rather than 0L (epoch-zero) when transactTime is absent.
       // 0L on the wire would silently look like a valid 1970-01-01 timestamp downstream and
-      // confuse audit/replay tooling.
+      // confuse audit/replay tooling. CONSUMER CONTRACT: cluster code consuming this field
+      // MUST compare against transactTimeNullValue() before using — uint64's null sentinel
+      // is a magic value, not Java null, and naïve comparisons / Instant.ofEpochNano calls
+      // will produce nonsense. APP-13 (FixGateway) is the first consumer.
       qr.transactTime(
           rs.hasTransactTime()
               ? utcTs.decodeNanos(rs.transactTime(), rs.transactTimeLength())
@@ -554,6 +558,9 @@ public final class FixToSbeTranslator {
     // FIX MassQuote has no top-level transactTime; it lives on QuoteSet entries. Use the SBE
     // null sentinel rather than 0L (epoch-zero) so downstream tooling can distinguish "missing"
     // from a real 1970-01-01 timestamp. APP-45 may pull from the first set's value.
+    // CONSUMER CONTRACT: same as translateQuoteRequest above — compare against
+    // MassQuoteDecoder.transactTimeNullValue() before using; magic-value semantics, not
+    // Java null.
     mq.transactTime(MassQuoteEncoder.transactTimeNullValue());
 
     // First pass: sum the inner-group counts. NOTE Artio's `quoteSetsGroupIterator()` returns

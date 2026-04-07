@@ -470,6 +470,45 @@ class FixToSbeTranslatorTest {
     assertEquals(110_100_000L, sbe.price());
   }
 
+  @Test
+  void quoteRequestWithoutTransactTimeUsesSbeNullSentinel() {
+    // Build a QuoteRequest whose related-sym entry has no TransactTime tag, then verify the
+    // SBE wire carries the null sentinel (Long.MAX_VALUE for uint64) — NOT 0L epoch-zero. This
+    // pins the consumer contract: cluster code MUST compare against transactTimeNullValue()
+    // before using the value.
+    com.trading.engine.fix.builder.QuoteRequestEncoder enc =
+        new com.trading.engine.fix.builder.QuoteRequestEncoder();
+    enc.header().senderCompID("CLIENT").targetCompID("EXCH").msgSeqNum(1);
+    enc.header().sendingTime("20260407-12:00:00".getBytes());
+    enc.quoteReqID("RFQ-NO-TS");
+    com.trading.engine.fix.builder.QuoteRequestEncoder.RelatedSymGroupEncoder relSym =
+        enc.relatedSymGroup(1);
+    relSym.instrument().symbol("EURUSD");
+    relSym.side('1');
+    relSym.orderQtyData().orderQty(new DecimalFloat(1L, 0));
+    // intentionally NOT calling relSym.transactTime(...)
+
+    MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
+    long encoded = enc.encode(wire, 0);
+    com.trading.engine.fix.decoder_flyweight.QuoteRequestDecoder dec =
+        new com.trading.engine.fix.decoder_flyweight.QuoteRequestDecoder();
+    dec.decode(wire, (int) (encoded >>> 32), (int) encoded);
+
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
+    new FixToSbeTranslator().translateQuoteRequest(dec, sbeBuf, 0);
+
+    MessageHeaderDecoder hdr = new MessageHeaderDecoder();
+    hdr.wrap(sbeBuf, 0);
+    com.trading.engine.messages.sbe.QuoteRequestDecoder sbe =
+        new com.trading.engine.messages.sbe.QuoteRequestDecoder();
+    sbe.wrap(sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdr.blockLength(), hdr.version());
+
+    // The whole point: the wire MUST carry the SBE null sentinel, not 0L.
+    assertEquals(
+        com.trading.engine.messages.sbe.QuoteRequestDecoder.transactTimeNullValue(),
+        sbe.transactTime());
+  }
+
   // ===========================================================================
   // MassQuote (35=i) — FIX nested groups → SBE flat group
   // ===========================================================================
@@ -565,6 +604,12 @@ class FixToSbeTranslatorTest {
     assertEquals("AUDUSD", trimSbeString(entries.symbol()));
     assertEquals(65_000_000L, entries.bidPx()); // 0.6500 → 65_000_000
     assertEquals(65_100_000L, entries.offerPx());
+
+    // FIX MassQuote has no top-level transactTime, so the SBE wire MUST carry the null
+    // sentinel — NOT 0L epoch-zero. Same consumer contract as QuoteRequest.
+    assertEquals(
+        com.trading.engine.messages.sbe.MassQuoteDecoder.transactTimeNullValue(),
+        sbe.transactTime());
   }
 
   /** SBE asString() returns null-padded fixed-length strings; trim trailing nulls. */
