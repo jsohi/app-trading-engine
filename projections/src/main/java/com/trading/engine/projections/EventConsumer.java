@@ -355,28 +355,14 @@ public final class EventConsumer implements FragmentHandler {
     ingressSequence = 0L;
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    // Zero all per-projection tracking in place (no allocation).
+    // The lastSeqByProjection key set IS the set of distinct registered projections (seeded by
+    // start() / markStartedForTest()). Calling seedLastSeqMap() here makes reset() valid even
+    // before start(). Iterating the key set gives us free dedup — no scratch array, no
+    // quadratic scan.
+    seedLastSeqMap();
     for (final Projection p : lastSeqByProjection.keySet()) {
       lastSeqByProjection.put(p, 0L);
-    }
-    // Dedup by identity across the dispatch table — typical projection count is a handful, the
-    // quadratic dedup is fine on a non-hot path.
-    final Projection[] seen = new Projection[countRegistrations()];
-    int seenCount = 0;
-    for (final Projection[] handlers : dispatchTable.values()) {
-      for (final Projection handler : handlers) {
-        boolean already = false;
-        for (int i = 0; i < seenCount; i++) {
-          if (seen[i] == handler) {
-            already = true;
-            break;
-          }
-        }
-        if (!already) {
-          seen[seenCount++] = handler;
-          handler.reset();
-        }
-      }
+      p.reset();
     }
   }
 
@@ -397,18 +383,5 @@ public final class EventConsumer implements FragmentHandler {
         }
       }
     }
-  }
-
-  /**
-   * Total number of (eventType, projection) registrations. Upper bound on distinct projections; the
-   * {@link #reset} dedup scan handles the overcount correctly when a projection is registered for
-   * multiple eventTypes.
-   */
-  private int countRegistrations() {
-    int total = 0;
-    for (final Projection[] handlers : dispatchTable.values()) {
-      total += handlers.length;
-    }
-    return total;
   }
 }

@@ -98,7 +98,12 @@ public final class ProjectionRegistry {
 
   /**
    * {@code true} iff every registered projection's lag is {@code <= lagThreshold}. Empty registry
-   * is vacuously healthy. Zero allocation.
+   * is vacuously healthy.
+   *
+   * <p>Iterating {@link Object2ObjectHashMap#values()} allocates a single iterator per call — not
+   * strictly zero allocation. Health checks are diagnostic, intended to be called from a monitoring
+   * duty cycle, not from the dispatch hot path; the iterator allocation is intentionally accepted
+   * as the cost of a clean diagnostic API.
    */
   public boolean isHealthy() {
     final long head = consumer.lastProcessedSequence();
