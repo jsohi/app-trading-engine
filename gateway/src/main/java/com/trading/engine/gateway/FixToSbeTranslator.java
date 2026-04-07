@@ -92,7 +92,12 @@ public final class FixToSbeTranslator {
 
     nos.putClOrdId(
         padFromChars(fix.clOrdID(), fix.clOrdIDLength(), NewOrderSingleEncoder.clOrdIdLength()), 0);
-    nos.putQuoteId(padNull(NewOrderSingleEncoder.quoteIdLength()), 0);
+    nos.putQuoteId(
+        fix.hasQuoteID()
+            ? padFromChars(
+                fix.quoteID(), fix.quoteIDLength(), NewOrderSingleEncoder.quoteIdLength())
+            : padNull(NewOrderSingleEncoder.quoteIdLength()),
+        0);
     nos.putSymbol(
         padFromChars(fix.symbol(), fix.symbolLength(), NewOrderSingleEncoder.symbolLength()), 0);
     nos.side(mapSide(fix.side()));
@@ -150,7 +155,12 @@ public final class FixToSbeTranslator {
     nom.putClOrdId(
         padFromChars(fix.clOrdID(), fix.clOrdIDLength(), NewOrderMultilegEncoder.clOrdIdLength()),
         0);
-    nom.putQuoteId(padNull(NewOrderMultilegEncoder.quoteIdLength()), 0);
+    nom.putQuoteId(
+        fix.hasQuoteID()
+            ? padFromChars(
+                fix.quoteID(), fix.quoteIDLength(), NewOrderMultilegEncoder.quoteIdLength())
+            : padNull(NewOrderMultilegEncoder.quoteIdLength()),
+        0);
     nom.putSymbol(
         padFromChars(fix.symbol(), fix.symbolLength(), NewOrderMultilegEncoder.symbolLength()), 0);
     nom.side(mapSide(fix.side()));
@@ -228,7 +238,10 @@ public final class FixToSbeTranslator {
               ? FixedPoint.toInt64(leg.legRatioQty())
               : NewOrderMultilegEncoder.NoLegsEncoder.legRatioQtyNullValue());
       legs.legTenor(TenorEnum.NULL_VAL); // APP-45
-      legs.legOrderQty(NewOrderMultilegEncoder.NoLegsEncoder.legOrderQtyNullValue()); // APP-45
+      legs.legOrderQty(
+          leg.hasLegQty()
+              ? FixedPoint.toInt64(leg.legQty())
+              : NewOrderMultilegEncoder.NoLegsEncoder.legOrderQtyNullValue());
       legs.legPrice(
           leg.hasLegPrice()
               ? FixedPoint.toInt64(leg.legPrice())
@@ -292,12 +305,26 @@ public final class FixToSbeTranslator {
             fix.origClOrdIDLength(),
             MultilegOrderCancelReplaceEncoder.origClOrdIdLength()),
         0);
-    mocr.putOrderId(padNull(MultilegOrderCancelReplaceEncoder.orderIdLength()), 0);
+    mocr.putOrderId(
+        fix.hasOrderID()
+            ? padFromChars(
+                fix.orderID(),
+                fix.orderIDLength(),
+                MultilegOrderCancelReplaceEncoder.orderIdLength())
+            : padNull(MultilegOrderCancelReplaceEncoder.orderIdLength()),
+        0);
     mocr.putClOrdId(
         padFromChars(
             fix.clOrdID(), fix.clOrdIDLength(), MultilegOrderCancelReplaceEncoder.clOrdIdLength()),
         0);
-    mocr.putQuoteId(padNull(MultilegOrderCancelReplaceEncoder.quoteIdLength()), 0);
+    mocr.putQuoteId(
+        fix.hasQuoteID()
+            ? padFromChars(
+                fix.quoteID(),
+                fix.quoteIDLength(),
+                MultilegOrderCancelReplaceEncoder.quoteIdLength())
+            : padNull(MultilegOrderCancelReplaceEncoder.quoteIdLength()),
+        0);
     mocr.putSymbol(
         padFromChars(
             fix.symbol(), fix.symbolLength(), MultilegOrderCancelReplaceEncoder.symbolLength()),
@@ -385,7 +412,9 @@ public final class FixToSbeTranslator {
               : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legRatioQtyNullValue());
       legs.legTenor(TenorEnum.NULL_VAL); // APP-45
       legs.legOrderQty(
-          MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legOrderQtyNullValue()); // APP-45
+          leg.hasLegQty()
+              ? FixedPoint.toInt64(leg.legQty())
+              : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legOrderQtyNullValue());
       legs.legPrice(
           leg.hasLegPrice()
               ? FixedPoint.toInt64(leg.legPrice())
@@ -460,8 +489,28 @@ public final class FixToSbeTranslator {
       qr.putSettlCurrency(padNull(QuoteRequestEncoder.settlCurrencyLength()), 0);
     }
 
-    qr.putAccountCode(padNull(QuoteRequestEncoder.accountCodeLength()), 0);
-    qr.transactTime(0L); // FIX QuoteRequest has no top-level transactTime
+    // FIX QuoteRequest has no top-level Account/TransactTime; both live inside the
+    // NoRelatedSym group. We re-fetch the iterator here (cheap, single instance is reused).
+    final QuoteRequestDecoder.RelatedSymGroupIterator iter2 = fix.relatedSymGroupIterator();
+    if (iter2.hasNext()) {
+      final QuoteRequestDecoder.RelatedSymGroupDecoder firstRelatedSym2 = iter2.next();
+      qr.putAccountCode(
+          firstRelatedSym2.hasAccount()
+              ? padFromChars(
+                  firstRelatedSym2.account(),
+                  firstRelatedSym2.accountLength(),
+                  QuoteRequestEncoder.accountCodeLength())
+              : padNull(QuoteRequestEncoder.accountCodeLength()),
+          0);
+      qr.transactTime(
+          firstRelatedSym2.hasTransactTime()
+              ? utcTs.decodeNanos(
+                  firstRelatedSym2.transactTime(), firstRelatedSym2.transactTimeLength())
+              : 0L);
+    } else {
+      qr.putAccountCode(padNull(QuoteRequestEncoder.accountCodeLength()), 0);
+      qr.transactTime(0L);
+    }
     qr.productType(ProductTypeEnum.NULL_VAL); // APP-45
     qr.tenor(TenorEnum.NULL_VAL); // APP-45
     qr.noLegsCount(0); // APP-47
@@ -550,6 +599,10 @@ public final class FixToSbeTranslator {
       case '5' -> SettlTypeEnum.TPlus4;
       case '6' -> SettlTypeEnum.Future;
       case '7' -> SettlTypeEnum.WhenAndIfIssued;
+      case '8' -> SettlTypeEnum.SellersOption;
+      case '9' -> SettlTypeEnum.TPlus5;
+      case 'B' -> SettlTypeEnum.BrokenDate;
+      case 'C' -> SettlTypeEnum.FXSpotNextDay;
       default -> throw new IllegalStateException("Unsupported FIX SettlType(63): " + fix);
     };
   }

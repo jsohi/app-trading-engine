@@ -72,6 +72,15 @@ public final class SbeToFixTranslator {
   private final byte[] erSettlCurrency =
       new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlCurrencyLength()];
 
+  /**
+   * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
+   * char fields applies to {@link UtcTimestampEncoder#buffer()}: it's the encoder's internal buffer
+   * and gets overwritten on the next {@code encodeFrom} call. We copy out into this dedicated
+   * buffer so the FIX encoder can hold a stable reference until {@code encode()}. 32 bytes covers
+   * FIX UTC timestamp formats up to nanosecond precision (27 chars).
+   */
+  private final byte[] erTransactTime = new byte[32];
+
   /** Reusable DecimalFloat for FIX decimal field setters. */
   private final DecimalFloat dec = new DecimalFloat();
 
@@ -132,8 +141,11 @@ public final class SbeToFixTranslator {
     fix.avgPx(dec);
 
     // transactTime — required. SBE is uint64 epoch nanos; encode as Artio's UTC timestamp ASCII.
+    // Copy out of the encoder's internal buffer into a dedicated per-field buffer so the FIX
+    // encoder's reference stays stable until encode() (same reasoning as the char fields).
     int tsLen = tsEnc.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
-    fix.transactTime(tsEnc.buffer(), 0, tsLen);
+    System.arraycopy(tsEnc.buffer(), 0, erTransactTime, 0, tsLen);
+    fix.transactTime(erTransactTime, 0, tsLen);
 
     // text — optional
     sbe.getText(erText, 0);
@@ -257,6 +269,10 @@ public final class SbeToFixTranslator {
       case TPlus4 -> '5';
       case Future -> '6';
       case WhenAndIfIssued -> '7';
+      case SellersOption -> '8';
+      case TPlus5 -> '9';
+      case BrokenDate -> 'B';
+      case FXSpotNextDay -> 'C';
       default -> throw new IllegalStateException("Unsupported SBE SettlType for FIX wire: " + sbe);
     };
   }
