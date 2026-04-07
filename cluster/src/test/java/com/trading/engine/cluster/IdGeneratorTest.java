@@ -80,6 +80,15 @@ class IdGeneratorTest {
   }
 
   @Test
+  void rejectsOverlongPrefix() {
+    // 10 chars is the boundary: "XXXXXXXXXX-NNNNNNNNN" = 20, fits SBE OrderID/ExecID/ClOrdID
+    String tenChars = "ABCDEFGHIJ";
+    assertEquals(IdGenerator.MAX_PREFIX_LENGTH, tenChars.length());
+    new IdGenerator(tenChars); // must not throw
+    assertThrows(IllegalArgumentException.class, () -> new IdGenerator(tenChars + "K"));
+  }
+
+  @Test
   void rejectsCounterExhaustion() {
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
