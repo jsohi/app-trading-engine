@@ -1118,6 +1118,7 @@
             <field name="status"           id="10027" type="AccountStatusEnum"/>
             <field name="complianceStatus" id="10041" type="ComplianceStatusEnum"/>
             <field name="capabilities"     id="10042" type="uint64"/>
+            <field name="transactTime"     id="60"    type="uint64"          description="Original LoadAccount transactTime (epoch nanos)"/>
         </group>
     </sbe:message>
 
@@ -1228,6 +1229,7 @@
             <field name="decimals"      id="10044" type="uint8"/>
             <field name="currencyClass" id="10045" type="CurrencyClassEnum"/>
             <field name="status"        id="10027" type="AccountStatusEnum"/>
+            <field name="transactTime"  id="60"    type="uint64"          description="Original LoadCurrency transactTime (epoch nanos)"/>
         </group>
     </sbe:message>
 
@@ -1241,6 +1243,7 @@
             <field name="maxDailyVolume"   id="10031" type="int64"/>
             <field name="maxDailyLossBps"  id="10048" type="uint32"/>
             <field name="status"           id="10027" type="AccountStatusEnum"/>
+            <field name="transactTime"     id="60"    type="uint64"          description="Original LoadRiskLimit transactTime (epoch nanos)"/>
         </group>
     </sbe:message>
 

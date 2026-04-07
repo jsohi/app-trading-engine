@@ -39,6 +39,18 @@ Read every changed file in full. Check for these **blocking violations** — any
 
 7. **Schema sequential merge warning** — if `trading-schema.xml` is modified, flag a warning that schema changes must be merged sequentially to avoid conflicts.
 
+8. **No autoboxing of primitives** — flag any code path that boxes a primitive to its wrapper type (`Long`, `Integer`, `Boolean`, `Double`, `Float`, `Short`, `Byte`, `Character`). Common offenders:
+   - `Long`, `Integer`, etc. as field types, parameter types, return types, or generic type arguments where a primitive would do (e.g., `Map<Long, X>`, `List<Integer>`, `Optional<Long>`)
+   - `Long.valueOf(...)`, `Integer.valueOf(...)`, `Boolean.valueOf(...)` calls
+   - Implicit boxing in method calls: `someMap.put(longVar, value)` where the map signature wants `Object` / `Long`
+   - Implicit boxing in collection operations: `list.add(intVar)`, `list.contains(longVar)` on `List<Integer>`/`List<Long>`
+   - **Iterating Agrona primitive collections via enhanced-for**: `for (final long id : longHashMap.keySet())` calls `Iterator<Long>.next()` and boxes — use the primitive iterator instead (`Long2ObjectHashMap.KeyIterator.nextLong()`, `Int2ObjectHashMap.KeyIterator.nextInt()`)
+   - `IntArrayList.addAll(Collection<Integer>)` / `LongArrayList.addAll(Collection<Long>)` — these box every element on the way in
+   - Returning a primitive from a method whose declared return type is the wrapper
+   - Auto-boxing into `Object[]` (e.g., `Stream.of(1, 2, 3)` → `Stream<Integer>`)
+
+   The hot path is the strict prohibition. Diagnostic / snapshot / startup paths may box if explicitly documented and justified — if you encounter boxing on those paths, flag it as a warning rather than blocking, but still call it out.
+
 Report each violation with: file path, line number, the offending code, which rule it violates, and a suggested fix.
 
 ### Agent B: General Code Quality Review

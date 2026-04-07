@@ -8,7 +8,6 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.LongArrayList;
 import org.agrona.collections.Object2ObjectHashMap;
 
 /**
@@ -195,15 +194,19 @@ public final class AccountStore implements ReferenceDataStore {
     final NoAccountsEncoder group = snapshotEncoder.noAccountsCount(recordCount);
 
     if (recordCount > 0) {
-      // Sorted iteration for deterministic snapshot output.
-      final LongArrayList sortedIds = new LongArrayList(recordCount, Long.MIN_VALUE);
-      for (final long id : byId.keySet()) {
-        sortedIds.addLong(id);
+      // Sorted iteration for deterministic snapshot output. Drain via Agrona's primitive
+      // KeyIterator.nextLong() (no per-element Long boxing) into a primitive long[], then sort.
+      // Snapshot path — allocation is allowed.
+      final long[] sortedIds = new long[recordCount];
+      final Long2ObjectHashMap<AccountState>.KeyIterator keyIt = byId.keySet().iterator();
+      int idx = 0;
+      while (keyIt.hasNext()) {
+        sortedIds[idx++] = keyIt.nextLong();
       }
-      sortLongAscending(sortedIds);
+      java.util.Arrays.sort(sortedIds);
 
       for (int i = 0; i < recordCount; i++) {
-        final long id = sortedIds.getLong(i);
+        final long id = sortedIds[i];
         final AccountState state = byId.get(id);
         group.next();
         group.accountId(state.accountId());
@@ -227,6 +230,7 @@ public final class AccountStore implements ReferenceDataStore {
         group.status(state.status());
         group.complianceStatus(state.complianceStatus());
         group.capabilities(state.capabilities());
+        group.transactTime(state.transactTime());
       }
     }
 
@@ -241,6 +245,10 @@ public final class AccountStore implements ReferenceDataStore {
         offset + MessageHeaderDecoder.ENCODED_LENGTH,
         headerDecoder.blockLength(),
         headerDecoder.version());
+    // Defensive: drop any pre-existing state so a smaller / empty snapshot doesn't leave
+    // orphan accounts behind. The registry's resetAll() also calls clear() but doing it
+    // here makes restoreFrom safe to call standalone.
+    clear();
 
     final AccountSnapshotDecoder.NoAccountsDecoder group = snapshotDecoder.noAccounts();
     while (group.hasNext()) {
@@ -258,6 +266,7 @@ public final class AccountStore implements ReferenceDataStore {
       state.setStatus(group.status());
       state.setComplianceStatus(group.complianceStatus());
       state.setCapabilities(group.capabilities());
+      state.setTransactTime(group.transactTime());
       put(state);
     }
 
@@ -270,26 +279,5 @@ public final class AccountStore implements ReferenceDataStore {
       len--;
     }
     return len;
-  }
-
-  /**
-   * In-place ascending sort of a {@link LongArrayList} via {@link java.util.Arrays#sort(long[])} —
-   * O(N log N), critical for the start-of-day snapshot path where N can reach 50k+ accounts.
-   * Allocates one {@code long[]} of size N; snapshot path is allowed to allocate per the project's
-   * CLAUDE.md exemption.
-   */
-  private static void sortLongAscending(final LongArrayList list) {
-    final int n = list.size();
-    if (n <= 1) {
-      return;
-    }
-    final long[] tmp = new long[n];
-    for (int i = 0; i < n; i++) {
-      tmp[i] = list.getLong(i);
-    }
-    java.util.Arrays.sort(tmp);
-    for (int i = 0; i < n; i++) {
-      list.setLong(i, tmp[i]);
-    }
   }
 }

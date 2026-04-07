@@ -4,7 +4,6 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
-import org.agrona.collections.IntArrayList;
 import org.agrona.collections.ObjectHashSet;
 
 /**
@@ -164,35 +163,23 @@ public final class ReferenceDataRegistry {
    * written across all stores.
    */
   public int snapshotAll(final MutableDirectBuffer dst, final int offset) {
-    final IntArrayList sortedTemplateIds =
-        new IntArrayList(storesBySnapshotTemplateId.size(), Integer.MIN_VALUE);
-    for (final int id : storesBySnapshotTemplateId.keySet()) {
-      sortedTemplateIds.addInt(id);
+    // Drain via primitive KeyIterator.nextInt() (no per-element Integer boxing).
+    final int storeCount = storesBySnapshotTemplateId.size();
+    final int[] sortedTemplateIds = new int[storeCount];
+    final Int2ObjectHashMap<ReferenceDataStore>.KeyIterator it =
+        storesBySnapshotTemplateId.keySet().iterator();
+    int idx = 0;
+    while (it.hasNext()) {
+      sortedTemplateIds[idx++] = it.nextInt();
     }
-    sortAscending(sortedTemplateIds);
+    java.util.Arrays.sort(sortedTemplateIds);
 
     int written = 0;
-    for (int i = 0; i < sortedTemplateIds.size(); i++) {
-      final ReferenceDataStore store = storesBySnapshotTemplateId.get(sortedTemplateIds.getInt(i));
+    for (int i = 0; i < storeCount; i++) {
+      final ReferenceDataStore store = storesBySnapshotTemplateId.get(sortedTemplateIds[i]);
       written += store.snapshotTo(dst, offset + written);
     }
     return written;
-  }
-
-  /** O(N log N) sort via {@link java.util.Arrays#sort(int[])}. */
-  private static void sortAscending(final IntArrayList list) {
-    final int n = list.size();
-    if (n <= 1) {
-      return;
-    }
-    final int[] tmp = new int[n];
-    for (int i = 0; i < n; i++) {
-      tmp[i] = list.getInt(i);
-    }
-    java.util.Arrays.sort(tmp);
-    for (int i = 0; i < n; i++) {
-      list.setInt(i, tmp[i]);
-    }
   }
 
   /**

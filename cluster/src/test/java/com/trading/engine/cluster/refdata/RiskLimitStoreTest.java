@@ -85,6 +85,25 @@ class RiskLimitStoreTest {
   }
 
   @Test
+  void restoreOverPrePopulatedStoreDropsOrphans() {
+    // The defensive clear() at the start of restoreFrom must drop pre-existing entries.
+    final RiskLimitStore src = new RiskLimitStore();
+    src.put(makeState(1L, 100L, 1000L));
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+    src.snapshotTo(buf, 0);
+
+    final RiskLimitStore dst = new RiskLimitStore();
+    dst.put(makeState(1L, 100L, 1000L));
+    dst.put(makeState(99L, 200L, 2000L)); // orphan
+    assertEquals(2, dst.size());
+
+    dst.restoreFrom(buf, 0);
+    assertEquals(1, dst.size());
+    assertNull(dst.get(99L));
+    assertNotNull(dst.get(1L));
+  }
+
+  @Test
   void snapshotIsDeterministic() {
     final RiskLimitStore a = new RiskLimitStore();
     a.put(makeState(1L, 1L, 1L));

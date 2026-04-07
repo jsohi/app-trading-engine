@@ -8,7 +8,6 @@ import com.trading.engine.messages.sbe.RiskLimitSnapshotEncoder.NoRiskLimitsEnco
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.LongArrayList;
 
 /**
  * Replicated in-cluster risk-limit store, keyed by {@code accountId}. Per industry standard (CME
@@ -83,14 +82,17 @@ public final class RiskLimitStore implements ReferenceDataStore {
     final NoRiskLimitsEncoder group = snapshotEncoder.noRiskLimitsCount(recordCount);
 
     if (recordCount > 0) {
-      final LongArrayList sortedIds = new LongArrayList(recordCount, Long.MIN_VALUE);
-      for (final long id : byAccountId.keySet()) {
-        sortedIds.addLong(id);
+      // Drain via primitive KeyIterator.nextLong() (no per-element Long boxing).
+      final long[] sortedIds = new long[recordCount];
+      final Long2ObjectHashMap<RiskLimitState>.KeyIterator keyIt = byAccountId.keySet().iterator();
+      int idx = 0;
+      while (keyIt.hasNext()) {
+        sortedIds[idx++] = keyIt.nextLong();
       }
-      sortLongAscending(sortedIds);
+      java.util.Arrays.sort(sortedIds);
 
       for (int i = 0; i < recordCount; i++) {
-        final long id = sortedIds.getLong(i);
+        final long id = sortedIds[i];
         final RiskLimitState state = byAccountId.get(id);
         group.next();
         group.accountId(state.accountId());
@@ -99,6 +101,7 @@ public final class RiskLimitStore implements ReferenceDataStore {
         group.maxDailyVolume(state.maxDailyVolume());
         group.maxDailyLossBps(state.maxDailyLossBps());
         group.status(state.status());
+        group.transactTime(state.transactTime());
       }
     }
 
@@ -113,6 +116,9 @@ public final class RiskLimitStore implements ReferenceDataStore {
         offset + MessageHeaderDecoder.ENCODED_LENGTH,
         headerDecoder.blockLength(),
         headerDecoder.version());
+    // Defensive: drop existing limits so a smaller/empty snapshot doesn't leave stale
+    // entries behind.
+    clear();
 
     final RiskLimitSnapshotDecoder.NoRiskLimitsDecoder group = snapshotDecoder.noRiskLimits();
     while (group.hasNext()) {
@@ -124,28 +130,10 @@ public final class RiskLimitStore implements ReferenceDataStore {
       state.setMaxDailyVolume(group.maxDailyVolume());
       state.setMaxDailyLossBps(group.maxDailyLossBps());
       state.setStatus(group.status());
+      state.setTransactTime(group.transactTime());
       byAccountId.put(state.accountId(), state);
     }
 
     return MessageHeaderDecoder.ENCODED_LENGTH + snapshotDecoder.encodedLength();
-  }
-
-  /**
-   * O(N log N) sort via {@link java.util.Arrays#sort(long[])}. Snapshot path is allowed to allocate
-   * the temporary array.
-   */
-  private static void sortLongAscending(final LongArrayList list) {
-    final int n = list.size();
-    if (n <= 1) {
-      return;
-    }
-    final long[] tmp = new long[n];
-    for (int i = 0; i < n; i++) {
-      tmp[i] = list.getLong(i);
-    }
-    java.util.Arrays.sort(tmp);
-    for (int i = 0; i < n; i++) {
-      list.setLong(i, tmp[i]);
-    }
   }
 }

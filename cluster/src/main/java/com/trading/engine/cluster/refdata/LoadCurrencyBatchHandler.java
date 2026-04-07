@@ -149,8 +149,8 @@ public final class LoadCurrencyBatchHandler implements ReferenceDataBatchLoader 
       loadedEncoder.timestamp(clusterTimestampNanos);
       loadedEncoder.putCcyCode(b0, b1, b2);
       loadedEncoder.isoNumeric(isoNumeric);
-      // Re-read name into scratch (it's still valid from above, but be explicit).
-      group.getName(scratchName, 0);
+      // scratchName is still the 64-byte fixed-length name from group.getName above — no
+      // re-read needed.
       loadedEncoder.putName(scratchName, 0);
       loadedEncoder.decimals(decimals);
       loadedEncoder.currencyClass(currencyClass);

@@ -162,6 +162,11 @@ class LoadCurrencyHandlerTest {
     final MessageHeaderDecoder header = new MessageHeaderDecoder();
     header.wrap(eventDst, 0);
     assertEquals(CurrencyLoadRejectedEventDecoder.TEMPLATE_ID, header.templateId());
+
+    final CurrencyLoadRejectedEventDecoder decoder = new CurrencyLoadRejectedEventDecoder();
+    decoder.wrap(
+        eventDst, MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(), header.version());
+    assertEquals(RejectReasonEnum.InvalidLimitValue, decoder.rejectReason());
     assertEquals(0, store.size());
   }
 
