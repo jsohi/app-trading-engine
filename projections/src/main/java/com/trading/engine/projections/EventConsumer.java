@@ -244,9 +244,9 @@ public final class EventConsumer implements FragmentHandler {
     ingressSequence = 0L;
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    for (final Projection p : lastSeqByProjection.keySet()) {
-      lastSeqByProjection.put(p, 0L);
-    }
+    // close() is terminal — clear the per-projection map outright. Subsequent
+    // lastProcessedSequence(projection) reads return 0L via the MISSING_SEQUENCE fallback.
+    lastSeqByProjection.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -257,11 +257,18 @@ public final class EventConsumer implements FragmentHandler {
    * Dispatch one fragment. Package-private for direct test access (tests feed pre-encoded buffers
    * without spinning up a real Aeron driver). Zero allocation.
    *
-   * <p>Fragments shorter than the SBE {@link MessageHeaderDecoder#ENCODED_LENGTH} (truncated or
-   * malformed) are silently dropped and counted in {@link #truncatedFragmentDropCount()} —
-   * attempting to decode the header would read past the end of the buffer. Unknown templateIds (no
-   * registered projection) are likewise silently dropped and counted in {@link
-   * #unknownTemplateDropCount()}. Neither case bumps the ingress counter.
+   * <p>Fragments are silently dropped and counted in {@link #truncatedFragmentDropCount()} when:
+   *
+   * <ul>
+   *   <li>{@code length < MessageHeaderDecoder.ENCODED_LENGTH} — header itself can't be decoded
+   *   <li>{@code length < ENCODED_LENGTH + headerDecoder.blockLength()} — the declared SBE
+   *       fixed-length block extends past the end of the delivered fragment, which means a
+   *       projection's flyweight decoder would read garbage past the buffer end and silently build
+   *       a corrupted read model. Catching this here is a load-bearing safety net.
+   * </ul>
+   *
+   * <p>Unknown templateIds (no registered projection) are silently dropped and counted in {@link
+   * #unknownTemplateDropCount()}. Drops never bump the ingress counter.
    */
   @Override
   public void onFragment(
@@ -271,6 +278,11 @@ public final class EventConsumer implements FragmentHandler {
       return;
     }
     headerDecoder.wrap(buffer, offset);
+    final int blockLength = headerDecoder.blockLength();
+    if (length < MessageHeaderDecoder.ENCODED_LENGTH + blockLength) {
+      truncatedFragmentDropCount++;
+      return;
+    }
     final int eventType = headerDecoder.templateId();
     final Projection[] handlers = dispatchTable.get(eventType);
     if (handlers == null) {

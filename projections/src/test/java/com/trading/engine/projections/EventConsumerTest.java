@@ -338,6 +338,46 @@ class EventConsumerTest {
 
     assertEquals(0, p.count);
     assertEquals(0L, c.lastProcessedSequence());
+    assertEquals(1L, c.truncatedFragmentDropCount());
+  }
+
+  @Test
+  void onFragmentDropsFragmentShorterThanDeclaredBlockLength() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+
+    // Header declares blockLength=16 but the fragment only carries 4 payload bytes after the
+    // 8-byte header. Total length 12 < 8 + 16 = 24, so the fragment must be dropped — letting
+    // it through would let a projection decoder read 12 bytes past the end of the buffer.
+    final UnsafeBuffer buf = new UnsafeBuffer(new byte[64]);
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    header.wrap(buf, 0).blockLength(16).templateId(ORDER_CREATED).schemaId(1).version(1);
+
+    c.onFragment(buf, 0, 12, null);
+
+    assertEquals(0, p.count);
+    assertEquals(0L, c.lastProcessedSequence());
+    assertEquals(1L, c.truncatedFragmentDropCount());
+  }
+
+  @Test
+  void onFragmentAcceptsFragmentMatchingDeclaredBlockLength() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+
+    // Header declares blockLength=16, fragment carries header + 16 bytes = 24 total. Just barely
+    // valid — should dispatch normally.
+    final UnsafeBuffer buf = new UnsafeBuffer(new byte[64]);
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    header.wrap(buf, 0).blockLength(16).templateId(ORDER_CREATED).schemaId(1).version(1);
+
+    c.onFragment(buf, 0, 24, null);
+
+    assertEquals(1, p.count);
+    assertEquals(16, p.lengths[0]);
+    assertEquals(0L, c.truncatedFragmentDropCount());
   }
 
   @Test
