@@ -112,15 +112,15 @@ class LoadAccountBatchHandlerTest {
               {2L, "BIGCO", "EUR"}, // valid
             });
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
-    dispatch(handler, src, srcLength, eventDst);
+    final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertEquals(2, accountStore.size()); // ACME, BIGCO
 
-    // Walk events.
+    // Walk events bounded by the actual bytes written, not the buffer capacity.
     int offset = 0;
     int loadedCount = 0;
     int rejectedCount = 0;
     final MessageHeaderDecoder header = new MessageHeaderDecoder();
-    while (offset < eventDst.capacity()) {
+    while (offset < totalEventBytes) {
       header.wrap(eventDst, offset);
       if (header.templateId() == AccountLoadedEventDecoder.TEMPLATE_ID) {
         final AccountLoadedEventDecoder loaded = new AccountLoadedEventDecoder();
@@ -141,11 +141,6 @@ class LoadAccountBatchHandlerTest {
         assertEquals(RejectReasonEnum.InvalidAccountId, rejected.rejectReason());
         rejectedCount++;
         offset += MessageHeaderDecoder.ENCODED_LENGTH + rejected.encodedLength();
-      } else {
-        break; // walked off the end of valid events
-      }
-      if (loadedCount + rejectedCount == 3) {
-        break;
       }
     }
     assertEquals(2, loadedCount);

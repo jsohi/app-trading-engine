@@ -174,6 +174,25 @@ class CurrencyStoreTest {
   }
 
   @Test
+  void restoreOverPrePopulatedStoreDropsOrphans() {
+    // The defensive clear() at the start of restoreFrom must drop pre-existing entries.
+    final CurrencyStore src = new CurrencyStore();
+    src.put(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeState("USD", 840, 2));
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+    src.snapshotTo(buf, 0);
+
+    final CurrencyStore dst = new CurrencyStore();
+    dst.put(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeState("USD", 840, 2));
+    dst.put(CurrencyStore.packCode((byte) 'X', (byte) 'X', (byte) 'X'), makeState("XXX", 999, 2));
+    assertEquals(2, dst.size());
+
+    dst.restoreFrom(buf, 0);
+    assertEquals(1, dst.size());
+    assertNull(dst.get(CurrencyStore.packCode((byte) 'X', (byte) 'X', (byte) 'X')));
+    assertNotNull(dst.get(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D')));
+  }
+
+  @Test
   void snapshotIsDeterministicAcrossInsertOrder() {
     // Insert in different orders, snapshot, compare bytes — must be byte-identical.
     final CurrencyStore a = new CurrencyStore();

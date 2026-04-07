@@ -212,6 +212,37 @@ class AccountStoreTest {
   }
 
   @Test
+  void restoreOverPrePopulatedStoreDropsOrphans() {
+    // The defensive clear() at the start of restoreFrom() must drop primary entries, secondary
+    // index entries, AND the codeKeyByAccountId sidecar entries — otherwise an orphan account
+    // would remain reachable via getByCode() after restoring a smaller snapshot.
+    final AccountStore src = new AccountStore();
+    src.put(makeState(1L, "ACME", "Acme", "USD"));
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+    final int written = src.snapshotTo(buf, 0);
+
+    final AccountStore dst = new AccountStore();
+    // Pre-populate dst with TWO accounts. Restore should leave only the snapshot's record.
+    dst.put(makeState(1L, "ACME", "Acme", "USD"));
+    dst.put(makeState(99L, "ORPHAN", "Should Be Gone", "EUR"));
+    assertEquals(2, dst.size());
+
+    final int read = dst.restoreFrom(buf, 0);
+    assertEquals(written, read);
+    assertEquals(1, dst.size());
+    // Orphan id is gone from the primary index.
+    assertNull(dst.get(99L));
+    // Orphan code is gone from the secondary index — load-bearing check that catches sidecar
+    // leaks.
+    final UnsafeBuffer orphanCode = new UnsafeBuffer(new byte[] {'O', 'R', 'P', 'H', 'A', 'N'});
+    assertNull(dst.getByCode(orphanCode, 0, 6));
+    // The snapshot's record is still findable.
+    assertNotNull(dst.get(1L));
+    final UnsafeBuffer acmeCode = new UnsafeBuffer(new byte[] {'A', 'C', 'M', 'E'});
+    assertNotNull(dst.getByCode(acmeCode, 0, 4));
+  }
+
+  @Test
   void scaleSnapshotRoundTripWithMixedCodeLengths() {
     // Load 500 accounts with varying code lengths (1..16 bytes) and verify snapshot/restore
     // including dual-index rebuild for every record. Exercises the trim-trailing-zeros path

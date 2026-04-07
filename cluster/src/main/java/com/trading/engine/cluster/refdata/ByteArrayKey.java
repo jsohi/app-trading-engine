@@ -69,7 +69,7 @@ public final class ByteArrayKey {
     if (src == null) {
       throw new NullPointerException("src must not be null");
     }
-    if (offset < 0 || length < 0 || offset + length > src.length) {
+    if (offset < 0 || length < 0 || length > src.length - offset) {
       throw new IndexOutOfBoundsException(
           "offset=" + offset + " length=" + length + " src.length=" + src.length);
     }
@@ -92,7 +92,7 @@ public final class ByteArrayKey {
     if (src == null) {
       throw new NullPointerException("src must not be null");
     }
-    if (offset < 0 || length < 0 || offset + length > src.length) {
+    if (offset < 0 || length < 0 || length > src.length - offset) {
       throw new IndexOutOfBoundsException(
           "offset=" + offset + " length=" + length + " src.length=" + src.length);
     }

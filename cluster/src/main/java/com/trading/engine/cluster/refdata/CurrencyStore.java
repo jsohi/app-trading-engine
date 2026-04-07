@@ -8,7 +8,6 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
-import org.agrona.collections.IntArrayList;
 
 /**
  * Replicated in-cluster ISO 4217 currency master, indexed by ASCII code packed into an int.
@@ -142,9 +141,31 @@ public final class CurrencyStore implements ReferenceDataStore {
    * must not retain or mutate it after this call. Upsert is idempotent — re-loading the same code
    * overwrites the existing record.
    *
+   * <p>Validates that {@code packedKey} matches the bytes inside {@code state.ccyCode}. A
+   * mismatched call would silently re-key the record after a snapshot round-trip (snapshot
+   * serializes the bytes inside the state, restore re-derives the packed key from those bytes) and
+   * break runtime lookups against the original packedKey. The check is a defensive tripwire —
+   * well-formed callers (this module's loaders) always pass matching values.
+   *
+   * @throws NullPointerException if {@code state} is null
+   * @throws IllegalArgumentException if {@code packedKey} does not match {@code
+   *     packCode(state.ccyCode...)}
    * @return {@code true} if a record was overwritten, {@code false} if newly inserted
    */
   public boolean put(final int packedKey, final CurrencyState state) {
+    if (state == null) {
+      throw new NullPointerException("state must not be null");
+    }
+    final int statePackedKey =
+        packCode(state.ccyCodeByte(0), state.ccyCodeByte(1), state.ccyCodeByte(2));
+    if (statePackedKey != packedKey) {
+      throw new IllegalArgumentException(
+          "packedKey "
+              + packedKey
+              + " does not match CurrencyState.ccyCode (packs to "
+              + statePackedKey
+              + ")");
+    }
     return byCode.put(packedKey, state) != null;
   }
 
@@ -159,14 +180,17 @@ public final class CurrencyStore implements ReferenceDataStore {
     final NoCurrenciesEncoder group = snapshotEncoder.noCurrenciesCount(recordCount);
 
     if (recordCount > 0) {
-      // Sorted iteration for deterministic snapshot output. Allocates an int[] of size
-      // recordCount — diagnostic / recovery path, not the hot path.
-      final IntArrayList sortedKeys = new IntArrayList(recordCount, Integer.MIN_VALUE);
-      sortedKeys.addAll(byCode.keySet());
-      sortKeysAscending(sortedKeys);
+      // Drain via primitive KeyIterator.nextInt() (no per-element Integer boxing).
+      final int[] sortedKeys = new int[recordCount];
+      final Int2ObjectHashMap<CurrencyState>.KeyIterator keyIt = byCode.keySet().iterator();
+      int idx = 0;
+      while (keyIt.hasNext()) {
+        sortedKeys[idx++] = keyIt.nextInt();
+      }
+      java.util.Arrays.sort(sortedKeys);
 
       for (int i = 0; i < recordCount; i++) {
-        final int key = sortedKeys.getInt(i);
+        final int key = sortedKeys[i];
         final CurrencyState state = byCode.get(key);
         group.next();
         group.putCcyCode(state.ccyCodeByte(0), state.ccyCodeByte(1), state.ccyCodeByte(2));
@@ -180,6 +204,7 @@ public final class CurrencyStore implements ReferenceDataStore {
         group.decimals((short) state.decimals());
         group.currencyClass(state.currencyClass());
         group.status(state.status());
+        group.transactTime(state.transactTime());
       }
     }
 
@@ -194,6 +219,9 @@ public final class CurrencyStore implements ReferenceDataStore {
         offset + MessageHeaderDecoder.ENCODED_LENGTH,
         headerDecoder.blockLength(),
         headerDecoder.version());
+    // Defensive: drop pre-existing entries so a smaller/empty snapshot doesn't leave stale
+    // currencies behind.
+    clear();
 
     final CurrencySnapshotDecoder.NoCurrenciesDecoder group = snapshotDecoder.noCurrencies();
     while (group.hasNext()) {
@@ -211,7 +239,7 @@ public final class CurrencyStore implements ReferenceDataStore {
       state.setDecimals(group.decimals());
       state.setCurrencyClass(group.currencyClass());
       state.setStatus(group.status());
-      // transactTime not in the snapshot — leave at 0 (it's metadata, not state).
+      state.setTransactTime(group.transactTime());
       byCode.put(packCode(b0, b1, b2), state);
     }
 
@@ -225,24 +253,5 @@ public final class CurrencyStore implements ReferenceDataStore {
       len--;
     }
     return len;
-  }
-
-  /**
-   * O(N log N) sort via {@link java.util.Arrays#sort(int[])}. Snapshot path is allowed to allocate
-   * the temporary array.
-   */
-  private static void sortKeysAscending(final IntArrayList keys) {
-    final int n = keys.size();
-    if (n <= 1) {
-      return;
-    }
-    final int[] tmp = new int[n];
-    for (int i = 0; i < n; i++) {
-      tmp[i] = keys.getInt(i);
-    }
-    java.util.Arrays.sort(tmp);
-    for (int i = 0; i < n; i++) {
-      keys.setInt(i, tmp[i]);
-    }
   }
 }
