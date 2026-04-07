@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import org.agrona.ExpandableArrayBuffer;
 import org.junit.jupiter.api.Test;
@@ -13,15 +14,15 @@ class IdGeneratorTest {
   @Test
   void producesSequentialZeroPaddedIds() {
     IdGenerator gen = new IdGenerator("ORD");
-    assertEquals("ORD-000000001", gen.next());
-    assertEquals("ORD-000000002", gen.next());
-    assertEquals("ORD-000000003", gen.next());
+    assertEquals("ORD-00000000001", gen.next());
+    assertEquals("ORD-00000000002", gen.next());
+    assertEquals("ORD-00000000003", gen.next());
   }
 
   @Test
   void honoursPrefix() {
-    assertEquals("EXE-000000001", new IdGenerator("EXE").next());
-    assertEquals("QTE-000000001", new IdGenerator("QTE").next());
+    assertEquals("EXE-00000000001", new IdGenerator("EXE").next());
+    assertEquals("QTE-00000000001", new IdGenerator("QTE").next());
   }
 
   @Test
@@ -57,7 +58,7 @@ class IdGeneratorTest {
     IdGenerator restored = new IdGenerator("ORD");
     restored.loadFrom(buffer, 0);
     assertEquals(42L, restored.currentCounter());
-    assertEquals("ORD-000000043", restored.next());
+    assertEquals("ORD-00000000043", restored.next());
   }
 
   @Test
@@ -71,7 +72,7 @@ class IdGeneratorTest {
 
     IdGenerator restored = new IdGenerator("ORD");
     restored.loadFrom(buffer, 16);
-    assertEquals("ORD-000000008", restored.next());
+    assertEquals("ORD-00000000008", restored.next());
   }
 
   @Test
@@ -96,16 +97,16 @@ class IdGeneratorTest {
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
 
     int len1 = gen.nextInto(buffer, 4); // start at offset 4 to verify offset honored
-    assertEquals(13, len1); // "ORD-000000001" = 13 bytes
-    assertEquals(13, gen.idByteLength());
-    assertEquals("ORD-000000001", readAscii(buffer, 4, len1));
+    assertEquals(15, len1); // "ORD-00000000001" = 15 bytes
+    assertEquals(15, gen.idByteLength());
+    assertEquals("ORD-00000000001", readAscii(buffer, 4, len1));
 
-    int len2 = gen.nextInto(buffer, 20);
-    assertEquals(13, len2);
-    assertEquals("ORD-000000002", readAscii(buffer, 20, len2));
+    int len2 = gen.nextInto(buffer, 24);
+    assertEquals(15, len2);
+    assertEquals("ORD-00000000002", readAscii(buffer, 24, len2));
 
     // The earlier write at offset 4 must NOT have been clobbered by the second call.
-    assertEquals("ORD-000000001", readAscii(buffer, 4, len1));
+    assertEquals("ORD-00000000001", readAscii(buffer, 4, len1));
   }
 
   @Test
@@ -113,17 +114,17 @@ class IdGeneratorTest {
     // Both APIs advance the same counter — interleaved use stays sequential.
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-    assertEquals("ORD-000000001", gen.next());
+    assertEquals("ORD-00000000001", gen.next());
     gen.nextInto(buffer, 0);
-    assertEquals("ORD-000000002", readAscii(buffer, 0, gen.idByteLength()));
-    assertEquals("ORD-000000003", gen.next());
+    assertEquals("ORD-00000000002", readAscii(buffer, 0, gen.idByteLength()));
+    assertEquals("ORD-00000000003", gen.next());
   }
 
   @Test
   void nextIntoRejectsCounterExhaustion() {
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer snapshot = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
-    snapshot.putLong(0, IdGenerator.MAX_COUNTER);
+    snapshot.putLong(0, IdGenerator.MAX_COUNTER, ByteOrder.LITTLE_ENDIAN);
     gen.loadFrom(snapshot, 0);
 
     ExpandableArrayBuffer dst = new ExpandableArrayBuffer(64);
@@ -133,9 +134,9 @@ class IdGeneratorTest {
 
   @Test
   void idByteLengthMatchesPrefix() {
-    assertEquals(13, new IdGenerator("ORD").idByteLength()); // 3 + 1 + 9
-    assertEquals(11, new IdGenerator("E").idByteLength()); // 1 + 1 + 9
-    assertEquals(18, new IdGenerator("ABCDEFGH").idByteLength()); // 8 + 1 + 9
+    assertEquals(15, new IdGenerator("ORD").idByteLength()); // 3 + 1 + 11
+    assertEquals(13, new IdGenerator("E").idByteLength()); // 1 + 1 + 11
+    assertEquals(20, new IdGenerator("ABCDEFGH").idByteLength()); // 8 + 1 + 11 — exact SBE fit
   }
 
   private static String readAscii(ExpandableArrayBuffer buffer, int offset, int length) {
@@ -158,7 +159,7 @@ class IdGeneratorTest {
   void rejectsCounterExhaustion() {
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
-    buffer.putLong(0, IdGenerator.MAX_COUNTER);
+    buffer.putLong(0, IdGenerator.MAX_COUNTER, ByteOrder.LITTLE_ENDIAN);
     gen.loadFrom(buffer, 0);
 
     assertThrows(IllegalStateException.class, gen::next);
@@ -170,22 +171,23 @@ class IdGeneratorTest {
   }
 
   @Test
-  void rendersFullNineDigitRange() {
-    // Pin the zero-pad renderer at the edges (1, 10, 99, 100, 999_999_998, 999_999_999)
-    // by seeding via snapshot. Catches any future off-by-one in DIGITS or the modulo loop.
+  void rendersFullElevenDigitRange() {
+    // Pin the zero-pad renderer at the edges — 1, 10, 100, 1000, 10^9 (where the loop crosses
+    // int range), and the final two values before MAX_COUNTER. Catches any future off-by-one
+    // in DIGITS or the modulo loop.
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
 
-    assertGeneratesNextId(buffer, 0L, "ORD-000000001");
-    assertGeneratesNextId(buffer, 9L, "ORD-000000010");
-    assertGeneratesNextId(buffer, 98L, "ORD-000000099");
-    assertGeneratesNextId(buffer, 99L, "ORD-000000100");
-    assertGeneratesNextId(buffer, 999_999_997L, "ORD-999999998");
-    assertGeneratesNextId(buffer, 999_999_998L, "ORD-999999999");
+    assertGeneratesNextId(buffer, 0L, "ORD-00000000001");
+    assertGeneratesNextId(buffer, 9L, "ORD-00000000010");
+    assertGeneratesNextId(buffer, 99L, "ORD-00000000100");
+    assertGeneratesNextId(buffer, 999L, "ORD-00000001000");
+    assertGeneratesNextId(buffer, 999_999_999L, "ORD-01000000000"); // crosses 10-digit boundary
+    assertGeneratesNextId(buffer, 99_999_999_998L, "ORD-99999999999");
   }
 
   private static void assertGeneratesNextId(
       ExpandableArrayBuffer buffer, long seedCounter, String expected) {
-    buffer.putLong(0, seedCounter);
+    buffer.putLong(0, seedCounter, ByteOrder.LITTLE_ENDIAN);
     IdGenerator gen = new IdGenerator("ORD");
     gen.loadFrom(buffer, 0);
     assertEquals(expected, gen.next());
@@ -195,10 +197,10 @@ class IdGeneratorTest {
   void rejectsOutOfRangeSnapshotCounter() {
     IdGenerator gen = new IdGenerator("ORD");
     ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(IdGenerator.SNAPSHOT_LENGTH);
-    buffer.putLong(0, IdGenerator.MAX_COUNTER + 1);
+    buffer.putLong(0, IdGenerator.MAX_COUNTER + 1, ByteOrder.LITTLE_ENDIAN);
     assertThrows(IllegalStateException.class, () -> gen.loadFrom(buffer, 0));
 
-    buffer.putLong(0, -1L);
+    buffer.putLong(0, -1L, ByteOrder.LITTLE_ENDIAN);
     assertThrows(IllegalStateException.class, () -> gen.loadFrom(buffer, 0));
   }
 
