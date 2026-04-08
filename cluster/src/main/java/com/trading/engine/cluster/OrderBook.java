@@ -9,6 +9,7 @@ import com.trading.engine.messages.sbe.OrderBookSnapshotEncoder.NoOrdersEncoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongObjConsumer;
 
 /**
  * In-memory book of active orders, implemented as a primitive-keyed flyweight pool. Backs the
@@ -93,6 +94,16 @@ public final class OrderBook {
   private final byte[] clOrdIdScratch = new byte[OrderState.CL_ORD_ID_LENGTH];
   private final byte[] symbolScratch = new byte[OrderState.SYMBOL_LENGTH];
 
+  // Scratch for draining ordersByKey during deterministic-order snapshot encoding. The
+  // pre-allocated long[] + LongObjConsumer field avoid the per-snapshot KeyIterator allocation
+  // that the Iterator API would otherwise incur. Sized at the book capacity (bounded by
+  // MAX_CAPACITY) so it can always hold every key. snapshotKeysFillIdx is reset before each
+  // forEachLong drain. Both final fields are assigned in the constructor so the lambda can
+  // capture the already-initialized scratch array.
+  private final long[] snapshotKeysScratch;
+  private final LongObjConsumer<OrderState> snapshotKeyCollector;
+  private int snapshotKeysFillIdx;
+
   /** Construct a book with {@link #DEFAULT_CAPACITY} pool slots. */
   public OrderBook() {
     this(DEFAULT_CAPACITY);
@@ -123,6 +134,9 @@ public final class OrderBook {
         new Long2ObjectHashMap<>((int) (capacity / MAP_LOAD_FACTOR) + 1, MAP_LOAD_FACTOR);
     this.pool = new OrderState[capacity];
     this.freeList = new int[capacity];
+    this.snapshotKeysScratch = new long[capacity];
+    this.snapshotKeyCollector =
+        (key, state) -> this.snapshotKeysScratch[this.snapshotKeysFillIdx++] = key;
     for (int i = 0; i < capacity; i++) {
       pool[i] = new OrderState(i);
       // LIFO stack: slot 0 is at the top of the initial free-list so acquire() hands it out first,
@@ -222,17 +236,15 @@ public final class OrderBook {
     final NoOrdersEncoder group = snapshotEncoder.noOrdersCount(recordCount);
 
     if (recordCount > 0) {
-      // Drain keys into a primitive long[] and sort. Snapshot path — allocation is allowed.
-      final long[] sortedKeys = new long[recordCount];
-      final Long2ObjectHashMap<OrderState>.KeyIterator keyIt = ordersByKey.keySet().iterator();
-      int idx = 0;
-      while (keyIt.hasNext()) {
-        sortedKeys[idx++] = keyIt.nextLong();
-      }
-      java.util.Arrays.sort(sortedKeys);
+      // Drain keys into the pre-allocated long[] via a stored LongObjConsumer — no per-call
+      // KeyIterator allocation. snapshotKeysScratch is pre-sized at the book capacity so it
+      // can always hold every key.
+      snapshotKeysFillIdx = 0;
+      ordersByKey.forEachLong(snapshotKeyCollector);
+      java.util.Arrays.sort(snapshotKeysScratch, 0, recordCount);
 
       for (int i = 0; i < recordCount; i++) {
-        final long key = sortedKeys[i];
+        final long key = snapshotKeysScratch[i];
         final OrderState state = ordersByKey.get(key);
         group.next();
         state.copyOrderIdTo(orderIdScratch, 0);

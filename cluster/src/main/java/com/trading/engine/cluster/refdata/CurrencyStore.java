@@ -8,6 +8,7 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
+import org.agrona.collections.IntObjConsumer;
 
 /**
  * Replicated in-cluster ISO 4217 currency master, indexed by ASCII code packed into an int.
@@ -27,9 +28,10 @@ import org.agrona.collections.Int2ObjectHashMap;
  * Iterating in ascending packed-int order is equivalent to iterating in lex-ASCII order over the
  * codes.
  *
- * <p><b>Threading.</b> Single-threaded. Hot-path lookups ({@link #get(int)}, {@link
- * #getByCode(DirectBuffer, int)}) are zero-allocation. Snapshot save/restore is allowed to allocate
- * (per the project exemption).
+ * <p><b>Threading.</b> Single-threaded — cluster duty cycle only. Hot-path lookups ({@link
+ * #get(int)}, {@link #getByCode(DirectBuffer, int)}) are zero-allocation. {@link #snapshotTo}
+ * relies on {@code snapshotKeysFillIdx} being reset at the start of every call; concurrent or
+ * re-entrant invocation would corrupt that counter.
  */
 public final class CurrencyStore implements ReferenceDataStore {
 
@@ -53,6 +55,14 @@ public final class CurrencyStore implements ReferenceDataStore {
 
   // Scratch byte buffers used during snapshot encode (avoids stack allocation in put loop).
   private final byte[] scratchName = new byte[NAME_LENGTH];
+
+  // Scratch for draining byCode in deterministic-order snapshot encoding. Grows on demand
+  // once when the map exceeds INITIAL_CAPACITY. Stored IntObjConsumer avoids the per-call
+  // KeyIterator allocation of the Iterator API.
+  private int[] snapshotKeysScratch = new int[INITIAL_CAPACITY];
+  private int snapshotKeysFillIdx;
+  private final IntObjConsumer<CurrencyState> snapshotKeyCollector =
+      (key, state) -> snapshotKeysScratch[snapshotKeysFillIdx++] = key;
 
   @Override
   public int snapshotTemplateId() {
@@ -180,17 +190,17 @@ public final class CurrencyStore implements ReferenceDataStore {
     final NoCurrenciesEncoder group = snapshotEncoder.noCurrenciesCount(recordCount);
 
     if (recordCount > 0) {
-      // Drain via primitive KeyIterator.nextInt() (no per-element Integer boxing).
-      final int[] sortedKeys = new int[recordCount];
-      final Int2ObjectHashMap<CurrencyState>.KeyIterator keyIt = byCode.keySet().iterator();
-      int idx = 0;
-      while (keyIt.hasNext()) {
-        sortedKeys[idx++] = keyIt.nextInt();
+      // Drain via a stored IntObjConsumer — no KeyIterator allocation on the snapshot path.
+      // Scratch grows on demand once when the map first outgrows INITIAL_CAPACITY.
+      if (snapshotKeysScratch.length < recordCount) {
+        snapshotKeysScratch = new int[recordCount];
       }
-      java.util.Arrays.sort(sortedKeys);
+      snapshotKeysFillIdx = 0;
+      byCode.forEachInt(snapshotKeyCollector);
+      java.util.Arrays.sort(snapshotKeysScratch, 0, recordCount);
 
       for (int i = 0; i < recordCount; i++) {
-        final int key = sortedKeys[i];
+        final int key = snapshotKeysScratch[i];
         final CurrencyState state = byCode.get(key);
         group.next();
         group.putCcyCode(state.ccyCodeByte(0), state.ccyCodeByte(1), state.ccyCodeByte(2));

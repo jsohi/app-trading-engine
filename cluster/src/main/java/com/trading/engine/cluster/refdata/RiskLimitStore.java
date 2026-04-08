@@ -8,6 +8,7 @@ import com.trading.engine.messages.sbe.RiskLimitSnapshotEncoder.NoRiskLimitsEnco
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongObjConsumer;
 
 /**
  * Replicated in-cluster risk-limit store, keyed by {@code accountId}. Per industry standard (CME
@@ -20,6 +21,10 @@ import org.agrona.collections.Long2ObjectHashMap;
  *
  * <p>Hot-path lookup is {@code O(1)} via {@link Long2ObjectHashMap#get(long)} — zero allocation, no
  * boxing.
+ *
+ * <p><b>Threading.</b> Not thread-safe — single-threaded cluster duty cycle only. {@link
+ * #snapshotTo} relies on {@code snapshotKeysFillIdx} being reset at the start of every call;
+ * concurrent or re-entrant invocation would corrupt that counter.
  */
 public final class RiskLimitStore implements ReferenceDataStore {
 
@@ -37,6 +42,14 @@ public final class RiskLimitStore implements ReferenceDataStore {
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
   private final RiskLimitSnapshotEncoder snapshotEncoder = new RiskLimitSnapshotEncoder();
   private final RiskLimitSnapshotDecoder snapshotDecoder = new RiskLimitSnapshotDecoder();
+
+  // Scratch for draining byAccountId in deterministic-order snapshot encoding. Grows on
+  // demand when the map exceeds the current array. Stored LongObjConsumer avoids the
+  // per-call KeyIterator allocation of the Iterator API.
+  private long[] snapshotKeysScratch = new long[INITIAL_CAPACITY];
+  private int snapshotKeysFillIdx;
+  private final LongObjConsumer<RiskLimitState> snapshotKeyCollector =
+      (key, state) -> snapshotKeysScratch[snapshotKeysFillIdx++] = key;
 
   @Override
   public int snapshotTemplateId() {
@@ -82,17 +95,17 @@ public final class RiskLimitStore implements ReferenceDataStore {
     final NoRiskLimitsEncoder group = snapshotEncoder.noRiskLimitsCount(recordCount);
 
     if (recordCount > 0) {
-      // Drain via primitive KeyIterator.nextLong() (no per-element Long boxing).
-      final long[] sortedIds = new long[recordCount];
-      final Long2ObjectHashMap<RiskLimitState>.KeyIterator keyIt = byAccountId.keySet().iterator();
-      int idx = 0;
-      while (keyIt.hasNext()) {
-        sortedIds[idx++] = keyIt.nextLong();
+      // Drain via a stored LongObjConsumer — no KeyIterator allocation on the snapshot path.
+      // Scratch grows on demand once when the map first outgrows INITIAL_CAPACITY.
+      if (snapshotKeysScratch.length < recordCount) {
+        snapshotKeysScratch = new long[recordCount];
       }
-      java.util.Arrays.sort(sortedIds);
+      snapshotKeysFillIdx = 0;
+      byAccountId.forEachLong(snapshotKeyCollector);
+      java.util.Arrays.sort(snapshotKeysScratch, 0, recordCount);
 
       for (int i = 0; i < recordCount; i++) {
-        final long id = sortedIds[i];
+        final long id = snapshotKeysScratch[i];
         final RiskLimitState state = byAccountId.get(id);
         group.next();
         group.accountId(state.accountId());
