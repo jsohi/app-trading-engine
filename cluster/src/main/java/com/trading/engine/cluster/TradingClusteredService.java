@@ -91,6 +91,14 @@ public final class TradingClusteredService implements ClusteredService {
   /** Number of body fragments in a well-formed snapshot envelope. */
   private static final int SNAPSHOT_STORE_COUNT = 6;
 
+  /**
+   * Maximum consecutive empty polls tolerated during snapshot reassembly in {@link #onStart} before
+   * we give up and throw. Protects cluster startup from hanging indefinitely on a corrupted image
+   * that never signals end-of-stream. Tuned generously (1M polls with the cluster idle strategy is
+   * several seconds of wall time at worst) so we never trip on a normal snapshot.
+   */
+  private static final int MAX_SNAPSHOT_EMPTY_POLLS = 1_000_000;
+
   // ===== Collaborators =====
   private final IdGenerator orderIdGen;
   private final IdGenerator execIdGen;
@@ -258,10 +266,21 @@ public final class TradingClusteredService implements ClusteredService {
         };
     // Drain until Aeron signals end-of-stream. An empty poll is a transient "no fragments
     // queued yet" signal — idle the cluster's IdleStrategy and try again rather than exiting
-    // early (which would leave a half-restored snapshot).
+    // early (which would leave a half-restored snapshot). Bound the empty-poll count so a
+    // corrupted image that never signals end-of-stream fails startup loudly rather than
+    // hanging the cluster duty cycle forever.
+    int emptyPolls = 0;
     while (!snapshotImage.isEndOfStream()) {
       if (snapshotImage.poll(appender, Integer.MAX_VALUE) == 0) {
+        if (++emptyPolls > MAX_SNAPSHOT_EMPTY_POLLS) {
+          throw new IllegalStateException(
+              "snapshot reassembly stalled after "
+                  + MAX_SNAPSHOT_EMPTY_POLLS
+                  + " consecutive empty polls — image may be corrupted");
+        }
         cluster.idleStrategy().idle();
+      } else {
+        emptyPolls = 0;
       }
     }
     if (snapshotReassemblyOffset > 0) {
