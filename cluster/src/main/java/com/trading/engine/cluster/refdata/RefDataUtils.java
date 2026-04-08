@@ -1,16 +1,16 @@
 package com.trading.engine.cluster.refdata;
 
 /**
- * Shared helpers used across the refdata stores and loaders. Package-private by design —
- * these are internal utilities, not a public API.
+ * Shared helpers used across the refdata stores and loaders. Package-private by design — these are
+ * internal utilities, not a public API.
  */
 final class RefDataUtils {
 
   private RefDataUtils() {}
 
   /**
-   * Trim trailing zero-padding from the first {@code upToLength} bytes of a fixed-length char
-   * field (SBE {@code char[N]} types are zero-padded on the wire). Returns the live length.
+   * Trim trailing zero-padding from the first {@code upToLength} bytes of a fixed-length char field
+   * (SBE {@code char[N]} types are zero-padded on the wire). Returns the live length.
    *
    * @param bytes the buffer holding the padded field
    * @param upToLength the fixed field width to scan

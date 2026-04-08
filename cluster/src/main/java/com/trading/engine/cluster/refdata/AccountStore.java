@@ -257,10 +257,12 @@ public final class AccountStore implements ReferenceDataStore {
       state.setAccountId(group.accountId());
       state.setParentAccountId(group.parentAccountId());
       group.getAccountCode(codeScratch, 0);
-      state.setAccountCode(codeScratch, 0, RefDataUtils.trimTrailingZeros(codeScratch, MAX_ACCOUNT_CODE_LENGTH));
+      state.setAccountCode(
+          codeScratch, 0, RefDataUtils.trimTrailingZeros(codeScratch, MAX_ACCOUNT_CODE_LENGTH));
       state.setAcctIdSource(group.acctIdSource());
       group.getAccountName(nameScratch, 0);
-      state.setAccountName(nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
+      state.setAccountName(
+          nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
       state.setAccountType(group.accountType());
       state.setBaseCurrency(group.baseCurrency(0), group.baseCurrency(1), group.baseCurrency(2));
       state.setStatus(group.status());
