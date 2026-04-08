@@ -1,5 +1,9 @@
 package com.trading.engine.cluster;
 
+import static io.aeron.Publication.ADMIN_ACTION;
+import static io.aeron.Publication.BACK_PRESSURED;
+import static io.aeron.cluster.service.ClientSession.MOCKED_OFFER;
+
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
@@ -32,7 +36,6 @@ import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
-import io.aeron.Publication;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
@@ -590,10 +593,10 @@ public final class TradingClusteredService implements ClusteredService {
     // delivered-to-client invariant is weaker than the sequenced-in-log invariant.
     for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
       final long result = session.offer(src, offset, length);
-      if (result >= 0L || result == Publication.MOCKED_OFFER_VALUE_RESULT) {
+      if (result >= 0L || result == MOCKED_OFFER) {
         return;
       }
-      if (result == Publication.BACK_PRESSURED || result == Publication.ADMIN_ACTION) {
+      if (result == BACK_PRESSURED || result == ADMIN_ACTION) {
         if (cluster != null) {
           cluster.idleStrategy().idle();
         }
@@ -619,7 +622,7 @@ public final class TradingClusteredService implements ClusteredService {
       if (result >= 0L) {
         return;
       }
-      if (result == Publication.BACK_PRESSURED || result == Publication.ADMIN_ACTION) {
+      if (result == BACK_PRESSURED || result == ADMIN_ACTION) {
         if (cluster != null) {
           cluster.idleStrategy().idle();
         }
@@ -1019,18 +1022,5 @@ public final class TradingClusteredService implements ClusteredService {
       }
     }
     return true;
-  }
-
-  // Publication.MOCKED_OFFER_VALUE_RESULT is not exposed as a constant in this Aeron version; the
-  // ClientSession contract treats non-negative returns as success.
-  private static final class Publication {
-    static final long BACK_PRESSURED = io.aeron.Publication.BACK_PRESSURED;
-    static final long NOT_CONNECTED = io.aeron.Publication.NOT_CONNECTED;
-    static final long ADMIN_ACTION = io.aeron.Publication.ADMIN_ACTION;
-    static final long CLOSED = io.aeron.Publication.CLOSED;
-    static final long MAX_POSITION_EXCEEDED = io.aeron.Publication.MAX_POSITION_EXCEEDED;
-    static final long MOCKED_OFFER_VALUE_RESULT = ClientSession.MOCKED_OFFER;
-
-    private Publication() {}
   }
 }
