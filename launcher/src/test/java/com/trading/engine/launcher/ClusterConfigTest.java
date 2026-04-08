@@ -132,4 +132,126 @@ class ClusterConfigTest {
     assertThrows(IllegalArgumentException.class, () -> ClusterConfig.ingressEndpoints(0));
     assertThrows(IllegalArgumentException.class, () -> ClusterConfig.ingressEndpoints(4));
   }
+
+  // -------------------------------------------------------------------------
+  // Multi-host overloads (added for APP-14 Gemini review: no more hardcoded localhost)
+  // -------------------------------------------------------------------------
+
+  @Test
+  void buildClusterMembersWithExplicitHosts() {
+    final String members = ClusterConfig.buildClusterMembers(3, "host-a", "host-b", "host-c");
+    assertEquals(
+        "0,host-a:20110,host-a:20220,host-a:20330,host-a:20440,host-a:8010"
+            + "|1,host-b:21110,host-b:21220,host-b:21330,host-b:21440,host-b:8011"
+            + "|2,host-c:22110,host-c:22220,host-c:22330,host-c:22440,host-c:8012",
+        members);
+  }
+
+  @Test
+  void buildClusterMembersWithSingleExplicitHost() {
+    assertEquals(
+        "0,10.0.0.1:20110,10.0.0.1:20220,10.0.0.1:20330,10.0.0.1:20440,10.0.0.1:8010",
+        ClusterConfig.buildClusterMembers(1, "10.0.0.1"));
+  }
+
+  @Test
+  void buildClusterMembersNoHostOverloadStillUsesLocalhost() {
+    // Back-compat: the existing single-arg overload remains localhost-only.
+    assertEquals(
+        ClusterConfig.buildClusterMembers(3, "localhost", "localhost", "localhost"),
+        ClusterConfig.buildClusterMembers(3));
+  }
+
+  @Test
+  void buildClusterMembersRejectsWrongHostCount() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.buildClusterMembers(3, "host-a", "host-b"));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.buildClusterMembers(2, "host-a", "host-b", "host-c"));
+  }
+
+  @Test
+  void buildClusterMembersRejectsBlankHost() {
+    assertThrows(
+        IllegalArgumentException.class, () -> ClusterConfig.buildClusterMembers(2, "host-a", ""));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.buildClusterMembers(2, "host-a", "   "));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.buildClusterMembers(2, "host-a", (String) null));
+  }
+
+  @Test
+  void buildClusterMembersRejectsNullHostsArray() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.buildClusterMembers(1, (String[]) null));
+  }
+
+  @Test
+  void ingressEndpointsWithExplicitHosts() {
+    assertEquals(
+        "0=host-a:20110,1=host-b:21110,2=host-c:22110",
+        ClusterConfig.ingressEndpoints(3, "host-a", "host-b", "host-c"));
+  }
+
+  @Test
+  void ingressEndpointsNoHostOverloadStillUsesLocalhost() {
+    assertEquals(
+        ClusterConfig.ingressEndpoints(3, "localhost", "localhost", "localhost"),
+        ClusterConfig.ingressEndpoints(3));
+  }
+
+  @Test
+  void ingressEndpointsRejectsWrongHostCount() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.ingressEndpoints(3, "host-a", "host-b"));
+  }
+
+  @Test
+  void hostForMemberExtractsLocalhostDefault() {
+    final String members = ClusterConfig.buildClusterMembers(3);
+    assertEquals("localhost", ClusterConfig.hostForMember(members, 0));
+    assertEquals("localhost", ClusterConfig.hostForMember(members, 1));
+    assertEquals("localhost", ClusterConfig.hostForMember(members, 2));
+  }
+
+  @Test
+  void hostForMemberExtractsExplicitHost() {
+    final String members = ClusterConfig.buildClusterMembers(3, "host-a", "host-b", "host-c");
+    assertEquals("host-a", ClusterConfig.hostForMember(members, 0));
+    assertEquals("host-b", ClusterConfig.hostForMember(members, 1));
+    assertEquals("host-c", ClusterConfig.hostForMember(members, 2));
+  }
+
+  @Test
+  void hostForMemberRejectsMissingNodeId() {
+    final String members = ClusterConfig.buildClusterMembers(2);
+    assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(members, 2));
+  }
+
+  @Test
+  void hostForMemberRejectsBlankString() {
+    assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember("", 0));
+    assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(null, 0));
+  }
+
+  @Test
+  void hostForMemberRejectsMalformedString() {
+    assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember("garbage", 0));
+    assertThrows(
+        IllegalArgumentException.class, () -> ClusterConfig.hostForMember("0,no-port-here", 0));
+  }
+
+  @Test
+  void hostForMemberRejectsNonNumericMemberId() {
+    // Covers the NumberFormatException catch branch.
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ClusterConfig.hostForMember("abc,host-a:20110,host-a:20220", 0));
+  }
 }

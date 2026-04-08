@@ -91,4 +91,19 @@ class ClusterNodeLauncherTest {
         NullPointerException.class,
         () -> ClusterNodeLauncher.launch(0, baseDir.toString(), "/nonexistent", null));
   }
+
+  @Test
+  void launchFailsFastWithNonLocalhostMembers(@TempDir final Path baseDir) {
+    // Locks in that the host-extraction path works for non-localhost clusters. The CnC check
+    // still fails first (driver not running), but launch() must have parsed the explicit host
+    // without throwing.
+    final String members = ClusterConfig.buildClusterMembers(1, "10.0.0.1");
+    final IllegalStateException ex =
+        assertThrows(
+            IllegalStateException.class,
+            () -> ClusterNodeLauncher.launch(0, baseDir.toString(), "/nonexistent", members));
+    assertTrue(
+        ex.getMessage().contains("cnc.dat missing"),
+        "expected 'cnc.dat missing' in message, got: " + ex.getMessage());
+  }
 }

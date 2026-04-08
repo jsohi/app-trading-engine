@@ -37,11 +37,6 @@ public final class ClusterNodeLauncher {
   private static final String CNC_FILENAME = "cnc.dat";
   private static final String INGRESS_CHANNEL = "aeron:udp?term-length=64k";
   private static final String LOG_CHANNEL = "aeron:udp?term-length=256k";
-  // Replication + archive control-response use ephemeral port 0 and bind to localhost. This is
-  // the correct default for a dev / single-host cluster; multi-host deployments will need a
-  // routable interface instead, which APP-15's config loader will supply.
-  private static final String REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
-  private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
   // Archive stream IDs — base values; the launch path adds {@code nodeId} to each so that even
   // if multiple cluster nodes ever share a Media Driver (they currently don't — each node has
@@ -61,11 +56,19 @@ public final class ClusterNodeLauncher {
    *   <li>closing the returned {@link ClusterComponents} on shutdown.
    * </ul>
    *
+   * <p>The local bind host for the replication and archive-control-response channels is extracted
+   * from {@code clusterMembers} — specifically, the ingress hostname at entry {@code nodeId}. This
+   * means a single-host dev cluster (built via {@link ClusterConfig#buildClusterMembers(int)})
+   * binds to {@code localhost}, while a multi-host cluster (built via {@link
+   * ClusterConfig#buildClusterMembers(int, String...)}) binds to the routable hostname the caller
+   * supplied.
+   *
    * @param nodeId cluster member id (0-based; must be in {@code [0, ClusterConfig.MAX_NODES)})
    * @param baseDir parent directory for per-node archive and cluster dirs (non-blank)
    * @param aeronDir external Media Driver's {@code aeron.dir} (non-blank)
    * @param clusterMembers member string in the format produced by {@link
-   *     ClusterConfig#buildClusterMembers(int)} (non-blank)
+   *     ClusterConfig#buildClusterMembers(int)} or {@link ClusterConfig#buildClusterMembers(int,
+   *     String...)} (non-blank; must contain an entry for {@code nodeId})
    * @return handle owning the launched Archive, ConsensusModule, and ClusteredServiceContainer
    * @throws NullPointerException if any string argument is {@code null}
    * @throws IllegalArgumentException if {@code nodeId} is out of range or any string argument is
@@ -82,6 +85,15 @@ public final class ClusterNodeLauncher {
     requireNonBlank(aeronDir, "aeronDir");
     requireNonBlank(clusterMembers, "clusterMembers");
     requireRunningMediaDriver(aeronDir);
+
+    // Extract this node's advertised ingress hostname from the member string and use it as the
+    // local bind host for the replication + archive-control-response channels. This keeps the
+    // launcher host-agnostic: localhost works for single-host dev (buildClusterMembers no-host
+    // overload defaults to localhost), a routable hostname works for multi-host deployments
+    // (buildClusterMembers hosts... overload). Using ephemeral port 0 lets the OS pick.
+    final String localHost = ClusterConfig.hostForMember(clusterMembers, nodeId);
+    final String replicationChannel = "aeron:udp?endpoint=" + localHost + ":0";
+    final String archiveControlResponseChannel = "aeron:udp?endpoint=" + localHost + ":0";
 
     final File archiveDir;
     final File clusterDir;
@@ -109,7 +121,8 @@ public final class ClusterNodeLauncher {
           new Archive.Context()
               .aeronDirectoryName(aeronDir)
               .archiveDir(archiveDir)
-              .controlChannel("aeron:udp?endpoint=localhost:" + ClusterConfig.archivePort(nodeId))
+              .controlChannel(
+                  "aeron:udp?endpoint=" + localHost + ":" + ClusterConfig.archivePort(nodeId))
               .controlStreamId(ARCHIVE_CONTROL_STREAM_ID + nodeId)
               .localControlChannel("aeron:ipc?term-length=64k")
               .localControlStreamId(ARCHIVE_LOCAL_CONTROL_STREAM_ID + nodeId)
@@ -127,7 +140,7 @@ public final class ClusterNodeLauncher {
               .aeronDirectoryName(aeronDir)
               .controlRequestChannel(archiveCtx.controlChannel())
               .controlRequestStreamId(archiveCtx.controlStreamId())
-              .controlResponseChannel(ARCHIVE_CONTROL_RESPONSE_CHANNEL)
+              .controlResponseChannel(archiveControlResponseChannel)
               .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID + nodeId);
 
       // 3. ConsensusModule — the Raft state machine + log replication.
@@ -140,7 +153,7 @@ public final class ClusterNodeLauncher {
               .clusterDir(clusterDir)
               .ingressChannel(INGRESS_CHANNEL)
               .logChannel(LOG_CHANNEL)
-              .replicationChannel(REPLICATION_CHANNEL)
+              .replicationChannel(replicationChannel)
               .errorHandler(throwable -> LOG.error("ConsensusModule error", throwable));
       consensusModule = ConsensusModule.launch(consensusCtx);
 

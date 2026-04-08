@@ -12,16 +12,16 @@ package com.trading.engine.launcher;
  * 2    | 22110   | 22220     | 22330 | 22440   | 8012
  * </pre>
  *
- * <p>The {@link #buildClusterMembers(int)} format is the exact string that {@code
+ * <p>The {@link #buildClusterMembers(int, String...)} format is the exact string that {@code
  * ConsensusModule.Context#clusterMembers(String)} expects: members separated by {@code |}, fields
  * within a member separated by {@code ,}, in the order {@code memberId,ingress,consensus,log,
  * catchup,archive}.
  *
- * <p><b>Host is hardcoded to {@code localhost}.</b> APP-14 is a single-host dev / test bootstrap —
- * multi-host deployment (where the three cluster members live on separate machines) is the concern
- * of APP-15's {@code TradingEngineLauncher} + {@code cluster.properties} config loader, which will
- * supply per-member hostnames. Keeping the helper localhost-only here lets APP-14 ship a
- * deterministic hermetic bootstrap without dragging config-file plumbing into this PR.
+ * <p>The no-host overloads ({@link #buildClusterMembers(int)}, {@link #ingressEndpoints(int)})
+ * default every member to {@code localhost} and are intended for single-host dev and hermetic
+ * tests. Multi-host deployments use the {@code String...} overloads to pass a routable hostname (or
+ * IP) per member; APP-15's {@code TradingEngineLauncher} + {@code cluster.properties} config loader
+ * will wire those overloads from file.
  */
 public final class ClusterConfig {
 
@@ -70,28 +70,54 @@ public final class ClusterConfig {
 
   /**
    * Build the {@code clusterMembers} string passed to {@code
-   * ConsensusModule.Context#clusterMembers(String)}.
-   *
-   * <p>Example for {@code nodeCount=3}: {@code
-   * "0,localhost:20110,localhost:20220,localhost:20330,localhost:20440,localhost:8010|1,localhost:21110,localhost:21220,localhost:21330,localhost:21440,localhost:8011|2,localhost:22110,localhost:22220,localhost:22330,localhost:22440,localhost:8012"}
+   * ConsensusModule.Context#clusterMembers(String)}, defaulting every member host to {@code
+   * localhost}. Shorthand for single-host dev / hermetic tests.
    */
   public static String buildClusterMembers(final int nodeCount) {
     checkNodeCount(nodeCount);
+    return buildClusterMembers(nodeCount, defaultHosts(nodeCount));
+  }
+
+  /**
+   * Build the {@code clusterMembers} string with an explicit hostname per member. Use this overload
+   * for multi-host deployments where each node lives on a different machine.
+   *
+   * <p>Example for {@code nodeCount=3, hosts=["host-a","host-b","host-c"]}: {@code
+   * "0,host-a:20110,host-a:20220,host-a:20330,host-a:20440,host-a:8010|1,host-b:21110,...|2,host-c:22110,..."}
+   *
+   * @param nodeCount number of members (1..{@link #MAX_NODES})
+   * @param hosts hostname or IP per member; length must equal {@code nodeCount}; no element may be
+   *     {@code null} or blank
+   */
+  public static String buildClusterMembers(final int nodeCount, final String... hosts) {
+    checkNodeCount(nodeCount);
+    checkHosts(nodeCount, hosts);
     final StringBuilder sb = new StringBuilder();
     for (int nodeId = 0; nodeId < nodeCount; nodeId++) {
       if (nodeId > 0) {
         sb.append('|');
       }
+      final String host = hosts[nodeId];
       sb.append(nodeId)
-          .append(",localhost:")
+          .append(',')
+          .append(host)
+          .append(':')
           .append(ingressPort(nodeId))
-          .append(",localhost:")
+          .append(',')
+          .append(host)
+          .append(':')
           .append(consensusPort(nodeId))
-          .append(",localhost:")
+          .append(',')
+          .append(host)
+          .append(':')
           .append(logPort(nodeId))
-          .append(",localhost:")
+          .append(',')
+          .append(host)
+          .append(':')
           .append(catchupPort(nodeId))
-          .append(",localhost:")
+          .append(',')
+          .append(host)
+          .append(':')
           .append(archivePort(nodeId));
     }
     return sb.toString();
@@ -99,18 +125,93 @@ public final class ClusterConfig {
 
   /**
    * Build the {@code ingressEndpoints} string used by {@code AeronCluster.Context} clients to reach
-   * any member. Format: {@code "0=host:port,1=host:port,2=host:port"}.
+   * any member, defaulting every host to {@code localhost}. Format: {@code
+   * "0=host:port,1=host:port,2=host:port"}.
    */
   public static String ingressEndpoints(final int nodeCount) {
     checkNodeCount(nodeCount);
+    return ingressEndpoints(nodeCount, defaultHosts(nodeCount));
+  }
+
+  /**
+   * Build the {@code ingressEndpoints} string with an explicit hostname per member.
+   *
+   * @param nodeCount number of members (1..{@link #MAX_NODES})
+   * @param hosts hostname or IP per member; length must equal {@code nodeCount}; no element may be
+   *     {@code null} or blank
+   */
+  public static String ingressEndpoints(final int nodeCount, final String... hosts) {
+    checkNodeCount(nodeCount);
+    checkHosts(nodeCount, hosts);
     final StringBuilder sb = new StringBuilder();
     for (int nodeId = 0; nodeId < nodeCount; nodeId++) {
       if (nodeId > 0) {
         sb.append(',');
       }
-      sb.append(nodeId).append("=localhost:").append(ingressPort(nodeId));
+      sb.append(nodeId).append('=').append(hosts[nodeId]).append(':').append(ingressPort(nodeId));
     }
     return sb.toString();
+  }
+
+  /**
+   * Extract the hostname of a given cluster member from a {@code clusterMembers} string previously
+   * built by {@link #buildClusterMembers(int, String...)}. Used by {@link ClusterNodeLauncher} to
+   * recover its local bind host at launch time without requiring a separate constructor argument.
+   *
+   * @param clusterMembers the full member string
+   * @param nodeId the member whose host to return
+   * @throws IllegalArgumentException if the member string is malformed or does not contain {@code
+   *     nodeId}
+   */
+  public static String hostForMember(final String clusterMembers, final int nodeId) {
+    if (clusterMembers == null || clusterMembers.isBlank()) {
+      throw new IllegalArgumentException("clusterMembers must not be blank");
+    }
+    for (final String member : clusterMembers.split("\\|")) {
+      final String[] fields = member.split(",");
+      if (fields.length < 2) {
+        throw new IllegalArgumentException("malformed member entry: " + member);
+      }
+      final int id;
+      try {
+        id = Integer.parseInt(fields[0]);
+      } catch (final NumberFormatException e) {
+        throw new IllegalArgumentException("malformed member id in entry: " + member, e);
+      }
+      if (id == nodeId) {
+        final String ingress = fields[1]; // format "host:port"
+        final int colon = ingress.lastIndexOf(':');
+        if (colon <= 0) {
+          throw new IllegalArgumentException("malformed ingress endpoint in entry: " + member);
+        }
+        return ingress.substring(0, colon);
+      }
+    }
+    throw new IllegalArgumentException(
+        "clusterMembers does not contain nodeId " + nodeId + ": " + clusterMembers);
+  }
+
+  private static String[] defaultHosts(final int nodeCount) {
+    final String[] hosts = new String[nodeCount];
+    for (int i = 0; i < nodeCount; i++) {
+      hosts[i] = "localhost";
+    }
+    return hosts;
+  }
+
+  private static void checkHosts(final int nodeCount, final String[] hosts) {
+    if (hosts == null) {
+      throw new IllegalArgumentException("hosts must not be null");
+    }
+    if (hosts.length != nodeCount) {
+      throw new IllegalArgumentException(
+          "hosts length (" + hosts.length + ") must equal nodeCount (" + nodeCount + ")");
+    }
+    for (int i = 0; i < hosts.length; i++) {
+      if (hosts[i] == null || hosts[i].isBlank()) {
+        throw new IllegalArgumentException("hosts[" + i + "] must not be blank");
+      }
+    }
   }
 
   /**
