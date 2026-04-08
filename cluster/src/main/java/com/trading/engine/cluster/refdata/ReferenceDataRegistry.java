@@ -217,6 +217,16 @@ public final class ReferenceDataRegistry {
     return distinctStores.size();
   }
 
+  /**
+   * Look up the registered store for a given snapshot templateId. Returns {@code null} if no store
+   * is registered for that id. Used by consumers (e.g. {@code TradingClusteredService}'s
+   * constructor-time wiring assertion) to verify that a concrete store reference held by the
+   * consumer is the same instance that is registered in the dispatch tables.
+   */
+  public ReferenceDataStore storeForSnapshotTemplateId(final int templateId) {
+    return storesBySnapshotTemplateId.get(templateId);
+  }
+
   public int loaderCount() {
     return loadersByCommandTemplateId.size();
   }

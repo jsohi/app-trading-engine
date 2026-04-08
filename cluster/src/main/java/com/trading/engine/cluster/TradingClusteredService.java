@@ -81,7 +81,6 @@ public final class TradingClusteredService implements ClusteredService {
 
   static final int NOT_HANDLED = -1;
   private static final int MAX_BACKPRESSURE_RETRY = 3_000;
-  private static final long NANOS_PER_MILLI = 1_000_000L;
 
   /**
    * Snapshot envelope version understood by this service. Bumped whenever the envelope layout
@@ -201,6 +200,34 @@ public final class TradingClusteredService implements ClusteredService {
     this.currencyStore = notNull(currencyStore, "currencyStore");
     this.riskLimitStore = notNull(riskLimitStore, "riskLimitStore");
     this.referenceDataRegistry = notNull(referenceDataRegistry, "referenceDataRegistry");
+    // Consistency check: the registry must be backed by the same concrete store instances we
+    // hold a direct reference to. Otherwise NewOrderSingle validation would read from one
+    // object graph while ref-data commands mutate another, or a snapshot restore could put the
+    // registry and the direct references out of sync. Fail fast at construction time.
+    requireSameStore(
+        referenceDataRegistry, AccountStore.SNAPSHOT_TEMPLATE_ID, accountStore, "accountStore");
+    requireSameStore(
+        referenceDataRegistry, CurrencyStore.SNAPSHOT_TEMPLATE_ID, currencyStore, "currencyStore");
+    requireSameStore(
+        referenceDataRegistry,
+        RiskLimitStore.SNAPSHOT_TEMPLATE_ID,
+        riskLimitStore,
+        "riskLimitStore");
+  }
+
+  private static void requireSameStore(
+      final ReferenceDataRegistry registry,
+      final int snapshotTemplateId,
+      final Object expected,
+      final String name) {
+    final Object registered = registry.storeForSnapshotTemplateId(snapshotTemplateId);
+    if (registered != expected) {
+      throw new IllegalArgumentException(
+          name
+              + " must be the same instance registered in the ReferenceDataRegistry (templateId "
+              + snapshotTemplateId
+              + ")");
+    }
   }
 
   private static <T> T notNull(final T value, final String name) {
@@ -585,12 +612,12 @@ public final class TradingClusteredService implements ClusteredService {
       return; // Unit tests may pass null for the unused ref-data session case.
     }
     // Phase-1 back-pressure strategy: a bounded retry on the duty-cycle thread. A single slow
-    // client can cause head-of-line blocking for other sessions while we retry, which the
-    // cluster framework's idle strategy will eventually idle away — but it is still a real
-    // concern for production. A follow-up issue (APP-? async egress queue) will move session
-    // egress off the duty cycle. For now, cap retries at MAX_BACKPRESSURE_RETRY and drop the
-    // message on exhaustion; the underlying event is already durable in the journal so the
-    // delivered-to-client invariant is weaker than the sequenced-in-log invariant.
+    // client can cause head-of-line blocking for other sessions while we retry; a follow-up
+    // issue will move session egress off the duty cycle. Crucially, if retries exhaust or the
+    // session returns a non-retryable result (NOT_CONNECTED / CLOSED / MAX_POSITION_EXCEEDED),
+    // we MUST NOT silently drop the reply — the underlying event is already journaled, so a
+    // client that does not see an ACK could safely replay a duplicate business command. Close
+    // the session instead, which forces the client to reconnect and resync from the journal.
     for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
       final long result = session.offer(src, offset, length);
       if (result >= 0L || result == MOCKED_OFFER) {
@@ -602,10 +629,13 @@ public final class TradingClusteredService implements ClusteredService {
         }
         continue;
       }
-      // NOT_CONNECTED / CLOSED / MAX_POSITION_EXCEEDED — give up for this message; the cluster
-      // framework will tear down the session.
+      // Non-retryable — quarantine the session so the cluster framework tears it down rather
+      // than leaving the client in an inconsistent state.
+      session.close();
       return;
     }
+    // Retry exhausted on persistent BACK_PRESSURED / ADMIN_ACTION — same treatment.
+    session.close();
   }
 
   private void offerFragment(

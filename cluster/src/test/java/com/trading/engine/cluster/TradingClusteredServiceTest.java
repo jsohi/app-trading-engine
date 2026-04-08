@@ -705,6 +705,16 @@ class TradingClusteredServiceTest {
   }
 
   private TradingClusteredService freshService() {
+    // The TradingClusteredService constructor asserts that the ref-data registry is backed by
+    // the same store instances passed in directly, so we must register and pass the same
+    // objects.
+    final AccountStore freshAccountStore = new AccountStore();
+    final CurrencyStore freshCurrencyStore = new CurrencyStore();
+    final RiskLimitStore freshRiskLimitStore = new RiskLimitStore();
+    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
+    freshRegistry.registerStore(freshAccountStore);
+    freshRegistry.registerStore(freshCurrencyStore);
+    freshRegistry.registerStore(freshRiskLimitStore);
     final TradingClusteredService s =
         new TradingClusteredService(
             new IdGenerator("ORD"),
@@ -712,20 +722,12 @@ class TradingClusteredServiceTest {
             new OrderBook(128),
             new EventSequencer(),
             new EventJournal(64),
-            new AccountStore(),
-            new CurrencyStore(),
-            new RiskLimitStore(),
-            newRegistry());
+            freshAccountStore,
+            freshCurrencyStore,
+            freshRiskLimitStore,
+            freshRegistry);
     s.onStart(cluster, null);
     return s;
-  }
-
-  private static ReferenceDataRegistry newRegistry() {
-    final ReferenceDataRegistry r = new ReferenceDataRegistry();
-    r.registerStore(new AccountStore());
-    r.registerStore(new CurrencyStore());
-    r.registerStore(new RiskLimitStore());
-    return r;
   }
 
   private static int appendFragment(
@@ -773,6 +775,51 @@ class TradingClusteredServiceTest {
     service.onTimerEvent(1L, TIMESTAMP);
     service.onRoleChange(Cluster.Role.LEADER);
     service.onTerminate(cluster);
+  }
+
+  @Test
+  void constructorRejectsRegistryWithDifferentStoreInstances() {
+    // Pass a different AccountStore instance than the one registered in the registry. The
+    // constructor must fail fast rather than let the service validate orders against one graph
+    // while ref-data commands mutate another.
+    final AccountStore differentAccountStore = new AccountStore();
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new TradingClusteredService(
+                orderIdGen,
+                execIdGen,
+                orderBook,
+                eventSequencer,
+                eventJournal,
+                differentAccountStore, // different instance than what is registered
+                currencyStore,
+                riskLimitStore,
+                registry));
+  }
+
+  @Test
+  void sessionClosedWhenOfferRetryExhausts() {
+    // Persistent BACK_PRESSURED → after MAX_BACKPRESSURE_RETRY attempts the session must be
+    // closed so the cluster framework tears it down. Silent drop would leave the client
+    // without ACK / NACK and free it to replay the command.
+    final FakeClientSession stuckSession = new FakeClientSession();
+    stuckSession.alwaysBackpressured = true;
+
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final int len =
+        encodeNewOrderSingle(
+            buf,
+            "CL-STUCK",
+            "EURUSD",
+            SideEnum.Buy,
+            OrdTypeEnum.Limit,
+            1L * PRICE_SCALE,
+            1L * PRICE_SCALE,
+            "ACME",
+            "USD");
+    service.onSessionMessage(stuckSession, TIMESTAMP, buf, 0, len, null);
+    assertTrue(stuckSession.closed, "session should be closed after retry exhaustion");
   }
 
   @Test
@@ -837,6 +884,8 @@ class TradingClusteredServiceTest {
   static final class FakeClientSession implements ClientSession {
     final List<byte[]> messages = new ArrayList<>();
     int pendingBackpressures;
+    boolean alwaysBackpressured;
+    boolean closed;
 
     @Override
     public long id() {
@@ -859,15 +908,20 @@ class TradingClusteredServiceTest {
     }
 
     @Override
-    public void close() {}
+    public void close() {
+      closed = true;
+    }
 
     @Override
     public boolean isClosing() {
-      return false;
+      return closed;
     }
 
     @Override
     public long offer(final DirectBuffer buffer, final int offset, final int length) {
+      if (alwaysBackpressured) {
+        return Publication.BACK_PRESSURED;
+      }
       if (pendingBackpressures > 0) {
         pendingBackpressures--;
         return Publication.BACK_PRESSURED;

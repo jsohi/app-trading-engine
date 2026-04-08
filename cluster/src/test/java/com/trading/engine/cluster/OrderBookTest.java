@@ -243,6 +243,11 @@ class OrderBookTest {
     assertEquals(SideEnum.Buy, r1.side());
     assertEquals(OrdTypeEnum.Limit, r1.ordType());
     assertEquals(TimeInForceEnum.Day, r1.timeInForce());
+    // OrderBookSnapshot does not carry ordStatus in the Phase-1 schema, so restoreFrom must
+    // unconditionally set it back to New (live orders in the book are always New; terminal
+    // states are removed before snapshot time). This asserts acquire()'s NULL_VAL reset was
+    // overwritten by restoreFrom.
+    assertEquals(OrdStatusEnum.New, r1.ordStatus());
 
     // OrderId bytes round-trip: "ORD-00000000001" padded with zeros to 20.
     final byte[] expected = new byte[OrderState.ORDER_ID_LENGTH];

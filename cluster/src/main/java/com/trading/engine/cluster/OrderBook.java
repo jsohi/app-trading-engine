@@ -2,6 +2,7 @@ package com.trading.engine.cluster;
 
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
 import com.trading.engine.messages.sbe.OrderBookSnapshotEncoder;
 import com.trading.engine.messages.sbe.OrderBookSnapshotEncoder.NoOrdersEncoder;
@@ -287,6 +288,12 @@ public final class OrderBook {
       state.setLeavesQty(group.leavesQty());
       state.setCumQty(group.cumQty());
       state.setAccountId(group.accountId());
+      // OrderBookSnapshot does not carry ordStatus in the Phase-1 schema because the only live
+      // status an order can have while in the book is New — fills / cancels / rejects remove
+      // the order from the book before a snapshot would ever see them. acquire() reset the
+      // field to NULL_VAL, so we must explicitly restore it here. A future schema extension
+      // will add per-record ordStatus once the matching engine produces non-New live states.
+      state.setOrdStatus(OrdStatusEnum.New);
       state.setTransactTime(group.timestamp());
     }
 
