@@ -84,12 +84,13 @@ public final class TradingClusteredService implements ClusteredService {
   /**
    * Maximum number of times {@link #offerToSession} / {@link #offerFragment} will retry a
    * back-pressured offer before giving up (and closing the session / throwing on the snapshot
-   * path). Bounded tightly enough that even a slow {@code IdleStrategy} (e.g. a backoff with
-   * microsecond-scale sleeps) cannot push the total retry wall-time past the cluster's heartbeat
-   * budget and trigger spurious elections. A follow-up issue will move session egress off the duty
-   * cycle and remove this retry loop entirely.
+   * path). Bounded tightly so even Aeron's default {@code BackoffIdleStrategy} — whose max park is
+   * ~1 ms — keeps the total retry wall-time (≈ 128 ms worst case) well under a 500 ms cluster
+   * heartbeat budget, so a single slow session can never trigger spurious leader elections. A
+   * follow-up issue will move session egress off the duty cycle entirely and remove this retry
+   * loop.
    */
-  private static final int MAX_BACKPRESSURE_RETRY = 1_024;
+  private static final int MAX_BACKPRESSURE_RETRY = 128;
 
   /**
    * Snapshot envelope version understood by this service. Bumped whenever the envelope layout
@@ -915,12 +916,17 @@ public final class TradingClusteredService implements ClusteredService {
         throw new IllegalStateException(
             "unknown or malformed snapshot fragment: templateId=" + templateId);
       }
-      // Update CRC over the raw bytes of this fragment. Snapshot restore is cold path, so the
-      // per-byte loop has no measurable cost and avoids an `UnsafeBuffer#byteArray()` fast path
-      // that would be incorrect for any DirectBuffer that wraps an array with a non-zero base
-      // offset (since `cursor` is a DirectBuffer offset, not a backing-array offset).
-      for (int i = 0; i < consumed; i++) {
-        crc.update(src.getByte(cursor + i) & 0xFF);
+      // Update CRC over the raw bytes of this fragment. When the DirectBuffer is backed by a
+      // byte[] (the production path uses ExpandableArrayBuffer, tests use UnsafeBuffer over a
+      // byte[]), use the array fast path with wrapAdjustment() added to cursor so a non-zero
+      // wrap offset is handled correctly. Falls back to per-byte for native-memory buffers.
+      final byte[] backing = src.byteArray();
+      if (backing != null) {
+        crc.update(backing, src.wrapAdjustment() + cursor, consumed);
+      } else {
+        for (int i = 0; i < consumed; i++) {
+          crc.update(src.getByte(cursor + i) & 0xFF);
+        }
       }
       cursor += consumed;
       fragmentCount++;
