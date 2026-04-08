@@ -202,6 +202,17 @@ class OrderBookTest {
     assertThrows(IllegalArgumentException.class, () -> new OrderBook(-5));
   }
 
+  @Test
+  void rejectsCapacityAboveSbeGroupLimit() {
+    // The SBE OrderBookSnapshot.noOrders repeating group encodes numInGroup as uint16 and the
+    // generated encoder throws for count > MAX_CAPACITY (65_534). A book whose pool is larger
+    // than that could not be snapshotted at full capacity.
+    assertThrows(IllegalArgumentException.class, () -> new OrderBook(OrderBook.MAX_CAPACITY + 1));
+    assertThrows(IllegalArgumentException.class, () -> new OrderBook(Integer.MAX_VALUE));
+    // The boundary value itself is accepted.
+    assertEquals(OrderBook.MAX_CAPACITY, new OrderBook(OrderBook.MAX_CAPACITY).capacity());
+  }
+
   // ---------------------------------------------------------------------------
   // Snapshot round-trip
   // ---------------------------------------------------------------------------

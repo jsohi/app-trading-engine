@@ -8,7 +8,9 @@ import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
@@ -24,6 +26,7 @@ import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
@@ -77,6 +80,15 @@ public final class TradingClusteredService implements ClusteredService {
   private static final int MAX_BACKPRESSURE_RETRY = 3_000;
   private static final long NANOS_PER_MILLI = 1_000_000L;
 
+  /**
+   * Snapshot envelope version understood by this service. Bumped whenever the envelope layout
+   * (fragment set, header fields, checksum algorithm) changes in a non-forward-compatible way.
+   */
+  private static final long SUPPORTED_SNAPSHOT_VERSION = 1L;
+
+  /** Number of body fragments in a well-formed snapshot envelope. */
+  private static final int SNAPSHOT_STORE_COUNT = 6;
+
   // ===== Collaborators =====
   private final IdGenerator orderIdGen;
   private final IdGenerator execIdGen;
@@ -117,6 +129,13 @@ public final class TradingClusteredService implements ClusteredService {
   private final byte[] clOrdIdScratch = new byte[OrderState.CL_ORD_ID_LENGTH];
   private final byte[] symbolScratch = new byte[OrderState.SYMBOL_LENGTH];
   private final byte[] accountCodeScratch = new byte[AccountStore.MAX_ACCOUNT_CODE_LENGTH];
+  // Current-NewOrderSingle currency bytes. Extracted once at the top of handleNewOrderSingle
+  // and read by both the happy-path encoders and the reject path so the rejected
+  // ExecutionReport can ship the correct currency (not stale bytes left in egressBuffer from
+  // the previous message).
+  private byte currencyByte0;
+  private byte currencyByte1;
+  private byte currencyByte2;
   // Reusable UnsafeBuffer wrappers around orderIdScratch / execIdScratch so the hot-path
   // IdGenerator.nextInto(...) call does not allocate on every NewOrderSingle.
   private final UnsafeBuffer orderIdScratchBuffer = new UnsafeBuffer(orderIdScratch);
@@ -147,6 +166,16 @@ public final class TradingClusteredService implements ClusteredService {
   private int snapshotReassemblyOffset;
 
   private final CRC32C crc = new CRC32C();
+
+  // Snapshot-walk bookkeeping — mutated only inside loadSnapshot / applySnapshotFragment.
+  private boolean eventSeqFragmentSeen;
+  private boolean idGenFragmentSeen;
+  private boolean orderBookFragmentSeen;
+  private boolean accountFragmentSeen;
+  private boolean currencyFragmentSeen;
+  private boolean riskLimitFragmentSeen;
+  private boolean orderIdGenRestored;
+  private boolean execIdGenRestored;
 
   private Cluster cluster;
 
@@ -315,6 +344,11 @@ public final class TradingClusteredService implements ClusteredService {
     final byte ccy0 = nosDecoder.currency(0);
     final byte ccy1 = nosDecoder.currency(1);
     final byte ccy2 = nosDecoder.currency(2);
+    // Stash on the service so emitOrderRejected can write them into the ER reject — the shared
+    // egressBuffer would otherwise leak the previous message's currency bytes.
+    currencyByte0 = ccy0;
+    currencyByte1 = ccy1;
+    currencyByte2 = ccy2;
 
     // ========== Validation ==========
     if (symbolLen == 0) {
@@ -520,6 +554,9 @@ public final class TradingClusteredService implements ClusteredService {
     erEncoder.cumQty(0L);
     erEncoder.avgPx(0L);
     erEncoder.transactTime(timestamp);
+    // Always write the current NOS's currency bytes so the rejected ER never leaks stale
+    // currency bytes from the previous message in the shared egressBuffer.
+    erEncoder.putCurrency(currencyByte0, currencyByte1, currencyByte2);
     erEncoder.text(text);
     final int erLen = MessageHeaderEncoder.ENCODED_LENGTH + erEncoder.encodedLength();
     offerToSession(session, egressBuffer, 0, erLen);
@@ -659,8 +696,8 @@ public final class TradingClusteredService implements ClusteredService {
     snapshotTakenEncoder.wrapAndApplyHeader(snapshotHeaderBuf, 0, headerEncoder);
     snapshotTakenEncoder.lastSequenceNumber(eventSequencer.currentSequence());
     snapshotTakenEncoder.snapshotTimestamp(snapshotTimestamp);
-    snapshotTakenEncoder.snapshotVersion(1L);
-    snapshotTakenEncoder.storeCount((short) 6);
+    snapshotTakenEncoder.snapshotVersion(SUPPORTED_SNAPSHOT_VERSION);
+    snapshotTakenEncoder.storeCount((short) SNAPSHOT_STORE_COUNT);
     snapshotTakenEncoder.totalByteLength(totalBody);
     // checksum is stored as an unsigned 32-bit in the SBE schema; widen via masked long.
     snapshotTakenEncoder.checksum(Integer.toUnsignedLong(checksum));
@@ -752,6 +789,16 @@ public final class TradingClusteredService implements ClusteredService {
         offset + MessageHeaderDecoder.ENCODED_LENGTH,
         headerDecoder.blockLength(),
         headerDecoder.version());
+    final long snapshotVersion = snapshotTakenDecoder.snapshotVersion();
+    if (snapshotVersion != SUPPORTED_SNAPSHOT_VERSION) {
+      throw new IllegalStateException(
+          "unsupported snapshotVersion "
+              + snapshotVersion
+              + ", only "
+              + SUPPORTED_SNAPSHOT_VERSION
+              + " is supported");
+    }
+    final int expectedStoreCount = snapshotTakenDecoder.storeCount();
     final long expectedBodyLength = snapshotTakenDecoder.totalByteLength();
     final long expectedChecksum = snapshotTakenDecoder.checksum();
     // Use the wire block length from the header (not the compile-time constant) so the walk
@@ -770,11 +817,22 @@ public final class TradingClusteredService implements ClusteredService {
     // 2. Reset destination ref-data state so smaller snapshots don't leave orphans behind.
     referenceDataRegistry.resetAll();
     orderBook.clear();
+    // Track whether each of the six required fragments has been seen so we can reject
+    // CRC-valid but semantically incomplete snapshots (missing or duplicated fragments).
+    eventSeqFragmentSeen = false;
+    idGenFragmentSeen = false;
+    orderBookFragmentSeen = false;
+    accountFragmentSeen = false;
+    currencyFragmentSeen = false;
+    riskLimitFragmentSeen = false;
+    orderIdGenRestored = false;
+    execIdGenRestored = false;
 
     // 3. Walk body fragments in publish order, dispatching each by templateId and computing CRC
     //    as we go.
     crc.reset();
     int cursor = bodyStart;
+    int fragmentCount = 0;
     while (cursor < bodyEnd) {
       headerDecoder.wrap(src, cursor);
       final int templateId = headerDecoder.templateId();
@@ -793,10 +851,48 @@ public final class TradingClusteredService implements ClusteredService {
         }
       }
       cursor += consumed;
+      fragmentCount++;
     }
     if (cursor != bodyEnd) {
       throw new IllegalStateException(
           "snapshot body walk ended at " + cursor + " but expected " + bodyEnd);
+    }
+    if (fragmentCount != expectedStoreCount) {
+      throw new IllegalStateException(
+          "snapshot storeCount mismatch: header said "
+              + expectedStoreCount
+              + " but walked "
+              + fragmentCount);
+    }
+    if (!eventSeqFragmentSeen
+        || !idGenFragmentSeen
+        || !orderBookFragmentSeen
+        || !accountFragmentSeen
+        || !currencyFragmentSeen
+        || !riskLimitFragmentSeen) {
+      throw new IllegalStateException(
+          "snapshot missing required fragments"
+              + " (eventSeq="
+              + eventSeqFragmentSeen
+              + ", idGen="
+              + idGenFragmentSeen
+              + ", account="
+              + accountFragmentSeen
+              + ", currency="
+              + currencyFragmentSeen
+              + ", riskLimit="
+              + riskLimitFragmentSeen
+              + ", orderBook="
+              + orderBookFragmentSeen
+              + ")");
+    }
+    if (!orderIdGenRestored || !execIdGenRestored) {
+      throw new IllegalStateException(
+          "snapshot IdGenerator fragment missing ORD or EXE counter (orderIdGenRestored="
+              + orderIdGenRestored
+              + ", execIdGenRestored="
+              + execIdGenRestored
+              + ")");
     }
     final long actualChecksum = Integer.toUnsignedLong((int) crc.getValue());
     if (actualChecksum != expectedChecksum) {
@@ -811,6 +907,10 @@ public final class TradingClusteredService implements ClusteredService {
   private int applySnapshotFragment(
       final int templateId, final DirectBuffer src, final int offset) {
     if (templateId == EventSequencerSnapshotDecoder.TEMPLATE_ID) {
+      if (eventSeqFragmentSeen) {
+        throw new IllegalStateException("duplicate EventSequencerSnapshot fragment in snapshot");
+      }
+      eventSeqFragmentSeen = true;
       final int wireBlockLength = headerDecoder.blockLength();
       eventSeqSnapDecoder.wrap(
           src,
@@ -823,6 +923,10 @@ public final class TradingClusteredService implements ClusteredService {
       return MessageHeaderDecoder.ENCODED_LENGTH + wireBlockLength;
     }
     if (templateId == IdGeneratorSnapshotDecoder.TEMPLATE_ID) {
+      if (idGenFragmentSeen) {
+        throw new IllegalStateException("duplicate IdGeneratorSnapshot fragment in snapshot");
+      }
+      idGenFragmentSeen = true;
       idGenSnapDecoder.wrap(
           src,
           offset + MessageHeaderDecoder.ENCODED_LENGTH,
@@ -834,33 +938,52 @@ public final class TradingClusteredService implements ClusteredService {
         final long counter = group.counter();
         if (prefixMatches(group, orderIdGen.prefix())) {
           orderIdGen.setCounter(counter);
+          orderIdGenRestored = true;
         } else if (prefixMatches(group, execIdGen.prefix())) {
           execIdGen.setCounter(counter);
+          execIdGenRestored = true;
         } else {
           // Snapshot carries an IdGenerator prefix we don't recognize — refuse to silently drop
           // it, since lost counter state would break determinism on the next command dispatch.
-          final byte[] bytes = new byte[IdGenerator.MAX_PREFIX_LENGTH];
-          for (int i = 0; i < IdGenerator.MAX_PREFIX_LENGTH; i++) {
-            bytes[i] = group.prefix(i);
-          }
-          throw new IllegalStateException(
-              "IdGeneratorSnapshot contains unregistered prefix '"
-                  + new String(bytes, java.nio.charset.StandardCharsets.US_ASCII).trim()
-                  + "'");
+          // Use a fixed message (no allocation of prefix bytes or String decode on this path).
+          throw new IllegalStateException(UNREGISTERED_ID_PREFIX_MESSAGE);
         }
       }
       return MessageHeaderDecoder.ENCODED_LENGTH + idGenSnapDecoder.encodedLength();
     }
     if (templateId == OrderBookSnapshotDecoder.TEMPLATE_ID) {
+      if (orderBookFragmentSeen) {
+        throw new IllegalStateException("duplicate OrderBookSnapshot fragment in snapshot");
+      }
+      orderBookFragmentSeen = true;
       return orderBook.restoreFrom(src, offset);
     }
     // Ref-data snapshots (Account 201, Currency 208, RiskLimit 209) route via the registry.
+    if (templateId == AccountSnapshotDecoder.TEMPLATE_ID) {
+      if (accountFragmentSeen) {
+        throw new IllegalStateException("duplicate AccountSnapshot fragment in snapshot");
+      }
+      accountFragmentSeen = true;
+    } else if (templateId == CurrencySnapshotDecoder.TEMPLATE_ID) {
+      if (currencyFragmentSeen) {
+        throw new IllegalStateException("duplicate CurrencySnapshot fragment in snapshot");
+      }
+      currencyFragmentSeen = true;
+    } else if (templateId == RiskLimitSnapshotDecoder.TEMPLATE_ID) {
+      if (riskLimitFragmentSeen) {
+        throw new IllegalStateException("duplicate RiskLimitSnapshot fragment in snapshot");
+      }
+      riskLimitFragmentSeen = true;
+    }
     final int consumed = referenceDataRegistry.restoreFragment(headerDecoder, src, offset);
     if (consumed != ReferenceDataRegistry.NOT_HANDLED) {
       return consumed;
     }
     return NOT_HANDLED;
   }
+
+  private static final String UNREGISTERED_ID_PREFIX_MESSAGE =
+      "IdGeneratorSnapshot contains an unregistered prefix (expected ORD or EXE)";
 
   // ===========================================================================
   // Misc

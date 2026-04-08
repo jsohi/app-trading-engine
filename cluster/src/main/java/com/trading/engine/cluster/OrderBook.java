@@ -40,11 +40,20 @@ import org.agrona.collections.Long2ObjectHashMap;
 public final class OrderBook {
 
   /**
-   * Default capacity of the pool and the primary map. 65,536 is comfortably above a busy FX RFQ
-   * working set while keeping the pool's backing arrays inside L2/L3 cache footprint. Re-tune when
-   * the matching engine lands and real book depth is measured.
+   * Maximum book capacity, bounded by the SBE {@code OrderBookSnapshot.noOrders} repeating-group
+   * {@code numInGroup} encoding. The generated encoder enforces {@code count <= 65534} (the uint16
+   * range minus the null sentinel), so the pool cannot be larger than that — otherwise {@code
+   * snapshotTo} would throw on a full book.
    */
-  public static final int DEFAULT_CAPACITY = 65_536;
+  public static final int MAX_CAPACITY = 65_534;
+
+  /**
+   * Default capacity of the pool and the primary map. Sized to {@link #MAX_CAPACITY} — the largest
+   * value the snapshot encoding can represent in a single fragment. Comfortably above a busy FX RFQ
+   * working set and still fits the backing arrays inside L2/L3 cache footprint. Re-tune when the
+   * matching engine lands and real book depth is measured.
+   */
+  public static final int DEFAULT_CAPACITY = MAX_CAPACITY;
 
   private static final float MAP_LOAD_FACTOR = 0.55f;
 
@@ -73,12 +82,20 @@ public final class OrderBook {
   /**
    * Construct a book with the supplied pool capacity.
    *
-   * @param capacity maximum number of concurrently active orders. Must be {@code > 0}.
-   * @throws IllegalArgumentException if {@code capacity <= 0}
+   * @param capacity maximum number of concurrently active orders. Must be in {@code [1,
+   *     MAX_CAPACITY]}.
+   * @throws IllegalArgumentException if {@code capacity <= 0} or {@code capacity > MAX_CAPACITY}
    */
   public OrderBook(final int capacity) {
     if (capacity <= 0) {
       throw new IllegalArgumentException("OrderBook capacity must be > 0, was " + capacity);
+    }
+    if (capacity > MAX_CAPACITY) {
+      throw new IllegalArgumentException(
+          "OrderBook capacity must be <= "
+              + MAX_CAPACITY
+              + " (SBE numInGroup uint16 limit), was "
+              + capacity);
     }
     this.capacity = capacity;
     // Size the underlying map so it never rehashes within the pool's capacity (capacity /

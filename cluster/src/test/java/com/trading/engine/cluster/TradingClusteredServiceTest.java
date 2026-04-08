@@ -248,6 +248,49 @@ class TradingClusteredServiceTest {
   }
 
   @Test
+  void rejectedExecutionReportCarriesCurrentOrdersCurrency() {
+    // Regression for the egressBuffer currency-leak: emit a happy-path order with USD, then
+    // submit a reject-triggering order with EUR — the rejected ExecutionReport must carry EUR,
+    // not the stale USD bytes left in egressBuffer.
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    int len =
+        encodeNewOrderSingle(
+            buf,
+            "CL-OK",
+            "EURUSD",
+            SideEnum.Buy,
+            OrdTypeEnum.Limit,
+            1L * PRICE_SCALE,
+            1L * PRICE_SCALE,
+            "ACME",
+            "USD");
+    dispatch(buf, len);
+    session.messages.clear();
+
+    // Now a reject with a different currency (EUR, which is in the store, but zero qty forces
+    // the reject path).
+    len =
+        encodeNewOrderSingle(
+            buf,
+            "CL-BAD",
+            "EURUSD",
+            SideEnum.Buy,
+            OrdTypeEnum.Limit,
+            1L * PRICE_SCALE,
+            0L,
+            "ACME",
+            "EUR");
+    dispatch(buf, len);
+
+    assertEquals(2, session.messages.size());
+    final ExecutionReportDecoder er = decodeExecutionReport(session.messages.get(1));
+    assertEquals(ExecTypeEnum.Rejected, er.execType());
+    assertEquals((byte) 'E', er.currency(0));
+    assertEquals((byte) 'U', er.currency(1));
+    assertEquals((byte) 'R', er.currency(2));
+  }
+
+  @Test
   void monotonicOrderAndExecIdsAcrossMultipleOrders() {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
