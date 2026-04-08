@@ -80,7 +80,16 @@ import org.agrona.concurrent.UnsafeBuffer;
 public final class TradingClusteredService implements ClusteredService {
 
   static final int NOT_HANDLED = -1;
-  private static final int MAX_BACKPRESSURE_RETRY = 3_000;
+
+  /**
+   * Maximum number of times {@link #offerToSession} / {@link #offerFragment} will retry a
+   * back-pressured offer before giving up (and closing the session / throwing on the snapshot
+   * path). Bounded tightly enough that even a slow {@code IdleStrategy} (e.g. a backoff with
+   * microsecond-scale sleeps) cannot push the total retry wall-time past the cluster's heartbeat
+   * budget and trigger spurious elections. A follow-up issue will move session egress off the duty
+   * cycle and remove this retry loop entirely.
+   */
+  private static final int MAX_BACKPRESSURE_RETRY = 1_024;
 
   /**
    * Snapshot envelope version understood by this service. Bumped whenever the envelope layout
@@ -132,8 +141,11 @@ public final class TradingClusteredService implements ClusteredService {
   private final IdGeneratorSnapshotDecoder idGenSnapDecoder = new IdGeneratorSnapshotDecoder();
 
   // ===== Pre-allocated scratch buffers =====
-  private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[2048]);
-  private final UnsafeBuffer refDataEventBuffer = new UnsafeBuffer(new byte[2048]);
+  // Sized at 8 KiB so the variable-length text/reason fields on OrderRejectedEvent and
+  // ExecutionReport can never exceed the fixed-size encoder window on any realistic path.
+  // Allocated once at construction — no hot-path allocation.
+  private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[8 * 1024]);
+  private final UnsafeBuffer refDataEventBuffer = new UnsafeBuffer(new byte[8 * 1024]);
   private final byte[] orderIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
   private final byte[] execIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
   private final byte[] clOrdIdScratch = new byte[OrderState.CL_ORD_ID_LENGTH];

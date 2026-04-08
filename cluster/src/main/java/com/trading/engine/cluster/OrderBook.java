@@ -58,6 +58,24 @@ public final class OrderBook {
 
   private static final float MAP_LOAD_FACTOR = 0.55f;
 
+  /** Number of digits in the counter suffix (matches {@link IdGenerator}'s 11-digit render). */
+  private static final int ORDER_ID_DIGITS = 11;
+
+  // Compile-time sanity: OrderBook and IdGenerator must agree on the id byte layout so
+  // parseOrderKey can find the separator hyphen. If any of the three constants drift, the
+  // snapshot restore path would break silently — fail loudly at class load instead.
+  static {
+    final int expected = IdGenerator.MAX_PREFIX_LENGTH + 1 + ORDER_ID_DIGITS;
+    if (OrderState.ORDER_ID_LENGTH != expected) {
+      throw new IllegalStateException(
+          "OrderState.ORDER_ID_LENGTH ("
+              + OrderState.ORDER_ID_LENGTH
+              + ") must equal IdGenerator.MAX_PREFIX_LENGTH + 1 + ORDER_ID_DIGITS ("
+              + expected
+              + ")");
+    }
+  }
+
   private final int capacity;
   private final Long2ObjectHashMap<OrderState> ordersByKey;
   private final OrderState[] pool;
@@ -309,13 +327,14 @@ public final class OrderBook {
    *     digits
    */
   private static long parseOrderKey(final byte[] orderId) {
-    // Scan BACKWARDS from the last position that still leaves room for 11 digits after the
-    // hyphen. Scanning backwards finds the last '-', which is the one that separates the prefix
-    // from the counter digits even when the prefix itself contains a hyphen (IdGenerator allows
-    // arbitrary ASCII in the prefix, e.g., "FX-ORD").
-    final int maxHyphenInclusive = OrderState.ORDER_ID_LENGTH - ORDER_ID_DIGITS - 1;
+    // Scan BACKWARDS from IdGenerator.MAX_PREFIX_LENGTH (the last position the prefix can end
+    // on) looking for the hyphen separator. Scanning backwards finds the LAST '-', which is
+    // the one that separates the prefix from the counter digits even when the prefix itself
+    // contains a hyphen (IdGenerator allows arbitrary ASCII in the prefix, e.g., "FX-ORD").
+    // Derived from IdGenerator's constant rather than a local duplicate so the two classes
+    // cannot drift — the static-initializer above asserts the id byte layout stays in sync.
     int hyphen = -1;
-    for (int i = maxHyphenInclusive; i >= 0; i--) {
+    for (int i = IdGenerator.MAX_PREFIX_LENGTH; i >= 0; i--) {
       if (orderId[i] == (byte) '-') {
         hyphen = i;
         break;
@@ -337,7 +356,4 @@ public final class OrderBook {
     }
     return value;
   }
-
-  /** Number of digits in the counter suffix (matches {@link IdGenerator}). */
-  private static final int ORDER_ID_DIGITS = 11;
 }
