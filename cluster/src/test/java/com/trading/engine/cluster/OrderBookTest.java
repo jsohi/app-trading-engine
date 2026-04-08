@@ -298,6 +298,31 @@ class OrderBookTest {
   }
 
   @Test
+  void snapshotRoundTripToleratesHyphenInPrefix() {
+    // parseOrderKey must find the LAST hyphen, not the first — otherwise an IdGenerator prefix
+    // containing its own hyphen (e.g. "FX-ORD") would round-trip incorrectly. Simulate an
+    // "FX-ORD-00000000042" textual id (3+1+3+1+11=19 bytes, padded to 20) by populating the
+    // state manually and verifying the round-trip key lands on 42.
+    final OrderBook src = new OrderBook(4);
+    final OrderState state = src.acquire(42L);
+    final byte[] orderIdBytes = new byte[OrderState.ORDER_ID_LENGTH];
+    final byte[] prefix = "FX-ORD-00000000042".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    System.arraycopy(prefix, 0, orderIdBytes, 0, prefix.length);
+    state.setOrderIdBytes(orderIdBytes, 0);
+    state.setSide(SideEnum.Buy);
+    state.setOrdType(OrdTypeEnum.Limit);
+    state.setTimeInForce(TimeInForceEnum.Day);
+
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+    final int written = src.snapshotTo(buf, 0);
+
+    final OrderBook restored = new OrderBook(4);
+    restored.restoreFrom(buf, 0);
+    assertNotNull(restored.get(42L), "round-trip must locate the key parsed from the LAST hyphen");
+    assertEquals(1, restored.size());
+  }
+
+  @Test
   void snapshotAtNonZeroOffset() {
     // Write the snapshot at a non-zero offset to verify the encoder/decoder honour it.
     final OrderBook src = new OrderBook(4);

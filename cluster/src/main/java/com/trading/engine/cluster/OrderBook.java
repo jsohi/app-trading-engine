@@ -285,10 +285,13 @@ public final class OrderBook {
    *     digits
    */
   private static long parseOrderKey(final byte[] orderId) {
-    // Scan up to the last position that still leaves room for 11 digits after the hyphen.
+    // Scan BACKWARDS from the last position that still leaves room for 11 digits after the
+    // hyphen. Scanning backwards finds the last '-', which is the one that separates the prefix
+    // from the counter digits even when the prefix itself contains a hyphen (IdGenerator allows
+    // arbitrary ASCII in the prefix, e.g., "FX-ORD").
     final int maxHyphenInclusive = OrderState.ORDER_ID_LENGTH - ORDER_ID_DIGITS - 1;
     int hyphen = -1;
-    for (int i = 0; i <= maxHyphenInclusive; i++) {
+    for (int i = maxHyphenInclusive; i >= 0; i--) {
       if (orderId[i] == (byte) '-') {
         hyphen = i;
         break;

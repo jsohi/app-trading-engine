@@ -8,9 +8,7 @@ import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
-import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
-import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
@@ -26,7 +24,6 @@ import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
-import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
@@ -111,11 +108,6 @@ public final class TradingClusteredService implements ClusteredService {
       new EventSequencerSnapshotDecoder();
   private final IdGeneratorSnapshotEncoder idGenSnapEncoder = new IdGeneratorSnapshotEncoder();
   private final IdGeneratorSnapshotDecoder idGenSnapDecoder = new IdGeneratorSnapshotDecoder();
-  // Dummy decoders used only to compute per-fragment byte lengths during restore walks.
-  private final AccountSnapshotDecoder accountSnapDecoder = new AccountSnapshotDecoder();
-  private final CurrencySnapshotDecoder currencySnapDecoder = new CurrencySnapshotDecoder();
-  private final RiskLimitSnapshotDecoder riskLimitSnapDecoder = new RiskLimitSnapshotDecoder();
-  private final OrderBookSnapshotDecoder orderBookSnapDecoder = new OrderBookSnapshotDecoder();
 
   // ===== Pre-allocated scratch buffers =====
   private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[2048]);
@@ -552,13 +544,19 @@ public final class TradingClusteredService implements ClusteredService {
     if (session == null) {
       return; // Unit tests may pass null for the unused ref-data session case.
     }
+    // Phase-1 back-pressure strategy: a bounded retry on the duty-cycle thread. A single slow
+    // client can cause head-of-line blocking for other sessions while we retry, which the
+    // cluster framework's idle strategy will eventually idle away — but it is still a real
+    // concern for production. A follow-up issue (APP-? async egress queue) will move session
+    // egress off the duty cycle. For now, cap retries at MAX_BACKPRESSURE_RETRY and drop the
+    // message on exhaustion; the underlying event is already durable in the journal so the
+    // delivered-to-client invariant is weaker than the sequenced-in-log invariant.
     for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
       final long result = session.offer(src, offset, length);
       if (result >= 0L || result == Publication.MOCKED_OFFER_VALUE_RESULT) {
         return;
       }
       if (result == Publication.BACK_PRESSURED || result == Publication.ADMIN_ACTION) {
-        // Retry after a brief yield to let the cluster duty cycle drain the publication.
         if (cluster != null) {
           cluster.idleStrategy().idle();
         }
@@ -575,6 +573,10 @@ public final class TradingClusteredService implements ClusteredService {
     if (pub == null) {
       return; // Test path uses the pre-encoded fragments directly from the scratch buffers.
     }
+    // Unlike offerToSession, a failed snapshot offer is non-recoverable: a truncated snapshot
+    // leaves the cluster unable to recover on restart. Throw on any non-retryable return code
+    // (NOT_CONNECTED / CLOSED / MAX_POSITION_EXCEEDED) and on retry exhaustion so the cluster
+    // framework surfaces the failure rather than silently shipping a corrupted snapshot.
     for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
       final long result = pub.offer(buf, 0, length);
       if (result >= 0L) {
@@ -586,8 +588,10 @@ public final class TradingClusteredService implements ClusteredService {
         }
         continue;
       }
-      return;
+      throw new IllegalStateException("snapshot fragment offer failed with result " + result);
     }
+    throw new IllegalStateException(
+        "snapshot fragment offer retry exhausted after " + MAX_BACKPRESSURE_RETRY + " attempts");
   }
 
   // ===========================================================================
