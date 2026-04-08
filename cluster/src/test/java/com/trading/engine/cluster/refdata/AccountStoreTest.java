@@ -301,4 +301,66 @@ class AccountStoreTest {
     bufB.getBytes(0, bytesB);
     assertArrayEquals(bytesA, bytesB);
   }
+
+  @Test
+  void snapshotRoundTripGrowsScratchBeyondInitialCapacity() {
+    // AccountStore initialises its snapshotKeysScratch at INITIAL_CAPACITY (4096). This test
+    // populates > 4096 records so snapshotTo must grow the scratch array on demand on the
+    // first call, and continue to work correctly afterwards. A regression that (e.g.) forgot
+    // to reassign the field after new long[recordCount] would fail this test.
+    final AccountStore src = new AccountStore();
+    final int count = 5000;
+    for (int i = 1; i <= count; i++) {
+      src.put(makeState(i, "ACC" + i, "Name " + i, "USD"));
+    }
+    assertEquals(count, src.size());
+
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(1_048_576);
+    final int written = src.snapshotTo(buf, 0);
+    assertTrue(written > 0);
+
+    final AccountStore restored = new AccountStore();
+    final int read = restored.restoreFrom(buf, 0);
+    assertEquals(written, read);
+    assertEquals(count, restored.size());
+    // Spot-check a few records spanning the full range.
+    assertNotNull(restored.get(1L));
+    assertNotNull(restored.get(count / 2L));
+    assertNotNull(restored.get((long) count));
+  }
+
+  @Test
+  void snapshotToCanBeCalledRepeatedlyOnSameInstance() {
+    // Regression test for the snapshotKeysFillIdx reset. A second snapshot on the same store
+    // must produce a byte-identical result to a fresh store populated from the first snapshot
+    // — this only holds if snapshotTo correctly zeroes snapshotKeysFillIdx at the start of
+    // every call. A regression that dropped the reset would either throw
+    // ArrayIndexOutOfBoundsException on the second call or silently produce a corrupt snapshot.
+    final AccountStore store = new AccountStore();
+    store.put(makeState(1L, "ACME", "Acme Inc", "USD"));
+    store.put(makeState(2L, "BIGCO", "Big Co", "EUR"));
+    store.put(makeState(3L, "JPN", "Japan Co", "JPY"));
+
+    final MutableDirectBuffer bufA = new ExpandableArrayBuffer(4096);
+    final int writtenA = store.snapshotTo(bufA, 0);
+
+    // Add a new record and snapshot again on the SAME store instance.
+    store.put(makeState(4L, "NEWCO", "New Co", "USD"));
+    final MutableDirectBuffer bufB = new ExpandableArrayBuffer(4096);
+    final int writtenB = store.snapshotTo(bufB, 0);
+
+    assertTrue(writtenB >= writtenA, "second snapshot should contain at least as much data");
+
+    // The first snapshot must be unchanged by the second call (verifies no cross-call state
+    // corruption). Round-trip it and assert it has exactly 3 accounts.
+    final AccountStore restoredA = new AccountStore();
+    restoredA.restoreFrom(bufA, 0);
+    assertEquals(3, restoredA.size());
+
+    // The second snapshot must round-trip to the full 4-account state.
+    final AccountStore restoredB = new AccountStore();
+    restoredB.restoreFrom(bufB, 0);
+    assertEquals(4, restoredB.size());
+    assertNotNull(restoredB.get(4L));
+  }
 }

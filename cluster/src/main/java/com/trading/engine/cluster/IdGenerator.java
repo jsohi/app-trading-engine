@@ -189,6 +189,19 @@ public final class IdGenerator {
    */
   public void loadFrom(DirectBuffer buffer, int offset) {
     long restored = buffer.getLong(offset, ByteOrder.LITTLE_ENDIAN);
+    setCounter(restored);
+  }
+
+  /**
+   * Restore the counter from a primitive {@code long}. Used by the cluster service's snapshot
+   * restore path where the counter is decoded from the {@code IdGeneratorSnapshot} repeating-group
+   * field (already a primitive), so there is no buffer to wrap. After restore, the next call to
+   * {@link #next()} or {@link #nextInto} returns id {@code counter + 1}.
+   *
+   * @throws IllegalStateException if {@code restored} is negative or greater than {@link
+   *     #MAX_COUNTER}
+   */
+  public void setCounter(final long restored) {
     if (restored < 0L || restored > MAX_COUNTER) {
       throw new IllegalStateException(
           "IdGenerator snapshot counter out of range for prefix '" + prefix + "': " + restored);

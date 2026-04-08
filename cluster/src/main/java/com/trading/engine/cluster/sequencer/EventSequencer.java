@@ -76,6 +76,17 @@ public final class EventSequencer {
    */
   public void loadFrom(DirectBuffer buffer, int offset) {
     long nextSequence = buffer.getLong(offset, ByteOrder.LITTLE_ENDIAN);
+    setNextSequence(nextSequence);
+  }
+
+  /**
+   * Restore the sequencer state from a primitive {@code long}. Used by the cluster service's
+   * snapshot-restore path where the next-sequence-to-assign value is decoded from an {@code
+   * EventSequencerSnapshot} SBE field (already a primitive), so there is no buffer to wrap.
+   *
+   * @throws IllegalStateException if {@code nextSequence < 1}
+   */
+  public void setNextSequence(final long nextSequence) {
     if (nextSequence < 1L) {
       throw new IllegalStateException(
           "EventSequencer snapshot nextSequence must be >= 1, was " + nextSequence);

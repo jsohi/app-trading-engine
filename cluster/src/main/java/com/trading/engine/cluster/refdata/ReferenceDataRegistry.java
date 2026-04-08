@@ -4,6 +4,7 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
+import org.agrona.collections.IntObjConsumer;
 import org.agrona.collections.ObjectHashSet;
 
 /**
@@ -23,7 +24,9 @@ import org.agrona.collections.ObjectHashSet;
  * TradingClusteredService} are required to add a new ref-data type.
  *
  * <p><b>Threading.</b> Single-threaded by contract — registration runs at startup, dispatch runs on
- * the cluster duty-cycle thread. No synchronization, no {@code volatile}.
+ * the cluster duty-cycle thread. No synchronization, no {@code volatile}. {@link #snapshotAll}
+ * relies on {@code snapshotKeysFillIdx} being reset at the start of every call; concurrent or
+ * re-entrant invocation would corrupt that counter.
  *
  * <p><b>Allocation.</b> Dispatch and snapshot iteration are zero-allocation: primitive-keyed Agrona
  * maps for routing, pre-allocated set for distinct stores. Snapshot save/restore inside each store
@@ -34,6 +37,13 @@ public final class ReferenceDataRegistry {
   /** Sentinel returned by {@link #dispatchCommand} when the templateId is not registered. */
   public static final int NOT_HANDLED = -1;
 
+  /**
+   * Initial size of {@link #snapshotKeysScratch}. Practical upper bound on the number of distinct
+   * ref-data stores registered in a single cluster; the scratch grows on demand if this turns out
+   * to be too small.
+   */
+  private static final int INITIAL_STORE_SCRATCH_CAPACITY = 16;
+
   private final Int2ObjectHashMap<ReferenceDataStore> storesBySnapshotTemplateId =
       new Int2ObjectHashMap<>();
   private final Int2ObjectHashMap<ReferenceDataLoader> loadersByCommandTemplateId =
@@ -41,6 +51,14 @@ public final class ReferenceDataRegistry {
   private final Int2ObjectHashMap<ReferenceDataBatchLoader> batchLoadersByBatchTemplateId =
       new Int2ObjectHashMap<>();
   private final ObjectHashSet<ReferenceDataStore> distinctStores = new ObjectHashSet<>();
+
+  // Scratch for draining storesBySnapshotTemplateId in deterministic-order snapshotAll().
+  // Grows on demand when the registry exceeds the initial capacity (unlikely, but defensive).
+  // Stored IntObjConsumer avoids the per-call KeyIterator allocation of the Iterator API.
+  private int[] snapshotKeysScratch = new int[INITIAL_STORE_SCRATCH_CAPACITY];
+  private int snapshotKeysFillIdx;
+  private final IntObjConsumer<ReferenceDataStore> snapshotKeyCollector =
+      (templateId, store) -> snapshotKeysScratch[snapshotKeysFillIdx++] = templateId;
 
   /**
    * Register a store. Stores are indexed by their {@link ReferenceDataStore#snapshotTemplateId()}
@@ -163,20 +181,19 @@ public final class ReferenceDataRegistry {
    * written across all stores.
    */
   public int snapshotAll(final MutableDirectBuffer dst, final int offset) {
-    // Drain via primitive KeyIterator.nextInt() (no per-element Integer boxing).
+    // Drain via a stored IntObjConsumer — no KeyIterator allocation on the snapshot path.
+    // Scratch grows on demand if the registry grows beyond the initial size.
     final int storeCount = storesBySnapshotTemplateId.size();
-    final int[] sortedTemplateIds = new int[storeCount];
-    final Int2ObjectHashMap<ReferenceDataStore>.KeyIterator it =
-        storesBySnapshotTemplateId.keySet().iterator();
-    int idx = 0;
-    while (it.hasNext()) {
-      sortedTemplateIds[idx++] = it.nextInt();
+    if (snapshotKeysScratch.length < storeCount) {
+      snapshotKeysScratch = new int[storeCount];
     }
-    java.util.Arrays.sort(sortedTemplateIds);
+    snapshotKeysFillIdx = 0;
+    storesBySnapshotTemplateId.forEachInt(snapshotKeyCollector);
+    java.util.Arrays.sort(snapshotKeysScratch, 0, storeCount);
 
     int written = 0;
     for (int i = 0; i < storeCount; i++) {
-      final ReferenceDataStore store = storesBySnapshotTemplateId.get(sortedTemplateIds[i]);
+      final ReferenceDataStore store = storesBySnapshotTemplateId.get(snapshotKeysScratch[i]);
       written += store.snapshotTo(dst, offset + written);
     }
     return written;
@@ -215,6 +232,16 @@ public final class ReferenceDataRegistry {
 
   public int storeCount() {
     return distinctStores.size();
+  }
+
+  /**
+   * Look up the registered store for a given snapshot templateId. Returns {@code null} if no store
+   * is registered for that id. Used by consumers (e.g. {@code TradingClusteredService}'s
+   * constructor-time wiring assertion) to verify that a concrete store reference held by the
+   * consumer is the same instance that is registered in the dispatch tables.
+   */
+  public ReferenceDataStore storeForSnapshotTemplateId(final int templateId) {
+    return storesBySnapshotTemplateId.get(templateId);
   }
 
   public int loaderCount() {

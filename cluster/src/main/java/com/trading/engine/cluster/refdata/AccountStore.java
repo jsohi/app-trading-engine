@@ -8,6 +8,7 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongObjConsumer;
 import org.agrona.collections.Object2ObjectHashMap;
 
 /**
@@ -32,6 +33,10 @@ import org.agrona.collections.Object2ObjectHashMap;
  * {@code accountId}s for deterministic byte output (Agrona hash-map iteration order is not
  * guaranteed stable). On {@link #restoreFrom} the secondary index is rebuilt with fresh {@code
  * ByteArrayKey} instances per record.
+ *
+ * <p><b>Threading.</b> Not thread-safe — single-threaded cluster duty cycle only. {@link
+ * #snapshotTo} relies on {@code snapshotKeysFillIdx} being reset at the start of every call; any
+ * concurrent or re-entrant invocation would corrupt that counter.
  */
 public final class AccountStore implements ReferenceDataStore {
 
@@ -74,6 +79,15 @@ public final class AccountStore implements ReferenceDataStore {
   // Snapshot scratch buffers for fixed-length char fields.
   private final byte[] codeScratch = new byte[MAX_ACCOUNT_CODE_LENGTH];
   private final byte[] nameScratch = new byte[NAME_LENGTH];
+
+  // Scratch for draining byId in deterministic-order snapshot encoding. Grows on demand
+  // when the map outsizes the current array (zero allocation after the first max-size
+  // snapshot). Using a stored LongObjConsumer avoids the per-call KeyIterator allocation
+  // of the Iterator API.
+  private long[] snapshotKeysScratch = new long[INITIAL_CAPACITY];
+  private int snapshotKeysFillIdx;
+  private final LongObjConsumer<AccountState> snapshotKeyCollector =
+      (key, state) -> snapshotKeysScratch[snapshotKeysFillIdx++] = key;
 
   @Override
   public int snapshotTemplateId() {
@@ -194,19 +208,18 @@ public final class AccountStore implements ReferenceDataStore {
     final NoAccountsEncoder group = snapshotEncoder.noAccountsCount(recordCount);
 
     if (recordCount > 0) {
-      // Sorted iteration for deterministic snapshot output. Drain via Agrona's primitive
-      // KeyIterator.nextLong() (no per-element Long boxing) into a primitive long[], then sort.
-      // Snapshot path — allocation is allowed.
-      final long[] sortedIds = new long[recordCount];
-      final Long2ObjectHashMap<AccountState>.KeyIterator keyIt = byId.keySet().iterator();
-      int idx = 0;
-      while (keyIt.hasNext()) {
-        sortedIds[idx++] = keyIt.nextLong();
+      // Sorted iteration for deterministic snapshot output. Drain via a stored LongObjConsumer
+      // (no KeyIterator allocation on the snapshot path) into a pre-allocated long[] that grows
+      // on demand if the map has outgrown its initial size.
+      if (snapshotKeysScratch.length < recordCount) {
+        snapshotKeysScratch = new long[recordCount];
       }
-      java.util.Arrays.sort(sortedIds);
+      snapshotKeysFillIdx = 0;
+      byId.forEachLong(snapshotKeyCollector);
+      java.util.Arrays.sort(snapshotKeysScratch, 0, recordCount);
 
       for (int i = 0; i < recordCount; i++) {
-        final long id = sortedIds[i];
+        final long id = snapshotKeysScratch[i];
         final AccountState state = byId.get(id);
         group.next();
         group.accountId(state.accountId());
