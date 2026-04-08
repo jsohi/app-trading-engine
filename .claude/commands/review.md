@@ -7,6 +7,17 @@ allowed-tools: ["Bash", "Glob", "Grep", "Read", "Agent"]
 
 Review all changes on the current branch before pushing. This wraps a general code review with trading-engine-specific checks that are **blocking**.
 
+## MANDATORY EXECUTION RULES — READ FIRST
+
+These rules are non-negotiable and OVERRIDE any judgment about efficiency, context reuse, or delta size:
+
+1. **ALWAYS spawn both review agents in parallel via the Agent tool** — Agent A (Trading Engine Constraint Checker) AND Agent B (General Code Quality Review). Never skip either. Never do "just one this time."
+2. **NEVER do an inline delta-only review** — even if you reviewed this exact branch seconds ago, even if the delta since the last review is a one-line comment, even if you "already have full context," even if the changes are "obviously clean." Spawn fresh agents every single invocation.
+3. **NEVER offer to shortcut** — do not propose "I can do a quick delta check instead" or "the previous review already covered this." Go straight to Step 1 → Step 2 (parallel agent spawn) → Step 3 without asking.
+4. **The value of /review is the independent second opinion from fresh agent context** — your own in-conversation review is not a substitute and defeats the purpose of invoking the command.
+
+If you catch yourself about to write "the delta is small so..." or "I already reviewed this..." — stop and spawn the agents.
+
 ## Step 1: Gather Context
 
 Run these in parallel:
