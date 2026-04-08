@@ -75,7 +75,11 @@ public final class FixToSbeTranslator {
                 Math.max(
                     QuoteRequestEncoder.quoteReqIdLength(), MassQuoteEncoder.quoteIdLength())));
     if (max > SCRATCH_LEN) {
-      throw new ExceptionInInitializerError(
+      // Thrown inside a static {} block — the JVM automatically wraps it in an
+      // ExceptionInInitializerError with this IllegalStateException as the cause, giving the
+      // caller a typed exception in the cause chain (class-init errors are unrecoverable in
+      // practice, but the typed cause is easier to diagnose from logs).
+      throw new IllegalStateException(
           "FixToSbeTranslator SCRATCH_LEN=" + SCRATCH_LEN + " too small for SBE field " + max);
     }
   }

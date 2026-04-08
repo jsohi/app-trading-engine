@@ -30,13 +30,25 @@ public final class FixToSbeMultilegTranslator {
 
   private static final int SCRATCH_LEN = 64;
 
+  // Class-init sanity check across every SBE char field this translator writes. The runtime
+  // `dstLen > SCRATCH_LEN` check in the pad helpers is the actual safety net; this static block
+  // is belt-and-braces to fail loudly at class-load if a future schema change widens any field
+  // past SCRATCH_LEN.
   static {
     final var max =
         Math.max(
             NewOrderMultilegEncoder.clOrdIdLength(),
-            MultilegOrderCancelReplaceEncoder.clOrdIdLength());
+            Math.max(
+                MultilegOrderCancelReplaceEncoder.clOrdIdLength(),
+                Math.max(
+                    NewOrderMultilegEncoder.NoLegsEncoder.legSymbolLength(),
+                    MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legSymbolLength())));
     if (max > SCRATCH_LEN) {
-      throw new ExceptionInInitializerError(
+      // Thrown inside a static {} block — the JVM automatically wraps it in an
+      // ExceptionInInitializerError with this IllegalStateException as the cause, giving the
+      // caller a typed exception in the cause chain (class-init errors are unrecoverable in
+      // practice, but the typed cause is easier to diagnose from logs).
+      throw new IllegalStateException(
           "FixToSbeMultilegTranslator SCRATCH_LEN="
               + SCRATCH_LEN
               + " too small for SBE field "
@@ -120,6 +132,13 @@ public final class FixToSbeMultilegTranslator {
     return MessageHeaderEncoder.ENCODED_LENGTH + nom.encodedLength();
   }
 
+  /**
+   * Walk the FIX 35=AB {@code NoLegs} repeating group and copy each leg's fields into the SBE
+   * {@link NewOrderMultilegEncoder.NoLegsEncoder} sub-group. Zero allocation — reuses the shared
+   * {@link #chars} scratch buffer for every char field and Artio's cached leg-group iterator.
+   * Unmapped FIX enum values propagate from the shared enum mappers as {@link
+   * IllegalStateException}.
+   */
   private void encodeNewOrderMultilegLegs(final NewOrderMultilegDecoder fix) {
     final var legCount = fix.noLegsGroupCounter();
     final var legs = nom.noLegsCount(legCount);
@@ -263,6 +282,12 @@ public final class FixToSbeMultilegTranslator {
     return MessageHeaderEncoder.ENCODED_LENGTH + mocr.encodedLength();
   }
 
+  /**
+   * Walk the FIX 35=AC {@code NoLegs} repeating group and copy each leg's fields into the SBE
+   * {@link MultilegOrderCancelReplaceEncoder.NoLegsEncoder} sub-group. Same contract as {@link
+   * #encodeNewOrderMultilegLegs} — zero allocation, shared scratch buffer, enum mapping throws on
+   * unmapped FIX values.
+   */
   private void encodeMultilegCancelReplaceLegs(final MultilegOrderCancelReplaceRequestDecoder fix) {
     final var legCount = fix.noLegsGroupCounter();
     final var legs = mocr.noLegsCount(legCount);
