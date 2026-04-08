@@ -46,7 +46,7 @@ public final class MediaDriverConfig {
 
   /** Load defaults from the classpath properties file. */
   public static MediaDriverConfig loadDefaults() {
-    final Properties props = new Properties();
+    final var props = new Properties();
     try (InputStream in = MediaDriverConfig.class.getResourceAsStream("/" + PROPERTIES_FILE)) {
       if (in != null) {
         props.load(in);
@@ -55,11 +55,11 @@ public final class MediaDriverConfig {
       LOG.warn("Failed to load '{}', using hard-coded defaults", PROPERTIES_FILE, e);
     }
 
-    final ThreadingMode threadingMode =
+    final var threadingMode =
         getEnumProperty(props, "threading.mode", DEFAULT_THREADING_MODE, ThreadingMode.class);
-    final int termBufferLength =
+    final var termBufferLength =
         getIntProperty(props, "term.buffer.length", DEFAULT_TERM_BUFFER_LENGTH);
-    final int ipcTermLength = getIntProperty(props, "ipc.term.length", DEFAULT_IPC_TERM_LENGTH);
+    final var ipcTermLength = getIntProperty(props, "ipc.term.length", DEFAULT_IPC_TERM_LENGTH);
 
     return new MediaDriverConfig(
         props.getProperty("aeron.dir", DEFAULT_AERON_DIR),
@@ -72,49 +72,43 @@ public final class MediaDriverConfig {
 
   /** Parse CLI arguments, falling back to defaults from the properties file. */
   public static MediaDriverConfig parseArgs(final String[] args) {
-    final MediaDriverConfig defaults = loadDefaults();
+    final var defaults = loadDefaults();
 
-    String aeronDir = defaults.aeronDir();
-    ThreadingMode threadingMode = defaults.threadingMode();
-    int termBufferLength = defaults.termBufferLength();
-    int ipcTermLength = defaults.ipcTermLength();
-    boolean dirDeleteOnStart = defaults.dirDeleteOnStart();
+    var aeronDir = defaults.aeronDir();
+    var threadingMode = defaults.threadingMode();
+    var termBufferLength = defaults.termBufferLength();
+    var ipcTermLength = defaults.ipcTermLength();
+    var dirDeleteOnStart = defaults.dirDeleteOnStart();
 
     for (final String arg : args) {
-      final int eqIdx = arg.indexOf('=');
+      final var eqIdx = arg.indexOf('=');
       if (eqIdx < 0) {
         continue;
       }
-      final String key = arg.substring(0, eqIdx + 1);
-      final String value = arg.substring(eqIdx + 1);
+      final var key = arg.substring(0, eqIdx + 1);
+      final var value = arg.substring(eqIdx + 1);
 
       switch (key) {
-        case ARG_AERON_DIR:
+        case ARG_AERON_DIR -> {
           if (!value.isEmpty()) {
             aeronDir = value;
           } else {
             LOG.warn("Empty value for --aeron-dir, using default: {}", defaults.aeronDir());
           }
-          break;
-        case ARG_THREADING_MODE:
-          threadingMode =
-              parseEnumArg(
-                  value, "--threading-mode", defaults.threadingMode(), ThreadingMode.class);
-          break;
-        case ARG_TERM_BUFFER_LENGTH:
-          termBufferLength =
-              parseIntArg(value, "--term-buffer-length", defaults.termBufferLength());
-          break;
-        case ARG_IPC_TERM_LENGTH:
-          ipcTermLength = parseIntArg(value, "--ipc-term-length", defaults.ipcTermLength());
-          break;
-        case ARG_DIR_DELETE_ON_START:
-          dirDeleteOnStart =
-              parseBooleanArg(value, "--dir-delete-on-start", defaults.dirDeleteOnStart());
-          break;
-        default:
-          LOG.warn("Unknown argument: {}", arg);
-          break;
+        }
+        case ARG_THREADING_MODE ->
+            threadingMode =
+                parseEnumArg(
+                    value, "--threading-mode", defaults.threadingMode(), ThreadingMode.class);
+        case ARG_TERM_BUFFER_LENGTH ->
+            termBufferLength =
+                parseIntArg(value, "--term-buffer-length", defaults.termBufferLength());
+        case ARG_IPC_TERM_LENGTH ->
+            ipcTermLength = parseIntArg(value, "--ipc-term-length", defaults.ipcTermLength());
+        case ARG_DIR_DELETE_ON_START ->
+            dirDeleteOnStart =
+                parseBooleanArg(value, "--dir-delete-on-start", defaults.dirDeleteOnStart());
+        default -> LOG.warn("Unknown argument: {}", arg);
       }
     }
 

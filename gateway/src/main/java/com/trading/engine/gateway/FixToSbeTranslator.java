@@ -9,8 +9,6 @@ import com.trading.engine.fix.decoder_flyweight.QuoteRequestDecoder;
 import com.trading.engine.messages.sbe.CancelOrderRequestEncoder;
 import com.trading.engine.messages.sbe.MassQuoteEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
-import com.trading.engine.messages.sbe.MultilegOrderCancelReplaceEncoder;
-import com.trading.engine.messages.sbe.NewOrderMultilegEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleEncoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
@@ -69,18 +67,13 @@ public final class FixToSbeTranslator {
   // pad helpers below also runtime-check `dstLen > SCRATCH_LEN` so a future schema change that
   // widens any field will throw a clean IllegalStateException at the call site, not AIOOBE.
   static {
-    final int max =
+    final var max =
         Math.max(
             NewOrderSingleEncoder.clOrdIdLength(),
             Math.max(
-                NewOrderMultilegEncoder.clOrdIdLength(),
+                CancelOrderRequestEncoder.origClOrdIdLength(),
                 Math.max(
-                    MultilegOrderCancelReplaceEncoder.clOrdIdLength(),
-                    Math.max(
-                        CancelOrderRequestEncoder.origClOrdIdLength(),
-                        Math.max(
-                            QuoteRequestEncoder.quoteReqIdLength(),
-                            MassQuoteEncoder.quoteIdLength())))));
+                    QuoteRequestEncoder.quoteReqIdLength(), MassQuoteEncoder.quoteIdLength())));
     if (max > SCRATCH_LEN) {
       throw new ExceptionInInitializerError(
           "FixToSbeTranslator SCRATCH_LEN=" + SCRATCH_LEN + " too small for SBE field " + max);
@@ -92,9 +85,7 @@ public final class FixToSbeTranslator {
   // SBE encoders are stateful flyweights — wrap() resets them on every call.
   private final MessageHeaderEncoder header = new MessageHeaderEncoder();
   private final NewOrderSingleEncoder nos = new NewOrderSingleEncoder();
-  private final NewOrderMultilegEncoder nom = new NewOrderMultilegEncoder();
   private final CancelOrderRequestEncoder cor = new CancelOrderRequestEncoder();
-  private final MultilegOrderCancelReplaceEncoder mocr = new MultilegOrderCancelReplaceEncoder();
   private final QuoteRequestEncoder qr = new QuoteRequestEncoder();
   private final MassQuoteEncoder mq = new MassQuoteEncoder();
 
@@ -102,6 +93,13 @@ public final class FixToSbeTranslator {
    * Artio's UTC-timestamp decoder is stateless on the read path; one per instance is sufficient.
    */
   private final UtcTimestampDecoder utcTs = new UtcTimestampDecoder(false);
+
+  /**
+   * Delegate for the two multileg message types (NewOrderMultileg 35=AB and
+   * MultilegOrderCancelReplaceRequest 35=AC). Split into its own class so the leg-loop complexity
+   * stays isolated from the flat-message translators here.
+   */
+  private final FixToSbeMultilegTranslator multileg = new FixToSbeMultilegTranslator();
 
   public FixToSbeTranslator() {}
 
@@ -169,114 +167,16 @@ public final class FixToSbeTranslator {
   }
 
   // ---------------------------------------------------------------------------
-  // NewOrderMultileg (35=AB)
+  // NewOrderMultileg (35=AB) — delegated to FixToSbeMultilegTranslator
   // ---------------------------------------------------------------------------
 
   /**
    * Translate a FIX 4.4 NewOrderMultileg (35=AB) into an SBE {@code NewOrderMultilegEncoder}
-   * including its noLegs repeating group.
+   * including its noLegs repeating group. Delegates to {@link FixToSbeMultilegTranslator}.
    */
   public int translateNewOrderMultileg(
-      NewOrderMultilegDecoder fix, MutableDirectBuffer sbe, int offset) {
-    nom.wrapAndApplyHeader(sbe, offset, header);
-
-    nom.putClOrdId(
-        padFromChars(fix.clOrdID(), fix.clOrdIDLength(), NewOrderMultilegEncoder.clOrdIdLength()),
-        0);
-    nom.putQuoteId(
-        fix.hasQuoteID()
-            ? padFromChars(
-                fix.quoteID(), fix.quoteIDLength(), NewOrderMultilegEncoder.quoteIdLength())
-            : padNull(NewOrderMultilegEncoder.quoteIdLength()),
-        0);
-    nom.putSymbol(
-        padFromChars(fix.symbol(), fix.symbolLength(), NewOrderMultilegEncoder.symbolLength()), 0);
-    nom.side(mapSide(fix.side()));
-    nom.ordType(mapOrdType(fix.ordType()));
-    nom.price(
-        fix.hasPrice()
-            ? FixedPoint.toInt64(fix.price())
-            : NewOrderMultilegEncoder.priceNullValue());
-    nom.orderQty(FixedPoint.toInt64(fix.orderQty()));
-    nom.timeInForce(fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
-    nom.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    nom.putAccountCode(
-        fix.hasAccount()
-            ? padFromChars(
-                fix.account(), fix.accountLength(), NewOrderMultilegEncoder.accountCodeLength())
-            : padNull(NewOrderMultilegEncoder.accountCodeLength()),
-        0);
-    nom.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    nom.putSettlDate(
-        fix.hasSettlDate()
-            ? padFromBytes(
-                fix.settlDate(), fix.settlDateLength(), NewOrderMultilegEncoder.settlDateLength())
-            : padNull(NewOrderMultilegEncoder.settlDateLength()),
-        0);
-    nom.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
-    nom.putCurrency(
-        fix.hasCurrency()
-            ? padFromChars(
-                fix.currency(), fix.currencyLength(), NewOrderMultilegEncoder.currencyLength())
-            : padNull(NewOrderMultilegEncoder.currencyLength()),
-        0);
-    nom.putSettlCurrency(
-        fix.hasSettlCurrency()
-            ? padFromChars(
-                fix.settlCurrency(),
-                fix.settlCurrencyLength(),
-                NewOrderMultilegEncoder.settlCurrencyLength())
-            : padNull(NewOrderMultilegEncoder.settlCurrencyLength()),
-        0);
-    nom.tenor(TenorEnum.NULL_VAL); // APP-45
-
-    final int legCount = fix.noLegsGroupCounter();
-    final NewOrderMultilegEncoder.NoLegsEncoder legs = nom.noLegsCount(legCount);
-    final NewOrderMultilegDecoder.LegsGroupIterator iter = fix.legsGroupIterator();
-    while (iter.hasNext()) {
-      final NewOrderMultilegDecoder.LegsGroupDecoder leg = iter.next();
-      legs.next();
-      legs.putLegSymbol(
-          padFromChars(
-              leg.legSymbol(),
-              leg.legSymbolLength(),
-              NewOrderMultilegEncoder.NoLegsEncoder.legSymbolLength()),
-          0);
-      legs.legSide(mapSide(leg.legSide()));
-      legs.putLegSettlDate(
-          leg.hasLegSettlDate()
-              ? padFromBytes(
-                  leg.legSettlDate(),
-                  leg.legSettlDateLength(),
-                  NewOrderMultilegEncoder.NoLegsEncoder.legSettlDateLength())
-              : padNull(NewOrderMultilegEncoder.NoLegsEncoder.legSettlDateLength()),
-          0);
-      legs.legSettlType(
-          leg.hasLegSettlType() ? mapSettlType(leg.legSettlType()) : SettlTypeEnum.NULL_VAL);
-      legs.putLegCurrency(
-          leg.hasLegCurrency()
-              ? padFromChars(
-                  leg.legCurrency(),
-                  leg.legCurrencyLength(),
-                  NewOrderMultilegEncoder.NoLegsEncoder.legCurrencyLength())
-              : padNull(NewOrderMultilegEncoder.NoLegsEncoder.legCurrencyLength()),
-          0);
-      legs.legRatioQty(
-          leg.hasLegRatioQty()
-              ? FixedPoint.toInt64(leg.legRatioQty())
-              : NewOrderMultilegEncoder.NoLegsEncoder.legRatioQtyNullValue());
-      legs.legTenor(TenorEnum.NULL_VAL); // APP-45
-      legs.legOrderQty(
-          leg.hasLegQty()
-              ? FixedPoint.toInt64(leg.legQty())
-              : NewOrderMultilegEncoder.NoLegsEncoder.legOrderQtyNullValue());
-      legs.legPrice(
-          leg.hasLegPrice()
-              ? FixedPoint.toInt64(leg.legPrice())
-              : NewOrderMultilegEncoder.NoLegsEncoder.legPriceNullValue());
-    }
-
-    return MessageHeaderEncoder.ENCODED_LENGTH + nom.encodedLength();
+      final NewOrderMultilegDecoder fix, final MutableDirectBuffer sbe, final int offset) {
+    return multileg.translateNewOrderMultileg(fix, sbe, offset);
   }
 
   // ---------------------------------------------------------------------------
@@ -316,140 +216,19 @@ public final class FixToSbeTranslator {
   }
 
   // ---------------------------------------------------------------------------
-  // MultilegOrderCancelReplaceRequest (35=AC)
+  // MultilegOrderCancelReplaceRequest (35=AC) — delegated to FixToSbeMultilegTranslator
   // ---------------------------------------------------------------------------
 
   /**
    * Translate a FIX 4.4 MultilegOrderCancelReplaceRequest (35=AC) into an SBE {@code
-   * MultilegOrderCancelReplaceEncoder} including its noLegs repeating group.
+   * MultilegOrderCancelReplaceEncoder} including its noLegs repeating group. Delegates to {@link
+   * FixToSbeMultilegTranslator}.
    */
   public int translateMultilegOrderCancelReplace(
-      MultilegOrderCancelReplaceRequestDecoder fix, MutableDirectBuffer sbe, int offset) {
-    mocr.wrapAndApplyHeader(sbe, offset, header);
-
-    mocr.putOrigClOrdId(
-        padFromChars(
-            fix.origClOrdID(),
-            fix.origClOrdIDLength(),
-            MultilegOrderCancelReplaceEncoder.origClOrdIdLength()),
-        0);
-    mocr.putOrderId(
-        fix.hasOrderID()
-            ? padFromChars(
-                fix.orderID(),
-                fix.orderIDLength(),
-                MultilegOrderCancelReplaceEncoder.orderIdLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.orderIdLength()),
-        0);
-    mocr.putClOrdId(
-        padFromChars(
-            fix.clOrdID(), fix.clOrdIDLength(), MultilegOrderCancelReplaceEncoder.clOrdIdLength()),
-        0);
-    mocr.putQuoteId(
-        fix.hasQuoteID()
-            ? padFromChars(
-                fix.quoteID(),
-                fix.quoteIDLength(),
-                MultilegOrderCancelReplaceEncoder.quoteIdLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.quoteIdLength()),
-        0);
-    mocr.putSymbol(
-        padFromChars(
-            fix.symbol(), fix.symbolLength(), MultilegOrderCancelReplaceEncoder.symbolLength()),
-        0);
-    mocr.side(mapSide(fix.side()));
-    mocr.ordType(mapOrdType(fix.ordType()));
-    mocr.price(
-        fix.hasPrice()
-            ? FixedPoint.toInt64(fix.price())
-            : MultilegOrderCancelReplaceEncoder.priceNullValue());
-    mocr.orderQty(FixedPoint.toInt64(fix.orderQty()));
-    mocr.timeInForce(
-        fix.hasTimeInForce() ? mapTimeInForce(fix.timeInForce()) : TimeInForceEnum.Day);
-    mocr.transactTime(utcTs.decodeNanos(fix.transactTime(), fix.transactTimeLength()));
-    mocr.putAccountCode(
-        fix.hasAccount()
-            ? padFromChars(
-                fix.account(),
-                fix.accountLength(),
-                MultilegOrderCancelReplaceEncoder.accountCodeLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.accountCodeLength()),
-        0);
-    mocr.productType(ProductTypeEnum.NULL_VAL); // APP-45
-    mocr.putSettlDate(
-        fix.hasSettlDate()
-            ? padFromBytes(
-                fix.settlDate(),
-                fix.settlDateLength(),
-                MultilegOrderCancelReplaceEncoder.settlDateLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.settlDateLength()),
-        0);
-    mocr.settlType(fix.hasSettlType() ? mapSettlType(fix.settlType()) : SettlTypeEnum.NULL_VAL);
-    mocr.putCurrency(
-        fix.hasCurrency()
-            ? padFromChars(
-                fix.currency(),
-                fix.currencyLength(),
-                MultilegOrderCancelReplaceEncoder.currencyLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.currencyLength()),
-        0);
-    mocr.putSettlCurrency(
-        fix.hasSettlCurrency()
-            ? padFromChars(
-                fix.settlCurrency(),
-                fix.settlCurrencyLength(),
-                MultilegOrderCancelReplaceEncoder.settlCurrencyLength())
-            : padNull(MultilegOrderCancelReplaceEncoder.settlCurrencyLength()),
-        0);
-    mocr.tenor(TenorEnum.NULL_VAL); // APP-45
-
-    final int legCount = fix.noLegsGroupCounter();
-    final MultilegOrderCancelReplaceEncoder.NoLegsEncoder legs = mocr.noLegsCount(legCount);
-    final MultilegOrderCancelReplaceRequestDecoder.LegsGroupIterator iter = fix.legsGroupIterator();
-    while (iter.hasNext()) {
-      final MultilegOrderCancelReplaceRequestDecoder.LegsGroupDecoder leg = iter.next();
-      legs.next();
-      legs.putLegSymbol(
-          padFromChars(
-              leg.legSymbol(),
-              leg.legSymbolLength(),
-              MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legSymbolLength()),
-          0);
-      legs.legSide(mapSide(leg.legSide()));
-      legs.putLegSettlDate(
-          leg.hasLegSettlDate()
-              ? padFromBytes(
-                  leg.legSettlDate(),
-                  leg.legSettlDateLength(),
-                  MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legSettlDateLength())
-              : padNull(MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legSettlDateLength()),
-          0);
-      legs.legSettlType(
-          leg.hasLegSettlType() ? mapSettlType(leg.legSettlType()) : SettlTypeEnum.NULL_VAL);
-      legs.putLegCurrency(
-          leg.hasLegCurrency()
-              ? padFromChars(
-                  leg.legCurrency(),
-                  leg.legCurrencyLength(),
-                  MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legCurrencyLength())
-              : padNull(MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legCurrencyLength()),
-          0);
-      legs.legRatioQty(
-          leg.hasLegRatioQty()
-              ? FixedPoint.toInt64(leg.legRatioQty())
-              : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legRatioQtyNullValue());
-      legs.legTenor(TenorEnum.NULL_VAL); // APP-45
-      legs.legOrderQty(
-          leg.hasLegQty()
-              ? FixedPoint.toInt64(leg.legQty())
-              : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legOrderQtyNullValue());
-      legs.legPrice(
-          leg.hasLegPrice()
-              ? FixedPoint.toInt64(leg.legPrice())
-              : MultilegOrderCancelReplaceEncoder.NoLegsEncoder.legPriceNullValue());
-    }
-
-    return MessageHeaderEncoder.ENCODED_LENGTH + mocr.encodedLength();
+      final MultilegOrderCancelReplaceRequestDecoder fix,
+      final MutableDirectBuffer sbe,
+      final int offset) {
+    return multileg.translateMultilegOrderCancelReplace(fix, sbe, offset);
   }
 
   // ---------------------------------------------------------------------------
