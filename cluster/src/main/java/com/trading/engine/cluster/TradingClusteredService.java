@@ -838,14 +838,24 @@ public final class TradingClusteredService implements ClusteredService {
     // survives a future forward-compatible schema extension of SnapshotTaken.
     final int headerFragmentLen = MessageHeaderDecoder.ENCODED_LENGTH + headerDecoder.blockLength();
     final int bodyStart = offset + headerFragmentLen;
-    final int bodyEnd = bodyStart + (int) expectedBodyLength;
-    if (bodyEnd > offset + length) {
+    // Bounds check in long arithmetic — a corrupted / malicious header could carry a
+    // totalByteLength that overflows int, and silently casting would misindex the walk.
+    final long availableBodyLength = (long) length - headerFragmentLen;
+    if (expectedBodyLength < 0L || expectedBodyLength > availableBodyLength) {
       throw new IllegalStateException(
           "snapshot body length "
               + expectedBodyLength
-              + " exceeds available buffer length "
-              + (length - headerFragmentLen));
+              + " out of range for available buffer length "
+              + availableBodyLength);
     }
+    if (expectedBodyLength > Integer.MAX_VALUE - bodyStart) {
+      throw new IllegalStateException(
+          "snapshot body length "
+              + expectedBodyLength
+              + " overflows int cursor at bodyStart "
+              + bodyStart);
+    }
+    final int bodyEnd = bodyStart + (int) expectedBodyLength;
 
     // 2. Reset destination ref-data state so smaller snapshots don't leave orphans behind.
     referenceDataRegistry.resetAll();
@@ -874,14 +884,12 @@ public final class TradingClusteredService implements ClusteredService {
         throw new IllegalStateException(
             "unknown or malformed snapshot fragment: templateId=" + templateId);
       }
-      // Update CRC over the raw bytes of this fragment.
-      if (src.byteArray() != null) {
-        crc.update(src.byteArray(), cursor, consumed);
-      } else {
-        // DirectBuffer without a backing array — byte-by-byte fallback. Not hot-path.
-        for (int i = 0; i < consumed; i++) {
-          crc.update(src.getByte(cursor + i) & 0xFF);
-        }
+      // Update CRC over the raw bytes of this fragment. Snapshot restore is cold path, so the
+      // per-byte loop has no measurable cost and avoids an `UnsafeBuffer#byteArray()` fast path
+      // that would be incorrect for any DirectBuffer that wraps an array with a non-zero base
+      // offset (since `cursor` is a DirectBuffer offset, not a backing-array offset).
+      for (int i = 0; i < consumed; i++) {
+        crc.update(src.getByte(cursor + i) & 0xFF);
       }
       cursor += consumed;
       fragmentCount++;
