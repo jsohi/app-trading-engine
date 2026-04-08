@@ -157,7 +157,8 @@ public final class LoadAccountBatchHandler implements ReferenceDataBatchLoader {
       state.setAccountCode(codeScratch, 0, codeLength);
       state.setAcctIdSource(group.acctIdSource());
       group.getAccountName(nameScratch, 0);
-      state.setAccountName(nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
+      state.setAccountName(
+          nameScratch, 0, RefDataUtils.trimTrailingZeros(nameScratch, NAME_LENGTH));
       state.setAccountType(group.accountType());
       state.setBaseCurrency(ccy0, ccy1, ccy2);
       state.setStatus(group.status());
