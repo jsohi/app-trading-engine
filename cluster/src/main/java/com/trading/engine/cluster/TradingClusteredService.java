@@ -9,7 +9,6 @@ import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
-import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
@@ -340,13 +339,12 @@ public final class TradingClusteredService implements ClusteredService {
     // refDataEventLen == NOT_HANDLED → fall through to trading command dispatch.
 
     switch (templateId) {
-      case NewOrderSingleDecoder.TEMPLATE_ID:
-        handleNewOrderSingle(session, timestamp, buffer, offset);
-        return;
-      default:
+      case NewOrderSingleDecoder.TEMPLATE_ID ->
+          handleNewOrderSingle(session, timestamp, buffer, offset);
+      default -> {
         // Unknown templateId — silently drop in Phase 1. A future PR will add structured logging
         // via GFLog.
-        return;
+      }
     }
   }
 
@@ -394,9 +392,9 @@ public final class TradingClusteredService implements ClusteredService {
 
     // Extract primitive fields + copy char arrays into scratch buffers.
     final long orderQty = nosDecoder.orderQty();
-    final OrdTypeEnum ordType = nosDecoder.ordType();
+    final var ordType = nosDecoder.ordType();
     final long price = nosDecoder.price();
-    final SideEnum side = nosDecoder.side();
+    final var side = nosDecoder.side();
     nosDecoder.getClOrdId(clOrdIdScratch, 0);
     nosDecoder.getSymbol(symbolScratch, 0);
     final int symbolLen = trimTrailingZeros(symbolScratch, OrderState.SYMBOL_LENGTH);
@@ -412,28 +410,64 @@ public final class TradingClusteredService implements ClusteredService {
     currencyByte1 = ccy1;
     currencyByte2 = ccy2;
 
-    // ========== Validation ==========
+    final var account =
+        validateNewOrder(
+            session,
+            timestamp,
+            side,
+            ordType,
+            orderQty,
+            price,
+            symbolLen,
+            accountCodeLen,
+            ccy0,
+            ccy1,
+            ccy2);
+    if (account == null) {
+      return;
+    }
+    admitNewOrder(session, timestamp, account, side, ordType, orderQty, price, ccy0, ccy1, ccy2);
+  }
+
+  /**
+   * Run every pre-trade validation for a decoded NewOrderSingle. On the first failure, emits the
+   * corresponding {@code OrderRejectedEvent} + {@code ExecutionReport(Rejected)} and returns {@code
+   * null}. On success returns the resolved {@link AccountState} — the caller reuses it for the
+   * happy path to avoid a second lookup.
+   */
+  private AccountState validateNewOrder(
+      final ClientSession session,
+      final long timestamp,
+      final SideEnum side,
+      final OrdTypeEnum ordType,
+      final long orderQty,
+      final long price,
+      final int symbolLen,
+      final int accountCodeLen,
+      final byte ccy0,
+      final byte ccy1,
+      final byte ccy2) {
     if (symbolLen == 0) {
       emitOrderRejected(
           session, timestamp, side, RejectReasonEnum.UnknownSymbol, "symbol is empty");
-      return;
+      return null;
     }
     if (orderQty <= 0L) {
       emitOrderRejected(
           session, timestamp, side, RejectReasonEnum.InvalidQuantity, "orderQty must be > 0");
-      return;
+      return null;
     }
     if (ordType == OrdTypeEnum.Limit && price <= 0L) {
       emitOrderRejected(
           session, timestamp, side, RejectReasonEnum.InvalidPrice, "limit price must be > 0");
-      return;
+      return null;
     }
     if (accountCodeLen == 0) {
       emitOrderRejected(
           session, timestamp, side, RejectReasonEnum.AccountNotFound, "accountCode is empty");
-      return;
+      return null;
     }
-    final AccountState account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen);
+    final var account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen);
     if (account == null) {
       emitOrderRejected(
           session,
@@ -441,12 +475,12 @@ public final class TradingClusteredService implements ClusteredService {
           side,
           RejectReasonEnum.AccountNotFound,
           "account not in AccountStore");
-      return;
+      return null;
     }
     if (account.status() != AccountStatusEnum.Active) {
       emitOrderRejected(
           session, timestamp, side, RejectReasonEnum.AccountSuspended, "account not active");
-      return;
+      return null;
     }
     if (!account.canTrade()) {
       emitOrderRejected(
@@ -455,7 +489,7 @@ public final class TradingClusteredService implements ClusteredService {
           side,
           RejectReasonEnum.AccountNoTradePermission,
           "account lacks CAN_TRADE");
-      return;
+      return null;
     }
     final int ccyPacked = CurrencyStore.packCodeOrInvalid(ccy0, ccy1, ccy2);
     if (ccyPacked == CurrencyStore.INVALID_PACKED_CODE) {
@@ -465,7 +499,7 @@ public final class TradingClusteredService implements ClusteredService {
           side,
           RejectReasonEnum.InvalidCurrencyCode,
           "currency is not 3 uppercase ASCII letters");
-      return;
+      return null;
     }
     if (!currencyStore.contains(ccyPacked)) {
       emitOrderRejected(
@@ -474,9 +508,9 @@ public final class TradingClusteredService implements ClusteredService {
           side,
           RejectReasonEnum.UnknownCurrency,
           "currency not in CurrencyStore");
-      return;
+      return null;
     }
-    final RiskLimitState riskLimit = riskLimitStore.get(account.accountId());
+    final var riskLimit = riskLimitStore.get(account.accountId());
     if (riskLimit != null && riskLimit.maxOrderSize() > 0L && orderQty > riskLimit.maxOrderSize()) {
       emitOrderRejected(
           session,
@@ -484,10 +518,27 @@ public final class TradingClusteredService implements ClusteredService {
           side,
           RejectReasonEnum.OrderExceedsMaxSize,
           "orderQty exceeds account maxOrderSize");
-      return;
+      return null;
     }
+    return account;
+  }
 
-    // ========== Happy path ==========
+  /**
+   * Happy path: generate ids, acquire a pooled {@link OrderState}, populate it from the decoded
+   * command, and emit {@code OrderCreatedEvent} (journaled) + {@code ExecutionReport(New)} (session
+   * only). On pool exhaustion emits a {@code BookFull} rejection instead.
+   */
+  private void admitNewOrder(
+      final ClientSession session,
+      final long timestamp,
+      final AccountState account,
+      final SideEnum side,
+      final OrdTypeEnum ordType,
+      final long orderQty,
+      final long price,
+      final byte ccy0,
+      final byte ccy1,
+      final byte ccy2) {
     // Generate ids. nextInto advances the counter; currentCounter() after the call gives the
     // counter value that was just assigned — we use it as the primitive OrderBook key. The
     // scratch wrappers (orderIdScratchBuffer / execIdScratchBuffer) are pre-allocated fields so
@@ -496,7 +547,7 @@ public final class TradingClusteredService implements ClusteredService {
     final long orderKey = orderIdGen.currentCounter();
     execIdGen.nextInto(execIdScratchBuffer, 0);
 
-    final OrderState state = orderBook.acquire(orderKey);
+    final var state = orderBook.acquire(orderKey);
     if (state == null) {
       // Pool exhaustion — emit BookFull reject.
       emitOrderRejected(
@@ -721,8 +772,7 @@ public final class TradingClusteredService implements ClusteredService {
 
     // 2. IdGeneratorSnapshot — two entries (ORD, EXE).
     idGenSnapEncoder.wrapAndApplyHeader(idGenSnapBuf, 0, headerEncoder);
-    final IdGeneratorSnapshotEncoder.NoGeneratorsEncoder idGenGroup =
-        idGenSnapEncoder.noGeneratorsCount(2);
+    final var idGenGroup = idGenSnapEncoder.noGeneratorsCount(2);
     idGenGroup.next();
     idGenGroup.prefix(orderIdGen.prefix());
     idGenGroup.counter(orderIdGen.currentCounter());

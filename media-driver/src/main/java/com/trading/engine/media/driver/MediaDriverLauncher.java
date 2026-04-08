@@ -13,11 +13,11 @@ public final class MediaDriverLauncher {
   private MediaDriverLauncher() {}
 
   public static void main(final String[] args) {
-    final MediaDriverConfig config = MediaDriverConfig.parseArgs(args);
+    final var config = MediaDriverConfig.parseArgs(args);
 
     LOG.info("Starting Aeron Media Driver with config: {}", config);
 
-    final MediaDriver.Context ctx =
+    final var ctx =
         new MediaDriver.Context()
             .aeronDirectoryName(config.aeronDir())
             .threadingMode(config.threadingMode())
@@ -27,11 +27,11 @@ public final class MediaDriverLauncher {
             .dirDeleteOnStart(config.dirDeleteOnStart())
             .dirDeleteOnShutdown(false);
 
-    final MediaDriver driver = MediaDriver.launch(ctx);
+    final var driver = MediaDriver.launch(ctx);
 
     LOG.info("Aeron Media Driver started");
 
-    final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+    final var barrier = new ShutdownSignalBarrier();
 
     Runtime.getRuntime()
         .addShutdownHook(
