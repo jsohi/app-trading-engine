@@ -40,9 +40,14 @@ public final class TradingClusteredServiceFactory {
       final RiskLimitStore riskLimitStore) {
     final IdGenerator orderIdGen = new IdGenerator("ORD");
     final IdGenerator execIdGen = new IdGenerator("EXE");
-    final OrderBook orderBook = new OrderBook(128);
+    // Default capacities (~65k each) for production bootstrap. The existing unit test in
+    // TradingClusteredServiceTest uses the int-capacity constructors (128 / 64) to keep its
+    // scratch buffers small — a deliberate divergence: the factory is for production, the test
+    // is for assertion surface, and both go through the same store-wiring path so the
+    // requireSameStore consistency check is unaffected.
+    final OrderBook orderBook = new OrderBook();
     final EventSequencer eventSequencer = new EventSequencer();
-    final EventJournal eventJournal = new EventJournal(64);
+    final EventJournal eventJournal = new EventJournal();
 
     final ReferenceDataRegistry registry = new ReferenceDataRegistry();
     registry.registerStore(accountStore);

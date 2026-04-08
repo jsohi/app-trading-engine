@@ -16,6 +16,12 @@ package com.trading.engine.launcher;
  * ConsensusModule.Context#clusterMembers(String)} expects: members separated by {@code |}, fields
  * within a member separated by {@code ,}, in the order {@code memberId,ingress,consensus,log,
  * catchup,archive}.
+ *
+ * <p><b>Host is hardcoded to {@code localhost}.</b> APP-14 is a single-host dev / test bootstrap —
+ * multi-host deployment (where the three cluster members live on separate machines) is the concern
+ * of APP-15's {@code TradingEngineLauncher} + {@code cluster.properties} config loader, which will
+ * supply per-member hostnames. Keeping the helper localhost-only here lets APP-14 ship a
+ * deterministic hermetic bootstrap without dragging config-file plumbing into this PR.
  */
 public final class ClusterConfig {
 

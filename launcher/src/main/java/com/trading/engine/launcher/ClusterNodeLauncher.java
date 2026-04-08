@@ -37,15 +37,18 @@ public final class ClusterNodeLauncher {
   private static final String CNC_FILENAME = "cnc.dat";
   private static final String INGRESS_CHANNEL = "aeron:udp?term-length=64k";
   private static final String LOG_CHANNEL = "aeron:udp?term-length=256k";
+  // Replication + archive control-response use ephemeral port 0 and bind to localhost. This is
+  // the correct default for a dev / single-host cluster; multi-host deployments will need a
+  // routable interface instead, which APP-15's config loader will supply.
   private static final String REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
   private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
-  // Archive stream IDs — per-process unique identifiers for the embedded Archive's control
-  // channels. Values match Aeron's sample defaults; they only need to be distinct within the
-  // same JVM because each cluster node runs in its own process.
+  // Archive stream IDs — base values; the launch path adds {@code nodeId} to each so that even
+  // if multiple cluster nodes ever share a Media Driver (they currently don't — each node has
+  // its own aeron.dir), their Archive IPC streams will not collide.
   private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
-  private static final int ARCHIVE_LOCAL_CONTROL_STREAM_ID = 101;
-  private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 110;
+  private static final int ARCHIVE_LOCAL_CONTROL_STREAM_ID = 110;
+  private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 120;
 
   private ClusterNodeLauncher() {}
 
@@ -107,11 +110,14 @@ public final class ClusterNodeLauncher {
               .aeronDirectoryName(aeronDir)
               .archiveDir(archiveDir)
               .controlChannel("aeron:udp?endpoint=localhost:" + ClusterConfig.archivePort(nodeId))
-              .controlStreamId(ARCHIVE_CONTROL_STREAM_ID)
+              .controlStreamId(ARCHIVE_CONTROL_STREAM_ID + nodeId)
               .localControlChannel("aeron:ipc?term-length=64k")
-              .localControlStreamId(ARCHIVE_LOCAL_CONTROL_STREAM_ID)
+              .localControlStreamId(ARCHIVE_LOCAL_CONTROL_STREAM_ID + nodeId)
               .recordingEventsEnabled(false)
-              .threadingMode(ArchiveThreadingMode.SHARED);
+              // DEDICATED gives the archive its own recorder + replayer threads, which is the
+              // recommended mode for real clusters. SHARED is fine for tests but causes the
+              // conductor and replayer to contend on a single thread under load.
+              .threadingMode(ArchiveThreadingMode.DEDICATED);
       archive = Archive.launch(archiveCtx);
 
       // 2. AeronArchive client context reused (cloned) by the ConsensusModule and the
@@ -122,7 +128,7 @@ public final class ClusterNodeLauncher {
               .controlRequestChannel(archiveCtx.controlChannel())
               .controlRequestStreamId(archiveCtx.controlStreamId())
               .controlResponseChannel(ARCHIVE_CONTROL_RESPONSE_CHANNEL)
-              .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID);
+              .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID + nodeId);
 
       // 3. ConsensusModule — the Raft state machine + log replication.
       final ConsensusModule.Context consensusCtx =
