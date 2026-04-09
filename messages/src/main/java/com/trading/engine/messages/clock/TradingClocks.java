@@ -1,11 +1,13 @@
 package com.trading.engine.messages.clock;
 
 import org.agrona.concurrent.EpochNanoClock;
+import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.OffsetEpochNanoClock;
+import org.agrona.concurrent.SystemNanoClock;
 
 /**
- * Standard clock factory for the trading engine. All non-cluster processes that need epoch time
- * MUST use this factory.
+ * Standard clock factory for the trading engine. All non-cluster processes that need clocks MUST
+ * use this factory.
  *
  * <p>Inside the cluster service: NEVER call this — use the cluster-supplied timestamp from {@code
  * onSessionMessage} / {@code onTimerEvent} callbacks.
@@ -26,6 +28,15 @@ public final class TradingClocks {
    */
   public static EpochNanoClock epochNanoClock() {
     return Holder.INSTANCE;
+  }
+
+  /**
+   * Returns the shared monotonic nanosecond clock backed by Agrona's {@link SystemNanoClock}, which
+   * delegates to {@code System.nanoTime()}. Thread-safe. Use for elapsed time and timeouts — not
+   * for wall-clock timestamps.
+   */
+  public static NanoClock nanoClock() {
+    return SystemNanoClock.INSTANCE;
   }
 
   private static final class Holder {

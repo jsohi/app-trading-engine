@@ -2,13 +2,13 @@ package com.trading.refdata;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NanoClock;
-import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.Test;
 
 final class ReferenceDataOrchestratorTest {
@@ -16,7 +16,7 @@ final class ReferenceDataOrchestratorTest {
   private static final long ACK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
   private final ReferenceDataOrchestrator orchestrator =
-      new ReferenceDataOrchestrator(SystemNanoClock.INSTANCE);
+      new ReferenceDataOrchestrator(TradingClocks.nanoClock());
 
   @Test
   void happyPathLoadsAllRecords() throws Exception {
