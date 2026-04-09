@@ -12,7 +12,7 @@ import java.util.List;
  */
 public final class ResponseCollector {
 
-  private int expectedCount;
+  private int expectedCount = -1;
   private int loadedCount;
   private int rejectedCount;
   private final List<String> rejectionReasons = new ArrayList<>();

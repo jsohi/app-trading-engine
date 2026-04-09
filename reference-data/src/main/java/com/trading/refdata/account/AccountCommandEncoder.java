@@ -12,7 +12,11 @@ import com.trading.refdata.spi.ReferenceDataEncoder;
 import java.util.List;
 import org.agrona.MutableDirectBuffer;
 
-/** Encodes {@link AccountRecord} instances into a {@code LoadAccountBatch} SBE message. */
+/**
+ * Encodes {@link AccountRecord} instances into a {@code LoadAccountBatch} SBE message.
+ *
+ * <p>Not thread-safe — reuses mutable SBE flyweight fields. Single-threaded use only.
+ */
 public final class AccountCommandEncoder implements ReferenceDataEncoder<AccountRecord> {
 
   private static final int MAX_BATCH_SIZE = 200;
