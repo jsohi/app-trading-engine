@@ -32,16 +32,28 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
   public List<AccountRecord> load() throws ReferenceDataLoadException {
     LOG.info("Loading accounts from {}", filePath);
 
-    final Map<String, Object> root;
+    final Object parsed;
     try (final Reader reader = Files.newBufferedReader(filePath, StandardCharsets.UTF_8)) {
-      root = new Yaml().load(reader);
+      parsed = new Yaml().load(reader);
     } catch (final IOException e) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "cannot read " + filePath, e);
     } catch (final Exception e) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "malformed YAML in " + filePath, e);
     }
 
-    if (root == null || !root.containsKey("accounts")) {
+    if (parsed == null) {
+      return List.of();
+    }
+    if (!(parsed instanceof Map<?, ?> rootMap)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "YAML root must be a map, got " + parsed.getClass().getSimpleName() + " in " + filePath);
+    }
+
+    @SuppressWarnings("unchecked")
+    final var root = (Map<String, Object>) rootMap;
+
+    if (!root.containsKey("accounts")) {
       return List.of();
     }
 

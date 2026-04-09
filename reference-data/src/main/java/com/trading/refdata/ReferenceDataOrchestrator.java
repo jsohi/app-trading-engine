@@ -24,8 +24,6 @@ public final class ReferenceDataOrchestrator {
   private static final long SEND_RETRY_NS = TimeUnit.MILLISECONDS.toNanos(1);
   private static final int BUFFER_INITIAL_CAPACITY = 64 * 1024;
 
-  private final MutableDirectBuffer buffer = new ExpandableArrayBuffer(BUFFER_INITIAL_CAPACITY);
-
   /**
    * Load all records from the given source, encode them as SBE batch commands, send to the cluster,
    * and await acknowledgements.
@@ -54,6 +52,12 @@ public final class ReferenceDataOrchestrator {
     }
 
     final int maxBatch = encoder.maxBatchSize();
+    if (maxBatch <= 0) {
+      throw new ReferenceDataLoadException(
+          "RefData", "encoder.maxBatchSize() must be > 0, got " + maxBatch);
+    }
+
+    final MutableDirectBuffer buffer = new ExpandableArrayBuffer(BUFFER_INITIAL_CAPACITY);
     int totalLoaded = 0;
 
     for (int from = 0; from < records.size(); from += maxBatch) {
@@ -61,6 +65,17 @@ public final class ReferenceDataOrchestrator {
       final int batchSize = to - from;
 
       final int encodedLength = encoder.encodeBatch(records, from, to, buffer, 0);
+      if (encodedLength <= 0) {
+        throw new ReferenceDataLoadException(
+            "RefData",
+            "encoder produced invalid length "
+                + encodedLength
+                + " for batch ["
+                + from
+                + ", "
+                + to
+                + ")");
+      }
 
       sendWithRetry(sender, buffer, encodedLength);
 

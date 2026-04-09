@@ -36,9 +36,9 @@ public final class ResponseCollector {
     rejectionReasons.add(reason);
   }
 
-  /** True when all expected responses have been received. */
+  /** True when all expected responses have been received. Returns false before initialization. */
   public boolean isComplete() {
-    return (loadedCount + rejectedCount) >= expectedCount;
+    return expectedCount >= 0 && (loadedCount + rejectedCount) >= expectedCount;
   }
 
   /** True if any record was rejected. */

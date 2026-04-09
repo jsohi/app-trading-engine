@@ -54,6 +54,12 @@ final class ResponseCollectorTest {
   }
 
   @Test
+  void isCompleteReturnsFalseBeforeInitialization() {
+    final var collector = new ResponseCollector();
+    assertFalse(collector.isComplete());
+  }
+
+  @Test
   void rejectionReasonsAreImmutableCopy() {
     final var collector = new ResponseCollector();
     collector.expectResponses(1);
