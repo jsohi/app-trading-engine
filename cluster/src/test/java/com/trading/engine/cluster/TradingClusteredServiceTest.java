@@ -530,52 +530,28 @@ class TradingClusteredServiceTest {
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Now rebuild a fresh service with empty stores and load the snapshot.
-    final IdGenerator freshOrderGen = new IdGenerator("ORD");
-    final IdGenerator freshExecGen = new IdGenerator("EXE");
-    final OrderBook freshBook = new OrderBook(128);
-    final EventSequencer freshSeq = new EventSequencer();
-    final EventJournal freshJournal = new EventJournal(64);
-    final AccountStore freshAccounts = new AccountStore();
-    final CurrencyStore freshCurrencies = new CurrencyStore();
-    final RiskLimitStore freshLimits = new RiskLimitStore();
-    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
-    freshRegistry.registerStore(freshAccounts);
-    freshRegistry.registerStore(freshCurrencies);
-    freshRegistry.registerStore(freshLimits);
-
-    final TradingClusteredService restored =
-        new TradingClusteredService(
-            freshOrderGen,
-            freshExecGen,
-            freshBook,
-            freshSeq,
-            freshJournal,
-            freshAccounts,
-            freshCurrencies,
-            freshLimits,
-            freshRegistry);
-    restored.onStart(cluster, null); // wire the cluster ref
-    restored.loadSnapshot(concatenated, 0, totalLength);
+    final ServiceBundle fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // Counters restored.
-    assertEquals(2L, freshSeq.currentSequence());
-    assertEquals(2L, freshOrderGen.currentCounter());
-    assertEquals(2L, freshExecGen.currentCounter());
+    assertEquals(2L, fresh.eventSequencer().currentSequence());
+    assertEquals(2L, fresh.orderIdGen().currentCounter());
+    assertEquals(2L, fresh.execIdGen().currentCounter());
 
     // Stores restored.
-    assertEquals(3, freshAccounts.size());
-    assertNotNull(freshAccounts.get(1L));
-    assertEquals(2, freshCurrencies.size());
+    assertEquals(3, fresh.accountStore().size());
+    assertNotNull(fresh.accountStore().get(1L));
+    assertEquals(2, fresh.currencyStore().size());
     assertTrue(
-        freshCurrencies.contains(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D')));
-    assertEquals(1, freshLimits.size());
-    assertEquals(10L * PRICE_SCALE, freshLimits.get(1L).maxOrderSize());
+        fresh.currencyStore().contains(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D')));
+    assertEquals(1, fresh.riskLimitStore().size());
+    assertEquals(10L * PRICE_SCALE, fresh.riskLimitStore().get(1L).maxOrderSize());
 
     // OrderBook restored.
-    assertEquals(2, freshBook.size());
-    assertNotNull(freshBook.get(1L));
-    assertNotNull(freshBook.get(2L));
-    assertEquals(1L, freshBook.get(1L).accountId());
+    assertEquals(2, fresh.orderBook().size());
+    assertNotNull(fresh.orderBook().get(1L));
+    assertNotNull(fresh.orderBook().get(2L));
+    assertEquals(1L, fresh.orderBook().get(1L).accountId());
   }
 
   @Test
@@ -604,31 +580,8 @@ class TradingClusteredServiceTest {
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Build restored service, load snapshot, replay commands 4-5.
-    final IdGenerator resOrderGen = new IdGenerator("ORD");
-    final IdGenerator resExecGen = new IdGenerator("EXE");
-    final OrderBook resBook = new OrderBook(128);
-    final EventSequencer resSeq = new EventSequencer();
-    final EventJournal resJournal = new EventJournal(64);
-    final AccountStore resAccounts = new AccountStore();
-    final CurrencyStore resCurrencies = new CurrencyStore();
-    final RiskLimitStore resLimits = new RiskLimitStore();
-    final ReferenceDataRegistry resRegistry = new ReferenceDataRegistry();
-    resRegistry.registerStore(resAccounts);
-    resRegistry.registerStore(resCurrencies);
-    resRegistry.registerStore(resLimits);
-    final TradingClusteredService restored =
-        new TradingClusteredService(
-            resOrderGen,
-            resExecGen,
-            resBook,
-            resSeq,
-            resJournal,
-            resAccounts,
-            resCurrencies,
-            resLimits,
-            resRegistry);
-    restored.onStart(cluster, null);
-    restored.loadSnapshot(concatenated, 0, totalLength);
+    final ServiceBundle res = createServiceBundle(false);
+    res.service().loadSnapshot(concatenated, 0, totalLength);
 
     final FakeClientSession resSession = new FakeClientSession();
     for (int i = 4; i <= 5; i++) {
@@ -643,36 +596,12 @@ class TradingClusteredServiceTest {
               1L * PRICE_SCALE,
               "ACME",
               "USD");
-      restored.onSessionMessage(resSession, TIMESTAMP, buf, 0, len, null);
+      res.service().onSessionMessage(resSession, TIMESTAMP, buf, 0, len, null);
     }
 
     // -- Path A: full replay of all 5 commands from genesis --------------------------------
 
-    final IdGenerator fullOrderGen = new IdGenerator("ORD");
-    final IdGenerator fullExecGen = new IdGenerator("EXE");
-    final OrderBook fullBook = new OrderBook(128);
-    final EventSequencer fullSeq = new EventSequencer();
-    final EventJournal fullJournal = new EventJournal(64);
-    final AccountStore fullAccounts = new AccountStore();
-    final CurrencyStore fullCurrencies = new CurrencyStore();
-    final RiskLimitStore fullLimits = new RiskLimitStore();
-    final ReferenceDataRegistry fullRegistry = new ReferenceDataRegistry();
-    seedReferenceData(fullAccounts, fullCurrencies, fullLimits);
-    fullRegistry.registerStore(fullAccounts);
-    fullRegistry.registerStore(fullCurrencies);
-    fullRegistry.registerStore(fullLimits);
-    final TradingClusteredService fullService =
-        new TradingClusteredService(
-            fullOrderGen,
-            fullExecGen,
-            fullBook,
-            fullSeq,
-            fullJournal,
-            fullAccounts,
-            fullCurrencies,
-            fullLimits,
-            fullRegistry);
-    fullService.onStart(cluster, null);
+    final ServiceBundle full = createServiceBundle(true);
 
     final FakeClientSession fullSession = new FakeClientSession();
     for (int i = 1; i <= 5; i++) {
@@ -687,51 +616,51 @@ class TradingClusteredServiceTest {
               1L * PRICE_SCALE,
               "ACME",
               "USD");
-      fullService.onSessionMessage(fullSession, TIMESTAMP, buf, 0, len, null);
+      full.service().onSessionMessage(fullSession, TIMESTAMP, buf, 0, len, null);
     }
 
     // -- Assert Path A == Path B ----------------------------------------------------------
 
     // Absolute sanity checks first — catch cases where both paths fail identically.
-    assertEquals(5L, fullSeq.currentSequence());
-    assertEquals(5L, fullOrderGen.currentCounter());
-    assertEquals(5L, fullExecGen.currentCounter());
-    assertEquals(5, fullBook.size());
+    assertEquals(5L, full.eventSequencer().currentSequence());
+    assertEquals(5L, full.orderIdGen().currentCounter());
+    assertEquals(5L, full.execIdGen().currentCounter());
+    assertEquals(5, full.orderBook().size());
 
     // Relative equality between the two paths.
-    assertEquals(fullSeq.currentSequence(), resSeq.currentSequence());
-    assertEquals(fullOrderGen.currentCounter(), resOrderGen.currentCounter());
-    assertEquals(fullExecGen.currentCounter(), resExecGen.currentCounter());
-    assertEquals(fullBook.size(), resBook.size());
-    assertEquals(fullAccounts.size(), resAccounts.size());
-    assertEquals(fullCurrencies.size(), resCurrencies.size());
-    assertEquals(fullLimits.size(), resLimits.size());
+    assertEquals(full.eventSequencer().currentSequence(), res.eventSequencer().currentSequence());
+    assertEquals(full.orderIdGen().currentCounter(), res.orderIdGen().currentCounter());
+    assertEquals(full.execIdGen().currentCounter(), res.execIdGen().currentCounter());
+    assertEquals(full.orderBook().size(), res.orderBook().size());
+    assertEquals(full.accountStore().size(), res.accountStore().size());
+    assertEquals(full.currencyStore().size(), res.currencyStore().size());
+    assertEquals(full.riskLimitStore().size(), res.riskLimitStore().size());
 
     // Ref-data field-level fidelity — sizes alone could mask corrupted contents.
-    final AccountState fullAcct = fullAccounts.get(1L);
-    final AccountState resAcct = resAccounts.get(1L);
+    final AccountState fullAcct = full.accountStore().get(1L);
+    final AccountState resAcct = res.accountStore().get(1L);
     assertNotNull(resAcct, "ACME account missing after snapshot+replay");
     assertEquals(fullAcct.accountId(), resAcct.accountId());
     assertEquals(fullAcct.status(), resAcct.status());
     assertEquals(fullAcct.capabilities(), resAcct.capabilities());
 
     final int usdKey = CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D');
-    assertTrue(fullCurrencies.contains(usdKey));
-    assertTrue(resCurrencies.contains(usdKey));
+    assertTrue(full.currencyStore().contains(usdKey));
+    assertTrue(res.currencyStore().contains(usdKey));
 
-    final RiskLimitState fullRl = fullLimits.get(1L);
-    final RiskLimitState resRl = resLimits.get(1L);
+    final RiskLimitState fullRl = full.riskLimitStore().get(1L);
+    final RiskLimitState resRl = res.riskLimitStore().get(1L);
     assertNotNull(resRl, "risk limit for account 1 missing after snapshot+replay");
     assertEquals(fullRl.maxOrderSize(), resRl.maxOrderSize());
     assertEquals(fullRl.status(), resRl.status());
 
     // EventJournal is intentionally NOT compared: it is not snapshotted (projections replay
-    // from Aeron Archive position 0), so resJournal only contains post-snapshot events (2)
-    // while fullJournal contains all 5. This divergence is by design.
+    // from Aeron Archive position 0), so the restored journal only contains post-snapshot
+    // events (2) while the full journal contains all 5. This divergence is by design.
 
     for (long ordKey = 1; ordKey <= 5; ordKey++) {
-      final OrderState fullOrd = fullBook.get(ordKey);
-      final OrderState resOrd = resBook.get(ordKey);
+      final OrderState fullOrd = full.orderBook().get(ordKey);
+      final OrderState resOrd = res.orderBook().get(ordKey);
       assertNotNull(fullOrd, "full-replay order " + ordKey);
       assertNotNull(resOrd, "snapshot+replay order " + ordKey);
       assertEquals(fullOrd.accountId(), resOrd.accountId());
@@ -750,47 +679,30 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
-    // Restore into fresh service with explicit AccountStore reference.
-    final AccountStore freshAccounts = new AccountStore();
-    final CurrencyStore freshCurrencies = new CurrencyStore();
-    final RiskLimitStore freshLimits = new RiskLimitStore();
-    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
-    freshRegistry.registerStore(freshAccounts);
-    freshRegistry.registerStore(freshCurrencies);
-    freshRegistry.registerStore(freshLimits);
-    final TradingClusteredService restored =
-        new TradingClusteredService(
-            new IdGenerator("ORD"),
-            new IdGenerator("EXE"),
-            new OrderBook(128),
-            new EventSequencer(),
-            new EventJournal(64),
-            freshAccounts,
-            freshCurrencies,
-            freshLimits,
-            freshRegistry);
-    restored.onStart(cluster, null);
-    restored.loadSnapshot(concatenated, 0, totalLength);
+    // Restore into fresh service.
+    final ServiceBundle fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // Primary index works (sanity).
-    assertNotNull(freshAccounts.get(1L));
-    assertNotNull(freshAccounts.get(2L));
-    assertNotNull(freshAccounts.get(3L));
+    final AccountStore accts = fresh.accountStore();
+    assertNotNull(accts.get(1L));
+    assertNotNull(accts.get(2L));
+    assertNotNull(accts.get(3L));
 
     // Secondary index (getByCode) rebuilt correctly for all 3 accounts.
     final UnsafeBuffer acmeBuf = new UnsafeBuffer("ACME".getBytes(StandardCharsets.US_ASCII));
-    assertEquals(1L, freshAccounts.getByCode(acmeBuf, 0, 4).accountId());
+    assertEquals(1L, accts.getByCode(acmeBuf, 0, 4).accountId());
 
     final UnsafeBuffer lockedBuf = new UnsafeBuffer("LOCKED".getBytes(StandardCharsets.US_ASCII));
-    assertEquals(2L, freshAccounts.getByCode(lockedBuf, 0, 6).accountId());
+    assertEquals(2L, accts.getByCode(lockedBuf, 0, 6).accountId());
 
     final UnsafeBuffer quoteOnlyBuf =
         new UnsafeBuffer("QUOTEONLY".getBytes(StandardCharsets.US_ASCII));
-    assertEquals(3L, freshAccounts.getByCode(quoteOnlyBuf, 0, 9).accountId());
+    assertEquals(3L, accts.getByCode(quoteOnlyBuf, 0, 9).accountId());
 
     // Unknown code returns null.
     final UnsafeBuffer unknownBuf = new UnsafeBuffer("NOPE".getBytes(StandardCharsets.US_ASCII));
-    assertNull(freshAccounts.getByCode(unknownBuf, 0, 4));
+    assertNull(accts.getByCode(unknownBuf, 0, 4));
   }
 
   @Test
@@ -799,43 +711,18 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
-    // Use explicit fresh collaborators so we can assert state on them directly (a plain
-    // freshService() hides them behind the TradingClusteredService).
-    final IdGenerator freshOrderGen = new IdGenerator("ORD");
-    final IdGenerator freshExecGen = new IdGenerator("EXE");
-    final OrderBook freshBook = new OrderBook(32);
-    final EventSequencer freshSeq = new EventSequencer();
-    final EventJournal freshJournal = new EventJournal(16);
-    final AccountStore freshAccounts = new AccountStore();
-    final CurrencyStore freshCurrencies = new CurrencyStore();
-    final RiskLimitStore freshLimits = new RiskLimitStore();
-    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
-    freshRegistry.registerStore(freshAccounts);
-    freshRegistry.registerStore(freshCurrencies);
-    freshRegistry.registerStore(freshLimits);
-    final TradingClusteredService restored =
-        new TradingClusteredService(
-            freshOrderGen,
-            freshExecGen,
-            freshBook,
-            freshSeq,
-            freshJournal,
-            freshAccounts,
-            freshCurrencies,
-            freshLimits,
-            freshRegistry);
-    restored.onStart(cluster, null);
-    restored.loadSnapshot(concatenated, 0, totalLength);
+    final ServiceBundle fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // The source service (setUp) has 3 accounts, 2 currencies, 1 risk limit, and no orders;
     // sequencer counter is 0. All of this should now be reflected in the fresh one.
-    assertEquals(0L, freshSeq.currentSequence());
-    assertEquals(0L, freshOrderGen.currentCounter());
-    assertEquals(0L, freshExecGen.currentCounter());
-    assertEquals(3, freshAccounts.size());
-    assertEquals(2, freshCurrencies.size());
-    assertEquals(1, freshLimits.size());
-    assertEquals(0, freshBook.size());
+    assertEquals(0L, fresh.eventSequencer().currentSequence());
+    assertEquals(0L, fresh.orderIdGen().currentCounter());
+    assertEquals(0L, fresh.execIdGen().currentCounter());
+    assertEquals(3, fresh.accountStore().size());
+    assertEquals(2, fresh.currencyStore().size());
+    assertEquals(1, fresh.riskLimitStore().size());
+    assertEquals(0, fresh.orderBook().size());
   }
 
   @Test
@@ -859,30 +746,49 @@ class TradingClusteredServiceTest {
     assertTrue(ise.getMessage().toLowerCase().contains("crc"));
   }
 
-  private TradingClusteredService freshService() {
-    // The TradingClusteredService constructor asserts that the ref-data registry is backed by
-    // the same store instances passed in directly, so we must register and pass the same
-    // objects.
-    final AccountStore freshAccountStore = new AccountStore();
-    final CurrencyStore freshCurrencyStore = new CurrencyStore();
-    final RiskLimitStore freshRiskLimitStore = new RiskLimitStore();
-    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
-    freshRegistry.registerStore(freshAccountStore);
-    freshRegistry.registerStore(freshCurrencyStore);
-    freshRegistry.registerStore(freshRiskLimitStore);
-    final TradingClusteredService s =
+  /** All collaborators for a TradingClusteredService, exposed for test assertions. */
+  private record ServiceBundle(
+      IdGenerator orderIdGen,
+      IdGenerator execIdGen,
+      OrderBook orderBook,
+      EventSequencer eventSequencer,
+      EventJournal eventJournal,
+      AccountStore accountStore,
+      CurrencyStore currencyStore,
+      RiskLimitStore riskLimitStore,
+      ReferenceDataRegistry registry,
+      TradingClusteredService service) {}
+
+  /**
+   * Build a fresh TradingClusteredService with all collaborators. If {@code seed} is true, the
+   * stores are populated with the standard 3 accounts, 2 currencies, and 1 risk limit.
+   */
+  private ServiceBundle createServiceBundle(final boolean seed) {
+    final IdGenerator ordGen = new IdGenerator("ORD");
+    final IdGenerator exeGen = new IdGenerator("EXE");
+    final OrderBook book = new OrderBook(128);
+    final EventSequencer seq = new EventSequencer();
+    final EventJournal journal = new EventJournal(64);
+    final AccountStore accounts = new AccountStore();
+    final CurrencyStore currencies = new CurrencyStore();
+    final RiskLimitStore limits = new RiskLimitStore();
+    if (seed) {
+      seedReferenceData(accounts, currencies, limits);
+    }
+    final ReferenceDataRegistry reg = new ReferenceDataRegistry();
+    reg.registerStore(accounts);
+    reg.registerStore(currencies);
+    reg.registerStore(limits);
+    final TradingClusteredService svc =
         new TradingClusteredService(
-            new IdGenerator("ORD"),
-            new IdGenerator("EXE"),
-            new OrderBook(128),
-            new EventSequencer(),
-            new EventJournal(64),
-            freshAccountStore,
-            freshCurrencyStore,
-            freshRiskLimitStore,
-            freshRegistry);
-    s.onStart(cluster, null);
-    return s;
+            ordGen, exeGen, book, seq, journal, accounts, currencies, limits, reg);
+    svc.onStart(cluster, null);
+    return new ServiceBundle(
+        ordGen, exeGen, book, seq, journal, accounts, currencies, limits, reg, svc);
+  }
+
+  private TradingClusteredService freshService() {
+    return createServiceBundle(false).service();
   }
 
   private static int appendFragment(
