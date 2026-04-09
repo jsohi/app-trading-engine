@@ -5,21 +5,25 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.Test;
 
 final class ReferenceDataOrchestratorTest {
+
+  private static final long ACK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
   private final ReferenceDataOrchestrator orchestrator =
       new ReferenceDataOrchestrator(SystemNanoClock.INSTANCE);
 
   @Test
   void happyPathLoadsAllRecords() throws Exception {
-    final var records = List.of("rec1", "rec2", "rec3");
-    final var loader = stubLoader(records, "test.yaml");
+    final List<String> records = List.of("rec1", "rec2", "rec3");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "test.yaml");
     final ReferenceDataEncoder<String> encoder = stubEncoder(10);
-    final var collector = new ResponseCollector();
+    final ResponseCollector collector = new ResponseCollector();
 
     // Simulate: sender accepts, egress delivers acks immediately
     final ClusterCommandSender sender = (buf, off, len) -> 1L;
@@ -40,7 +44,7 @@ final class ReferenceDataOrchestratorTest {
   void emptyRecordsIsNoOp() throws Exception {
     final ReferenceDataLoader<String> loader = stubLoader(List.of(), "empty.yaml");
     final ReferenceDataEncoder<String> encoder = stubEncoder(10);
-    final var collector = new ResponseCollector();
+    final ResponseCollector collector = new ResponseCollector();
 
     orchestrator.load(loader, encoder, (buf, off, len) -> 1L, () -> {}, collector);
     // No exception — no records to load
@@ -48,15 +52,15 @@ final class ReferenceDataOrchestratorTest {
 
   @Test
   void rejectionThrows() {
-    final var records = List.of("rec1");
-    final var loader = stubLoader(records, "reject.yaml");
+    final List<String> records = List.of("rec1");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "reject.yaml");
     final ReferenceDataEncoder<String> encoder = stubEncoder(10);
-    final var collector = new ResponseCollector();
+    final ResponseCollector collector = new ResponseCollector();
 
     final ClusterCommandSender sender = (buf, off, len) -> 1L;
     final Runnable pollEgress = () -> collector.onRejected("invalid account");
 
-    final var ex =
+    final ReferenceDataLoadException ex =
         assertThrows(
             ReferenceDataLoadException.class,
             () -> orchestrator.load(loader, encoder, sender, pollEgress, collector));
@@ -66,11 +70,11 @@ final class ReferenceDataOrchestratorTest {
 
   @Test
   void multipleBatchesLoadCorrectly() throws Exception {
-    final var records = List.of("r1", "r2", "r3", "r4", "r5");
-    final var loader = stubLoader(records, "multi.yaml");
+    final List<String> records = List.of("r1", "r2", "r3", "r4", "r5");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "multi.yaml");
     final ReferenceDataEncoder<String> encoder =
         stubEncoder(2); // max batch size = 2, so 3 batches: 2+2+1
-    final var collector = new ResponseCollector();
+    final ResponseCollector collector = new ResponseCollector();
 
     final int[] sendCount = {0};
     final ClusterCommandSender sender =
@@ -105,13 +109,61 @@ final class ReferenceDataOrchestratorTest {
           }
         };
     final ReferenceDataEncoder<String> encoder = stubEncoder(10);
-    final var collector = new ResponseCollector();
+    final ResponseCollector collector = new ResponseCollector();
 
-    final var ex =
+    final ReferenceDataLoadException ex =
         assertThrows(
             ReferenceDataLoadException.class,
             () -> orchestrator.load(loader, encoder, (b, o, l) -> 1L, () -> {}, collector));
     assertTrue(ex.getMessage().contains("file not found"));
+  }
+
+  @Test
+  void sendWithRetryTimesOutOnPersistentBackPressure() {
+    final long[] nowNs = {0L};
+    final NanoClock fakeClock = () -> nowNs[0];
+    final ReferenceDataOrchestrator timedOrchestrator = new ReferenceDataOrchestrator(fakeClock);
+
+    final List<String> records = List.of("rec1");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "timeout.yaml");
+    final ReferenceDataEncoder<String> encoder = stubEncoder(10);
+    final ResponseCollector collector = new ResponseCollector();
+
+    // Sender always returns back-pressure; clock jumps past the 10s deadline on second call
+    final ClusterCommandSender sender =
+        (buf, off, len) -> {
+          nowNs[0] += ACK_TIMEOUT_NS + 1;
+          return -1L;
+        };
+
+    final ReferenceDataLoadException ex =
+        assertThrows(
+            ReferenceDataLoadException.class,
+            () -> timedOrchestrator.load(loader, encoder, sender, () -> {}, collector));
+    assertTrue(ex.getMessage().contains("timed out sending command"));
+    assertTrue(ex.getMessage().contains("back-pressure"));
+  }
+
+  @Test
+  void awaitResponsesTimesOutWhenClusterSilent() {
+    final long[] nowNs = {0L};
+    final NanoClock fakeClock = () -> nowNs[0];
+    final ReferenceDataOrchestrator timedOrchestrator = new ReferenceDataOrchestrator(fakeClock);
+
+    final List<String> records = List.of("rec1");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "silent.yaml");
+    final ReferenceDataEncoder<String> encoder = stubEncoder(10);
+    final ResponseCollector collector = new ResponseCollector();
+
+    // Sender succeeds, but egress never delivers acks — clock advances past deadline
+    final ClusterCommandSender sender = (buf, off, len) -> 1L;
+    final Runnable pollEgress = () -> nowNs[0] += ACK_TIMEOUT_NS + 1;
+
+    final ReferenceDataLoadException ex =
+        assertThrows(
+            ReferenceDataLoadException.class,
+            () -> timedOrchestrator.load(loader, encoder, sender, pollEgress, collector));
+    assertTrue(ex.getMessage().contains("timed out waiting for cluster acks"));
   }
 
   private static <T> ReferenceDataLoader<T> stubLoader(final List<T> records, final String name) {

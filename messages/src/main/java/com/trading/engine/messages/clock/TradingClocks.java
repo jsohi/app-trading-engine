@@ -14,16 +14,21 @@ import org.agrona.concurrent.OffsetEpochNanoClock;
  */
 public final class TradingClocks {
 
-  private static final EpochNanoClock INSTANCE = new OffsetEpochNanoClock();
-
   private TradingClocks() {}
 
   /**
    * Returns the shared, zero-allocation epoch nanosecond clock backed by Agrona's {@link
    * OffsetEpochNanoClock}, which anchors {@code System.nanoTime()} to the epoch at construction and
    * periodically re-anchors. Thread-safe — safe to share across all threads in a process.
+   *
+   * <p>Uses the lazy-holder idiom so the clock is not constructed until the first call, avoiding
+   * premature epoch-anchor sampling during class scanning or test-framework loading.
    */
   public static EpochNanoClock epochNanoClock() {
-    return INSTANCE;
+    return Holder.INSTANCE;
+  }
+
+  private static final class Holder {
+    static final EpochNanoClock INSTANCE = new OffsetEpochNanoClock();
   }
 }

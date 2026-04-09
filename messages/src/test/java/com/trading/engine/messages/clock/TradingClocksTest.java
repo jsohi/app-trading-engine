@@ -2,6 +2,7 @@ package com.trading.engine.messages.clock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.concurrent.locks.LockSupport;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.Test;
 
@@ -21,8 +22,9 @@ final class TradingClocksTest {
   void successiveCallsAreMonotonicallyNonDecreasing() {
     final EpochNanoClock clock = TradingClocks.epochNanoClock();
     final long first = clock.nanoTime();
+    LockSupport.parkNanos(1_000);
     final long second = clock.nanoTime();
-    assertTrue(second >= first, "Expected monotonic: first=" + first + " second=" + second);
+    assertTrue(second > first, "Expected strictly monotonic: first=" + first + " second=" + second);
   }
 
   @Test
