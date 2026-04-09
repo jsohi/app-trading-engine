@@ -187,7 +187,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     erDecoder.getClOrdId(clOrdIdScratch, 0);
     final int clOrdIdLen = trimNullPadding(clOrdIdScratch);
 
-    final long sessionKey = sessionLookup.findByClOrdId(clOrdIdScratch, 0, clOrdIdLen);
+    final long sessionKey = sessionLookup.findByCorrelationId(clOrdIdScratch, 0, clOrdIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
       // Cluster responded but the FIX session disconnected — clear the in-flight entry
       // (no timeout needed) and move on.
@@ -217,7 +217,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     cxlRejDecoder.getClOrdId(cxlClOrdIdScratch, 0);
     final int clOrdIdLen = trimNullPadding(cxlClOrdIdScratch);
 
-    final long sessionKey = sessionLookup.findByClOrdId(cxlClOrdIdScratch, 0, clOrdIdLen);
+    final long sessionKey = sessionLookup.findByCorrelationId(cxlClOrdIdScratch, 0, clOrdIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
       inFlightTracker.onResponseReceived(cxlClOrdIdScratch, 0, clOrdIdLen);
       LOG.info().append("Orphaned OrderCancelReject: clOrdIdLen=").append(clOrdIdLen).commit();
@@ -244,7 +244,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
 
     // Quotes are correlated by QuoteReqID, not ClOrdID. Use the same session lookup
     // because the gateway registers both ClOrdID and QuoteReqID in the same map.
-    final long sessionKey = sessionLookup.findByClOrdId(quoteReqIdScratch, 0, quoteReqIdLen);
+    final long sessionKey = sessionLookup.findByCorrelationId(quoteReqIdScratch, 0, quoteReqIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
       inFlightTracker.onResponseReceived(quoteReqIdScratch, 0, quoteReqIdLen);
       LOG.info().append("Orphaned Quote: quoteReqIdLen=").append(quoteReqIdLen).commit();
