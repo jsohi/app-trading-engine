@@ -21,7 +21,7 @@ final class TradingClocksTest {
   }
 
   @Test
-  void successiveCallsAreMonotonicallyNonDecreasing() {
+  void successiveCallsAreStrictlyIncreasing() {
     final EpochNanoClock clock = TradingClocks.epochNanoClock();
     final long first = clock.nanoTime();
     LockSupport.parkNanos(100_000);

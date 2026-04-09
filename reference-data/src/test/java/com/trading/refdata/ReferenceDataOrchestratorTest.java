@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import io.aeron.Publication;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.agrona.MutableDirectBuffer;
@@ -133,7 +134,7 @@ final class ReferenceDataOrchestratorTest {
     final ClusterCommandSender sender =
         (buf, off, len) -> {
           nowNs[0] += ACK_TIMEOUT_NS + 1;
-          return -1L;
+          return Publication.BACK_PRESSURED;
         };
 
     final ReferenceDataLoadException ex =
@@ -141,7 +142,27 @@ final class ReferenceDataOrchestratorTest {
             ReferenceDataLoadException.class,
             () -> timedOrchestrator.load(loader, encoder, sender, () -> {}, collector));
     assertTrue(ex.getMessage().contains("timed out sending command"));
-    assertTrue(ex.getMessage().contains("back-pressure"));
+  }
+
+  @Test
+  void sendWithRetryFailsFastOnTerminalPublicationError() {
+    final long[] nowNs = {0L};
+    final NanoClock fakeClock = () -> nowNs[0];
+    final ReferenceDataOrchestrator timedOrchestrator = new ReferenceDataOrchestrator(fakeClock);
+
+    final List<String> records = List.of("rec1");
+    final ReferenceDataLoader<String> loader = stubLoader(records, "terminal.yaml");
+    final ReferenceDataEncoder<String> encoder = stubEncoder(10);
+    final ResponseCollector collector = new ResponseCollector();
+
+    // Sender returns CLOSED — should fail immediately without retrying
+    final ClusterCommandSender sender = (buf, off, len) -> Publication.CLOSED;
+
+    final ReferenceDataLoadException ex =
+        assertThrows(
+            ReferenceDataLoadException.class,
+            () -> timedOrchestrator.load(loader, encoder, sender, () -> {}, collector));
+    assertTrue(ex.getMessage().contains("terminal publication error"));
   }
 
   @Test

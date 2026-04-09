@@ -2,6 +2,7 @@ package com.trading.refdata;
 
 import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import io.aeron.Publication;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -113,9 +114,16 @@ public final class ReferenceDataOrchestrator {
       if (result >= 0) {
         return;
       }
+      if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
+        throw new ReferenceDataLoadException(
+            entityType,
+            "terminal publication error sending command to cluster: "
+                + Publication.errorString(result));
+      }
+      // BACK_PRESSURED (-2), ADMIN_ACTION (-3), NOT_CONNECTED (-1) are retryable at startup
       if (nanoClock.nanoTime() >= deadlineNs) {
         throw new ReferenceDataLoadException(
-            entityType, "timed out sending command to cluster (back-pressure)");
+            entityType, "timed out sending command to cluster: " + Publication.errorString(result));
       }
       LockSupport.parkNanos(backoffNs);
       backoffNs = Math.min(backoffNs * 2, SEND_RETRY_MAX_NS);
