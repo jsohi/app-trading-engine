@@ -2,11 +2,14 @@ package com.trading.refdata;
 
 import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import io.aeron.Publication;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.NanoClock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +27,12 @@ public final class ReferenceDataOrchestrator {
   private static final long SEND_RETRY_INITIAL_NS = TimeUnit.MICROSECONDS.toNanos(100);
   private static final long SEND_RETRY_MAX_NS = TimeUnit.MILLISECONDS.toNanos(10);
   private static final int BUFFER_INITIAL_CAPACITY = 64 * 1024;
+
+  private final NanoClock nanoClock;
+
+  public ReferenceDataOrchestrator(final NanoClock nanoClock) {
+    this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+  }
 
   /**
    * Load all records from the given source, encode them as SBE batch commands, send to the cluster,
@@ -44,7 +53,7 @@ public final class ReferenceDataOrchestrator {
       final ResponseCollector collector)
       throws ReferenceDataLoadException {
 
-    final long startNs = System.nanoTime();
+    final long startNs = nanoClock.nanoTime();
     final List<T> records = loader.load();
 
     if (records.isEmpty()) {
@@ -86,7 +95,7 @@ public final class ReferenceDataOrchestrator {
       totalLoaded += collector.loadedCount();
     }
 
-    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
+    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(nanoClock.nanoTime() - startNs);
     LOG.info("Loaded {} records from {} in {}ms", totalLoaded, loader.sourceName(), elapsedMs);
   }
 
@@ -97,7 +106,7 @@ public final class ReferenceDataOrchestrator {
       final String entityType)
       throws ReferenceDataLoadException {
 
-    final long deadlineNs = System.nanoTime() + ACK_TIMEOUT_NS;
+    final long deadlineNs = nanoClock.nanoTime() + ACK_TIMEOUT_NS;
     long backoffNs = SEND_RETRY_INITIAL_NS;
 
     while (true) {
@@ -105,9 +114,16 @@ public final class ReferenceDataOrchestrator {
       if (result >= 0) {
         return;
       }
-      if (System.nanoTime() >= deadlineNs) {
+      if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
         throw new ReferenceDataLoadException(
-            entityType, "timed out sending command to cluster (back-pressure)");
+            entityType,
+            "terminal publication error sending command to cluster: "
+                + Publication.errorString(result));
+      }
+      // BACK_PRESSURED (-2), ADMIN_ACTION (-3), NOT_CONNECTED (-1) are retryable at startup
+      if (nanoClock.nanoTime() >= deadlineNs) {
+        throw new ReferenceDataLoadException(
+            entityType, "timed out sending command to cluster: " + Publication.errorString(result));
       }
       LockSupport.parkNanos(backoffNs);
       backoffNs = Math.min(backoffNs * 2, SEND_RETRY_MAX_NS);
@@ -121,7 +137,7 @@ public final class ReferenceDataOrchestrator {
       final String sourceName)
       throws ReferenceDataLoadException {
 
-    final long deadlineNs = System.nanoTime() + ACK_TIMEOUT_NS;
+    final long deadlineNs = nanoClock.nanoTime() + ACK_TIMEOUT_NS;
 
     while (!collector.isComplete()) {
       pollEgress.run();
@@ -136,7 +152,7 @@ public final class ReferenceDataOrchestrator {
                 + collector.rejectionReasons());
       }
 
-      if (System.nanoTime() >= deadlineNs) {
+      if (nanoClock.nanoTime() >= deadlineNs) {
         throw new ReferenceDataLoadException(
             entityType,
             "timed out waiting for cluster acks from "
