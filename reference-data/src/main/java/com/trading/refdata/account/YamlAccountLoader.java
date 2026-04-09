@@ -142,7 +142,12 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     if (value instanceof Number n) {
       return n.longValue();
     }
-    return Long.parseLong(value.toString());
+    try {
+      return Long.parseLong(value.toString());
+    } catch (final NumberFormatException e) {
+      throw new ReferenceDataLoadException(
+          "Account", "field '" + key + "' is not a valid number: '" + value + "'", e);
+    }
   }
 
   private static String requireString(final Map<String, Object> map, final String key)

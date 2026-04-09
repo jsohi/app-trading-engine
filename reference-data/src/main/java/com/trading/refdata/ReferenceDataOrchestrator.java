@@ -112,6 +112,10 @@ public final class ReferenceDataOrchestrator {
                 + collector.rejectionReasons());
       }
 
+      if (collector.isComplete()) {
+        break;
+      }
+
       if (System.nanoTime() >= deadlineNs) {
         throw new ReferenceDataLoadException(
             "RefData",
