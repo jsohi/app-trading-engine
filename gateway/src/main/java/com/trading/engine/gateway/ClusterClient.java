@@ -290,6 +290,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
       state = State.CONNECTED;
       reconnectAttempts = 0;
       lastKeepAliveNs = nanoClock.nanoTime();
+      lastTimeoutCheckNs = lastKeepAliveNs;
 
       LOG.info()
           .append("Connected to cluster: sessionId=")
@@ -357,8 +358,9 @@ public final class ClusterClient implements Agent, AutoCloseable {
         aeronCluster.close();
       } catch (final Exception ex) {
         errorHandler.onError(ex);
+      } finally {
+        aeronCluster = null;
       }
-      aeronCluster = null;
     }
   }
 
