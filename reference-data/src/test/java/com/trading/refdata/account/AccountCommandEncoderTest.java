@@ -171,6 +171,28 @@ final class AccountCommandEncoderTest {
   }
 
   @Test
+  void encodeInvalidComplianceStatusThrows() {
+    final var records =
+        List.of(
+            new AccountRecord(
+                1L,
+                0L,
+                "BAD",
+                "Internal",
+                "Bad Compliance",
+                "Client",
+                "USD",
+                "Active",
+                "BadCompliance",
+                0L));
+
+    final var ex =
+        assertThrows(
+            ReferenceDataLoadException.class, () -> encoder.encodeBatch(records, 0, 1, buffer, 0));
+    assertTrue(ex.getMessage().contains("complianceStatus"));
+  }
+
+  @Test
   void templateIdMatchesSbeConstant() {
     assertEquals(LoadAccountBatchEncoder.TEMPLATE_ID, encoder.templateId());
   }

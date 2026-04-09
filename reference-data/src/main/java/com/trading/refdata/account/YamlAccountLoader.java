@@ -178,6 +178,10 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
   private static String stringOrDefault(
       final Map<String, Object> map, final String key, final String defaultValue) {
     final var value = map.get(key);
-    return value != null ? value.toString() : defaultValue;
+    if (value == null) {
+      return defaultValue;
+    }
+    final var str = value.toString();
+    return str.isBlank() ? defaultValue : str;
   }
 }
