@@ -36,8 +36,8 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
 
     final int count = toIndex - fromIndex;
     batchEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder);
-    // Sender-side epoch nanos — informational only; cluster overwrites with its own timestamp
-    batchEncoder.transactTime(System.currentTimeMillis() * 1_000_000L);
+    // Cluster overwrites this field with its own deterministic timestamp
+    batchEncoder.transactTime(0L);
 
     final NoAccountsEncoder group = batchEncoder.noAccountsCount(count);
 

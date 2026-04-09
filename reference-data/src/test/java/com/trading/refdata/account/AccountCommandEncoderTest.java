@@ -58,7 +58,7 @@ final class AccountCommandEncoderTest {
     assertEquals(LoadAccountBatchEncoder.TEMPLATE_ID, headerDecoder.templateId());
 
     batchDecoder.wrapAndApplyHeader(buffer, 0, headerDecoder);
-    assertTrue(batchDecoder.transactTime() > 0);
+    assertEquals(0L, batchDecoder.transactTime());
 
     final NoAccountsDecoder group = batchDecoder.noAccounts();
     assertEquals(2, group.count());

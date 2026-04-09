@@ -19,6 +19,9 @@ public final class ResponseCollector {
 
   /** Set the number of ack responses expected for the current batch. */
   public void expectResponses(final int count) {
+    if (count < 0) {
+      throw new IllegalArgumentException("expected count must be >= 0, got " + count);
+    }
     expectedCount = count;
     loadedCount = 0;
     rejectedCount = 0;
