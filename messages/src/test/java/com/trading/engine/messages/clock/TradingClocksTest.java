@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.concurrent.EpochNanoClock;
+import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.Test;
 
 final class TradingClocksTest {
@@ -22,15 +24,21 @@ final class TradingClocksTest {
   void successiveCallsAreMonotonicallyNonDecreasing() {
     final EpochNanoClock clock = TradingClocks.epochNanoClock();
     final long first = clock.nanoTime();
-    LockSupport.parkNanos(1_000);
+    LockSupport.parkNanos(100_000);
     final long second = clock.nanoTime();
     assertTrue(second > first, "Expected strictly monotonic: first=" + first + " second=" + second);
   }
 
   @Test
-  void returnsSingletonInstance() {
+  void epochNanoClockReturnsSingletonInstance() {
     final EpochNanoClock a = TradingClocks.epochNanoClock();
     final EpochNanoClock b = TradingClocks.epochNanoClock();
     assertSame(a, b);
+  }
+
+  @Test
+  void nanoClockReturnsSystemNanoClock() {
+    final NanoClock clock = TradingClocks.nanoClock();
+    assertSame(SystemNanoClock.INSTANCE, clock);
   }
 }
