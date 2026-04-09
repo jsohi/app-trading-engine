@@ -52,6 +52,7 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
 
     final List<AccountRecord> records = new ArrayList<>(entries.size());
     final Set<String> seenCodes = new HashSet<>();
+    final Set<Long> seenIds = new HashSet<>();
 
     for (int i = 0; i < entries.size(); i++) {
       if (!(entries.get(i) instanceof Map<?, ?> map)) {
@@ -63,6 +64,12 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
       final var entry = (Map<String, Object>) map;
 
       final var record = toRecord(entry, i);
+
+      if (!seenIds.add(record.accountId())) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE,
+            "duplicate accountId " + record.accountId() + " at entry " + i + " in " + filePath);
+      }
 
       if (!seenCodes.add(record.accountCode())) {
         throw new ReferenceDataLoadException(
@@ -109,7 +116,8 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     }
   }
 
-  private static long toLong(final Map<String, Object> map, final String key) {
+  private static long toLong(final Map<String, Object> map, final String key)
+      throws ReferenceDataLoadException {
     final var value = map.get(key);
     if (value == null) {
       return 0L;
@@ -117,7 +125,12 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     if (value instanceof Number n) {
       return n.longValue();
     }
-    return Long.parseLong(value.toString());
+    try {
+      return Long.parseLong(value.toString());
+    } catch (final NumberFormatException e) {
+      throw new ReferenceDataLoadException(
+          "Account", "field '" + key + "' is not a valid number: '" + value + "'", e);
+    }
   }
 
   private static long requireLong(final Map<String, Object> map, final String key)
@@ -138,7 +151,11 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     if (value == null) {
       throw new ReferenceDataLoadException("Account", "missing required field '" + key + "'");
     }
-    return value.toString();
+    final var str = value.toString();
+    if (str.isBlank()) {
+      throw new ReferenceDataLoadException("Account", "field '" + key + "' must not be blank");
+    }
+    return str;
   }
 
   private static String stringOrDefault(

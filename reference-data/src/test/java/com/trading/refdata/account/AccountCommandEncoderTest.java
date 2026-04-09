@@ -203,7 +203,7 @@ final class AccountCommandEncoderTest {
         MessageHeaderEncoder.ENCODED_LENGTH
             + LoadAccountBatchEncoder.BLOCK_LENGTH
             + 4 // group header (blockLength u16 + numInGroup u16)
-            + 111; // NoAccountsEncoder.sbeBlockLength()
+            + LoadAccountBatchEncoder.NoAccountsEncoder.sbeBlockLength();
     assertEquals(expected, length);
   }
 }

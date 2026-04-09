@@ -82,6 +82,24 @@ final class YamlAccountLoaderTest {
   }
 
   @Test
+  void loadDuplicateAccountIdThrows() {
+    final var loader = new YamlAccountLoader(testResource("accounts-duplicate-id.yaml"));
+
+    final var ex = assertThrows(ReferenceDataLoadException.class, loader::load);
+    assertEquals("Account", ex.entityType());
+    assertTrue(ex.getMessage().contains("duplicate accountId"));
+  }
+
+  @Test
+  void loadBlankAccountCodeThrows() {
+    final var loader = new YamlAccountLoader(testResource("accounts-blank-code.yaml"));
+
+    final var ex = assertThrows(ReferenceDataLoadException.class, loader::load);
+    assertEquals("Account", ex.entityType());
+    assertTrue(ex.getMessage().contains("must not be blank"));
+  }
+
+  @Test
   void loadMissingAccountIdThrows() {
     final var loader = new YamlAccountLoader(testResource("accounts-missing-id.yaml"));
 
@@ -116,5 +134,6 @@ final class YamlAccountLoaderTest {
     assertEquals("Active", record.status());
     assertEquals("OK", record.complianceStatus());
     assertEquals(0L, record.parentAccountId());
+    assertEquals(0L, record.capabilities());
   }
 }
