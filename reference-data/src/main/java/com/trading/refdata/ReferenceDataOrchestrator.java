@@ -21,7 +21,8 @@ public final class ReferenceDataOrchestrator {
   private static final Logger LOG = LoggerFactory.getLogger(ReferenceDataOrchestrator.class);
   private static final long ACK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
   private static final long POLL_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(1);
-  private static final long SEND_RETRY_NS = TimeUnit.MILLISECONDS.toNanos(1);
+  private static final long SEND_RETRY_INITIAL_NS = TimeUnit.MICROSECONDS.toNanos(100);
+  private static final long SEND_RETRY_MAX_NS = TimeUnit.MILLISECONDS.toNanos(10);
   private static final int BUFFER_INITIAL_CAPACITY = 64 * 1024;
 
   /**
@@ -97,6 +98,7 @@ public final class ReferenceDataOrchestrator {
       throws ReferenceDataLoadException {
 
     final long deadlineNs = System.nanoTime() + ACK_TIMEOUT_NS;
+    long backoffNs = SEND_RETRY_INITIAL_NS;
 
     while (true) {
       final long result = sender.send(buf, 0, length);
@@ -107,7 +109,8 @@ public final class ReferenceDataOrchestrator {
         throw new ReferenceDataLoadException(
             entityType, "timed out sending command to cluster (back-pressure)");
       }
-      LockSupport.parkNanos(SEND_RETRY_NS);
+      LockSupport.parkNanos(backoffNs);
+      backoffNs = Math.min(backoffNs * 2, SEND_RETRY_MAX_NS);
     }
   }
 
