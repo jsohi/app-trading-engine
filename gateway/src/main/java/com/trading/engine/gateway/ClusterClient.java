@@ -124,7 +124,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
 
     // 1. Handle reconnection backoff.
     if (state == State.RECONNECTING) {
-      if (nanoClock.nanoTime() < reconnectDeadlineNs) {
+      if (reconnectDeadlineNs - nanoClock.nanoTime() > 0) {
         return 0;
       }
       connect();
@@ -306,7 +306,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
       } catch (final Exception closeEx) {
         errorHandler.onError(closeEx);
       }
-      LOG.info().append("Cluster connection failed: ").append(ex.getMessage()).commit();
+      LOG.warn().append("Cluster connection failed: ").append(ex.getMessage()).commit();
       scheduleReconnect();
     }
   }
@@ -331,11 +331,16 @@ public final class ClusterClient implements Agent, AutoCloseable {
       return;
     }
 
-    // Exponential backoff: base * 2^attempt, capped at max. The shift can overflow to negative
-    // for large base values (e.g., 100ms << 24 overflows a signed long), so clamp to MAX_VALUE
-    // before applying the cap — this ensures Math.min always picks reconnectMaxDelayNs.
-    final long shifted = reconnectBaseDelayNs << Math.min(reconnectAttempts, 62);
-    final long delayNs = Math.min(shifted < 0 ? Long.MAX_VALUE : shifted, reconnectMaxDelayNs);
+    // Exponential backoff: base * 2^attempt, capped at max. The shift count is limited to the
+    // number of leading zeros in the base value so the result never overflows (stays positive).
+    // For any shift beyond that limit, the uncapped value exceeds Long.MAX_VALUE, so we use
+    // reconnectMaxDelayNs directly.
+    final int safeShift =
+        Math.min(reconnectAttempts, Long.numberOfLeadingZeros(reconnectBaseDelayNs) - 1);
+    final long delayNs =
+        safeShift < 0
+            ? reconnectMaxDelayNs
+            : Math.min(reconnectBaseDelayNs << safeShift, reconnectMaxDelayNs);
     reconnectDeadlineNs = nanoClock.nanoTime() + delayNs;
     reconnectAttempts++;
     state = State.RECONNECTING;
