@@ -718,6 +718,24 @@ class TradingClusteredServiceTest {
     assertEquals(fullCurrencies.size(), resCurrencies.size());
     assertEquals(fullLimits.size(), resLimits.size());
 
+    // Ref-data field-level fidelity — sizes alone could mask corrupted contents.
+    final AccountState fullAcct = fullAccounts.get(1L);
+    final AccountState resAcct = resAccounts.get(1L);
+    assertNotNull(resAcct, "ACME account missing after snapshot+replay");
+    assertEquals(fullAcct.accountId(), resAcct.accountId());
+    assertEquals(fullAcct.status(), resAcct.status());
+    assertEquals(fullAcct.capabilities(), resAcct.capabilities());
+
+    final int usdKey = CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D');
+    assertTrue(fullCurrencies.contains(usdKey));
+    assertTrue(resCurrencies.contains(usdKey));
+
+    final RiskLimitState fullRl = fullLimits.get(1L);
+    final RiskLimitState resRl = resLimits.get(1L);
+    assertNotNull(resRl, "risk limit for account 1 missing after snapshot+replay");
+    assertEquals(fullRl.maxOrderSize(), resRl.maxOrderSize());
+    assertEquals(fullRl.status(), resRl.status());
+
     // EventJournal is intentionally NOT compared: it is not snapshotted (projections replay
     // from Aeron Archive position 0), so resJournal only contains post-snapshot events (2)
     // while fullJournal contains all 5. This divergence is by design.
