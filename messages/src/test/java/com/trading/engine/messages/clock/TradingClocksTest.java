@@ -26,9 +26,9 @@ final class TradingClocksTest {
   }
 
   @Test
-  void eachInvocationReturnsNewInstance() {
+  void returnsSingletonInstance() {
     final EpochNanoClock a = TradingClocks.epochNanoClock();
     final EpochNanoClock b = TradingClocks.epochNanoClock();
-    assertNotSame(a, b);
+    assertSame(a, b);
   }
 }

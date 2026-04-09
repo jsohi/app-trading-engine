@@ -14,17 +14,16 @@ import org.agrona.concurrent.OffsetEpochNanoClock;
  */
 public final class TradingClocks {
 
+  private static final EpochNanoClock INSTANCE = new OffsetEpochNanoClock();
+
   private TradingClocks() {}
 
   /**
-   * Create a zero-allocation epoch nanosecond clock backed by Agrona's {@link
+   * Returns the shared, zero-allocation epoch nanosecond clock backed by Agrona's {@link
    * OffsetEpochNanoClock}, which anchors {@code System.nanoTime()} to the epoch at construction and
-   * periodically re-anchors.
-   *
-   * <p>Create one instance per process at bootstrap and inject it everywhere via {@link
-   * EpochNanoClock}.
+   * periodically re-anchors. Thread-safe — safe to share across all threads in a process.
    */
   public static EpochNanoClock epochNanoClock() {
-    return new OffsetEpochNanoClock();
+    return INSTANCE;
   }
 }
