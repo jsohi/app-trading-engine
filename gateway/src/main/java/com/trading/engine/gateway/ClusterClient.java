@@ -62,6 +62,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
   private final ClusterEgressListener egressListener;
   private final long messageTimeoutNs;
   private final long keepAliveIntervalNs;
+  private final long timeoutCheckIntervalNs;
   private final long reconnectBaseDelayNs;
   private final long reconnectMaxDelayNs;
   private final int maxReconnectAttempts;
@@ -76,6 +77,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
   private AeronCluster aeronCluster;
   private State state = State.DISCONNECTED;
   private long lastKeepAliveNs;
+  private long lastTimeoutCheckNs;
   private long reconnectDeadlineNs;
   private int reconnectAttempts;
 
@@ -86,6 +88,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
     this.egressListener = requireNonNull(builder.egressListener, "egressListener");
     this.messageTimeoutNs = builder.messageTimeoutNs;
     this.keepAliveIntervalNs = builder.keepAliveIntervalNs;
+    this.timeoutCheckIntervalNs = builder.timeoutCheckIntervalNs;
     this.reconnectBaseDelayNs = builder.reconnectBaseDelayNs;
     this.reconnectMaxDelayNs = builder.reconnectMaxDelayNs;
     this.maxReconnectAttempts = builder.maxReconnectAttempts;
@@ -156,8 +159,12 @@ public final class ClusterClient implements Agent, AutoCloseable {
       }
     }
 
-    // 5. Check in-flight request timeouts.
-    workCount += inFlightTracker.checkTimeouts(nowNs, timeoutCallback);
+    // 5. Check in-flight request timeouts (throttled to avoid scanning the full map every
+    // doWork iteration — the scan is O(n) in the number of in-flight entries).
+    if (nowNs - lastTimeoutCheckNs >= timeoutCheckIntervalNs) {
+      workCount += inFlightTracker.checkTimeouts(nowNs, timeoutCallback);
+      lastTimeoutCheckNs = nowNs;
+    }
 
     return workCount;
   }
@@ -392,6 +399,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
     ClusterEgressListener egressListener;
     long messageTimeoutNs = TimeUnit.SECONDS.toNanos(5);
     long keepAliveIntervalNs = TimeUnit.SECONDS.toNanos(1);
+    long timeoutCheckIntervalNs = TimeUnit.MILLISECONDS.toNanos(100);
     long reconnectBaseDelayNs = TimeUnit.MILLISECONDS.toNanos(100);
     long reconnectMaxDelayNs = TimeUnit.SECONDS.toNanos(10);
     int maxReconnectAttempts = 10;
@@ -434,6 +442,12 @@ public final class ClusterClient implements Agent, AutoCloseable {
     /** Interval between keep-alive heartbeats in nanoseconds (default: 1 second). */
     public Builder keepAliveIntervalNs(final long keepAliveIntervalNs) {
       this.keepAliveIntervalNs = keepAliveIntervalNs;
+      return this;
+    }
+
+    /** Interval between in-flight timeout scans in nanoseconds (default: 100ms). */
+    public Builder timeoutCheckIntervalNs(final long timeoutCheckIntervalNs) {
+      this.timeoutCheckIntervalNs = timeoutCheckIntervalNs;
       return this;
     }
 
