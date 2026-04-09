@@ -1,0 +1,80 @@
+# Seed account data — loaded at startup by ReferenceDataOrchestrator
+# All quantities use fixed-point scale 10^-8 (PRICE_SCALE = 100_000_000)
+
+accounts:
+  - accountId: 1
+    parentAccountId: 0
+    accountCode: "ACME-001"
+    acctIdSource: "Internal"
+    accountName: "ACME Capital Management"
+    accountType: "Client"
+    baseCurrency: "USD"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3  # CAN_TRADE | CAN_RFQ
+
+  - accountId: 2
+    parentAccountId: 0
+    accountCode: "HOUSE-001"
+    acctIdSource: "Internal"
+    accountName: "House Trading Account"
+    accountType: "House"
+    baseCurrency: "USD"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 3
+    parentAccountId: 0
+    accountCode: "CITADEL-MM"
+    acctIdSource: "Internal"
+    accountName: "Citadel Market Making"
+    accountType: "MarketMaker"
+    baseCurrency: "USD"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 4
+    parentAccountId: 0
+    accountCode: "NOMURA-001"
+    acctIdSource: "BIC"
+    accountName: "Nomura Securities International"
+    accountType: "Client"
+    baseCurrency: "JPY"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 5
+    parentAccountId: 0
+    accountCode: "HSBC-LDN"
+    acctIdSource: "BIC"
+    accountName: "HSBC London Branch"
+    accountType: "Client"
+    baseCurrency: "GBP"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 6
+    parentAccountId: 1
+    accountCode: "ACME-SUB1"
+    acctIdSource: "Internal"
+    accountName: "ACME Sub-Account Alpha"
+    accountType: "Client"
+    baseCurrency: "EUR"
+    status: "Active"
+    complianceStatus: "PendingReview"
+    capabilities: 1  # CAN_TRADE only
+
+  - accountId: 7
+    parentAccountId: 0
+    accountCode: "SUSPENDED1"
+    acctIdSource: "Internal"
+    accountName: "Suspended Test Account"
+    accountType: "Client"
+    baseCurrency: "USD"
+    status: "Suspended"
+    complianceStatus: "Suspended"
+    capabilities: 0

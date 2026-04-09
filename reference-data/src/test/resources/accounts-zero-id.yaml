@@ -1,0 +1,6 @@
+accounts:
+  - accountId: 0
+    accountCode: "ZERO-ID"
+    accountName: "Zero ID Account"
+    accountType: "Client"
+    baseCurrency: "USD"

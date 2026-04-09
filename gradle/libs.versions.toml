@@ -10,6 +10,7 @@ disruptor = "3.4.4"
 slf4j = "2.0.17"
 gflog = "3.0.7"
 owasp = "12.1.1"
+snakeyaml = "2.6"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -33,3 +34,4 @@ log4j-slf4j2 = { module = "org.apache.logging.log4j:log4j-slf4j2-impl", version.
 disruptor = { module = "com.lmax:disruptor", version.ref = "disruptor" }
 gflog-api = { module = "com.epam.deltix:gflog-api", version.ref = "gflog" }
 gflog-core = { module = "com.epam.deltix:gflog-core", version.ref = "gflog" }
+snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }

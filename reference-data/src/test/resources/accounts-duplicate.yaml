@@ -1,0 +1,12 @@
+accounts:
+  - accountId: 1
+    accountCode: "DUPE-CODE"
+    accountName: "First Account"
+    accountType: "Client"
+    baseCurrency: "USD"
+
+  - accountId: 2
+    accountCode: "DUPE-CODE"
+    accountName: "Second Account"
+    accountType: "House"
+    baseCurrency: "EUR"

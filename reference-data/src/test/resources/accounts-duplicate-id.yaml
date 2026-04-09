@@ -1,0 +1,12 @@
+accounts:
+  - accountId: 1
+    accountCode: "FIRST"
+    accountName: "First Account"
+    accountType: "Client"
+    baseCurrency: "USD"
+
+  - accountId: 1
+    accountCode: "SECOND"
+    accountName: "Second Account"
+    accountType: "House"
+    baseCurrency: "EUR"

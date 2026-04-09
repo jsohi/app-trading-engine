@@ -1,0 +1,6 @@
+accounts:
+  - accountId: 1
+    accountCode: ""
+    accountName: "Blank Code Account"
+    accountType: "Client"
+    baseCurrency: "USD"

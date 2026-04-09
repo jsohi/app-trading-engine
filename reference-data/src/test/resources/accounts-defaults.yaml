@@ -1,0 +1,6 @@
+accounts:
+  - accountId: 1
+    accountCode: "DEFAULT-TEST"
+    accountName: "Test Defaults"
+    accountType: "Client"
+    baseCurrency: "USD"

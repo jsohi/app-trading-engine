@@ -1,0 +1,5 @@
+accounts:
+  - accountId: 1
+    accountCode: "GOOD"
+    accountName: "Missing accountType field"
+    baseCurrency: "USD"

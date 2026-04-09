@@ -1,0 +1,22 @@
+accounts:
+  - accountId: 1
+    parentAccountId: 0
+    accountCode: "TEST-001"
+    acctIdSource: "Internal"
+    accountName: "Test Account One"
+    accountType: "Client"
+    baseCurrency: "USD"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 2
+    parentAccountId: 1
+    accountCode: "TEST-002"
+    acctIdSource: "BIC"
+    accountName: "Test Account Two"
+    accountType: "House"
+    baseCurrency: "EUR"
+    status: "Suspended"
+    complianceStatus: "PendingReview"
+    capabilities: 1
