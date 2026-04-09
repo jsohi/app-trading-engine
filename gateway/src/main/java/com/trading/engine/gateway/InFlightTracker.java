@@ -38,6 +38,9 @@ public final class InFlightTracker {
    *     #checkTimeouts}
    */
   public InFlightTracker(final int initialCapacity, final long timeoutNs) {
+    if (initialCapacity <= 0) {
+      throw new IllegalArgumentException("initialCapacity must be positive: " + initialCapacity);
+    }
     if (timeoutNs <= 0) {
       throw new IllegalArgumentException("timeoutNs must be positive: " + timeoutNs);
     }
