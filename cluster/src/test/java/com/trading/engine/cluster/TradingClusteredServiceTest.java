@@ -2,6 +2,7 @@ package com.trading.engine.cluster;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +44,7 @@ import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -521,30 +523,8 @@ class TradingClusteredServiceTest {
     assertEquals(2L, orderIdGen.currentCounter());
 
     // Encode the snapshot into a single contiguous buffer (header + 6 body fragments).
-    service.encodeSnapshotFragments(TIMESTAMP);
     final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
-    int cursor = 0;
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.snapshotHeaderBuffer(), service.snapshotHeaderLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.eventSeqSnapBuffer(), service.eventSeqSnapLength());
-    cursor =
-        appendFragment(concatenated, cursor, service.idGenSnapBuffer(), service.idGenSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.accountSnapBuffer(), service.accountSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.currencySnapBuffer(), service.currencySnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.riskLimitSnapBuffer(), service.riskLimitSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.orderBookSnapBuffer(), service.orderBookSnapLength());
-    final int totalLength = cursor;
+    final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Now rebuild a fresh service with empty stores and load the snapshot.
     final IdGenerator freshOrderGen = new IdGenerator("ORD");
@@ -596,31 +576,221 @@ class TradingClusteredServiceTest {
   }
 
   @Test
+  void snapshotPlusReplayMatchesFullReplay() {
+    // -- Path B: snapshot after 3 commands, then replay 2 more on restored service -----------
+
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    for (int i = 1; i <= 3; i++) {
+      final int len =
+          encodeNewOrderSingle(
+              buf,
+              "CL-" + i,
+              "EURUSD",
+              SideEnum.Buy,
+              OrdTypeEnum.Limit,
+              1L * PRICE_SCALE,
+              1L * PRICE_SCALE,
+              "ACME",
+              "USD");
+      dispatch(buf, len);
+    }
+    assertEquals(3, orderBook.size());
+
+    // Take snapshot at position 3.
+    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
+
+    // Build restored service, load snapshot, replay commands 4-5.
+    final IdGenerator resOrderGen = new IdGenerator("ORD");
+    final IdGenerator resExecGen = new IdGenerator("EXE");
+    final OrderBook resBook = new OrderBook(128);
+    final EventSequencer resSeq = new EventSequencer();
+    final EventJournal resJournal = new EventJournal(64);
+    final AccountStore resAccounts = new AccountStore();
+    final CurrencyStore resCurrencies = new CurrencyStore();
+    final RiskLimitStore resLimits = new RiskLimitStore();
+    final ReferenceDataRegistry resRegistry = new ReferenceDataRegistry();
+    resRegistry.registerStore(resAccounts);
+    resRegistry.registerStore(resCurrencies);
+    resRegistry.registerStore(resLimits);
+    final TradingClusteredService restored =
+        new TradingClusteredService(
+            resOrderGen,
+            resExecGen,
+            resBook,
+            resSeq,
+            resJournal,
+            resAccounts,
+            resCurrencies,
+            resLimits,
+            resRegistry);
+    restored.onStart(cluster, null);
+    restored.loadSnapshot(concatenated, 0, totalLength);
+
+    final FakeClientSession resSession = new FakeClientSession();
+    for (int i = 4; i <= 5; i++) {
+      final int len =
+          encodeNewOrderSingle(
+              buf,
+              "CL-" + i,
+              "EURUSD",
+              SideEnum.Buy,
+              OrdTypeEnum.Limit,
+              1L * PRICE_SCALE,
+              1L * PRICE_SCALE,
+              "ACME",
+              "USD");
+      restored.onSessionMessage(resSession, TIMESTAMP, buf, 0, len, null);
+    }
+
+    // -- Path A: full replay of all 5 commands from genesis --------------------------------
+
+    final IdGenerator fullOrderGen = new IdGenerator("ORD");
+    final IdGenerator fullExecGen = new IdGenerator("EXE");
+    final OrderBook fullBook = new OrderBook(128);
+    final EventSequencer fullSeq = new EventSequencer();
+    final EventJournal fullJournal = new EventJournal(64);
+    final AccountStore fullAccounts = new AccountStore();
+    final CurrencyStore fullCurrencies = new CurrencyStore();
+    final RiskLimitStore fullLimits = new RiskLimitStore();
+    final ReferenceDataRegistry fullRegistry = new ReferenceDataRegistry();
+    fullAccounts.put(
+        makeAccount(1L, "ACME", AccountStatusEnum.Active, AccountState.Capabilities.CAN_TRADE));
+    fullAccounts.put(
+        makeAccount(
+            2L, "LOCKED", AccountStatusEnum.Suspended, AccountState.Capabilities.CAN_TRADE));
+    fullAccounts.put(makeAccount(3L, "QUOTEONLY", AccountStatusEnum.Active, 0L));
+    fullCurrencies.put(
+        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD", 840));
+    fullCurrencies.put(
+        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR", 978));
+    final RiskLimitState fullLimit = new RiskLimitState();
+    fullLimit.setAccountId(1L);
+    fullLimit.setMaxOrderSize(10L * PRICE_SCALE);
+    fullLimit.setStatus(AccountStatusEnum.Active);
+    fullLimits.put(fullLimit);
+    fullRegistry.registerStore(fullAccounts);
+    fullRegistry.registerStore(fullCurrencies);
+    fullRegistry.registerStore(fullLimits);
+    final TradingClusteredService fullService =
+        new TradingClusteredService(
+            fullOrderGen,
+            fullExecGen,
+            fullBook,
+            fullSeq,
+            fullJournal,
+            fullAccounts,
+            fullCurrencies,
+            fullLimits,
+            fullRegistry);
+    fullService.onStart(cluster, null);
+
+    final FakeClientSession fullSession = new FakeClientSession();
+    for (int i = 1; i <= 5; i++) {
+      final int len =
+          encodeNewOrderSingle(
+              buf,
+              "CL-" + i,
+              "EURUSD",
+              SideEnum.Buy,
+              OrdTypeEnum.Limit,
+              1L * PRICE_SCALE,
+              1L * PRICE_SCALE,
+              "ACME",
+              "USD");
+      fullService.onSessionMessage(fullSession, TIMESTAMP, buf, 0, len, null);
+    }
+
+    // -- Assert Path A == Path B ----------------------------------------------------------
+
+    // Absolute sanity checks first — catch cases where both paths fail identically.
+    assertEquals(5L, fullSeq.currentSequence());
+    assertEquals(5L, fullOrderGen.currentCounter());
+    assertEquals(5L, fullExecGen.currentCounter());
+    assertEquals(5, fullBook.size());
+
+    // Relative equality between the two paths.
+    assertEquals(fullSeq.currentSequence(), resSeq.currentSequence());
+    assertEquals(fullOrderGen.currentCounter(), resOrderGen.currentCounter());
+    assertEquals(fullExecGen.currentCounter(), resExecGen.currentCounter());
+    assertEquals(fullBook.size(), resBook.size());
+    assertEquals(fullAccounts.size(), resAccounts.size());
+    assertEquals(fullCurrencies.size(), resCurrencies.size());
+    assertEquals(fullLimits.size(), resLimits.size());
+
+    // EventJournal is intentionally NOT compared: it is not snapshotted (projections replay
+    // from Aeron Archive position 0), so resJournal only contains post-snapshot events (2)
+    // while fullJournal contains all 5. This divergence is by design.
+
+    for (long ordKey = 1; ordKey <= 5; ordKey++) {
+      final OrderState fullOrd = fullBook.get(ordKey);
+      final OrderState resOrd = resBook.get(ordKey);
+      assertNotNull(fullOrd, "full-replay order " + ordKey);
+      assertNotNull(resOrd, "snapshot+replay order " + ordKey);
+      assertEquals(fullOrd.accountId(), resOrd.accountId());
+      assertEquals(fullOrd.side(), resOrd.side());
+      assertEquals(fullOrd.ordType(), resOrd.ordType());
+      assertEquals(fullOrd.price(), resOrd.price());
+      assertEquals(fullOrd.orderQty(), resOrd.orderQty());
+      assertEquals(fullOrd.leavesQty(), resOrd.leavesQty());
+      assertEquals(fullOrd.cumQty(), resOrd.cumQty());
+    }
+  }
+
+  @Test
+  void accountStoreSecondaryIndexRebuiltAfterSnapshot() {
+    // Snapshot the service from setUp (3 accounts already seeded).
+    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
+
+    // Restore into fresh service with explicit AccountStore reference.
+    final AccountStore freshAccounts = new AccountStore();
+    final CurrencyStore freshCurrencies = new CurrencyStore();
+    final RiskLimitStore freshLimits = new RiskLimitStore();
+    final ReferenceDataRegistry freshRegistry = new ReferenceDataRegistry();
+    freshRegistry.registerStore(freshAccounts);
+    freshRegistry.registerStore(freshCurrencies);
+    freshRegistry.registerStore(freshLimits);
+    final TradingClusteredService restored =
+        new TradingClusteredService(
+            new IdGenerator("ORD"),
+            new IdGenerator("EXE"),
+            new OrderBook(128),
+            new EventSequencer(),
+            new EventJournal(64),
+            freshAccounts,
+            freshCurrencies,
+            freshLimits,
+            freshRegistry);
+    restored.onStart(cluster, null);
+    restored.loadSnapshot(concatenated, 0, totalLength);
+
+    // Primary index works (sanity).
+    assertNotNull(freshAccounts.get(1L));
+    assertNotNull(freshAccounts.get(2L));
+    assertNotNull(freshAccounts.get(3L));
+
+    // Secondary index (getByCode) rebuilt correctly for all 3 accounts.
+    final UnsafeBuffer acmeBuf = new UnsafeBuffer("ACME".getBytes(StandardCharsets.US_ASCII));
+    assertEquals(1L, freshAccounts.getByCode(acmeBuf, 0, 4).accountId());
+
+    final UnsafeBuffer lockedBuf = new UnsafeBuffer("LOCKED".getBytes(StandardCharsets.US_ASCII));
+    assertEquals(2L, freshAccounts.getByCode(lockedBuf, 0, 6).accountId());
+
+    final UnsafeBuffer quoteOnlyBuf =
+        new UnsafeBuffer("QUOTEONLY".getBytes(StandardCharsets.US_ASCII));
+    assertEquals(3L, freshAccounts.getByCode(quoteOnlyBuf, 0, 9).accountId());
+
+    // Unknown code returns null.
+    final UnsafeBuffer unknownBuf = new UnsafeBuffer("NOPE".getBytes(StandardCharsets.US_ASCII));
+    assertNull(freshAccounts.getByCode(unknownBuf, 0, 4));
+  }
+
+  @Test
   void snapshotRoundTripEmptyState() {
     // Take a snapshot of an initial (empty) service and restore into a fresh one.
-    service.encodeSnapshotFragments(TIMESTAMP);
     final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
-    int cursor = 0;
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.snapshotHeaderBuffer(), service.snapshotHeaderLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.eventSeqSnapBuffer(), service.eventSeqSnapLength());
-    cursor =
-        appendFragment(concatenated, cursor, service.idGenSnapBuffer(), service.idGenSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.accountSnapBuffer(), service.accountSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.currencySnapBuffer(), service.currencySnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.riskLimitSnapBuffer(), service.riskLimitSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.orderBookSnapBuffer(), service.orderBookSnapLength());
+    final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Use explicit fresh collaborators so we can assert state on them directly (a plain
     // freshService() hides them behind the TradingClusteredService).
@@ -648,7 +818,7 @@ class TradingClusteredServiceTest {
             freshLimits,
             freshRegistry);
     restored.onStart(cluster, null);
-    restored.loadSnapshot(concatenated, 0, cursor);
+    restored.loadSnapshot(concatenated, 0, totalLength);
 
     // The source service (setUp) has 3 accounts, 2 currencies, 1 risk limit, and no orders;
     // sequencer counter is 0. All of this should now be reflected in the fresh one.
@@ -663,30 +833,8 @@ class TradingClusteredServiceTest {
 
   @Test
   void snapshotCorruptedChecksumDetected() {
-    service.encodeSnapshotFragments(TIMESTAMP);
     final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
-    int cursor = 0;
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.snapshotHeaderBuffer(), service.snapshotHeaderLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.eventSeqSnapBuffer(), service.eventSeqSnapLength());
-    cursor =
-        appendFragment(concatenated, cursor, service.idGenSnapBuffer(), service.idGenSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.accountSnapBuffer(), service.accountSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.currencySnapBuffer(), service.currencySnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.riskLimitSnapBuffer(), service.riskLimitSnapLength());
-    cursor =
-        appendFragment(
-            concatenated, cursor, service.orderBookSnapBuffer(), service.orderBookSnapLength());
-    final int totalLength = cursor;
+    final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Flip a byte in the body (somewhere in the eventSeq fragment which is just after the
     // SnapshotTaken header).
@@ -737,6 +885,24 @@ class TradingClusteredServiceTest {
       final int length) {
     dst.putBytes(offset, src, 0, length);
     return offset + length;
+  }
+
+  /**
+   * Encode all snapshot fragments from the given service into a single contiguous buffer. Returns
+   * the total encoded length.
+   */
+  private static int encodeAndConcatenateSnapshot(
+      final TradingClusteredService svc, final MutableDirectBuffer dst) {
+    svc.encodeSnapshotFragments(TIMESTAMP);
+    int cursor = 0;
+    cursor = appendFragment(dst, cursor, svc.snapshotHeaderBuffer(), svc.snapshotHeaderLength());
+    cursor = appendFragment(dst, cursor, svc.eventSeqSnapBuffer(), svc.eventSeqSnapLength());
+    cursor = appendFragment(dst, cursor, svc.idGenSnapBuffer(), svc.idGenSnapLength());
+    cursor = appendFragment(dst, cursor, svc.accountSnapBuffer(), svc.accountSnapLength());
+    cursor = appendFragment(dst, cursor, svc.currencySnapBuffer(), svc.currencySnapLength());
+    cursor = appendFragment(dst, cursor, svc.riskLimitSnapBuffer(), svc.riskLimitSnapLength());
+    cursor = appendFragment(dst, cursor, svc.orderBookSnapBuffer(), svc.orderBookSnapLength());
+    return cursor;
   }
 
   // ---------------------------------------------------------------------------
