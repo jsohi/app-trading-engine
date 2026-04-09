@@ -78,7 +78,12 @@ public final class InFlightTracker {
    * Scan all in-flight entries and invoke {@code callback} for each one whose age exceeds {@link
    * #timeoutNs}. Expired entries are removed from the map during the scan.
    *
-   * <p>Called from the gateway duty cycle on each {@code doWork()} iteration.
+   * <p>Called from the gateway duty cycle at a throttled interval (not every {@code doWork()}).
+   *
+   * <p><b>Iterator compaction.</b> Agrona's {@code Long2LongHashMap} uses open-addressing with
+   * compaction on remove, which may cause the iterator to skip entries in a single pass. Any missed
+   * entries will be caught on the next scan. This is acceptable given the throttled scan interval
+   * (typically 100ms).
    *
    * @param nowNs current monotonic nanosecond timestamp
    * @param callback invoked for each expired entry

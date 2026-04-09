@@ -117,6 +117,34 @@ class InFlightTrackerTest {
   }
 
   @Test
+  void constructor_zeroCapacity_throws() {
+    assertThrows(IllegalArgumentException.class, () -> new InFlightTracker(0, TIMEOUT_NS));
+  }
+
+  @Test
+  void constructor_negativeCapacity_throws() {
+    assertThrows(IllegalArgumentException.class, () -> new InFlightTracker(-1, TIMEOUT_NS));
+  }
+
+  @Test
+  void checkTimeouts_callbackThrows_stillRemovesEntry() {
+    final byte[] clOrdId = id("ORD-001");
+    tracker.onCommandSent(clOrdId, 0, clOrdId.length, 1_000L);
+    assertEquals(1, tracker.size());
+
+    final long nowNs = 1_000L + TIMEOUT_NS;
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            tracker.checkTimeouts(
+                nowNs,
+                (hash, sentNs) -> {
+                  throw new RuntimeException("boom");
+                }));
+    assertEquals(0, tracker.size());
+  }
+
+  @Test
   void fnv1aHash_deterministic() {
     final byte[] a = id("ORD-00000000001");
     final byte[] b = id("ORD-00000000001");

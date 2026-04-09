@@ -129,7 +129,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
           handleOrderCancelReject(buffer, offset, timestamp);
       case QuoteDecoder.TEMPLATE_ID -> handleQuote(buffer, offset, timestamp);
       default -> {
-        LOG.info().append("Unhandled egress templateId=").append(templateId).commit();
+        LOG.warn().append("Unhandled egress templateId=").append(templateId).commit();
         yield Action.CONTINUE;
       }
     };

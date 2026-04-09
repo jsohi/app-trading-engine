@@ -221,9 +221,9 @@ class ClusterClientTest {
   // ===========================================================================
 
   @Test
-  void doWork_checksInFlightTimeouts() {
-    // We can't easily test doWork() in CONNECTED state without a real cluster,
-    // but we can verify that InFlightTracker timeout works independently.
+  void inFlightTracker_expiresTimedOutEntries() {
+    // Connected-state doWork() testing requires a live cluster (APP-16 integration tests).
+    // Here we verify the InFlightTracker timeout mechanism independently.
     final byte[] id = "ORD-001".getBytes(StandardCharsets.US_ASCII);
     inFlightTracker.onCommandSent(id, 0, id.length, 1_000L);
     assertEquals(1, inFlightTracker.size());
