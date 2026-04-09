@@ -1,0 +1,5 @@
+accounts:
+  - accountCode: "NO-ID"
+    accountName: "Missing Account ID"
+    accountType: "Client"
+    baseCurrency: "USD"

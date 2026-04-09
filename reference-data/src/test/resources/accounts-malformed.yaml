@@ -1,0 +1,4 @@
+accounts:
+  - accountId: 1
+    accountCode: [this is not: valid yaml
+    invalid_key:

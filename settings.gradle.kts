@@ -12,6 +12,7 @@ include(
     "messages",
     "pricing-service",
     "projections",
+    "reference-data",
     "query-service",
     "sbe-typescript-generator",
     "web-ui",
