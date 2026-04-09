@@ -272,4 +272,79 @@ class ClusterConfigTest {
             ClusterConfig.hostForMember(
                 "abc,host-a:20110,host-a:20220,host-a:20330,host-a:20440,host-a:8010", 0));
   }
+
+  // -------------------------------------------------------------------------
+  // IPv6 host handling — hostForMember must accept bracketed IPv6 literals and reject
+  // unbracketed ones as ambiguous.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void hostForMemberExtractsBracketedIpv6() {
+    // Passing a bracketed IPv6 literal through buildClusterMembers keeps the brackets and
+    // hostForMember returns the content between them (without brackets).
+    final String members = ClusterConfig.buildClusterMembers(1, "[2001:db8::1]");
+    assertEquals("2001:db8::1", ClusterConfig.hostForMember(members, 0));
+  }
+
+  @Test
+  void hostForMemberExtractsIpv4() {
+    final String members = ClusterConfig.buildClusterMembers(1, "10.0.0.1");
+    assertEquals("10.0.0.1", ClusterConfig.hostForMember(members, 0));
+  }
+
+  @Test
+  void hostForMemberRejectsUnbracketedIpv6() {
+    // Unbracketed IPv6 is ambiguous with host:port parsing. We construct the member string
+    // by hand so buildClusterMembers can't help us.
+    final String members =
+        "0,2001:db8::1:20110,2001:db8::1:20220,2001:db8::1:20330,2001:db8::1:20440,"
+            + "2001:db8::1:8010";
+    final IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(members, 0));
+    assertTrue(
+        ex.getMessage().contains("bracket"),
+        "expected 'bracket' hint in message, got: " + ex.getMessage());
+  }
+
+  @Test
+  void hostForMemberExtractsIpv6Loopback() {
+    // Simplest and most common IPv6 literal — the leading `::` is a classic parser trip-up.
+    final String members = ClusterConfig.buildClusterMembers(1, "[::1]");
+    assertEquals("::1", ClusterConfig.hostForMember(members, 0));
+  }
+
+  @Test
+  void hostForMemberRejectsMalformedBrackets() {
+    // [host] without port
+    final String noPort =
+        "0,[2001:db8::1],[2001:db8::1]:20220,[2001:db8::1]:20330,[2001:db8::1]:20440,"
+            + "[2001:db8::1]:8010";
+    final IllegalArgumentException noPortEx =
+        assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(noPort, 0));
+    assertTrue(
+        noPortEx.getMessage().contains("missing ':port'"),
+        "expected missing-port message, got: " + noPortEx.getMessage());
+
+    // Empty brackets []
+    final String empty = "0,[]:20110,[]:20220,[]:20330,[]:20440,[]:8010";
+    final IllegalArgumentException emptyEx =
+        assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(empty, 0));
+    assertTrue(
+        emptyEx.getMessage().contains("empty brackets"),
+        "expected empty-brackets message, got: " + emptyEx.getMessage());
+  }
+
+  @Test
+  void hostForMemberRejectsUnclosedBracket() {
+    // Unclosed bracket — missing the ']'. Must hit a distinct error from "empty brackets".
+    final String unclosed =
+        "0,[2001:db8::1:20110,[2001:db8::1]:20220,[2001:db8::1]:20330,[2001:db8::1]:20440,"
+            + "[2001:db8::1]:8010";
+    final IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class, () -> ClusterConfig.hostForMember(unclosed, 0));
+    assertTrue(
+        ex.getMessage().contains("unclosed bracket"),
+        "expected unclosed-bracket message, got: " + ex.getMessage());
+  }
 }

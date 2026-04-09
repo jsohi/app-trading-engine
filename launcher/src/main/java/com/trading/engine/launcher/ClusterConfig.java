@@ -161,6 +161,11 @@ public final class ClusterConfig {
    * built by {@link #buildClusterMembers(int, String...)}. Used by {@link ClusterNodeLauncher} to
    * recover its local bind host at launch time without requiring a separate constructor argument.
    *
+   * <p>Supports hostnames, IPv4 literals, and <b>bracketed</b> IPv6 literals (e.g. {@code
+   * [2001:db8::1]:20110}). Unbracketed IPv6 literals are ambiguous with the {@code host:port} colon
+   * separator and are rejected — callers must bracket IPv6 hosts when passing them to {@link
+   * #buildClusterMembers(int, String...)}.
+   *
    * @param clusterMembers the full member string
    * @param nodeId the member whose host to return
    * @throws IllegalArgumentException if the member string is malformed or does not contain {@code
@@ -186,16 +191,52 @@ public final class ClusterConfig {
         throw new IllegalArgumentException("malformed member id in entry: " + member, e);
       }
       if (id == nodeId) {
-        final String ingress = fields[1]; // format "host:port"
-        final int colon = ingress.lastIndexOf(':');
-        if (colon <= 0) {
-          throw new IllegalArgumentException("malformed ingress endpoint in entry: " + member);
-        }
-        return ingress.substring(0, colon);
+        return extractHost(fields[1], member);
       }
     }
     throw new IllegalArgumentException(
         "clusterMembers does not contain nodeId " + nodeId + ": " + clusterMembers);
+  }
+
+  /**
+   * Parse the host part of an endpoint field in one of two accepted formats:
+   *
+   * <ul>
+   *   <li>{@code host:port} — hostname or IPv4; split at the single {@code :}
+   *   <li>{@code [ipv6]:port} — bracketed IPv6; return the content between the brackets
+   * </ul>
+   *
+   * Unbracketed IPv6 literals (multiple colons without brackets) are rejected as ambiguous.
+   */
+  private static String extractHost(final String endpoint, final String memberEntryForError) {
+    if (endpoint.startsWith("[")) {
+      final int closeBracket = endpoint.indexOf(']');
+      if (closeBracket < 0) {
+        throw new IllegalArgumentException(
+            "unclosed bracket in IPv6 endpoint in entry: " + memberEntryForError);
+      }
+      if (closeBracket == 1) {
+        throw new IllegalArgumentException(
+            "empty brackets in IPv6 endpoint in entry: " + memberEntryForError);
+      }
+      if (closeBracket + 1 >= endpoint.length() || endpoint.charAt(closeBracket + 1) != ':') {
+        throw new IllegalArgumentException(
+            "bracketed IPv6 endpoint missing ':port' in entry: " + memberEntryForError);
+      }
+      return endpoint.substring(1, closeBracket);
+    }
+    final int firstColon = endpoint.indexOf(':');
+    final int lastColon = endpoint.lastIndexOf(':');
+    if (firstColon <= 0) {
+      throw new IllegalArgumentException(
+          "malformed ingress endpoint in entry: " + memberEntryForError);
+    }
+    if (firstColon != lastColon) {
+      throw new IllegalArgumentException(
+          "ambiguous endpoint (looks like unbracketed IPv6 — bracket it as [host]:port): "
+              + memberEntryForError);
+    }
+    return endpoint.substring(0, firstColon);
   }
 
   private static String[] defaultHosts(final int nodeCount) {

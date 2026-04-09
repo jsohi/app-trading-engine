@@ -86,14 +86,13 @@ public final class ClusterNodeLauncher {
     requireNonBlank(clusterMembers, "clusterMembers");
     requireRunningMediaDriver(aeronDir);
 
-    // Extract this node's advertised ingress hostname from the member string and use it as the
-    // local bind host for the replication + archive-control-response channels. This keeps the
-    // launcher host-agnostic: localhost works for single-host dev (buildClusterMembers no-host
-    // overload defaults to localhost), a routable hostname works for multi-host deployments
-    // (buildClusterMembers hosts... overload). Using ephemeral port 0 lets the OS pick.
+    // Extract this node's advertised ingress hostname from the member string. Used for:
+    //   1. The Archive's external UDP controlChannel (so ClusterTool / backup nodes can reach it)
+    //   2. The ConsensusModule's replication channel (peer-to-peer snapshot transfer)
+    // The AeronArchive client context uses IPC instead since it runs in-process. Using
+    // ephemeral port 0 on UDP endpoints lets the OS pick a free port.
     final String localHost = ClusterConfig.hostForMember(clusterMembers, nodeId);
-    final String replicationChannel = "aeron:udp?endpoint=" + localHost + ":0";
-    final String archiveControlResponseChannel = "aeron:udp?endpoint=" + localHost + ":0";
+    final String replicationChannel = udpEndpoint(localHost, 0);
 
     final File archiveDir;
     final File clusterDir;
@@ -121,12 +120,17 @@ public final class ClusterNodeLauncher {
           new Archive.Context()
               .aeronDirectoryName(aeronDir)
               .archiveDir(archiveDir)
-              .controlChannel(
-                  "aeron:udp?endpoint=" + localHost + ":" + ClusterConfig.archivePort(nodeId))
+              // UDP controlChannel — used by external operators (ClusterTool, backup nodes).
+              .controlChannel(udpEndpoint(localHost, ClusterConfig.archivePort(nodeId)))
               .controlStreamId(ARCHIVE_CONTROL_STREAM_ID + nodeId)
+              // IPC localControlChannel — used by the in-process ConsensusModule and
+              // ClusteredServiceContainer. Intra-process comms don't need UDP overhead.
               .localControlChannel("aeron:ipc?term-length=64k")
               .localControlStreamId(ARCHIVE_LOCAL_CONTROL_STREAM_ID + nodeId)
-              .recordingEventsEnabled(false)
+              // Recording events surface recording position / progress on a dedicated stream —
+              // required for ConsensusModule and external monitoring tools to observe archive
+              // health. Default is true; we leave it true explicitly to document the choice.
+              .recordingEventsEnabled(true)
               // DEDICATED gives the archive its own recorder + replayer threads, which is the
               // recommended mode for real clusters. SHARED is fine for tests but causes the
               // conductor and replayer to contend on a single thread under load.
@@ -134,13 +138,15 @@ public final class ClusterNodeLauncher {
       archive = Archive.launch(archiveCtx);
 
       // 2. AeronArchive client context reused (cloned) by the ConsensusModule and the
-      //    ClusteredServiceContainer to talk to the embedded Archive above.
+      //    ClusteredServiceContainer to talk to the embedded Archive above. Both components
+      //    live in this same JVM, so we use IPC (localControlChannel) instead of UDP — faster
+      //    and bypasses the kernel network stack entirely.
       final AeronArchive.Context aeronArchiveCtx =
           new AeronArchive.Context()
               .aeronDirectoryName(aeronDir)
-              .controlRequestChannel(archiveCtx.controlChannel())
-              .controlRequestStreamId(archiveCtx.controlStreamId())
-              .controlResponseChannel(archiveControlResponseChannel)
+              .controlRequestChannel(archiveCtx.localControlChannel())
+              .controlRequestStreamId(archiveCtx.localControlStreamId())
+              .controlResponseChannel("aeron:ipc")
               .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID + nodeId);
 
       // 3. ConsensusModule — the Raft state machine + log replication.
@@ -196,5 +202,16 @@ public final class ClusterNodeLauncher {
     if (value.isBlank()) {
       throw new IllegalArgumentException(name + " must not be blank");
     }
+  }
+
+  /**
+   * Build an {@code aeron:udp?endpoint=host:port} URI, bracketing the host automatically if it
+   * contains a {@code :} (i.e. an IPv6 literal). Aeron's endpoint URI grammar requires bracketed
+   * IPv6 literals — emitting {@code aeron:udp?endpoint=2001:db8::1:8010} would be parsed as {@code
+   * host=2001} + garbage port.
+   */
+  private static String udpEndpoint(final String host, final int port) {
+    final String hostPart = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+    return "aeron:udp?endpoint=" + hostPart + ":" + port;
   }
 }
