@@ -62,6 +62,8 @@ Read every changed file in full. Check for these **blocking violations** — any
 
    The hot path is the strict prohibition. Diagnostic / snapshot / startup paths may box if explicitly documented and justified — if you encounter boxing on those paths, flag it as a warning rather than blocking, but still call it out.
 
+9. **No direct wall-clock calls outside cluster** — flag `System.currentTimeMillis()`, `Instant.now()`, `LocalDateTime.now()`, `new Date()`, `System.nanoTime()` in any non-test module. Must use injected `EpochNanoClock` (epoch time) or `NanoClock` (monotonic time). Exception: test code.
+
 Report each violation with: file path, line number, the offending code, which rule it violates, and a suggested fix.
 
 ### Agent B: General Code Quality Review

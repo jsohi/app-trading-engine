@@ -6,11 +6,13 @@ import com.trading.refdata.spi.ReferenceDataEncoder;
 import com.trading.refdata.spi.ReferenceDataLoader;
 import java.util.List;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.Test;
 
 final class ReferenceDataOrchestratorTest {
 
-  private final ReferenceDataOrchestrator orchestrator = new ReferenceDataOrchestrator();
+  private final ReferenceDataOrchestrator orchestrator =
+      new ReferenceDataOrchestrator(SystemNanoClock.INSTANCE);
 
   @Test
   void happyPathLoadsAllRecords() throws Exception {

@@ -27,7 +27,7 @@
 ## Module Layout
 
 ```text
-messages              — SBE schema + generated codecs (no internal deps)
+messages              — SBE schema + generated codecs + TradingClocks (no internal deps)
 media-driver          — Standalone Aeron Media Driver process
 cluster               — TradingClusteredService (order matching, state machine)
 gateway               — Artio FIX acceptor + ClusterClient
@@ -49,6 +49,13 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **Fixed-point only**: `long` with scale factor `100_000_000L` (10^-8)
 - **No floating-point** (`double`, `float`, `BigDecimal`) for prices, quantities, or amounts
 - Constants: `public static final long PRICE_SCALE = 100_000_000L;`
+
+### Clock Usage
+- **Inside cluster service**: ONLY use `long timestamp` from `onSessionMessage` / `onTimerEvent`. No wall clock. The `ConsensusModule` is configured with `NanosecondClusterClock` so all cluster timestamps are epoch nanoseconds.
+- **Outside cluster (gateway, pricing, websocket, logger)**: Inject `EpochNanoClock` via `TradingClocks.epochNanoClock()`. One instance per process at bootstrap.
+- **Monotonic timeouts/elapsed time**: Use `NanoClock` / `SystemNanoClock.INSTANCE` (or inject for testability).
+- **NEVER use directly**: `System.currentTimeMillis()`, `Instant.now()`, `LocalDateTime.now()`, `new Date()`.
+- **Cross-box sync**: Requires PTP (IEEE 1588) or chrony at infrastructure level. See `docs/clock-sync.md`.
 
 ### Cluster Service (Deterministic)
 - **No wall-clock time** — use cluster timestamp from `onSessionMessage` / `onTimerEvent`

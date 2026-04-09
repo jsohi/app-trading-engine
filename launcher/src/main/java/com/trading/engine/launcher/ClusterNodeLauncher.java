@@ -6,6 +6,7 @@ import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import java.io.File;
 import java.io.IOException;
@@ -160,6 +161,7 @@ public final class ClusterNodeLauncher {
               .ingressChannel(INGRESS_CHANNEL)
               .logChannel(LOG_CHANNEL)
               .replicationChannel(replicationChannel)
+              .clusterClock(new NanosecondClusterClock())
               .errorHandler(throwable -> LOG.error("ConsensusModule error", throwable));
       consensusModule = ConsensusModule.launch(consensusCtx);
 
