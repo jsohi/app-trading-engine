@@ -91,6 +91,15 @@ final class YamlAccountLoaderTest {
   }
 
   @Test
+  void loadZeroAccountIdThrows() {
+    final var loader = new YamlAccountLoader(testResource("accounts-zero-id.yaml"));
+
+    final var ex = assertThrows(ReferenceDataLoadException.class, loader::load);
+    assertEquals("Account", ex.entityType());
+    assertTrue(ex.getMessage().contains("accountId must be > 0"));
+  }
+
+  @Test
   void loadBlankAccountCodeThrows() {
     final var loader = new YamlAccountLoader(testResource("accounts-blank-code.yaml"));
 

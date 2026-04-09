@@ -110,8 +110,13 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
   private AccountRecord toRecord(final Map<String, Object> entry, final int index)
       throws ReferenceDataLoadException {
     try {
+      final long accountId = requireLong(entry, "accountId");
+      if (accountId <= 0) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "accountId must be > 0, got " + accountId);
+      }
       return new AccountRecord(
-          requireLong(entry, "accountId"),
+          accountId,
           toLong(entry, "parentAccountId"),
           requireString(entry, "accountCode"),
           stringOrDefault(entry, "acctIdSource", "Internal"),
