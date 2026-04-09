@@ -91,9 +91,13 @@ public final class InFlightTracker {
       it.next();
       final long sentNs = it.getLongValue();
       if (nowNs - sentNs >= timeoutNs) {
-        callback.onTimeout(it.getLongKey(), sentNs);
-        it.remove();
-        expired++;
+        final long key = it.getLongKey();
+        try {
+          callback.onTimeout(key, sentNs);
+        } finally {
+          it.remove();
+          expired++;
+        }
       }
     }
     return expired;
