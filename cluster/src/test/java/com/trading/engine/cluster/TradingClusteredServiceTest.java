@@ -86,24 +86,7 @@ class TradingClusteredServiceTest {
     currencyStore = new CurrencyStore();
     riskLimitStore = new RiskLimitStore();
 
-    // Seed the accounts + currencies that valid NewOrderSingle messages need.
-    accountStore.put(
-        makeAccount(1L, "ACME", AccountStatusEnum.Active, AccountState.Capabilities.CAN_TRADE));
-    accountStore.put(
-        makeAccount(
-            2L, "LOCKED", AccountStatusEnum.Suspended, AccountState.Capabilities.CAN_TRADE));
-    accountStore.put(makeAccount(3L, "QUOTEONLY", AccountStatusEnum.Active, 0L));
-    currencyStore.put(
-        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD", 840));
-    currencyStore.put(
-        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR", 978));
-
-    // A tight risk limit on account 1 so we can exercise OrderExceedsMaxSize.
-    final RiskLimitState limit = new RiskLimitState();
-    limit.setAccountId(1L);
-    limit.setMaxOrderSize(10L * PRICE_SCALE);
-    limit.setStatus(AccountStatusEnum.Active);
-    riskLimitStore.put(limit);
+    seedReferenceData(accountStore, currencyStore, riskLimitStore);
 
     registry = new ReferenceDataRegistry();
     registry.registerStore(accountStore);
@@ -165,6 +148,26 @@ class TradingClusteredServiceTest {
     c.setStatus(AccountStatusEnum.Active);
     c.setTransactTime(0L);
     return c;
+  }
+
+  /** Seed the 3 accounts, 2 currencies, and 1 risk limit used by all order-processing tests. */
+  private static void seedReferenceData(
+      final AccountStore accounts, final CurrencyStore currencies, final RiskLimitStore limits) {
+    accounts.put(
+        makeAccount(1L, "ACME", AccountStatusEnum.Active, AccountState.Capabilities.CAN_TRADE));
+    accounts.put(
+        makeAccount(
+            2L, "LOCKED", AccountStatusEnum.Suspended, AccountState.Capabilities.CAN_TRADE));
+    accounts.put(makeAccount(3L, "QUOTEONLY", AccountStatusEnum.Active, 0L));
+    currencies.put(
+        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD", 840));
+    currencies.put(
+        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR", 978));
+    final RiskLimitState limit = new RiskLimitState();
+    limit.setAccountId(1L);
+    limit.setMaxOrderSize(10L * PRICE_SCALE);
+    limit.setStatus(AccountStatusEnum.Active);
+    limits.put(limit);
   }
 
   private static int encodeNewOrderSingle(
@@ -654,21 +657,7 @@ class TradingClusteredServiceTest {
     final CurrencyStore fullCurrencies = new CurrencyStore();
     final RiskLimitStore fullLimits = new RiskLimitStore();
     final ReferenceDataRegistry fullRegistry = new ReferenceDataRegistry();
-    fullAccounts.put(
-        makeAccount(1L, "ACME", AccountStatusEnum.Active, AccountState.Capabilities.CAN_TRADE));
-    fullAccounts.put(
-        makeAccount(
-            2L, "LOCKED", AccountStatusEnum.Suspended, AccountState.Capabilities.CAN_TRADE));
-    fullAccounts.put(makeAccount(3L, "QUOTEONLY", AccountStatusEnum.Active, 0L));
-    fullCurrencies.put(
-        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD", 840));
-    fullCurrencies.put(
-        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR", 978));
-    final RiskLimitState fullLimit = new RiskLimitState();
-    fullLimit.setAccountId(1L);
-    fullLimit.setMaxOrderSize(10L * PRICE_SCALE);
-    fullLimit.setStatus(AccountStatusEnum.Active);
-    fullLimits.put(fullLimit);
+    seedReferenceData(fullAccounts, fullCurrencies, fullLimits);
     fullRegistry.registerStore(fullAccounts);
     fullRegistry.registerStore(fullCurrencies);
     fullRegistry.registerStore(fullLimits);
