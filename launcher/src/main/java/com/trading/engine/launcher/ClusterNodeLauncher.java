@@ -173,8 +173,11 @@ public final class ClusterNodeLauncher {
 
       LOG.info("Cluster node {} launched", nodeId);
       return new ClusterComponents(archive, consensusModule, serviceContainer);
-    } catch (final RuntimeException | Error e) {
-      // Roll back already-constructed components in reverse order.
+    } catch (final RuntimeException e) {
+      // Roll back already-constructed components in reverse order. We deliberately do NOT catch
+      // Error — OutOfMemoryError, StackOverflowError, and LinkageError subclasses should not be
+      // swallowed; letting them propagate lets the JVM crash cleanly rather than allocating
+      // more memory during a half-broken rollback.
       CloseHelper.quietCloseAll(serviceContainer, consensusModule, archive);
       throw e;
     }

@@ -27,6 +27,9 @@ public final class ClusterConfig {
 
   public static final int MAX_NODES = 3;
 
+  /** Number of comma-separated fields in a valid cluster-member entry. */
+  private static final int EXPECTED_MEMBER_FIELDS = 6;
+
   // Ingress: 20110, 21110, 22110
   private static final int INGRESS_BASE = 20110;
   // Consensus: 20220, 21220, 22220
@@ -169,8 +172,12 @@ public final class ClusterConfig {
     }
     for (final String member : clusterMembers.split("\\|")) {
       final String[] fields = member.split(",");
-      if (fields.length < 2) {
-        throw new IllegalArgumentException("malformed member entry: " + member);
+      // A valid member entry has exactly 6 fields: memberId, ingress, consensus, log, catchup,
+      // archive. Being stricter than "length < 2" catches partially-formed strings that would
+      // otherwise silently pass and later blow up inside ConsensusModule.
+      if (fields.length != EXPECTED_MEMBER_FIELDS) {
+        throw new IllegalArgumentException(
+            "malformed member entry, expected " + EXPECTED_MEMBER_FIELDS + " fields: " + member);
       }
       final int id;
       try {

@@ -2,6 +2,7 @@ package com.trading.engine.launcher;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -242,16 +243,33 @@ class ClusterConfigTest {
 
   @Test
   void hostForMemberRejectsMalformedString() {
+    // "garbage" has 1 field, fails the strict 6-field check.
     assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember("garbage", 0));
+    // 2 fields — also fails the strict check.
     assertThrows(
         IllegalArgumentException.class, () -> ClusterConfig.hostForMember("0,no-port-here", 0));
   }
 
   @Test
+  void hostForMemberRejectsPartialMemberEntry() {
+    // Exactly 5 fields — missing the archive endpoint. Must fail fast rather than parse
+    // partial config (per Gemini review feedback on PR #28).
+    final String partial = "0,host-a:20110,host-a:20220,host-a:20330,host-a:20440";
+    final IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> ClusterConfig.hostForMember(partial, 0));
+    assertTrue(
+        ex.getMessage().contains("expected 6 fields"),
+        "expected 'expected 6 fields' in message, got: " + ex.getMessage());
+  }
+
+  @Test
   void hostForMemberRejectsNonNumericMemberId() {
-    // Covers the NumberFormatException catch branch.
+    // Covers the NumberFormatException catch branch. Must have exactly 6 fields to get past the
+    // length check and reach the parseInt.
     assertThrows(
         IllegalArgumentException.class,
-        () -> ClusterConfig.hostForMember("abc,host-a:20110,host-a:20220", 0));
+        () ->
+            ClusterConfig.hostForMember(
+                "abc,host-a:20110,host-a:20220,host-a:20330,host-a:20440,host-a:8010", 0));
   }
 }
