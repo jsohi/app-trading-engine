@@ -22,3 +22,6 @@ Thumbs.db
 # Node (web-ui)
 node_modules/
 dist/
+
+# Log output (Log4j2)
+logs/
