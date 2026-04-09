@@ -25,4 +25,7 @@ public interface ReferenceDataEncoder<T> {
 
   /** Maximum records per batch (constrained by Aeron MTU / SBE group limits). */
   int maxBatchSize();
+
+  /** Human-readable entity type name for error messages (e.g. "Account"). */
+  String entityType();
 }

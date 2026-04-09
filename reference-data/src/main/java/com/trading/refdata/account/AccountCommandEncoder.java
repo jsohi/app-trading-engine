@@ -70,6 +70,11 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
     return MAX_BATCH_SIZE;
   }
 
+  @Override
+  public String entityType() {
+    return ENTITY_TYPE;
+  }
+
   private static AcctIDSourceEnum toAcctIdSource(final String value)
       throws ReferenceDataLoadException {
     return switch (value) {

@@ -148,6 +148,11 @@ final class ReferenceDataOrchestratorTest {
       public int maxBatchSize() {
         return maxBatch;
       }
+
+      @Override
+      public String entityType() {
+        return "TestEntity";
+      }
     };
   }
 }

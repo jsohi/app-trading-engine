@@ -20,7 +20,7 @@ public final class ReferenceDataOrchestrator {
 
   private static final Logger LOG = LoggerFactory.getLogger(ReferenceDataOrchestrator.class);
   private static final long ACK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
-  private static final long POLL_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(10);
+  private static final long POLL_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(1);
   private static final long SEND_RETRY_NS = TimeUnit.MILLISECONDS.toNanos(1);
   private static final int BUFFER_INITIAL_CAPACITY = 64 * 1024;
 
@@ -54,7 +54,7 @@ public final class ReferenceDataOrchestrator {
     final int maxBatch = encoder.maxBatchSize();
     if (maxBatch <= 0) {
       throw new ReferenceDataLoadException(
-          "RefData", "encoder.maxBatchSize() must be > 0, got " + maxBatch);
+          encoder.entityType(), "encoder.maxBatchSize() must be > 0, got " + maxBatch);
     }
 
     final MutableDirectBuffer buffer = new ExpandableArrayBuffer(BUFFER_INITIAL_CAPACITY);
@@ -67,7 +67,7 @@ public final class ReferenceDataOrchestrator {
       final int encodedLength = encoder.encodeBatch(records, from, to, buffer, 0);
       if (encodedLength <= 0) {
         throw new ReferenceDataLoadException(
-            "RefData",
+            encoder.entityType(),
             "encoder produced invalid length "
                 + encodedLength
                 + " for batch ["
@@ -77,10 +77,10 @@ public final class ReferenceDataOrchestrator {
                 + ")");
       }
 
-      sendWithRetry(sender, buffer, encodedLength);
+      sendWithRetry(sender, buffer, encodedLength, encoder.entityType());
 
       collector.expectResponses(batchSize);
-      awaitResponses(pollEgress, collector, loader.sourceName());
+      awaitResponses(pollEgress, collector, encoder.entityType(), loader.sourceName());
 
       totalLoaded += collector.loadedCount();
     }
@@ -90,7 +90,10 @@ public final class ReferenceDataOrchestrator {
   }
 
   private void sendWithRetry(
-      final ClusterCommandSender sender, final MutableDirectBuffer buf, final int length)
+      final ClusterCommandSender sender,
+      final MutableDirectBuffer buf,
+      final int length,
+      final String entityType)
       throws ReferenceDataLoadException {
 
     final long deadlineNs = System.nanoTime() + ACK_TIMEOUT_NS;
@@ -102,14 +105,17 @@ public final class ReferenceDataOrchestrator {
       }
       if (System.nanoTime() >= deadlineNs) {
         throw new ReferenceDataLoadException(
-            "RefData", "timed out sending command to cluster (back-pressure)");
+            entityType, "timed out sending command to cluster (back-pressure)");
       }
       LockSupport.parkNanos(SEND_RETRY_NS);
     }
   }
 
   private void awaitResponses(
-      final Runnable pollEgress, final ResponseCollector collector, final String sourceName)
+      final Runnable pollEgress,
+      final ResponseCollector collector,
+      final String entityType,
+      final String sourceName)
       throws ReferenceDataLoadException {
 
     final long deadlineNs = System.nanoTime() + ACK_TIMEOUT_NS;
@@ -119,7 +125,7 @@ public final class ReferenceDataOrchestrator {
 
       if (collector.hasRejections()) {
         throw new ReferenceDataLoadException(
-            "RefData",
+            entityType,
             collector.rejectedCount()
                 + " record(s) rejected from "
                 + sourceName
@@ -127,13 +133,9 @@ public final class ReferenceDataOrchestrator {
                 + collector.rejectionReasons());
       }
 
-      if (collector.isComplete()) {
-        break;
-      }
-
       if (System.nanoTime() >= deadlineNs) {
         throw new ReferenceDataLoadException(
-            "RefData",
+            entityType,
             "timed out waiting for cluster acks from "
                 + sourceName
                 + " (received "

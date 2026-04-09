@@ -34,6 +34,7 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
 
     final Object parsed;
     try (final Reader reader = Files.newBufferedReader(filePath, StandardCharsets.UTF_8)) {
+      // SnakeYAML 2.x uses SafeConstructor by default — no arbitrary class instantiation
       parsed = new Yaml().load(reader);
     } catch (final IOException e) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "cannot read " + filePath, e);
