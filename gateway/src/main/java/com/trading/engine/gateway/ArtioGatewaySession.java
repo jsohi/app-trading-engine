@@ -50,6 +50,13 @@ public final class ArtioGatewaySession implements GatewaySession {
     return session.connectedHost();
   }
 
+  @Override
+  public String senderCompId() {
+    // For acceptor sessions: Artio's onAcceptLogon sets localCompId = TargetCompID (us),
+    // remoteCompId = SenderCompID (the client). We want the client's identity.
+    return session.compositeKey().remoteCompId();
+  }
+
   /** Returns the underlying Artio session (escape hatch for Artio-specific operations). */
   public Session unwrap() {
     return session;

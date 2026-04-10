@@ -299,13 +299,11 @@ public final class FixGateway implements Agent {
     final GatewaySession gatewaySession = new ArtioGatewaySession(session);
     final long sessionKey = gatewaySession.id();
 
-    // Use the session ID as the CompID hash for per-CompID capacity tracking.
-    // Artio's Session does not expose SenderCompID directly on the session object at
-    // acquisition time — the Logon was already validated by the AuthenticationStrategy
-    // which checked CompID allowlists. For per-CompID limiting, we use the session key
-    // which is unique per CompID pair. A future enhancement (APP-166) will extract the
-    // CompID from the auth callback and thread it through.
-    final long compIdHash = sessionKey;
+    // Extract the counterparty's SenderCompID (tag 49) for per-CompID capacity enforcement.
+    // GatewaySession.senderCompId() delegates to compositeKey().remoteCompId() which, for
+    // acceptor sessions, returns the client's SenderCompID from the Logon message.
+    final String senderCompId = gatewaySession.senderCompId();
+    final long compIdHash = fnv1aHashString(senderCompId);
 
     if (!registry.tryRegisterSession(sessionKey, compIdHash, gatewaySession)) {
       LOG.warn()
@@ -395,6 +393,22 @@ public final class FixGateway implements Agent {
   /** Returns the session registry (for testing). */
   SessionRegistry registry() {
     return registry;
+  }
+
+  /**
+   * FNV-1a hash of a String, treating each char as a byte (ASCII). Used for CompID hashing. Zero
+   * allocation — reads chars inline without getBytes().
+   */
+  private static long fnv1aHashString(final String s) {
+    if (s == null || s.isEmpty()) {
+      return 0L;
+    }
+    long hash = 0xcbf29ce484222325L;
+    for (int i = 0, len = s.length(); i < len; i++) {
+      hash ^= (s.charAt(i) & 0xFFL);
+      hash *= 0x100000001b3L;
+    }
+    return hash;
   }
 
   // ===========================================================================
