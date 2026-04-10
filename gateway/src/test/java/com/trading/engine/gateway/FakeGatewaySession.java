@@ -14,6 +14,7 @@ import uk.co.real_logic.artio.builder.Encoder;
 final class FakeGatewaySession implements GatewaySession {
 
   private final long id;
+  private String senderCompId = "SENDER";
   private boolean connected = true;
   private int lastReceivedMsgSeqNum;
   private long trySendResult = 1L; // default: successful send
@@ -59,6 +60,11 @@ final class FakeGatewaySession implements GatewaySession {
     return "127.0.0.1";
   }
 
+  @Override
+  public String senderCompId() {
+    return senderCompId;
+  }
+
   // --- Test configuration ---
 
   FakeGatewaySession setConnected(final boolean connected) {
@@ -78,5 +84,10 @@ final class FakeGatewaySession implements GatewaySession {
 
   boolean isLogoutCalled() {
     return logoutCalled;
+  }
+
+  FakeGatewaySession setSenderCompId(final String compId) {
+    this.senderCompId = compId;
+    return this;
   }
 }

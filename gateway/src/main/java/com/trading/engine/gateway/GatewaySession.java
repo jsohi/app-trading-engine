@@ -41,4 +41,13 @@ public interface GatewaySession {
 
   /** The remote host this session is connected from. */
   String connectedHost();
+
+  /**
+   * Returns the SenderCompID (tag 49) of the counterparty that initiated this session. Used for
+   * per-CompID session capacity enforcement.
+   *
+   * <p>For acceptor sessions, this is the client's CompID from the Logon message. For initiator
+   * sessions, this is the local CompID.
+   */
+  String senderCompId();
 }
