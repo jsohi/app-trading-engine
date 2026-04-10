@@ -54,6 +54,10 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final InFlightTracker inFlightTracker;
   private final EgressCallback callback;
 
+  // --- Last-used correlation key (set by handleXxx, read by egress callback for cleanup) ---
+  private byte[] lastCorrelationScratch;
+  private int lastCorrelationLen;
+
   // --- Reconnection signal (read by ClusterClient on the same duty-cycle thread) ---
   private boolean reconnectNeeded;
 
@@ -187,6 +191,9 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     erDecoder.getClOrdId(clOrdIdScratch, 0);
     final int clOrdIdLen = trimNullPadding(clOrdIdScratch);
 
+    lastCorrelationScratch = clOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
+
     final long sessionKey = sessionLookup.findByCorrelationId(clOrdIdScratch, 0, clOrdIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
       // Cluster responded but the FIX session disconnected — clear the in-flight entry
@@ -216,6 +223,8 @@ public final class ClusterEgressListener implements ControlledEgressListener {
         headerDecoder.version());
     cxlRejDecoder.getClOrdId(cxlClOrdIdScratch, 0);
     final int clOrdIdLen = trimNullPadding(cxlClOrdIdScratch);
+    lastCorrelationScratch = cxlClOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
 
     final long sessionKey = sessionLookup.findByCorrelationId(cxlClOrdIdScratch, 0, clOrdIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
@@ -241,6 +250,8 @@ public final class ClusterEgressListener implements ControlledEgressListener {
         headerDecoder.version());
     quoteDecoder.getQuoteReqId(quoteReqIdScratch, 0);
     final int quoteReqIdLen = trimNullPadding(quoteReqIdScratch);
+    lastCorrelationScratch = quoteReqIdScratch;
+    lastCorrelationLen = quoteReqIdLen;
 
     // Quotes are correlated by QuoteReqID, not ClOrdID. Use the same session lookup
     // because the gateway registers both ClOrdID and QuoteReqID in the same map.
@@ -296,6 +307,20 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   /** Returns the SBE-to-FIX translator for use by the callback. */
   public SbeToFixTranslator translator() {
     return translator;
+  }
+
+  /**
+   * Returns the scratch buffer containing the last-extracted correlation ID bytes. Valid only
+   * within the scope of an {@link EgressCallback#onEgressMessage} invocation. Used by the callback
+   * to clean up the correlation entry in {@link SessionRegistry} after successful delivery.
+   */
+  public byte[] lastCorrelationScratch() {
+    return lastCorrelationScratch;
+  }
+
+  /** Returns the significant byte length of the last-extracted correlation ID. */
+  public int lastCorrelationLen() {
+    return lastCorrelationLen;
   }
 
   /**

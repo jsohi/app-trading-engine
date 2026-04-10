@@ -109,6 +109,10 @@ public final class SessionRegistry implements SessionLookup {
    * Remove orphan correlation entries whose session key is no longer in {@link #sessionsByKey}.
    * Called periodically from the gateway duty cycle to prevent unbounded map growth.
    *
+   * <p><b>Iterator compaction.</b> Agrona's {@code Long2LongHashMap} uses open-addressing with
+   * compaction on remove, which may cause the iterator to skip entries in a single pass. Any missed
+   * entries will be caught on the next sweep. This is acceptable given the sweep interval (60s).
+   *
    * @return number of stale entries removed
    */
   public int sweepStaleCorrelations() {

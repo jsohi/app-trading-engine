@@ -371,7 +371,13 @@ public final class FixGateway implements Agent {
       }
     }
 
-    return position >= 0;
+    if (position >= 0) {
+      // Clean up the correlation entry now that the response is delivered.
+      registry.removeCorrelation(
+          egressListener.lastCorrelationScratch(), 0, egressListener.lastCorrelationLen());
+      return true;
+    }
+    return false;
   }
 
   // ===========================================================================
