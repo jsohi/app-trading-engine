@@ -414,10 +414,6 @@ public final class FixGateway implements Agent {
 
   /**
    * FNV-1a hash of a String, treating each char as a byte (ASCII). Used for CompID hashing. Zero
-   * allocation — reads chars inline without getBytes().
-   */
-  /**
-   * FNV-1a hash of a String, treating each char as a byte (ASCII). Used for CompID hashing. Zero
    * allocation — reads chars inline without getBytes(). Returns FNV offset basis for null/empty
    * strings (not 0, which could collide with a legitimate hash). The result is remapped via {@link
    * SessionRegistry#remapSentinel} to avoid collision with Agrona's {@code MISSING_VALUE} sentinel.
