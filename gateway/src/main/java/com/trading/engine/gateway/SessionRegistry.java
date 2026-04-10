@@ -37,6 +37,17 @@ public final class SessionRegistry implements SessionLookup {
   /** Sentinel for missing entries in all Agrona {@link Long2LongHashMap} instances. */
   private static final long MISSING_VALUE = Long.MIN_VALUE;
 
+  /**
+   * Remap a hash value that collides with Agrona's {@link Long2LongHashMap} {@code MISSING_VALUE}
+   * sentinel. If an FNV-1a hash produces {@code Long.MIN_VALUE}, the map silently treats it as "not
+   * present" — breaking correlation lookups and per-CompID counting. Remapping to {@code
+   * Long.MIN_VALUE + 1} is safe: it shifts one value in a 2^64 space and preserves the uniformity
+   * guarantee of the hash.
+   */
+  static long remapSentinel(final long hash) {
+    return hash == MISSING_VALUE ? MISSING_VALUE + 1 : hash;
+  }
+
   private final Long2LongHashMap correlationMap;
   private final Long2ObjectHashMap<GatewaySession> sessionsByKey;
   private final Long2LongHashMap sessionCompIdMap;
@@ -73,7 +84,7 @@ public final class SessionRegistry implements SessionLookup {
 
   @Override
   public long findByCorrelationId(final byte[] correlationId, final int offset, final int length) {
-    final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
+    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
     final long sessionKey = correlationMap.get(hash);
     return sessionKey == MISSING_VALUE ? NULL_SESSION : sessionKey;
   }
@@ -88,7 +99,7 @@ public final class SessionRegistry implements SessionLookup {
    */
   public void registerCorrelation(
       final byte[] correlationId, final int offset, final int length, final long sessionKey) {
-    final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
+    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
     final long existing = correlationMap.put(hash, sessionKey);
     if (existing != MISSING_VALUE && existing != sessionKey) {
       // Hash collision or ClOrdID reuse across sessions — log for observability.
@@ -108,7 +119,7 @@ public final class SessionRegistry implements SessionLookup {
    * times out.
    */
   public void removeCorrelation(final byte[] correlationId, final int offset, final int length) {
-    final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
+    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
     correlationMap.remove(hash);
   }
 
