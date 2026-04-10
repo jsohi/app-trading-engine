@@ -48,8 +48,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
+import org.agrona.ErrorHandler;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
@@ -956,6 +958,248 @@ class TradingClusteredServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Atomic snapshot tests (APP-150)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Call {@code onTakeSnapshot(null)} which assembles all fragments into the reassembly buffer,
+   * then feed that contiguous buffer to {@code loadSnapshot()} on a fresh service. Validates the
+   * assembly path end-to-end.
+   */
+  @Test
+  void onTakeSnapshot_null_roundTripRestoresState() {
+    // Seed some orders so the OrderBook fragment is non-trivial.
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    for (int i = 1; i <= 3; i++) {
+      final int len =
+          encodeNewOrderSingle(
+              buf,
+              "CL-" + i,
+              "EURUSD",
+              SideEnum.Buy,
+              OrdTypeEnum.Limit,
+              1L * PRICE_SCALE,
+              1L * PRICE_SCALE,
+              "ACME",
+              "USD");
+      dispatch(buf, len);
+    }
+    assertEquals(3, orderBook.size());
+
+    // Trigger the atomic assembly path (null publication → offerFragment is a no-op).
+    service.onTakeSnapshot(null);
+
+    // Read the assembled buffer via the package-private accessor.
+    final MutableDirectBuffer assembled = service.snapshotReassemblyBuffer();
+    final int totalLen =
+        service.snapshotHeaderLength()
+            + service.eventSeqSnapLength()
+            + service.idGenSnapLength()
+            + service.accountSnapLength()
+            + service.currencySnapLength()
+            + service.riskLimitSnapLength()
+            + service.orderBookSnapLength();
+
+    // Load onto a fresh service and verify full state restoration.
+    final ServiceBundle fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(assembled, 0, totalLen);
+
+    assertEquals(3L, fresh.eventSequencer().currentSequence());
+    assertEquals(3L, fresh.orderIdGen().currentCounter());
+    assertEquals(3L, fresh.execIdGen().currentCounter());
+    assertEquals(3, fresh.orderBook().size());
+    assertNotNull(fresh.orderBook().get(1L));
+    assertNotNull(fresh.orderBook().get(2L));
+    assertNotNull(fresh.orderBook().get(3L));
+    assertEquals(3, fresh.accountStore().size());
+    assertEquals(2, fresh.currencyStore().size());
+    assertEquals(1, fresh.riskLimitStore().size());
+  }
+
+  /**
+   * Verify that {@code assembleSnapshot} returns a length matching the sum of all fragment lengths,
+   * and that the assembled buffer is a valid snapshot loadable by a fresh service.
+   */
+  @Test
+  void assembleSnapshot_returnsCorrectLengthAndProducesValidSnapshot() {
+    final int assembledLen = service.assembleSnapshot(Integer.MAX_VALUE);
+    final int expectedLen =
+        service.snapshotHeaderLength()
+            + service.eventSeqSnapLength()
+            + service.idGenSnapLength()
+            + service.accountSnapLength()
+            + service.currencySnapLength()
+            + service.riskLimitSnapLength()
+            + service.orderBookSnapLength();
+    assertEquals(expectedLen, assembledLen);
+
+    // Verify the assembled buffer is a valid snapshot.
+    final ServiceBundle fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(service.snapshotReassemblyBuffer(), 0, assembledLen);
+    assertEquals(3, fresh.accountStore().size());
+    assertEquals(2, fresh.currencyStore().size());
+  }
+
+  /**
+   * When the assembled snapshot exceeds the provided {@code maxMessageLength}, the size guard must
+   * throw with a CRITICAL message.
+   */
+  @Test
+  void assembleSnapshot_sizeGuardThrowsOnExceededMaxMessageLength() {
+    final var ex =
+        assertThrows(
+            IllegalStateException.class, () -> service.assembleSnapshot(1)); // impossibly small
+    assertTrue(ex.getMessage().contains("CRITICAL"), "error message should contain CRITICAL");
+    assertTrue(
+        ex.getMessage().contains("maxMessageLength"),
+        "error message should mention maxMessageLength");
+  }
+
+  /**
+   * When the snapshot size is between 80% and 100% of {@code maxMessageLength}, a warning should be
+   * surfaced via the cluster's error handler, and assembly should still succeed.
+   */
+  @Test
+  void assembleSnapshot_warningThresholdSurfacedViaErrorHandler() {
+    // Wire a FakeCluster with a real context + error handler.
+    final AtomicReference<Throwable> capturedWarning = new AtomicReference<>();
+    final FakeCluster warningCluster = new FakeCluster(TIMESTAMP);
+    warningCluster.errorHandler = capturedWarning::set;
+
+    final ServiceBundle bundle = createServiceBundle(true);
+    bundle.service().onStart(warningCluster, null);
+
+    // First pass: learn the actual assembled size.
+    final int actualLen = bundle.service().assembleSnapshot(Integer.MAX_VALUE);
+
+    // Second pass: set maxMessageLength so the snapshot is between 80%-100%.
+    final int maxMsg = actualLen + 1; // just barely fits → triggers 80% warning
+    final int assembledLen = bundle.service().assembleSnapshot(maxMsg);
+    assertEquals(actualLen, assembledLen, "assembled length should not change between passes");
+
+    // Warning should have been surfaced.
+    assertNotNull(capturedWarning.get(), "expected a warning via error handler");
+    assertTrue(capturedWarning.get().getMessage().contains("WARNING"));
+  }
+
+  /**
+   * Near-capacity stress test: seed the OrderBook to 1000 orders, take a snapshot via the atomic
+   * assembly path, and verify round-trip restoration of all orders.
+   */
+  @Test
+  void onTakeSnapshot_nearCapacityOrderBookRoundTrip() {
+    final IdGenerator ordGen = new IdGenerator("ORD");
+    final IdGenerator exeGen = new IdGenerator("EXE");
+    final OrderBook bigBook = new OrderBook(2048);
+    final EventSequencer seq = new EventSequencer();
+    final EventJournal journal = new EventJournal(2048);
+    final AccountStore accounts = new AccountStore();
+    final CurrencyStore currencies = new CurrencyStore();
+    final RiskLimitStore limits = new RiskLimitStore();
+    seedReferenceData(accounts, currencies, limits);
+    // Remove the 10-unit max order size limit so we can place many orders.
+    final RiskLimitState bigLimit = new RiskLimitState();
+    bigLimit.setAccountId(1L);
+    bigLimit.setMaxOrderSize(0L); // 0 = unlimited
+    bigLimit.setStatus(AccountStatusEnum.Active);
+    limits.put(bigLimit);
+
+    final ReferenceDataRegistry reg = new ReferenceDataRegistry();
+    reg.registerStore(accounts);
+    reg.registerStore(currencies);
+    reg.registerStore(limits);
+    reg.registerLoader(new LoadAccountHandler(accounts, currencies));
+    reg.registerLoader(new LoadCurrencyHandler(currencies));
+    reg.registerLoader(new LoadRiskLimitHandler(limits, accounts));
+
+    final TradingClusteredService svc =
+        new TradingClusteredService(
+            ordGen, exeGen, bigBook, seq, journal, accounts, currencies, limits, reg);
+    svc.onStart(cluster, null);
+
+    // Place 1000 orders.
+    final int orderCount = 1000;
+    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final FakeClientSession bigSession = new FakeClientSession();
+    for (int i = 1; i <= orderCount; i++) {
+      final int len =
+          encodeNewOrderSingle(
+              buf,
+              "CL-" + i,
+              "EURUSD",
+              SideEnum.Buy,
+              OrdTypeEnum.Limit,
+              1L * PRICE_SCALE,
+              1L * PRICE_SCALE,
+              "ACME",
+              "USD");
+      svc.onSessionMessage(bigSession, TIMESTAMP, buf, 0, len, null);
+    }
+    assertEquals(orderCount, bigBook.size());
+
+    // Take atomic snapshot via null publication.
+    svc.onTakeSnapshot(null);
+
+    final MutableDirectBuffer assembled = svc.snapshotReassemblyBuffer();
+    final int totalLen =
+        svc.snapshotHeaderLength()
+            + svc.eventSeqSnapLength()
+            + svc.idGenSnapLength()
+            + svc.accountSnapLength()
+            + svc.currencySnapLength()
+            + svc.riskLimitSnapLength()
+            + svc.orderBookSnapLength();
+
+    // Build a fresh service with matching capacity and restore.
+    final IdGenerator freshOrdGen = new IdGenerator("ORD");
+    final IdGenerator freshExeGen = new IdGenerator("EXE");
+    final OrderBook freshBook = new OrderBook(2048);
+    final EventSequencer freshSeq = new EventSequencer();
+    final EventJournal freshJournal = new EventJournal(2048);
+    final AccountStore freshAccounts = new AccountStore();
+    final CurrencyStore freshCurrencies = new CurrencyStore();
+    final RiskLimitStore freshLimits = new RiskLimitStore();
+    final ReferenceDataRegistry freshReg = new ReferenceDataRegistry();
+    freshReg.registerStore(freshAccounts);
+    freshReg.registerStore(freshCurrencies);
+    freshReg.registerStore(freshLimits);
+    final TradingClusteredService freshSvc =
+        new TradingClusteredService(
+            freshOrdGen,
+            freshExeGen,
+            freshBook,
+            freshSeq,
+            freshJournal,
+            freshAccounts,
+            freshCurrencies,
+            freshLimits,
+            freshReg);
+    freshSvc.onStart(cluster, null);
+
+    freshSvc.loadSnapshot(assembled, 0, totalLen);
+
+    assertEquals(orderCount, freshBook.size());
+    assertEquals((long) orderCount, freshSeq.currentSequence());
+    assertEquals((long) orderCount, freshOrdGen.currentCounter());
+    assertEquals((long) orderCount, freshExeGen.currentCounter());
+    assertNotNull(freshBook.get(1L));
+    assertNotNull(freshBook.get(500L));
+    assertNotNull(freshBook.get(1000L));
+  }
+
+  /**
+   * Verify that the hard cap guard does not falsely trigger for normal-sized snapshots, and that
+   * the assembly succeeds when within bounds.
+   */
+  @Test
+  void assembleSnapshot_hardCapDoesNotFalselyTrigger() {
+    // Normal snapshot with seeded ref-data is well under 32MB.
+    final int assembledLen = service.assembleSnapshot(16 * 1024 * 1024);
+    assertTrue(assembledLen > 0);
+    assertTrue(assembledLen < 32 * 1024 * 1024, "normal snapshot must be under hard cap");
+  }
+
+  // ---------------------------------------------------------------------------
   // Test doubles
   // ---------------------------------------------------------------------------
 
@@ -1028,6 +1272,12 @@ class TradingClusteredServiceTest {
     private final IdleStrategy idleStrategy;
     int idleCount;
 
+    /**
+     * When non-null, {@link #context()} returns a real {@link ClusteredServiceContainer.Context}
+     * wired with this error handler. Used by the warning-threshold snapshot test (APP-150).
+     */
+    ErrorHandler errorHandler;
+
     FakeCluster(final long time) {
       this.time = time;
       this.idleStrategy =
@@ -1069,6 +1319,9 @@ class TradingClusteredServiceTest {
 
     @Override
     public ClusteredServiceContainer.Context context() {
+      if (errorHandler != null) {
+        return new ClusteredServiceContainer.Context().errorHandler(errorHandler);
+      }
       return null;
     }
 

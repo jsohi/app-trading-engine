@@ -39,6 +39,24 @@ public final class ClusterNodeLauncher {
   private static final String INGRESS_CHANNEL = "aeron:udp?term-length=64k";
   private static final String LOG_CHANNEL = "aeron:udp?term-length=256k";
 
+  /**
+   * Snapshot channel configured with a 128 MB term buffer, yielding a {@code maxMessageLength} of
+   * 16 MB ({@code termBufferLength / 8}). This allows the entire cluster snapshot to be published
+   * as a single atomic {@code ExclusivePublication.offer()} call — either all bytes commit or none
+   * do — preventing the truncated-snapshot problem that would occur with per-fragment offers.
+   *
+   * <p>Sizing rationale: the {@code OrderBookSnapshot} buffer starts at 8 MB and each order record
+   * is ~103 bytes, so 16 MB supports ~163 K concurrent orders — well above the pool's {@code
+   * MAX_CAPACITY} of 65 534. If future state growth approaches the limit, double the term-length to
+   * 256 MB (32 MB max message) and restart all nodes.
+   *
+   * <p>This channel applies to {@link ClusteredServiceContainer.Context#snapshotChannel} only. The
+   * {@link ConsensusModule.Context} does not expose a {@code snapshotChannel} setter — it records
+   * the service's snapshot publication using the service container's channel configuration.
+   */
+  // Aeron ChannelUri accepts both '|' and '&' as parameter separators; '|' is the Aeron convention.
+  static final String SNAPSHOT_CHANNEL = "aeron:ipc?alias=snapshot|term-length=134217728";
+
   // Archive stream IDs — base values; the launch path adds {@code nodeId} to each so that even
   // if multiple cluster nodes ever share a Media Driver (they currently don't — each node has
   // its own aeron.dir), their Archive IPC streams will not collide.
@@ -176,6 +194,7 @@ public final class ClusterNodeLauncher {
               .archiveContext(aeronArchiveCtx.clone())
               .clusteredService(service)
               .clusterDir(clusterDir)
+              .snapshotChannel(SNAPSHOT_CHANNEL)
               .errorHandler(throwable -> LOG.error("ClusteredServiceContainer error", throwable));
       serviceContainer = ClusteredServiceContainer.launch(serviceCtx);
 

@@ -1,9 +1,11 @@
 package com.trading.engine.launcher;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.ChannelUri;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
@@ -90,6 +92,21 @@ class ClusterNodeLauncherTest {
     assertThrows(
         NullPointerException.class,
         () -> ClusterNodeLauncher.launch(0, baseDir.toString(), "/nonexistent", null));
+  }
+
+  /**
+   * Validates that the snapshot channel URI parses correctly with Aeron's {@link ChannelUri}
+   * parser. If this test fails, the snapshot channel falls back to the Media Driver's default IPC
+   * term-length (256 KB / 32 KB maxMessageLength), silently breaking atomic snapshot publish. This
+   * test MUST pass before any APP-150 changes are merged.
+   */
+  @Test
+  void snapshotChannelUriParsesCorrectly() {
+    final ChannelUri uri = ChannelUri.parse(ClusterNodeLauncher.SNAPSHOT_CHANNEL);
+    assertEquals("ipc", uri.media(), "snapshot channel must use IPC transport");
+    assertEquals(
+        "134217728", uri.get("term-length"), "term-length must be 128 MB (134217728 bytes)");
+    assertEquals("snapshot", uri.get("alias"), "alias must be 'snapshot'");
   }
 
   @Test
