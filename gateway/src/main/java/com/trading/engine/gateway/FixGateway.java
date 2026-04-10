@@ -263,16 +263,25 @@ public final class FixGateway implements Agent {
           .commit();
     }
 
-    // Phase 3: Send Logout to all connected sessions
+    // Phase 3: Send Logout to all connected sessions. Collect keys first to avoid concurrent
+    // modification of the Agrona map — logoutAndDisconnect() may trigger onDisconnect() callbacks
+    // which call registry.removeSession(), invalidating the open-addressing iterator.
+    final int sessionCount = registry.sessionCount();
+    final long[] sessionKeys = new long[sessionCount];
+    int keyIdx = 0;
     final var sessions = registry.allSessions();
     while (sessions.hasNext()) {
       final GatewaySession session = sessions.next();
-      if (session.isConnected()) {
+      sessionKeys[keyIdx++] = session.id();
+    }
+    for (int i = 0; i < keyIdx; i++) {
+      final GatewaySession session = registry.findSession(sessionKeys[i]);
+      if (session != null && session.isConnected()) {
         final long logoutResult = session.logoutAndDisconnect();
         if (logoutResult < 0) {
           LOG.warn()
               .append("Logout failed for sessionId=")
-              .append(session.id())
+              .append(sessionKeys[i])
               .append(" result=")
               .append(logoutResult)
               .commit();
@@ -405,18 +414,20 @@ public final class FixGateway implements Agent {
 
   /**
    * FNV-1a hash of a String, treating each char as a byte (ASCII). Used for CompID hashing. Zero
-   * allocation — reads chars inline without getBytes().
+   * allocation — reads chars inline without getBytes(). Returns FNV offset basis for null/empty
+   * strings (not 0, which could collide with a legitimate hash). The result is remapped via {@link
+   * SessionRegistry#remapSentinel} to avoid collision with Agrona's {@code MISSING_VALUE} sentinel.
    */
-  private static long fnv1aHashString(final String s) {
+  static long fnv1aHashString(final String s) {
     if (s == null || s.isEmpty()) {
-      return 0L;
+      return SessionRegistry.remapSentinel(0xcbf29ce484222325L);
     }
     long hash = 0xcbf29ce484222325L;
     for (int i = 0, len = s.length(); i < len; i++) {
       hash ^= (s.charAt(i) & 0xFFL);
       hash *= 0x100000001b3L;
     }
-    return hash;
+    return SessionRegistry.remapSentinel(hash);
   }
 
   // ===========================================================================

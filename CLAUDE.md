@@ -95,6 +95,38 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **Projections never snapshot** — they replay all events from Aeron Archive position 0 on recovery. Archive log is never truncated.
 - **RFQ snapshot recovery** — after restoring RfqStateMachine from snapshot, immediately expire any RFQ in REQUESTED/QUOTED state whose TTL has elapsed relative to recovery cluster timestamp
 
+### Java Documentation Standards
+All production code must meet industry-level documentation standards consistent with exchange-core, LMAX, and Aeron project conventions:
+
+#### Class-Level Javadoc (required on every public/package-private class)
+- **Purpose**: What this class does and its role in the system (1-2 sentences)
+- **Design rationale**: Why this design was chosen, referencing industry patterns where applicable (e.g., "matches exchange-core idiom", "CME iLink pattern")
+- **Threading model**: Explicitly state thread-safety guarantees (e.g., "Not thread-safe — single-threaded cluster duty cycle only", "Thread-safe via CAS")
+- **Lifecycle**: If the class has startup/shutdown semantics, document the ordering constraints
+- **Dependencies**: Note key collaborators and data flow direction
+
+#### Method-Level Javadoc (required on public methods; recommended on package-private)
+- **Contract**: What the method does, its preconditions, and postconditions
+- **Parameters**: `@param` for every parameter with value constraints (e.g., "must be > 0", "null for test path")
+- **Return values**: `@return` with semantics (e.g., "encoded length including header", "null if pool exhausted")
+- **Exceptions**: `@throws` for every checked and unchecked exception with trigger condition
+- **Hot-path methods**: Note allocation behavior (e.g., "zero-allocation", "allocates on first call only")
+
+#### Field-Level Comments (required on non-obvious fields)
+- Constants: Document the value's origin and why it was chosen
+- Buffers: Document sizing rationale, lifecycle, and dual-use safety
+- State flags: Document valid transitions
+
+#### Inline Comments
+- **When to comment**: Non-obvious algorithmic choices, performance-critical decisions, workarounds for library quirks, safety invariants that would be broken by "obvious" refactoring
+- **When NOT to comment**: Self-evident code, restating what the code does, TODO without a ticket reference
+- **TODOs**: Always reference a Linear issue (e.g., `// TODO(APP-62): add maxOrderNotional check`)
+
+#### Test Documentation
+- Test class: Brief description of what component/behavior is under test
+- Test methods: Descriptive names using `methodUnderTest_scenario_expectedBehavior` pattern (e.g., `snapshotRoundTrip_emptyOrderBook_restoresAllRefData`)
+- Complex test setup: Document why specific values were chosen (e.g., "price chosen to exercise fixed-point boundary")
+
 ### Testing
 - Unit tests: `./gradlew :MODULE:test`
 - Integration tests: `./gradlew :integration-tests:test` (spins up full 3-node cluster)

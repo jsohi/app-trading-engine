@@ -108,6 +108,15 @@ public final class TradingClusteredService implements ClusteredService {
    */
   private static final int MAX_SNAPSHOT_EMPTY_POLLS = 1_000_000;
 
+  /**
+   * Hard cap multiplier applied to the publication's {@code maxMessageLength}. The actual cap is
+   * {@code SNAPSHOT_HARD_CAP_MULTIPLIER * maxMessageLength}, so it scales automatically when the
+   * snapshot channel's term-length is increased (e.g., doubling from 128 MB to 256 MB). The Aeron
+   * size guard ({@code maxMessageLength}) fires first under normal conditions; this cap catches
+   * pathological state growth before {@code checkLimit()} attempts allocation.
+   */
+  static final int SNAPSHOT_HARD_CAP_MULTIPLIER = 2;
+
   // ===== Collaborators =====
   private final IdGenerator orderIdGen;
   private final IdGenerator execIdGen;
@@ -181,8 +190,15 @@ public final class TradingClusteredService implements ClusteredService {
   private int riskLimitSnapLen;
   private int orderBookSnapLen;
 
-  // Reassembly buffer for onStart — captures the concatenated fragments delivered by Image.poll
-  // so we can walk them in a single pass inside loadSnapshot(). Grown on demand at startup.
+  // Used by onStart() for snapshot image reassembly and by onTakeSnapshot() for atomic assembly
+  // before publication. Dual use is safe: Aeron Cluster guarantees onStart() completes before
+  // onTakeSnapshot() is invoked (leader lifecycle ordering).
+  //
+  // Read-side note: onStart() uses a plain FragmentHandler (not FragmentAssembler). When
+  // onTakeSnapshot() publishes a message larger than maxPayloadLength, Aeron splits it into
+  // term-level frames. The FragmentHandler receives each frame individually and the appender
+  // lambda concatenates them. The result is byte-identical to what was passed to offer(). This
+  // is correct by construction.
   private final MutableDirectBuffer snapshotReassemblyBuf =
       new ExpandableArrayBuffer(16 * 1024 * 1024);
   private int snapshotReassemblyOffset;
@@ -288,7 +304,9 @@ public final class TradingClusteredService implements ClusteredService {
           throw new IllegalStateException(
               "snapshot reassembly stalled after "
                   + MAX_SNAPSHOT_EMPTY_POLLS
-                  + " consecutive empty polls — image may be corrupted");
+                  + " consecutive empty polls — reassembled "
+                  + snapshotReassemblyOffset
+                  + " bytes so far; image may be corrupted or snapshot channel misconfigured");
         }
         cluster.idleStrategy().idle();
       } else {
@@ -355,14 +373,143 @@ public final class TradingClusteredService implements ClusteredService {
 
   @Override
   public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
+    final int maxMsg =
+        snapshotPublication != null ? snapshotPublication.maxMessageLength() : Integer.MAX_VALUE;
+    final int assembledLen = assembleSnapshot(maxMsg);
+    offerFragment(snapshotPublication, snapshotReassemblyBuf, assembledLen);
+  }
+
+  /**
+   * Encode, validate, and assemble the full snapshot into {@link #snapshotReassemblyBuf}. Returns
+   * the total assembled length. Package-private so tests can exercise the assembly + guard chain
+   * without requiring a real (final) {@link ExclusivePublication}.
+   *
+   * <p>Guard chain (in order):
+   *
+   * <ol>
+   *   <li>Hard cap — fail fast before allocation if {@code totalLen > SNAPSHOT_HARD_CAP_MULTIPLIER
+   *       * maxMessageLength}
+   *   <li>Pre-size — {@code checkLimit(totalLen)} to avoid incremental doubling
+   *   <li>Assemble — {@code putBytes} all 7 fragments into contiguous buffer
+   *   <li>Integrity — assert {@code pos == totalLen}
+   *   <li>80% warning — surfaced via cluster error handler
+   *   <li>Size guard — fail if {@code totalLen > maxMessageLength}
+   * </ol>
+   *
+   * @param maxMessageLength the publication's max message length, or {@code Integer.MAX_VALUE} if
+   *     no publication is available (test / null-publication path)
+   * @return the total number of bytes assembled into {@code snapshotReassemblyBuf}
+   * @throws IllegalStateException if any guard fails
+   */
+  int assembleSnapshot(final int maxMessageLength) {
     encodeSnapshotFragments(cluster == null ? 0L : cluster.time());
-    offerFragment(snapshotPublication, snapshotHeaderBuf, snapshotHeaderLen);
-    offerFragment(snapshotPublication, eventSeqSnapBuf, eventSeqSnapLen);
-    offerFragment(snapshotPublication, idGenSnapBuf, idGenSnapLen);
-    offerFragment(snapshotPublication, accountSnapBuf, accountSnapLen);
-    offerFragment(snapshotPublication, currencySnapBuf, currencySnapLen);
-    offerFragment(snapshotPublication, riskLimitSnapBuf, riskLimitSnapLen);
-    offerFragment(snapshotPublication, orderBookSnapBuf, orderBookSnapLen);
+
+    // Pre-compute total assembled length across all seven fragments. Use long arithmetic so a
+    // pathological state-growth bug cannot wrap the sum negative and silently bypass the hard cap.
+    final long totalLenLong =
+        (long) snapshotHeaderLen
+            + eventSeqSnapLen
+            + idGenSnapLen
+            + accountSnapLen
+            + currencySnapLen
+            + riskLimitSnapLen
+            + orderBookSnapLen;
+
+    // Hard cap: fail fast before attempting allocation to protect against OOM from unbounded
+    // state growth (e.g., order pool leak that never releases slots). Scales with maxMessageLength
+    // so increasing the snapshot channel's term-length automatically raises the cap.
+    final long hardCap = (long) SNAPSHOT_HARD_CAP_MULTIPLIER * maxMessageLength;
+    if (totalLenLong > hardCap) {
+      throw new IllegalStateException(
+          "CRITICAL: snapshot assembly size ("
+              + totalLenLong
+              + " bytes) exceeds hard limit ("
+              + hardCap
+              + " bytes) — investigate state growth (order count: "
+              + orderBook.size()
+              + ")");
+    }
+    // Guard against int overflow before narrowing — unreachable under normal conditions (order
+    // pool capped at 65,534 entries ≈ 7 MB) but prevents silent corruption if the hard cap is
+    // configured above Integer.MAX_VALUE (e.g., maxMessageLength == Integer.MAX_VALUE in tests).
+    if (totalLenLong > Integer.MAX_VALUE) {
+      throw new IllegalStateException(
+          "CRITICAL: snapshot assembly size ("
+              + totalLenLong
+              + " bytes) exceeds Integer.MAX_VALUE — cannot be represented as an int offset");
+    }
+    final int totalLen = (int) totalLenLong;
+
+    // Ensure the reassembly buffer is large enough in a single allocation (avoids multiple
+    // doublings on the duty-cycle thread).
+    snapshotReassemblyBuf.checkLimit(totalLen);
+
+    // Assemble all 7 fragments into snapshotReassemblyBuf as one contiguous block.
+    int pos = 0;
+    snapshotReassemblyBuf.putBytes(pos, snapshotHeaderBuf, 0, snapshotHeaderLen);
+    pos += snapshotHeaderLen;
+    snapshotReassemblyBuf.putBytes(pos, eventSeqSnapBuf, 0, eventSeqSnapLen);
+    pos += eventSeqSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, idGenSnapBuf, 0, idGenSnapLen);
+    pos += idGenSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, accountSnapBuf, 0, accountSnapLen);
+    pos += accountSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, currencySnapBuf, 0, currencySnapLen);
+    pos += currencySnapLen;
+    snapshotReassemblyBuf.putBytes(pos, riskLimitSnapBuf, 0, riskLimitSnapLen);
+    pos += riskLimitSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, orderBookSnapBuf, 0, orderBookSnapLen);
+    pos += orderBookSnapLen;
+
+    // Post-assembly integrity: verify cursor matches pre-computed total.
+    if (pos != totalLen) {
+      throw new IllegalStateException(
+          "snapshot assembly integrity failure: expected "
+              + totalLen
+              + " bytes but assembled "
+              + pos
+              + " — fragment length field corruption");
+    }
+
+    // Size guard: validate against Aeron's max message length for this publication.
+    if (maxMessageLength < Integer.MAX_VALUE) {
+      // Early warning at 80% — surfaced via Aeron error handler since the cluster module has
+      // no logging dependency. Operators can proactively increase term-length before this
+      // becomes a hard failure.
+      final int warnThreshold = maxMessageLength - (maxMessageLength / 5);
+      if (pos > warnThreshold && pos <= maxMessageLength) {
+        final var ctx = cluster != null ? cluster.context() : null;
+        final var handler = ctx != null ? ctx.errorHandler() : null;
+        if (handler != null) {
+          handler.onError(
+              new IllegalStateException(
+                  "WARNING: snapshot size ("
+                      + pos
+                      + " bytes) is at "
+                      + (pos * 100L / maxMessageLength)
+                      + "% of maxMessageLength ("
+                      + maxMessageLength
+                      + " bytes) — consider increasing snapshot channel term-length"
+                      + " in ClusterNodeLauncher before this becomes a hard failure"));
+        }
+      }
+      if (pos > maxMessageLength) {
+        throw new IllegalStateException(
+            "CRITICAL: snapshot assembly ("
+                + pos
+                + " bytes) exceeds maxMessageLength ("
+                + maxMessageLength
+                + " bytes). Cluster cannot persist snapshots — risk of data loss on restart."
+                + " Increase term-length in ClusterNodeLauncher.snapshotChannel()"
+                + " (current yields "
+                + maxMessageLength
+                + " max; try doubling term-length)"
+                + " and restart all nodes. Order count: "
+                + orderBook.size());
+      }
+    }
+
+    return pos;
   }
 
   @Override
@@ -874,6 +1021,10 @@ public final class TradingClusteredService implements ClusteredService {
 
   MutableDirectBuffer orderBookSnapBuffer() {
     return orderBookSnapBuf;
+  }
+
+  MutableDirectBuffer snapshotReassemblyBuffer() {
+    return snapshotReassemblyBuf;
   }
 
   // ===========================================================================

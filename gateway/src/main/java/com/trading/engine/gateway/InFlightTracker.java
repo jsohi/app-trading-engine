@@ -58,7 +58,7 @@ public final class InFlightTracker {
    */
   public void onCommandSent(
       final byte[] clOrdId, final int offset, final int length, final long timestampNs) {
-    final long hash = fnv1aHash(clOrdId, offset, length);
+    final long hash = SessionRegistry.remapSentinel(fnv1aHash(clOrdId, offset, length));
     pending.put(hash, timestampNs);
   }
 
@@ -70,7 +70,7 @@ public final class InFlightTracker {
    *     timed out or never tracked
    */
   public boolean onResponseReceived(final byte[] clOrdId, final int offset, final int length) {
-    final long hash = fnv1aHash(clOrdId, offset, length);
+    final long hash = SessionRegistry.remapSentinel(fnv1aHash(clOrdId, offset, length));
     return pending.remove(hash) != MISSING_VALUE;
   }
 
