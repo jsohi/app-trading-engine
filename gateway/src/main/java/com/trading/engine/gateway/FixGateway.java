@@ -268,7 +268,15 @@ public final class FixGateway implements Agent {
     while (sessions.hasNext()) {
       final GatewaySession session = sessions.next();
       if (session.isConnected()) {
-        session.logoutAndDisconnect();
+        final long logoutResult = session.logoutAndDisconnect();
+        if (logoutResult < 0) {
+          LOG.warn()
+              .append("Logout failed for sessionId=")
+              .append(session.id())
+              .append(" result=")
+              .append(logoutResult)
+              .commit();
+        }
       }
     }
 

@@ -15,7 +15,7 @@ import org.agrona.collections.Long2ObjectHashMap;
  * <ol>
  *   <li>{@code correlationHash → sessionKey} — used by {@link ClusterEgressListener} via {@link
  *       SessionLookup#findByCorrelationId} to route cluster responses.
- *   <li>{@code sessionKey → Session} — used by the egress callback to call {@link
+ *   <li>{@code sessionKey → GatewaySession} — used by the egress callback to call {@link
  *       GatewaySession#trySend} on the correct Artio session.
  * </ol>
  *
