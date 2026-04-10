@@ -96,9 +96,10 @@ public final class FixGateway implements Agent {
   private final FixSessionHandler.DrainingSupplier drainingSupplier = this::isDraining;
 
   // --- State ---
-  // volatile: onClose() may be called from a shutdown hook thread while doWork() runs on the
-  // duty-cycle thread. Cross-thread visibility is intentional.
-  private volatile boolean draining;
+  // Not volatile: onClose() is called by the Agent framework on the same duty-cycle thread as
+  // doWork(). If external shutdown coordination is needed, the caller must signal the AgentRunner
+  // to stop, which then calls onClose() on the correct thread.
+  private boolean draining;
   private long lastSweepNs;
 
   /**
@@ -372,7 +373,9 @@ public final class FixGateway implements Agent {
     }
 
     if (position >= 0) {
-      // Clean up the correlation entry now that the response is delivered.
+      // Clean up the correlation entry now that the response is delivered. Safe to read
+      // lastCorrelationScratch here because this callback is invoked synchronously within
+      // ClusterEgressListener.handleXxx — no other message can be processed until we return.
       registry.removeCorrelation(
           egressListener.lastCorrelationScratch(), 0, egressListener.lastCorrelationLen());
       return true;

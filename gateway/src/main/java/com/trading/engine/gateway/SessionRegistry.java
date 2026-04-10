@@ -93,7 +93,18 @@ public final class SessionRegistry implements SessionLookup {
   public void registerCorrelation(
       final byte[] correlationId, final int offset, final int length, final long sessionKey) {
     final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
-    correlationMap.put(hash, sessionKey);
+    final long existing = correlationMap.put(hash, sessionKey);
+    if (existing != CORRELATION_MISSING && existing != sessionKey) {
+      // Hash collision or ClOrdID reuse across sessions — log for observability.
+      LOG.warn()
+          .append("Correlation overwrite: hash=")
+          .append(hash)
+          .append(" prevSession=")
+          .append(existing)
+          .append(" newSession=")
+          .append(sessionKey)
+          .commit();
+    }
   }
 
   /**
