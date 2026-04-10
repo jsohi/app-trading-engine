@@ -382,6 +382,15 @@ public final class FixSessionHandler implements SessionHandler {
    */
   private int copyCharsToBytes(final char[] src, final int srcLen) {
     final int len = Math.min(srcLen, correlationScratch.length);
+    if (srcLen > correlationScratch.length) {
+      LOG.warn()
+          .append("Correlation ID truncated from ")
+          .append(srcLen)
+          .append(" to ")
+          .append(correlationScratch.length)
+          .append(" bytes — matches SBE field length, hash will be consistent")
+          .commit();
+    }
     for (int i = 0; i < len; i++) {
       correlationScratch[i] = (byte) src[i];
     }

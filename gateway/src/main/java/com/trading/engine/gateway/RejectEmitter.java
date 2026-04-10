@@ -106,7 +106,7 @@ public final class RejectEmitter {
   public static int mapExceptionToRejectReason(final Exception ex) {
     if (ex instanceof IllegalStateException) {
       final String msg = ex.getMessage();
-      if (msg != null && msg.contains("unmapped")) {
+      if (msg != null && (msg.contains("Unsupported") || msg.contains("unmapped"))) {
         return BusinessRejectReason.UNSUPPORTED_MESSAGE_TYPE.representation();
       }
     }
