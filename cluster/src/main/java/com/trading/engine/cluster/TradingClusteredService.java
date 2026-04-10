@@ -429,6 +429,15 @@ public final class TradingClusteredService implements ClusteredService {
               + orderBook.size()
               + ")");
     }
+    // Guard against int overflow before narrowing — unreachable under normal conditions (order
+    // pool capped at 65,534 entries ≈ 7 MB) but prevents silent corruption if the hard cap is
+    // configured above Integer.MAX_VALUE (e.g., maxMessageLength == Integer.MAX_VALUE in tests).
+    if (totalLenLong > Integer.MAX_VALUE) {
+      throw new IllegalStateException(
+          "CRITICAL: snapshot assembly size ("
+              + totalLenLong
+              + " bytes) exceeds Integer.MAX_VALUE — cannot be represented as an int offset");
+    }
     final int totalLen = (int) totalLenLong;
 
     // Ensure the reassembly buffer is large enough in a single allocation (avoids multiple
