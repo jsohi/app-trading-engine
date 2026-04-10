@@ -32,14 +32,15 @@ public final class RejectEmitter {
   /**
    * Emit a BusinessMessageReject (35=j) to the given FIX session.
    *
-   * @param session Artio session to send the reject to
+   * @param session gateway session to send the reject to
    * @param refSeqNum MsgSeqNum of the rejected message (tag 45)
    * @param refMsgType MsgType of the rejected message as Artio long encoding (tag 372)
    * @param reason FIX BusinessRejectReason code (tag 380)
    * @param text human-readable rejection text (tag 58)
    * @param textOffset offset within {@code text}
    * @param textLength number of significant bytes in {@code text}
-   * @return the result of {@link Session#trySend}, or {@code -1L} if session is not connected
+   * @return the result of {@link GatewaySession#trySend}, or {@code -1L} if session is not
+   *     connected
    */
   public long emit(
       final GatewaySession session,
@@ -82,7 +83,7 @@ public final class RejectEmitter {
   /**
    * Convenience overload that accepts a {@link BusinessRejectReason} enum.
    *
-   * @see #emit(Session, int, long, int, byte[], int, int)
+   * @see #emit(GatewaySession, int, long, int, byte[], int, int)
    */
   public long emit(
       final GatewaySession session,

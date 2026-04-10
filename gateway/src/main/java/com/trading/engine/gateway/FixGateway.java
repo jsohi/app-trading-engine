@@ -43,7 +43,7 @@ import uk.co.real_logic.artio.validation.MessageValidationStrategy;
  *
  * <p><b>Egress callback.</b> Cluster responses are routed via the {@link
  * ClusterEgressListener.EgressCallback} to the correct FIX session by looking up the session key in
- * the {@link SessionRegistry} and calling {@link Session#trySend}.
+ * the {@link SessionRegistry} and calling {@link GatewaySession#trySend}.
  *
  * <p><b>Allocation.</b> Zero allocation on hot path after startup. Shared translators, encoders,
  * and buffers are pre-allocated and reused across all sessions.

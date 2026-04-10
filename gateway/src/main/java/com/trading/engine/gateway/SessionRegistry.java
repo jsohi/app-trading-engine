@@ -15,8 +15,8 @@ import org.agrona.collections.Long2ObjectHashMap;
  * <ol>
  *   <li>{@code correlationHash → sessionKey} — used by {@link ClusterEgressListener} via {@link
  *       SessionLookup#findByCorrelationId} to route cluster responses.
- *   <li>{@code sessionKey → Session} — used by the egress callback to call {@link Session#trySend}
- *       on the correct Artio session.
+ *   <li>{@code sessionKey → Session} — used by the egress callback to call {@link
+ *       GatewaySession#trySend} on the correct Artio session.
  * </ol>
  *
  * <p><b>Session capacity.</b> Enforces a global maximum session count and a per-CompID maximum to
@@ -34,11 +34,8 @@ public final class SessionRegistry implements SessionLookup {
 
   private static final Log LOG = LogFactory.getLog(SessionRegistry.class);
 
-  /** Sentinel for missing entries in Agrona Long2LongHashMap. */
-  private static final long CORRELATION_MISSING = Long.MIN_VALUE;
-
-  /** Sentinel for missing entries in the compId session count map. */
-  private static final long COMP_ID_COUNT_MISSING = Long.MIN_VALUE;
+  /** Sentinel for missing entries in all Agrona {@link Long2LongHashMap} instances. */
+  private static final long MISSING_VALUE = Long.MIN_VALUE;
 
   private final Long2LongHashMap correlationMap;
   private final Long2ObjectHashMap<GatewaySession> sessionsByKey;
@@ -64,10 +61,10 @@ public final class SessionRegistry implements SessionLookup {
     }
     this.maxSessions = maxSessions;
     this.maxSessionsPerCompId = maxSessionsPerCompId;
-    this.correlationMap = new Long2LongHashMap(correlationCapacity, 0.65f, CORRELATION_MISSING);
+    this.correlationMap = new Long2LongHashMap(correlationCapacity, 0.65f, MISSING_VALUE);
     this.sessionsByKey = new Long2ObjectHashMap<GatewaySession>(maxSessions, 0.65f);
-    this.sessionCompIdMap = new Long2LongHashMap(maxSessions, 0.65f, CORRELATION_MISSING);
-    this.compIdSessionCount = new Long2LongHashMap(maxSessions, 0.65f, COMP_ID_COUNT_MISSING);
+    this.sessionCompIdMap = new Long2LongHashMap(maxSessions, 0.65f, MISSING_VALUE);
+    this.compIdSessionCount = new Long2LongHashMap(maxSessions, 0.65f, MISSING_VALUE);
   }
 
   // ===========================================================================
@@ -78,7 +75,7 @@ public final class SessionRegistry implements SessionLookup {
   public long findByCorrelationId(final byte[] correlationId, final int offset, final int length) {
     final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
     final long sessionKey = correlationMap.get(hash);
-    return sessionKey == CORRELATION_MISSING ? NULL_SESSION : sessionKey;
+    return sessionKey == MISSING_VALUE ? NULL_SESSION : sessionKey;
   }
 
   // ===========================================================================
@@ -93,7 +90,7 @@ public final class SessionRegistry implements SessionLookup {
       final byte[] correlationId, final int offset, final int length, final long sessionKey) {
     final long hash = InFlightTracker.fnv1aHash(correlationId, offset, length);
     final long existing = correlationMap.put(hash, sessionKey);
-    if (existing != CORRELATION_MISSING && existing != sessionKey) {
+    if (existing != MISSING_VALUE && existing != sessionKey) {
       // Hash collision or ClOrdID reuse across sessions — log for observability.
       LOG.warn()
           .append("Correlation overwrite: hash=")
@@ -163,7 +160,7 @@ public final class SessionRegistry implements SessionLookup {
     }
 
     final long currentCount = compIdSessionCount.get(compIdHash);
-    final long count = currentCount == COMP_ID_COUNT_MISSING ? 0L : currentCount;
+    final long count = currentCount == MISSING_VALUE ? 0L : currentCount;
     if (count >= maxSessionsPerCompId) {
       LOG.warn()
           .append("Session rejected: per-CompID limit reached (")
@@ -197,9 +194,9 @@ public final class SessionRegistry implements SessionLookup {
   public void removeSession(final long sessionKey) {
     sessionsByKey.remove(sessionKey);
     final long compIdHash = sessionCompIdMap.remove(sessionKey);
-    if (compIdHash != CORRELATION_MISSING) {
+    if (compIdHash != MISSING_VALUE) {
       final long currentCount = compIdSessionCount.get(compIdHash);
-      if (currentCount != COMP_ID_COUNT_MISSING && currentCount > 0) {
+      if (currentCount != MISSING_VALUE && currentCount > 0) {
         if (currentCount == 1L) {
           compIdSessionCount.remove(compIdHash);
         } else {
