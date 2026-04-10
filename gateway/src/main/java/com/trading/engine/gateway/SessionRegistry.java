@@ -4,11 +4,10 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.Long2ObjectHashMap;
-import uk.co.real_logic.artio.session.Session;
 
 /**
  * Central session registry that maps FIX correlation identifiers (ClOrdID, QuoteReqID) to gateway
- * session keys and session keys to Artio {@link Session} objects. Implements {@link SessionLookup}
+ * session keys and session keys to {@link GatewaySession} objects. Implements {@link SessionLookup}
  * for use by {@link ClusterEgressListener}.
  *
  * <p><b>Two maps.</b> The egress pipeline needs two lookups:
@@ -42,7 +41,7 @@ public final class SessionRegistry implements SessionLookup {
   private static final long COMP_ID_COUNT_MISSING = Long.MIN_VALUE;
 
   private final Long2LongHashMap correlationMap;
-  private final Long2ObjectHashMap<Object> sessionsByKey;
+  private final Long2ObjectHashMap<GatewaySession> sessionsByKey;
   private final Long2LongHashMap sessionCompIdMap;
   private final Long2LongHashMap compIdSessionCount;
 
@@ -66,7 +65,7 @@ public final class SessionRegistry implements SessionLookup {
     this.maxSessions = maxSessions;
     this.maxSessionsPerCompId = maxSessionsPerCompId;
     this.correlationMap = new Long2LongHashMap(correlationCapacity, 0.65f, CORRELATION_MISSING);
-    this.sessionsByKey = new Long2ObjectHashMap<Object>(maxSessions, 0.65f);
+    this.sessionsByKey = new Long2ObjectHashMap<GatewaySession>(maxSessions, 0.65f);
     this.sessionCompIdMap = new Long2LongHashMap(maxSessions, 0.65f, CORRELATION_MISSING);
     this.compIdSessionCount = new Long2LongHashMap(maxSessions, 0.65f, COMP_ID_COUNT_MISSING);
   }
@@ -153,7 +152,7 @@ public final class SessionRegistry implements SessionLookup {
    * @return {@code true} if registered, {@code false} if capacity exceeded
    */
   public boolean tryRegisterSession(
-      final long sessionKey, final long compIdHash, final Object session) {
+      final long sessionKey, final long compIdHash, final GatewaySession session) {
     if (sessionsByKey.size() >= maxSessions) {
       LOG.warn()
           .append("Session rejected: global limit reached (")
@@ -182,15 +181,13 @@ public final class SessionRegistry implements SessionLookup {
   }
 
   /**
-   * Look up the session object for the given key. Returns the raw Object — callers in production
-   * code should cast to {@link Session}. Using Object allows test doubles without requiring Artio
-   * session infrastructure.
+   * Look up the {@link GatewaySession} for the given session key. Used by the egress callback to
+   * call {@link GatewaySession#trySend}.
    *
-   * @return the session object, or {@code null} if the session has disconnected
+   * @return the session, or {@code null} if the session has disconnected
    */
-  @SuppressWarnings("unchecked")
-  public <T> T findSession(final long sessionKey) {
-    return (T) sessionsByKey.get(sessionKey);
+  public GatewaySession findSession(final long sessionKey) {
+    return sessionsByKey.get(sessionKey);
   }
 
   /**
@@ -216,7 +213,7 @@ public final class SessionRegistry implements SessionLookup {
    * Returns all registered sessions for iteration (e.g., graceful shutdown logout). The returned
    * iterator is a reusable Agrona flyweight — callers must consume it immediately and not store it.
    */
-  public Long2ObjectHashMap<Object>.ValueIterator allSessions() {
+  public Long2ObjectHashMap<GatewaySession>.ValueIterator allSessions() {
     return sessionsByKey.values().iterator();
   }
 
