@@ -1042,13 +1042,20 @@ class TradingClusteredServiceTest {
 
   /**
    * When the assembled snapshot exceeds the provided {@code maxMessageLength}, the size guard must
-   * throw with a CRITICAL message.
+   * throw with a CRITICAL message. Uses a maxMessageLength large enough to pass the hard cap
+   * ({@code SNAPSHOT_HARD_CAP_MULTIPLIER * maxMessageLength > totalLen}) but too small for the
+   * actual snapshot, so the maxMessageLength guard fires (not the hard cap).
    */
   @Test
   void assembleSnapshot_sizeGuardThrowsOnExceededMaxMessageLength() {
+    // First, learn the actual snapshot size to pick a maxMessageLength that's smaller than
+    // the snapshot but large enough that the hard cap (2x) is bigger than the snapshot.
+    final int actualLen = service.assembleSnapshot(Integer.MAX_VALUE);
+    // maxMessageLength = actualLen - 1 → snapshot exceeds it; hard cap = 2 * (actualLen - 1)
+    // which is larger than actualLen, so the maxMessageLength guard fires first.
+    final int maxMsg = actualLen - 1;
     final var ex =
-        assertThrows(
-            IllegalStateException.class, () -> service.assembleSnapshot(1)); // impossibly small
+        assertThrows(IllegalStateException.class, () -> service.assembleSnapshot(maxMsg));
     assertTrue(ex.getMessage().contains("CRITICAL"), "error message should contain CRITICAL");
     assertTrue(
         ex.getMessage().contains("maxMessageLength"),
@@ -1193,10 +1200,11 @@ class TradingClusteredServiceTest {
    */
   @Test
   void assembleSnapshot_hardCapDoesNotFalselyTrigger() {
-    // Normal snapshot with seeded ref-data is well under 32MB.
-    final int assembledLen = service.assembleSnapshot(16 * 1024 * 1024);
+    final int maxMsg = 16 * 1024 * 1024;
+    final int assembledLen = service.assembleSnapshot(maxMsg);
     assertTrue(assembledLen > 0);
-    assertTrue(assembledLen < 32 * 1024 * 1024, "normal snapshot must be under hard cap");
+    final long hardCap = (long) TradingClusteredService.SNAPSHOT_HARD_CAP_MULTIPLIER * maxMsg;
+    assertTrue(assembledLen < hardCap, "normal snapshot must be under hard cap");
   }
 
   // ---------------------------------------------------------------------------

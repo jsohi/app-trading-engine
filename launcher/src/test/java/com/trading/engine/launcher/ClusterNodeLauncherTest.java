@@ -101,7 +101,7 @@ class ClusterNodeLauncherTest {
    * test MUST pass before any APP-150 changes are merged.
    */
   @Test
-  void snapshotChannelUriParsesCorrectly() {
+  void snapshotChannel_validUri_parsesCorrectly() {
     final ChannelUri uri = ChannelUri.parse(ClusterNodeLauncher.SNAPSHOT_CHANNEL);
     assertEquals("ipc", uri.media(), "snapshot channel must use IPC transport");
     assertEquals(

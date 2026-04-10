@@ -109,13 +109,13 @@ public final class TradingClusteredService implements ClusteredService {
   private static final int MAX_SNAPSHOT_EMPTY_POLLS = 1_000_000;
 
   /**
-   * Hard ceiling for assembled snapshot size in bytes. Protects the duty-cycle thread from OOM if a
-   * bug causes unbounded state growth (e.g., order pool leak that never releases slots). Set to 2x
-   * the expected {@code maxMessageLength} (16 MB from a 128 MB term buffer) so the Aeron size guard
-   * fires first under normal conditions, but this cap catches pathological cases before {@link
-   * org.agrona.ExpandableArrayBuffer#checkLimit(int)} attempts allocation.
+   * Hard cap multiplier applied to the publication's {@code maxMessageLength}. The actual cap is
+   * {@code SNAPSHOT_HARD_CAP_MULTIPLIER * maxMessageLength}, so it scales automatically when the
+   * snapshot channel's term-length is increased (e.g., doubling from 128 MB to 256 MB). The Aeron
+   * size guard ({@code maxMessageLength}) fires first under normal conditions; this cap catches
+   * pathological state growth before {@code checkLimit()} attempts allocation.
    */
-  private static final int MAX_SNAPSHOT_ASSEMBLY_BYTES = 32 * 1024 * 1024;
+  static final int SNAPSHOT_HARD_CAP_MULTIPLIER = 2;
 
   // ===== Collaborators =====
   private final IdGenerator orderIdGen;
@@ -387,7 +387,8 @@ public final class TradingClusteredService implements ClusteredService {
    * <p>Guard chain (in order):
    *
    * <ol>
-   *   <li>Hard cap — fail fast before allocation if {@code totalLen > MAX_SNAPSHOT_ASSEMBLY_BYTES}
+   *   <li>Hard cap — fail fast before allocation if {@code totalLen > SNAPSHOT_HARD_CAP_MULTIPLIER
+   *       * maxMessageLength}
    *   <li>Pre-size — {@code checkLimit(totalLen)} to avoid incremental doubling
    *   <li>Assemble — {@code putBytes} all 7 fragments into contiguous buffer
    *   <li>Integrity — assert {@code pos == totalLen}
@@ -415,13 +416,15 @@ public final class TradingClusteredService implements ClusteredService {
             + orderBookSnapLen;
 
     // Hard cap: fail fast before attempting allocation to protect against OOM from unbounded
-    // state growth (e.g., order pool leak that never releases slots).
-    if (totalLenLong > MAX_SNAPSHOT_ASSEMBLY_BYTES) {
+    // state growth (e.g., order pool leak that never releases slots). Scales with maxMessageLength
+    // so increasing the snapshot channel's term-length automatically raises the cap.
+    final long hardCap = (long) SNAPSHOT_HARD_CAP_MULTIPLIER * maxMessageLength;
+    if (totalLenLong > hardCap) {
       throw new IllegalStateException(
           "CRITICAL: snapshot assembly size ("
               + totalLenLong
               + " bytes) exceeds hard limit ("
-              + MAX_SNAPSHOT_ASSEMBLY_BYTES
+              + hardCap
               + " bytes) — investigate state growth (order count: "
               + orderBook.size()
               + ")");
