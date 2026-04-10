@@ -58,7 +58,7 @@ public final class FixSessionHandler implements SessionHandler {
   private static final byte[] SYSTEM_SHUTTING_DOWN =
       "System shutting down".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
-  private final Session session;
+  private final GatewaySession gatewaySession;
   private final long sessionKey;
   private final ClusterClient clusterClient;
   private final FixToSbeTranslator translator;
@@ -93,7 +93,7 @@ public final class FixSessionHandler implements SessionHandler {
   }
 
   /**
-   * @param session Artio session (not null)
+   * @param gatewaySession gateway session abstraction (not null)
    * @param clusterClient cluster client for offering SBE messages
    * @param translator shared FIX→SBE translator (single-threaded, safe to share)
    * @param registry session + correlation registry
@@ -103,7 +103,7 @@ public final class FixSessionHandler implements SessionHandler {
    * @param drainingSupplier returns true when gateway is draining (graceful shutdown)
    */
   public FixSessionHandler(
-      final Session session,
+      final GatewaySession gatewaySession,
       final ClusterClient clusterClient,
       final FixToSbeTranslator translator,
       final SessionRegistry registry,
@@ -111,8 +111,8 @@ public final class FixSessionHandler implements SessionHandler {
       final MutableAsciiBuffer asciiBuffer,
       final MutableDirectBuffer sbeBuffer,
       final DrainingSupplier drainingSupplier) {
-    this.session = session;
-    this.sessionKey = session.id();
+    this.gatewaySession = gatewaySession;
+    this.sessionKey = gatewaySession.id();
     this.clusterClient = clusterClient;
     this.translator = translator;
     this.registry = registry;
@@ -143,8 +143,8 @@ public final class FixSessionHandler implements SessionHandler {
 
     if (drainingSupplier.isDraining()) {
       rejectEmitter.emit(
-          session,
-          session.lastReceivedMsgSeqNum(),
+          gatewaySession,
+          gatewaySession.lastReceivedMsgSeqNum(),
           messageType,
           com.trading.engine.fix.BusinessRejectReason.OTHER.representation(),
           SYSTEM_SHUTTING_DOWN,
@@ -154,22 +154,22 @@ public final class FixSessionHandler implements SessionHandler {
     }
 
     if (messageType == NewOrderSingleDecoder.MESSAGE_TYPE) {
-      return handleNewOrderSingle(session, length, messageType);
+      return handleNewOrderSingle(length, messageType);
     } else if (messageType == OrderCancelRequestDecoder.MESSAGE_TYPE) {
-      return handleOrderCancelRequest(session, length, messageType);
+      return handleOrderCancelRequest(length, messageType);
     } else if (messageType == QuoteRequestDecoder.MESSAGE_TYPE) {
-      return handleQuoteRequest(session, length, messageType);
+      return handleQuoteRequest(length, messageType);
     } else if (messageType == MassQuoteDecoder.MESSAGE_TYPE) {
-      return handleMassQuote(session, length, messageType);
+      return handleMassQuote(length, messageType);
     } else if (messageType == NewOrderMultilegDecoder.MESSAGE_TYPE) {
-      return handleNewOrderMultileg(session, length, messageType);
+      return handleNewOrderMultileg(length, messageType);
     } else if (messageType == MultilegOrderCancelReplaceRequestDecoder.MESSAGE_TYPE) {
-      return handleMultilegCancelReplace(session, length, messageType);
+      return handleMultilegCancelReplace(length, messageType);
     }
 
     rejectEmitter.emit(
-        session,
-        session.lastReceivedMsgSeqNum(),
+        gatewaySession,
+        gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
         com.trading.engine.fix.BusinessRejectReason.UNSUPPORTED_MESSAGE_TYPE.representation(),
         null,
@@ -222,79 +222,74 @@ public final class FixSessionHandler implements SessionHandler {
   // Message handlers
   // ===========================================================================
 
-  private Action handleNewOrderSingle(
-      final Session session, final int length, final long messageType) {
+  private Action handleNewOrderSingle(final int length, final long messageType) {
     try {
       nosDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen = translator.translateNewOrderSingle(nosDecoder, sbeBuffer, 0);
       final int corrLen = copyCharsToBytes(nosDecoder.clOrdID(), nosDecoder.clOrdIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
-  private Action handleOrderCancelRequest(
-      final Session session, final int length, final long messageType) {
+  private Action handleOrderCancelRequest(final int length, final long messageType) {
     try {
       cxlDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen = translator.translateOrderCancelRequest(cxlDecoder, sbeBuffer, 0);
       final int corrLen = copyCharsToBytes(cxlDecoder.clOrdID(), cxlDecoder.clOrdIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
-  private Action handleQuoteRequest(
-      final Session session, final int length, final long messageType) {
+  private Action handleQuoteRequest(final int length, final long messageType) {
     try {
       quoteReqDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen = translator.translateQuoteRequest(quoteReqDecoder, sbeBuffer, 0);
       final int corrLen =
           copyCharsToBytes(quoteReqDecoder.quoteReqID(), quoteReqDecoder.quoteReqIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
-  private Action handleMassQuote(final Session session, final int length, final long messageType) {
+  private Action handleMassQuote(final int length, final long messageType) {
     try {
       massQuoteDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen = translator.translateMassQuote(massQuoteDecoder, sbeBuffer, 0);
       final int corrLen =
           copyCharsToBytes(massQuoteDecoder.quoteID(), massQuoteDecoder.quoteIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
-  private Action handleNewOrderMultileg(
-      final Session session, final int length, final long messageType) {
+  private Action handleNewOrderMultileg(final int length, final long messageType) {
     try {
       multilegDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen = translator.translateNewOrderMultileg(multilegDecoder, sbeBuffer, 0);
       final int corrLen =
           copyCharsToBytes(multilegDecoder.clOrdID(), multilegDecoder.clOrdIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
-  private Action handleMultilegCancelReplace(
-      final Session session, final int length, final long messageType) {
+  private Action handleMultilegCancelReplace(final int length, final long messageType) {
     try {
       multilegCxlDecoder.decode(asciiBuffer, 0, length);
       final int sbeLen =
           translator.translateMultilegOrderCancelReplace(multilegCxlDecoder, sbeBuffer, 0);
       final int corrLen =
           copyCharsToBytes(multilegCxlDecoder.clOrdID(), multilegCxlDecoder.clOrdIDLength());
-      return offerAndRegister(session, sbeLen, corrLen, messageType);
+      return offerAndRegister(sbeLen, corrLen, messageType);
     } catch (final Exception ex) {
-      return rejectOnError(session, messageType, ex);
+      return rejectOnError(messageType, ex);
     }
   }
 
@@ -307,7 +302,7 @@ public final class FixSessionHandler implements SessionHandler {
    * Returns ABORT on backpressure so Artio re-delivers.
    */
   private Action offerAndRegister(
-      final Session session, final int sbeLen, final int correlationLen, final long messageType) {
+      final int sbeLen, final int correlationLen, final long messageType) {
     final long result =
         clusterClient.offerTracked(sbeBuffer, 0, sbeLen, correlationScratch, 0, correlationLen);
 
@@ -328,8 +323,8 @@ public final class FixSessionHandler implements SessionHandler {
         .append(sessionKey)
         .commit();
     rejectEmitter.emit(
-        session,
-        session.lastReceivedMsgSeqNum(),
+        gatewaySession,
+        gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
         com.trading.engine.fix.BusinessRejectReason.OTHER.representation(),
         CLUSTER_UNAVAILABLE,
@@ -339,7 +334,7 @@ public final class FixSessionHandler implements SessionHandler {
   }
 
   /** Send a BusinessMessageReject for a translation or processing error. Zero-alloc path. */
-  private Action rejectOnError(final Session session, final long messageType, final Exception ex) {
+  private Action rejectOnError(final long messageType, final Exception ex) {
     LOG.warn()
         .append("Translation error: sessionId=")
         .append(sessionKey)
@@ -350,8 +345,8 @@ public final class FixSessionHandler implements SessionHandler {
         .commit();
     final int textLen = copyExceptionMessage(ex, rejectTextScratch);
     rejectEmitter.emit(
-        session,
-        session.lastReceivedMsgSeqNum(),
+        gatewaySession,
+        gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
         RejectEmitter.mapExceptionToRejectReason(ex),
         textLen > 0 ? rejectTextScratch : null,

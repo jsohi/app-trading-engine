@@ -4,7 +4,6 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.fix.BusinessRejectReason;
 import com.trading.engine.fix.builder.BusinessMessageRejectEncoder;
-import uk.co.real_logic.artio.session.Session;
 
 /**
  * Zero-allocation emitter for FIX BusinessMessageReject (35=j) messages. Used by the gateway to
@@ -43,7 +42,7 @@ public final class RejectEmitter {
    * @return the result of {@link Session#trySend}, or {@code -1L} if session is not connected
    */
   public long emit(
-      final Session session,
+      final GatewaySession session,
       final int refSeqNum,
       final long refMsgType,
       final int reason,
@@ -86,7 +85,7 @@ public final class RejectEmitter {
    * @see #emit(Session, int, long, int, byte[], int, int)
    */
   public long emit(
-      final Session session,
+      final GatewaySession session,
       final int refSeqNum,
       final long refMsgType,
       final BusinessRejectReason reason,

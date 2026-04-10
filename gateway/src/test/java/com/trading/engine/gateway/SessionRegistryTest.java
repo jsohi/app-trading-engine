@@ -15,10 +15,12 @@ class SessionRegistryTest {
   private static final int MAX_SESSIONS = 3;
   private static final int MAX_PER_COMP_ID = 2;
 
-  /**
-   * Sentinel object used in place of Artio Session (which requires infrastructure to construct).
-   */
-  private static final Object FAKE_SESSION = new Object();
+  /** Minimal GatewaySession stub for testing SessionRegistry without Artio infrastructure. */
+  private static final GatewaySession FAKE_SESSION = new FakeGatewaySession(1L);
+
+  private static GatewaySession fakeSession(final long id) {
+    return new FakeGatewaySession(id);
+  }
 
   private SessionRegistry registry;
 
@@ -85,7 +87,7 @@ class SessionRegistryTest {
 
   @Test
   void registerAndFindSession() {
-    final Object mySession = new Object();
+    final GatewaySession mySession = fakeSession(1L);
     final boolean registered = registry.tryRegisterSession(1L, 100L, mySession);
     assertTrue(registered);
     assertEquals(1, registry.sessionCount());

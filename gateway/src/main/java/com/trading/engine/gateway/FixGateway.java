@@ -266,7 +266,7 @@ public final class FixGateway implements Agent {
     // Phase 3: Send Logout to all connected sessions
     final var sessions = registry.allSessions();
     while (sessions.hasNext()) {
-      final Session session = (Session) sessions.next();
+      final GatewaySession session = sessions.next();
       if (session.isConnected()) {
         session.logoutAndDisconnect();
       }
@@ -296,7 +296,8 @@ public final class FixGateway implements Agent {
   // ===========================================================================
 
   private SessionHandler onSessionAcquired(final Session session) {
-    final long sessionKey = session.id();
+    final GatewaySession gatewaySession = new ArtioGatewaySession(session);
+    final long sessionKey = gatewaySession.id();
 
     // Use the session ID as the CompID hash for per-CompID capacity tracking.
     // Artio's Session does not expose SenderCompID directly on the session object at
@@ -306,19 +307,19 @@ public final class FixGateway implements Agent {
     // CompID from the auth callback and thread it through.
     final long compIdHash = sessionKey;
 
-    if (!registry.tryRegisterSession(sessionKey, compIdHash, session)) {
+    if (!registry.tryRegisterSession(sessionKey, compIdHash, gatewaySession)) {
       LOG.warn()
           .append("Session capacity exceeded, disconnecting: sessionId=")
           .append(sessionKey)
           .commit();
-      session.logoutAndDisconnect();
+      gatewaySession.logoutAndDisconnect();
       return NO_OP_HANDLER;
     }
 
     LOG.info().append("Session acquired: sessionId=").append(sessionKey).commit();
 
     return new FixSessionHandler(
-        session,
+        gatewaySession,
         clusterClient,
         fixToSbeTranslator,
         registry,
@@ -337,7 +338,7 @@ public final class FixGateway implements Agent {
    * and sends to the correct Artio session.
    */
   boolean onEgressMessage(final long sessionKey, final int templateId, final long timestamp) {
-    final Session session = registry.<Session>findSession(sessionKey);
+    final GatewaySession session = registry.findSession(sessionKey);
     if (session == null || !session.isConnected()) {
       if (session != null) {
         registry.removeSession(sessionKey);

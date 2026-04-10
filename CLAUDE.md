@@ -1,5 +1,22 @@
 # Trading Engine — Developer Conventions
 
+## Reasoning Effort
+
+Always use **high** reasoning effort for this project. Run `/effort high` at the start of every session. No shortcuts — everything must be industry standard and production ready.
+
+## Code Documentation Standards
+
+All Java code must follow **industry-standard documentation practices** for a production trading system:
+
+- **Class-level Javadoc**: Every public class must have a Javadoc comment describing purpose, threading model, allocation behavior, and key design decisions
+- **Method-level Javadoc**: All public methods must have Javadoc with `@param`, `@return`, and `@throws` where applicable
+- **Threading annotations**: Document whether a class/method is thread-safe, single-threaded, or requires external synchronization
+- **Allocation annotations**: Hot-path classes must document "Zero allocation after construction" or explicitly note where allocation occurs
+- **Design rationale**: Non-obvious decisions (e.g., hash collision trade-offs, sentinel values, lazy cleanup) must include inline comments explaining *why*, not just *what*
+- **FIX protocol references**: FIX message types and tags must reference the tag number (e.g., "ClOrdID (tag 11)", "BusinessRejectReason (tag 380)")
+- **Cross-references**: Use `{@link}` to connect related classes (e.g., SessionRegistry → ClusterEgressListener → SessionLookup)
+- **No TODO without ticket**: Every TODO must reference a Linear issue (e.g., `// TODO(APP-166): extract CompID from auth callback`)
+
 ## Build Commands
 
 ```bash
