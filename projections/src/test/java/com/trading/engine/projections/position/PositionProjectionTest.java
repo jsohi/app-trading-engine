@@ -248,8 +248,8 @@ class PositionProjectionTest {
     final PositionSnapshot s = projection.getPosition("EURUSD", "ACME", "20260412");
     assertEquals(10L * PRICE_SCALE, s.buyQty());
     assertEquals(3L * PRICE_SCALE, s.sellQty());
-    assertTrue(s.avgBuyPx() > 0);
-    assertTrue(s.avgSellPx() > 0);
+    assertEquals(108_500_000L, s.avgBuyPx());
+    assertEquals(108_600_000L, s.avgSellPx());
   }
 
   @Test
@@ -508,5 +508,15 @@ class PositionProjectionTest {
     final PositionSnapshot s = projection.getPosition("EURUSD", "ACME", "20260412");
     assertEquals("USD", s.currency());
     assertEquals("USD", s.settlCurrency());
+  }
+
+  @Test
+  void decodeErrorIncrementsErrorCount() {
+    // Dispatch with a null buffer — should cause a NullPointerException in the decoder
+    seqNo = 99;
+    projection.onEvent(99, OrderFilledEventDecoder.TEMPLATE_ID, null, 0, 100);
+    assertEquals(99, projection.lastProcessedSequence());
+    assertEquals(1, projection.errorCount());
+    assertEquals(0, projection.size());
   }
 }

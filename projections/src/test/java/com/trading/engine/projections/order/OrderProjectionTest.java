@@ -476,6 +476,7 @@ class OrderProjectionTest {
     final OrderSnapshot s = projection.getOrder("ORD-050");
     assertEquals(OrdStatusEnum.Canceled, s.ordStatus());
     assertEquals(ExecTypeEnum.Canceled, s.execType());
+    assertEquals(0, s.leavesQty()); // FIX 4.4: leavesQty must be 0 when canceled
   }
 
   @Test

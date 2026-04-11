@@ -38,9 +38,10 @@ import org.agrona.collections.ObjectHashSet;
  * </ol>
  *
  * <p><b>Threading:</b> single-writer / multi-reader via {@link StampedLock}. The event-dispatch
- * thread acquires the write stamp in {@link #onEvent}. Query threads acquire optimistic or
- * pessimistic read stamps in query methods. Query methods return immutable {@link OrderSnapshot}
- * records — internal mutable {@link OrderView} instances are never leaked.
+ * thread acquires the write stamp in {@link #onEvent}. Query threads acquire pessimistic read
+ * stamps in query methods (optimistic reads are unsafe with Agrona's non-concurrent collections).
+ * Query methods return immutable {@link OrderSnapshot} records — internal mutable {@link OrderView}
+ * instances are never leaked.
  *
  * <p><b>Allocation:</b> bounded per-entity allocation on the event path (one {@link OrderView} per
  * order, one {@link ByteArrayKey#copyOf()} per map entry). Zero allocation on lookups via
@@ -148,6 +149,8 @@ public final class OrderProjection implements Projection {
           .append(seqNo)
           .append(" eventType=")
           .append(eventType)
+          .append(" ")
+          .append(e)
           .commit();
     } finally {
       lastProcessedSeqNo = seqNo;
@@ -381,6 +384,7 @@ public final class OrderProjection implements Projection {
 
     view.setOrdStatus(OrdStatusEnum.Canceled);
     view.setExecType(ExecTypeEnum.Canceled);
+    view.setLeavesQty(0); // FIX 4.4: leavesQty must be 0 when order is canceled
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(canceledDecoder.timestamp());
   }
