@@ -289,16 +289,16 @@ public final class AccountProjection implements Projection {
 
     rejectCount++;
 
-    // Decode accountCode into scratch buffer to avoid SBE convenience method String allocation
+    // Decode accountCode into scratch buffer to avoid SBE convenience method String allocation.
+    // GFLog has no append(byte[], offset, length), so append char-by-char for zero allocation.
     rejectedDecoder.getAccountCode(scratchAccountCode, 0);
     final int rejCodeLen = ProjectionUtil.sbeStrLen(scratchAccountCode.length, scratchAccountCode);
 
-    LOG.warn()
-        .append("AccountProjection: account load rejected, accountCode=")
-        .append(new String(scratchAccountCode, 0, rejCodeLen, StandardCharsets.US_ASCII))
-        .append(" reason=")
-        .append(rejectedDecoder.rejectReason().name())
-        .commit();
+    final var entry = LOG.warn().append("AccountProjection: account load rejected, accountCode=");
+    for (int i = 0; i < rejCodeLen; i++) {
+      entry.append((char) scratchAccountCode[i]);
+    }
+    entry.append(" reason=").append(rejectedDecoder.rejectReason().name()).commit();
   }
 
   // ---------------------------------------------------------------------------
