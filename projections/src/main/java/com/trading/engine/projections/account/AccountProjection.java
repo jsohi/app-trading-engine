@@ -225,13 +225,23 @@ public final class AccountProjection implements Projection {
       }
 
       if (codeChanged) {
-        // Remove old secondary index entry using old code
+        // Remove old secondary index entry, but only if it still points to this view.
+        // Another account may have hijacked the code (last-write-wins), so unconditional
+        // removal would corrupt the index for that other account.
         probeAccountCode.set(existing.accountCode(), 0, oldLen);
-        byAccountCode.remove(probeAccountCode);
+        if (byAccountCode.get(probeAccountCode) == existing) {
+          byAccountCode.remove(probeAccountCode);
+        }
         // Insert new secondary index entry
         byAccountCode.put(ByteArrayKey.copyOf(scratchAccountCode, 0, accountCodeLen), existing);
+      } else {
+        // Code did NOT change. Ensure the index still points to us (last-write-wins reclaim)
+        // in case another account hijacked our code and then changed away from it.
+        probeAccountCode.set(scratchAccountCode, 0, accountCodeLen);
+        if (byAccountCode.get(probeAccountCode) != existing) {
+          byAccountCode.put(ByteArrayKey.copyOf(scratchAccountCode, 0, accountCodeLen), existing);
+        }
       }
-      // If code did NOT change, do not touch byAccountCode — existing key is correct
 
       populateView(existing, accountId, accountCodeLen, accountNameLen, baseCurrencyLen, seqNo);
     } else {
@@ -281,7 +291,7 @@ public final class AccountProjection implements Projection {
 
     // Decode accountCode into scratch buffer to avoid SBE convenience method String allocation
     rejectedDecoder.getAccountCode(scratchAccountCode, 0);
-    final int rejCodeLen = ProjectionUtil.sbeStrLen(16, scratchAccountCode);
+    final int rejCodeLen = ProjectionUtil.sbeStrLen(scratchAccountCode.length, scratchAccountCode);
 
     LOG.warn()
         .append("AccountProjection: account load rejected, accountCode=")
@@ -313,12 +323,16 @@ public final class AccountProjection implements Projection {
 
   /**
    * Looks up an account by account code string. Allocates a {@link ByteArrayKey} on every call
-   * (query path — never uses the pre-allocated probe key, which is event-thread only).
+   * (query path — never uses the pre-allocated probe key, which is event-thread only). Returns
+   * {@code null} for null or overlength codes (SBE Account field is char[16]).
    *
-   * @param accountCode the account code (FIX tag 1)
-   * @return the account read model, or {@code null} if not found
+   * @param accountCode the account code (FIX tag 1), at most 16 characters
+   * @return the account read model, or {@code null} if not found or code exceeds max length
    */
   public AccountReadModel getByAccountCode(final String accountCode) {
+    if (accountCode == null || accountCode.length() > 16) {
+      return null;
+    }
     final ByteArrayKey key = keyFromString(accountCode, 16);
     final long stamp = lock.readLock();
     try {
