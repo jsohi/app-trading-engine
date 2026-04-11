@@ -116,6 +116,8 @@ public final class PositionProjection implements Projection {
           .append(seqNo)
           .append(" eventType=")
           .append(eventType)
+          .append(" ")
+          .append(e)
           .commit();
     } finally {
       lastProcessedSeqNo = seqNo;

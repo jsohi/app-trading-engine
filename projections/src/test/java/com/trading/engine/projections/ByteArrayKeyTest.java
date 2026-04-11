@@ -125,4 +125,19 @@ class ByteArrayKeyTest {
     key.getBytes(dst, 0, 6, 5);
     assertArrayEquals("WORLD".getBytes(), dst);
   }
+
+  @Test
+  void immutableKeyThrowsOnSet() {
+    final ByteArrayKey key = ByteArrayKey.copyOf("EURUSD".getBytes(), 0, 6);
+    org.junit.jupiter.api.Assertions.assertThrows(
+        UnsupportedOperationException.class, () -> key.set("USDJPY".getBytes(), 0, 6));
+  }
+
+  @Test
+  void immutableKeyThrowsOnSetComposite() {
+    final ByteArrayKey key = ByteArrayKey.copyOf("ACME".getBytes(), 0, 4);
+    org.junit.jupiter.api.Assertions.assertThrows(
+        UnsupportedOperationException.class,
+        () -> key.setComposite("ACME".getBytes(), 0, 4, "20260412".getBytes(), 0, 8));
+  }
 }
