@@ -70,6 +70,11 @@ public final class SymbolPacker {
     if (symbol == null || symbol.isEmpty() || symbol.length() > SYMBOL_LENGTH) {
       throw new IllegalArgumentException("Symbol must be 1-8 ASCII characters, got: " + symbol);
     }
+    for (int i = 0; i < symbol.length(); i++) {
+      if (symbol.charAt(i) > 0x7F) {
+        throw new IllegalArgumentException("Symbol must be 1-8 ASCII characters, got: " + symbol);
+      }
+    }
     final byte[] padded = new byte[SYMBOL_LENGTH];
     final byte[] ascii = symbol.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(ascii, 0, padded, 0, ascii.length);
