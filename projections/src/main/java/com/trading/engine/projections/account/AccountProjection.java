@@ -91,11 +91,11 @@ public final class AccountProjection implements Projection {
   // --- Concurrency ---
   private final StampedLock lock = new StampedLock();
 
-  // --- Counters ---
-  private long lastProcessedSeqNo;
-  private long eventsProcessed;
-  private long errorCount;
-  private int rejectCount;
+  // --- Counters (volatile for cross-thread visibility without requiring read lock) ---
+  private volatile long lastProcessedSeqNo;
+  private volatile long eventsProcessed;
+  private volatile long errorCount;
+  private volatile int rejectCount;
 
   /**
    * Creates an AccountProjection with a default initial capacity of 256 accounts.
@@ -445,15 +445,16 @@ public final class AccountProjection implements Projection {
   // ---------------------------------------------------------------------------
 
   /**
-   * Creates a {@link ByteArrayKey} from a String, NUL-padded to the given maxLength. Used on the
-   * query path (allocation acceptable). Produces a key with trimmed length matching the insert-path
-   * key construction.
+   * Creates a {@link ByteArrayKey} from a String for secondary index lookup. Callers must validate
+   * length before calling (e.g., {@code getByAccountCode} rejects overlength input). Allocates on
+   * every call (query path only — never used from event dispatch).
+   *
+   * @param value the account code string (must be at most {@code maxLength} characters)
+   * @param maxLength the SBE field width (16 for Account)
+   * @return a trimmed {@link ByteArrayKey} matching the insert-path key construction
    */
   private static ByteArrayKey keyFromString(final String value, final int maxLength) {
-    final byte[] padded = new byte[maxLength];
     final byte[] ascii = value.getBytes(StandardCharsets.US_ASCII);
-    final int copyLen = Math.min(ascii.length, maxLength);
-    System.arraycopy(ascii, 0, padded, 0, copyLen);
-    return ByteArrayKey.copyOf(padded, 0, ProjectionUtil.sbeStrLen(maxLength, padded));
+    return ByteArrayKey.copyOf(ascii, 0, ProjectionUtil.sbeStrLen(ascii.length, ascii));
   }
 }

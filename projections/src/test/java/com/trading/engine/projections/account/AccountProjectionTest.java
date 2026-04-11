@@ -24,6 +24,13 @@ import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+/**
+ * Tests for {@link AccountProjection} covering account load, upsert (same code, changed code,
+ * shorter/longer code, hijack-and-reclaim), rejection handling, collection queries, reset/replay
+ * determinism, capability bitfield decoding, enum round-tripping, boundary conditions (max-length
+ * code, empty code, accountId zero, null/overlength query input), concurrency under StampedLock,
+ * and batch load stress.
+ */
 class AccountProjectionTest {
 
   private static final int HDR_LEN = MessageHeaderEncoder.ENCODED_LENGTH;
@@ -177,6 +184,16 @@ class AccountProjectionTest {
     assertNull(projection.getByAccountCode("NONEXISTENT"));
   }
 
+  @Test
+  void getByAccountCodeReturnsNullForNullInput() {
+    assertNull(projection.getByAccountCode(null));
+  }
+
+  @Test
+  void getByAccountCodeReturnsNullForOverlengthCode() {
+    assertNull(projection.getByAccountCode("12345678901234567")); // 17 chars > max 16
+  }
+
   // ---------------------------------------------------------------------------
   // Upsert paths
   // ---------------------------------------------------------------------------
@@ -230,6 +247,27 @@ class AccountProjectionTest {
     assertEquals(1, projection.size());
     assertNull(projection.getByAccountCode("ACM"));
     assertNotNull(projection.getByAccountCode("ACME-LONGCODE1"));
+  }
+
+  @Test
+  void upsertReclaimsSecondaryIndexAfterCodeHijackedAndReleased() {
+    // A owns "CODE-X"
+    loadAccount(1L, "CODE-X", AccountStatusEnum.Active, 1L);
+    assertEquals(1L, projection.getByAccountCode("CODE-X").accountId());
+
+    // B hijacks "CODE-X" (last-write-wins)
+    loadAccount(2L, "CODE-X", AccountStatusEnum.Active, 1L);
+    assertEquals(2L, projection.getByAccountCode("CODE-X").accountId());
+
+    // B changes to "CODE-Y", releasing "CODE-X" from secondary index
+    loadAccount(2L, "CODE-Y", AccountStatusEnum.Active, 1L);
+    assertNull(projection.getByAccountCode("CODE-X"));
+    assertNotNull(projection.getByAccountCode("CODE-Y"));
+
+    // A upserts with same code "CODE-X" — should reclaim secondary index
+    loadAccount(1L, "CODE-X", AccountStatusEnum.Active, 1L);
+    assertNotNull(projection.getByAccountCode("CODE-X"));
+    assertEquals(1L, projection.getByAccountCode("CODE-X").accountId());
   }
 
   // ---------------------------------------------------------------------------

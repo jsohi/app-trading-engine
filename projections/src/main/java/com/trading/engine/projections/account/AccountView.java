@@ -4,7 +4,6 @@ import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
-import java.util.Arrays;
 
 /**
  * Mutable internal read-model for a single account. Tracks the latest state from {@code
@@ -83,42 +82,72 @@ final class AccountView {
 
   // --- Public getters (primitives and enums) ---
 
+  /**
+   * @return the primary account identifier (custom tag 10024)
+   */
   public long accountId() {
     return accountId;
   }
 
+  /**
+   * @return the parent account identifier for give-up arrangements, 0 if none (custom tag 10040)
+   */
   public long parentAccountId() {
     return parentAccountId;
   }
 
+  /**
+   * @return the account identifier source scheme (FIX tag 660)
+   */
   public AcctIDSourceEnum acctIdSource() {
     return acctIdSource;
   }
 
+  /**
+   * @return the account type classification (custom tag 10029)
+   */
   public AccountTypeEnum accountType() {
     return accountType;
   }
 
+  /**
+   * @return the administrative status (custom tag 10027)
+   */
   public AccountStatusEnum status() {
     return status;
   }
 
+  /**
+   * @return the KYC/compliance status (custom tag 10041)
+   */
   public ComplianceStatusEnum complianceStatus() {
     return complianceStatus;
   }
 
+  /**
+   * @return the raw capability bitfield (custom tag 10042; bit 0 = CAN_TRADE, bit 1 = CAN_RFQ)
+   */
   public long capabilities() {
     return capabilities;
   }
 
+  /**
+   * @return the transaction time in epoch nanos (FIX tag 60)
+   */
   public long transactTime() {
     return transactTime;
   }
 
+  /**
+   * @return the event sequence number from the most recently applied AccountLoadedEvent
+   */
   public long sequenceNumber() {
     return sequenceNumber;
   }
 
+  /**
+   * @return the cluster timestamp (epoch nanos) of the most recently applied AccountLoadedEvent
+   */
   public long lastUpdatedAt() {
     return lastUpdatedAt;
   }
@@ -177,22 +206,20 @@ final class AccountView {
   }
 
   // --- Package-private setters (only AccountProjection mutates) ---
-  // Byte array setters zero-fill before copy to prevent stale trailing bytes on upsert.
+  // All readers use the corresponding length field (e.g., accountCodeLen) to determine
+  // the valid byte range. Trailing bytes beyond the length are never read.
 
   void setAccountCode(final byte[] src, final int offset, final int length) {
-    Arrays.fill(accountCode, (byte) 0);
     System.arraycopy(src, offset, accountCode, 0, length);
     accountCodeLen = length;
   }
 
   void setAccountName(final byte[] src, final int offset, final int length) {
-    Arrays.fill(accountName, (byte) 0);
     System.arraycopy(src, offset, accountName, 0, length);
     accountNameLen = length;
   }
 
   void setBaseCurrency(final byte[] src, final int offset, final int length) {
-    Arrays.fill(baseCurrency, (byte) 0);
     System.arraycopy(src, offset, baseCurrency, 0, length);
     baseCurrencyLen = length;
   }
