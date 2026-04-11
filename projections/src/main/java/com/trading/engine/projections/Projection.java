@@ -27,7 +27,8 @@ import org.agrona.DirectBuffer;
  * <p><b>Locking:</b> projections that serve concurrent query threads (e.g. via a query-service or
  * WebSocket layer) may acquire a {@link java.util.concurrent.locks.StampedLock} to protect shared
  * state, provided the critical section is bounded and non-blocking. The event-dispatch thread
- * acquires the write stamp; query threads use optimistic reads with pessimistic fallback.
+ * acquires the write stamp; query threads acquire pessimistic read stamps. Optimistic reads are
+ * unsafe with Agrona's non-concurrent collections (they can throw during concurrent rehash).
  *
  * <p><b>Allocation:</b> bounded per-entity allocation (e.g. one view object per order, one map
  * entry per position) is permitted on the read side. Avoid unbounded or per-event allocation.

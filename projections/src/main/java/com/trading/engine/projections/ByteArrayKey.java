@@ -131,12 +131,8 @@ public final class ByteArrayKey {
     if (prefixLength > length) {
       return false;
     }
-    for (int i = 0; i < prefixLength; i++) {
-      if (data[i] != prefix[offset + i]) {
-        return false;
-      }
-    }
-    return true;
+    return java.util.Arrays.mismatch(data, 0, prefixLength, prefix, offset, offset + prefixLength)
+        == -1;
   }
 
   /**
