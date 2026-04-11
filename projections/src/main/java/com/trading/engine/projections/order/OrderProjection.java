@@ -137,7 +137,7 @@ public final class OrderProjection implements Projection {
         case OrderCanceledEventDecoder.TEMPLATE_ID ->
             onOrderCanceled(seqNo, buffer, offset, length);
         default -> {
-          /* EventConsumer only dispatches registered types */
+          return; // EventConsumer only dispatches registered types — do not count as processed
         }
       }
       eventsProcessed++;

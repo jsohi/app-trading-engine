@@ -32,11 +32,13 @@ import org.agrona.DirectBuffer;
 public final class ByteArrayKey {
 
   private final byte[] data;
+  private final boolean mutable;
   private int length;
   private int hashCode;
 
-  private ByteArrayKey(final byte[] data, final int length) {
+  private ByteArrayKey(final byte[] data, final int length, final boolean mutable) {
     this.data = data;
+    this.mutable = mutable;
     this.length = length;
     this.hashCode = computeHashCode(data, length);
   }
@@ -53,7 +55,7 @@ public final class ByteArrayKey {
   public static ByteArrayKey copyOf(final byte[] src, final int offset, final int length) {
     final byte[] copy = new byte[length];
     System.arraycopy(src, offset, copy, 0, length);
-    return new ByteArrayKey(copy, length);
+    return new ByteArrayKey(copy, length, false);
   }
 
   /**
@@ -66,7 +68,7 @@ public final class ByteArrayKey {
    * @return a new mutable ByteArrayKey for zero-allocation lookups
    */
   public static ByteArrayKey emptyForLookup(final int maxLength) {
-    return new ByteArrayKey(new byte[maxLength], 0);
+    return new ByteArrayKey(new byte[maxLength], 0, true);
   }
 
   /**
@@ -77,6 +79,7 @@ public final class ByteArrayKey {
    * @param length number of bytes to copy (must not exceed backing array length)
    */
   public void set(final DirectBuffer buffer, final int offset, final int length) {
+    ensureMutable();
     buffer.getBytes(offset, data, 0, length);
     this.length = length;
     this.hashCode = computeHashCode(data, length);
@@ -90,6 +93,7 @@ public final class ByteArrayKey {
    * @param length number of bytes to copy (must not exceed backing array length)
    */
   public void set(final byte[] src, final int offset, final int length) {
+    ensureMutable();
     System.arraycopy(src, offset, data, 0, length);
     this.length = length;
     this.hashCode = computeHashCode(data, length);
@@ -113,6 +117,7 @@ public final class ByteArrayKey {
       final byte[] b,
       final int bOff,
       final int bLen) {
+    ensureMutable();
     System.arraycopy(a, aOff, data, 0, aLen);
     System.arraycopy(b, bOff, data, aLen, bLen);
     this.length = aLen + bLen;
@@ -187,6 +192,12 @@ public final class ByteArrayKey {
    */
   public ByteArrayKey copyOf() {
     return copyOf(data, 0, length);
+  }
+
+  private void ensureMutable() {
+    if (!mutable) {
+      throw new UnsupportedOperationException("Immutable ByteArrayKey cannot be mutated");
+    }
   }
 
   private static int computeHashCode(final byte[] data, final int length) {
