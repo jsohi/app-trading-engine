@@ -818,6 +818,7 @@
         <field name="currency"       id="15"    type="Currency"/>
         <field name="settlCurrency"  id="120"   type="Currency" description="ISO 4217 settlement currency (differs from currency for NDFs). Empty bytes = same as currency."/>
         <field name="tenor"          id="10001" type="TenorEnum"/>
+        <field name="accountCode"    id="1"     type="Account"/>
         <group name="noLegs" id="555" dimensionType="groupSizeEncoding"
                description="Swap legs — 0 for single-leg, 2 for swap (near + far)">
             <field name="legSide"      id="624"   type="SideEnum"/>
