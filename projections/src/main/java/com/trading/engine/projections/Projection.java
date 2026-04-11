@@ -19,10 +19,21 @@ import org.agrona.DirectBuffer;
  * available for the lifetime of the system. See the project {@code CLAUDE.md} for the rule.
  *
  * <p><b>Threading:</b> implementations are invoked single-threaded from the {@link EventConsumer}
- * poll loop. No synchronization is required inside projection methods, and implementations MUST NOT
- * block (no I/O on the dispatch thread, no lock acquisition, no allocation) — a slow projection
+ * poll loop. No synchronization is required for projection-internal state accessed only from the
+ * dispatch thread. Implementations MUST NOT block on external I/O — a slow projection
  * back-pressures the entire read-side consumer, and under the wrong wiring could even back-pressure
  * the cluster itself.
+ *
+ * <p><b>Locking:</b> projections that serve concurrent query threads (e.g. via a query-service or
+ * WebSocket layer) may acquire a {@link java.util.concurrent.locks.StampedLock} to protect shared
+ * state, provided the critical section is bounded and non-blocking. The event-dispatch thread
+ * acquires the write stamp; query threads use optimistic reads with pessimistic fallback.
+ *
+ * <p><b>Allocation:</b> bounded per-entity allocation (e.g. one view object per order, one map
+ * entry per position) is permitted on the read side. Avoid unbounded or per-event allocation.
+ * Projections are off the matching-engine hot path — the zero-allocation discipline from {@code
+ * ClusteredService} does not apply in full, but per-event allocation should still be avoided to
+ * keep replay fast.
  *
  * <p><b>Byte-oriented contract:</b> the event payload is delivered as raw bytes in a {@link
  * DirectBuffer} slice, not as a decoded POJO. Implementations wrap their own SBE flyweight decoder
