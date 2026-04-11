@@ -361,8 +361,7 @@ public final class PositionProjection implements Projection {
    * @return list of position snapshots (empty if no positions for this account)
    */
   public List<PositionSnapshot> getPositionsByAccount(final String account) {
-    // Use full 16-byte padded account for prefix matching against fixed-width composite keys
-    // to prevent false positives (e.g., "ACM" matching "ACME" positions).
+    // Pad to full 16-byte fixed-width for consistent lookup against the byAccount secondary index
     final byte[] accountBytes = padToLength(account, ACCOUNT_LENGTH);
     final List<PositionSnapshot> result = new ArrayList<>();
     final long stamp = lock.readLock();
