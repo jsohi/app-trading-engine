@@ -76,4 +76,25 @@ public final class SymbolPacker {
     // Remaining bytes are already NUL (0x00) from array initialization
     return pack(padded, 0);
   }
+
+  /**
+   * Unpacks a little-endian {@code long} back to a trimmed ASCII symbol string. The reverse of
+   * {@link #pack(String)}.
+   *
+   * <p>Allocates a {@link String} — suitable for query paths only, not event dispatch.
+   *
+   * @param packed the packed symbol long
+   * @return the trimmed symbol string (trailing NUL bytes removed)
+   */
+  public static String unpack(final long packed) {
+    final byte[] bytes = new byte[SYMBOL_LENGTH];
+    for (int i = 0; i < SYMBOL_LENGTH; i++) {
+      bytes[i] = (byte) ((packed >>> (i * 8)) & 0xFF);
+    }
+    int end = SYMBOL_LENGTH;
+    while (end > 0 && bytes[end - 1] == 0) {
+      end--;
+    }
+    return end == 0 ? "" : new String(bytes, 0, end, StandardCharsets.US_ASCII);
+  }
 }

@@ -269,7 +269,7 @@ class OrderProjectionTest {
     assertEquals(ExecTypeEnum.PartialFill, s.execType());
     assertEquals(7L * PRICE_SCALE, s.leavesQty());
     assertEquals(3L * PRICE_SCALE, s.cumQty());
-    assertTrue(s.avgPx() > 0);
+    assertEquals(108_500_000L, s.avgPx()); // Single fill at 1.0850 → VWAP = 1.0850
   }
 
   @Test

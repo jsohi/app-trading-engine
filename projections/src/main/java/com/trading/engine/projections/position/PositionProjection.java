@@ -6,6 +6,7 @@ import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.projections.ByteArrayKey;
 import com.trading.engine.projections.Projection;
+import com.trading.engine.projections.ProjectionUtil;
 import com.trading.engine.projections.SymbolPacker;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -14,6 +15,7 @@ import java.util.concurrent.locks.StampedLock;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.Object2ObjectHashMap;
+import org.agrona.collections.ObjectHashSet;
 
 /**
  * CQRS read-model projection tracking net positions per (symbol, account, settlDate). Consumes
@@ -60,11 +62,15 @@ public final class PositionProjection implements Projection {
   // --- Position map: symbol(long) → composite(account+settlDate) → PositionView ---
   private final Long2ObjectHashMap<Object2ObjectHashMap<ByteArrayKey, PositionView>> positions;
 
+  // --- Secondary index: accountCode → set of PositionViews for O(1) account lookup ---
+  private final Object2ObjectHashMap<ByteArrayKey, ObjectHashSet<PositionView>> byAccount;
+
   // --- Pre-allocated SBE decoder ---
   private final OrderFilledEventDecoder filledDecoder = new OrderFilledEventDecoder();
 
-  // --- Pre-allocated probe key for composite position key (account[16] + settlDate[8] = 24) ---
+  // --- Pre-allocated probe keys ---
   private final ByteArrayKey probePositionKey = ByteArrayKey.emptyForLookup(24);
+  private final ByteArrayKey probeAccountKey = ByteArrayKey.emptyForLookup(ACCOUNT_LENGTH);
 
   // --- Pre-allocated scratch arrays ---
   private final byte[] scratchAccountCode = new byte[16];
@@ -83,6 +89,7 @@ public final class PositionProjection implements Projection {
 
   public PositionProjection() {
     positions = new Long2ObjectHashMap<>(64, LOAD_FACTOR);
+    byAccount = new Object2ObjectHashMap<>(256, LOAD_FACTOR);
   }
 
   // ---------------------------------------------------------------------------
@@ -126,6 +133,7 @@ public final class PositionProjection implements Projection {
     final long stamp = lock.writeLock();
     try {
       positions.clear();
+      byAccount.clear();
       lastProcessedSeqNo = 0;
       eventsProcessed = 0;
       errorCount = 0;
@@ -151,7 +159,8 @@ public final class PositionProjection implements Projection {
     filledDecoder.getSymbol(scratchSymbol, 0);
     final long symbolPacked = SymbolPacker.pack(scratchSymbol, 0);
     final int accountLen =
-        sbeStrLen(filledDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
+        ProjectionUtil.sbeStrLen(
+            filledDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
     if (accountLen <= 0) {
       return; // Empty accountCode — skip silently
     }
@@ -163,7 +172,7 @@ public final class PositionProjection implements Projection {
       // Swap: process each leg as a separate position update
       for (final OrderFilledEventDecoder.NoLegsDecoder leg : legs) {
         final SideEnum legSide = leg.legSide();
-        final int legSettlDateLen = sbeStrLen(8, readLegSettlDate(leg));
+        final int legSettlDateLen = ProjectionUtil.sbeStrLen(8, readLegSettlDate(leg));
         final long legLastPx = leg.legLastPx();
         final long legLastQty = leg.legLastQty();
         readLegCurrency(leg);
@@ -178,9 +187,9 @@ public final class PositionProjection implements Projection {
             legLastPx,
             legLastQty,
             scratchCurrency,
-            sbeStrLen(3, scratchCurrency),
+            ProjectionUtil.sbeStrLen(3, scratchCurrency),
             scratchSettlCurrency,
-            sbeStrLen(3, scratchSettlCurrency),
+            ProjectionUtil.sbeStrLen(3, scratchSettlCurrency),
             seqNo,
             timestamp);
       }
@@ -190,10 +199,13 @@ public final class PositionProjection implements Projection {
       final long lastPx = filledDecoder.lastPx();
       final long lastQty = filledDecoder.lastQty();
       final int settlDateLen =
-          sbeStrLen(filledDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
-      final int currLen = sbeStrLen(filledDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
+          ProjectionUtil.sbeStrLen(
+              filledDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
+      final int currLen =
+          ProjectionUtil.sbeStrLen(filledDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
       final int settlCurrLen =
-          sbeStrLen(filledDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
+          ProjectionUtil.sbeStrLen(
+              filledDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
 
       updatePosition(
           symbolPacked,
@@ -250,6 +262,15 @@ public final class PositionProjection implements Projection {
       view.setCurrency(currency, 0, currLen);
       view.setSettlCurrency(settlCurrency, 0, settlCurrLen);
       inner.put(probePositionKey.copyOf(), view);
+
+      // Add to account secondary index
+      probeAccountKey.set(accountCode, 0, ACCOUNT_LENGTH);
+      ObjectHashSet<PositionView> accountSet = byAccount.get(probeAccountKey);
+      if (accountSet == null) {
+        accountSet = new ObjectHashSet<>(16, LOAD_FACTOR);
+        byAccount.put(probeAccountKey.copyOf(), accountSet);
+      }
+      accountSet.add(view);
     } else {
       // Update currency fields if not set (first fill may not have had them)
       if (view.currencyLen() == 0 && currLen > 0) {
@@ -261,7 +282,7 @@ public final class PositionProjection implements Projection {
     }
 
     // Update quantities and notional
-    final long fillNotional = mulDiv(lastPx, lastQty, PRICE_SCALE);
+    final long fillNotional = ProjectionUtil.mulDiv(lastPx, lastQty, PRICE_SCALE);
     if (side == SideEnum.Buy) {
       view.setNetQty(view.netQty() + lastQty);
       view.setBuyQty(view.buyQty() + lastQty);
@@ -307,17 +328,12 @@ public final class PositionProjection implements Projection {
       final String symbol, final String account, final String settlDate) {
     final long symbolPacked = SymbolPacker.pack(symbol);
     final ByteArrayKey key = compositeKeyFromStrings(account, settlDate);
-    long stamp = lock.tryOptimisticRead();
-    PositionSnapshot result = lookupAndSnapshot(symbolPacked, key, symbol);
-    if (!lock.validate(stamp)) {
-      stamp = lock.readLock();
-      try {
-        result = lookupAndSnapshot(symbolPacked, key, symbol);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      return lookupAndSnapshot(symbolPacked, key, symbol);
+    } finally {
+      lock.unlockRead(stamp);
     }
-    return result;
   }
 
   /**
@@ -327,16 +343,11 @@ public final class PositionProjection implements Projection {
    */
   public List<PositionSnapshot> getAllPositions() {
     final List<PositionSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectAllPositions(result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectAllPositions(result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectAllPositions(result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -352,16 +363,11 @@ public final class PositionProjection implements Projection {
     // to prevent false positives (e.g., "ACM" matching "ACME" positions).
     final byte[] accountBytes = padToLength(account, ACCOUNT_LENGTH);
     final List<PositionSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectByAccount(accountBytes, result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectByAccount(accountBytes, result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectByAccount(accountBytes, result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -375,16 +381,11 @@ public final class PositionProjection implements Projection {
   public List<PositionSnapshot> getPositionsBySymbol(final String symbol) {
     final long symbolPacked = SymbolPacker.pack(symbol);
     final List<PositionSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectBySymbol(symbolPacked, symbol, result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectBySymbol(symbolPacked, symbol, result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectBySymbol(symbolPacked, symbol, result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -455,20 +456,16 @@ public final class PositionProjection implements Projection {
   private void collectAllPositions(final List<PositionSnapshot> result) {
     for (final Object2ObjectHashMap<ByteArrayKey, PositionView> inner : positions.values()) {
       for (final PositionView view : inner.values()) {
-        result.add(createSnapshot(view, decodeSymbol(view.symbolPacked())));
+        result.add(createSnapshot(view, SymbolPacker.unpack(view.symbolPacked())));
       }
     }
   }
 
   private void collectByAccount(final byte[] accountBytes, final List<PositionSnapshot> result) {
-    for (final Object2ObjectHashMap<ByteArrayKey, PositionView> inner : positions.values()) {
-      for (final ByteArrayKey key : inner.keySet()) {
-        // Compare full 16-byte padded account field to prevent false prefix matches
-        if (key.prefixEquals(accountBytes, 0, ACCOUNT_LENGTH)) {
-          final PositionView view = inner.get(key);
-          result.add(createSnapshot(view, decodeSymbol(view.symbolPacked())));
-        }
-      }
+    final ByteArrayKey accountKey = ByteArrayKey.copyOf(accountBytes, 0, ACCOUNT_LENGTH);
+    final ObjectHashSet<PositionView> set = byAccount.get(accountKey);
+    if (set != null) {
+      set.forEach(v -> result.add(createSnapshot(v, SymbolPacker.unpack(v.symbolPacked()))));
     }
   }
 
@@ -484,61 +481,19 @@ public final class PositionProjection implements Projection {
 
   private PositionSnapshot createSnapshot(final PositionView view, final String symbol) {
     final long avgBuyPx =
-        view.buyQty() > 0 ? mulDiv(view.buyCumNotional(), PRICE_SCALE, view.buyQty()) : 0;
+        view.buyQty() > 0
+            ? ProjectionUtil.mulDiv(view.buyCumNotional(), PRICE_SCALE, view.buyQty())
+            : 0;
     final long avgSellPx =
-        view.sellQty() > 0 ? mulDiv(view.sellCumNotional(), PRICE_SCALE, view.sellQty()) : 0;
+        view.sellQty() > 0
+            ? ProjectionUtil.mulDiv(view.sellCumNotional(), PRICE_SCALE, view.sellQty())
+            : 0;
     return PositionSnapshot.from(view, symbol, avgBuyPx, avgSellPx);
-  }
-
-  /** Decodes a packed symbol long back to a trimmed ASCII string. Used on query path only. */
-  private static String decodeSymbol(final long packed) {
-    final byte[] bytes = new byte[8];
-    for (int i = 0; i < 8; i++) {
-      bytes[i] = (byte) ((packed >>> (i * 8)) & 0xFF);
-    }
-    int end = 8;
-    while (end > 0 && bytes[end - 1] == 0) {
-      end--;
-    }
-    return end == 0 ? "" : new String(bytes, 0, end, StandardCharsets.US_ASCII);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Arithmetic — 128-bit safe multiply-divide for VWAP
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Computes {@code (a * b) / divisor} using 128-bit intermediate to avoid overflow.
-   *
-   * @see com.trading.engine.projections.order.OrderProjection#mulDiv(long, long, long)
-   */
-  static long mulDiv(final long a, final long b, final long divisor) {
-    if (a <= 0 || b <= 0 || divisor <= 0) {
-      return 0;
-    }
-    final long hi = Math.multiplyHigh(a, b);
-    final long lo = a * b;
-
-    if (hi == 0 && lo >= 0) {
-      return lo / divisor;
-    }
-
-    final java.math.BigInteger product =
-        java.math.BigInteger.valueOf(a).multiply(java.math.BigInteger.valueOf(b));
-    return product.divide(java.math.BigInteger.valueOf(divisor)).longValueExact();
   }
 
   // ---------------------------------------------------------------------------
   // Utilities
   // ---------------------------------------------------------------------------
-
-  private static int sbeStrLen(final int fieldLength, final byte[] data) {
-    int end = fieldLength;
-    while (end > 0 && data[end - 1] == 0) {
-      end--;
-    }
-    return end;
-  }
 
   private static ByteArrayKey compositeKeyFromStrings(
       final String account, final String settlDate) {

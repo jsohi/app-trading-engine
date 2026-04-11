@@ -8,7 +8,7 @@ import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
-import java.nio.charset.StandardCharsets;
+import com.trading.engine.projections.ProjectionUtil;
 
 /**
  * Immutable snapshot of an order's state at a point in time. Returned by {@link OrderProjection}
@@ -82,41 +82,29 @@ public record OrderSnapshot(
    */
   static OrderSnapshot from(final OrderView v) {
     return new OrderSnapshot(
-        asciiString(v.orderId(), v.orderIdLen()),
-        asciiString(v.clOrdId(), v.clOrdIdLen()),
-        asciiString(v.symbol(), v.symbolLen()),
-        asciiString(v.accountCode(), v.accountCodeLen()),
+        ProjectionUtil.asciiString(v.orderId(), v.orderIdLen()),
+        ProjectionUtil.asciiString(v.clOrdId(), v.clOrdIdLen()),
+        ProjectionUtil.asciiString(v.symbol(), v.symbolLen()),
+        ProjectionUtil.asciiString(v.accountCode(), v.accountCodeLen()),
         v.side(),
         v.ordType(),
         v.ordStatus(),
         v.productType(),
         v.execType(),
         v.rejectReason(),
-        asciiString(v.lastExecId(), v.lastExecIdLen()),
+        ProjectionUtil.asciiString(v.lastExecId(), v.lastExecIdLen()),
         v.price(),
         v.orderQty(),
         v.leavesQty(),
         v.cumQty(),
         v.avgPx(),
-        asciiString(v.settlDate(), v.settlDateLen()),
+        ProjectionUtil.asciiString(v.settlDate(), v.settlDateLen()),
         v.settlType(),
-        asciiString(v.currency(), v.currencyLen()),
-        asciiString(v.settlCurrency(), v.settlCurrencyLen()),
+        ProjectionUtil.asciiString(v.currency(), v.currencyLen()),
+        ProjectionUtil.asciiString(v.settlCurrency(), v.settlCurrencyLen()),
         v.tenor(),
         v.sequenceNumber(),
         v.createdAt(),
         v.lastUpdatedAt());
-  }
-
-  private static String asciiString(final byte[] data, final int length) {
-    if (length <= 0) {
-      return "";
-    }
-    // Trim trailing NUL bytes (SBE pads fixed-length char fields with 0x00)
-    int end = length;
-    while (end > 0 && data[end - 1] == 0) {
-      end--;
-    }
-    return end == 0 ? "" : new String(data, 0, end, StandardCharsets.US_ASCII);
   }
 }

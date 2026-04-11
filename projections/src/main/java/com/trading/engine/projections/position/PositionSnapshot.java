@@ -1,6 +1,6 @@
 package com.trading.engine.projections.position;
 
-import java.nio.charset.StandardCharsets;
+import com.trading.engine.projections.ProjectionUtil;
 
 /**
  * Immutable snapshot of a position's state at a point in time. Returned by {@link
@@ -52,10 +52,10 @@ public record PositionSnapshot(
       final PositionView v, final String symbolStr, final long avgBuyPx, final long avgSellPx) {
     return new PositionSnapshot(
         symbolStr,
-        asciiString(v.accountCode(), v.accountCodeLen()),
-        asciiString(v.settlDate(), v.settlDateLen()),
-        asciiString(v.currency(), v.currencyLen()),
-        asciiString(v.settlCurrency(), v.settlCurrencyLen()),
+        ProjectionUtil.asciiString(v.accountCode(), v.accountCodeLen()),
+        ProjectionUtil.asciiString(v.settlDate(), v.settlDateLen()),
+        ProjectionUtil.asciiString(v.currency(), v.currencyLen()),
+        ProjectionUtil.asciiString(v.settlCurrency(), v.settlCurrencyLen()),
         v.netQty(),
         v.buyQty(),
         v.sellQty(),
@@ -63,16 +63,5 @@ public record PositionSnapshot(
         avgSellPx,
         v.lastUpdatedAt(),
         v.lastSequenceNumber());
-  }
-
-  private static String asciiString(final byte[] data, final int length) {
-    if (length <= 0) {
-      return "";
-    }
-    int end = length;
-    while (end > 0 && data[end - 1] == 0) {
-      end--;
-    }
-    return end == 0 ? "" : new String(data, 0, end, StandardCharsets.US_ASCII);
   }
 }

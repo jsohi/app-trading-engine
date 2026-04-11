@@ -10,6 +10,7 @@ import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.projections.ByteArrayKey;
 import com.trading.engine.projections.Projection;
+import com.trading.engine.projections.ProjectionUtil;
 import com.trading.engine.projections.SymbolPacker;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -97,6 +98,7 @@ public final class OrderProjection implements Projection {
   private long lastProcessedSeqNo;
   private long eventsProcessed;
   private long errorCount;
+  private int rejectCount;
 
   public OrderProjection() {
     this(4096);
@@ -169,6 +171,7 @@ public final class OrderProjection implements Projection {
       lastProcessedSeqNo = 0;
       eventsProcessed = 0;
       errorCount = 0;
+      rejectCount = 0;
       LOG.info().append("OrderProjection reset").commit();
     } finally {
       lock.unlockWrite(stamp);
@@ -187,11 +190,15 @@ public final class OrderProjection implements Projection {
         OrderCreatedEventDecoder.BLOCK_LENGTH,
         OrderCreatedEventDecoder.SCHEMA_VERSION);
 
-    final int orderIdLen = sbeStrLen(createdDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
-    final int clOrdIdLen = sbeStrLen(createdDecoder.getClOrdId(scratchClOrdId, 0), scratchClOrdId);
-    final int symbolLen = sbeStrLen(createdDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
+    final int orderIdLen =
+        ProjectionUtil.sbeStrLen(createdDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
+    final int clOrdIdLen =
+        ProjectionUtil.sbeStrLen(createdDecoder.getClOrdId(scratchClOrdId, 0), scratchClOrdId);
+    final int symbolLen =
+        ProjectionUtil.sbeStrLen(createdDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
     final int accountLen =
-        sbeStrLen(createdDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
+        ProjectionUtil.sbeStrLen(
+            createdDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
 
     // Check for duplicate orderId — remove old view from secondary indexes before overwriting
     probeOrderId.set(scratchOrderId, 0, orderIdLen);
@@ -224,12 +231,15 @@ public final class OrderProjection implements Projection {
 
     // Decode FX fields
     final int settlDateLen =
-        sbeStrLen(createdDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
+        ProjectionUtil.sbeStrLen(
+            createdDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
     view.setSettlDate(scratchSettlDate, 0, settlDateLen);
-    final int currLen = sbeStrLen(createdDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
+    final int currLen =
+        ProjectionUtil.sbeStrLen(createdDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
     view.setCurrency(scratchCurrency, 0, currLen);
     final int settlCurrLen =
-        sbeStrLen(createdDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
+        ProjectionUtil.sbeStrLen(
+            createdDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
     view.setSettlCurrency(scratchSettlCurrency, 0, settlCurrLen);
 
     // Index in all 4 maps
@@ -263,10 +273,13 @@ public final class OrderProjection implements Projection {
         OrderRejectedEventDecoder.BLOCK_LENGTH,
         OrderRejectedEventDecoder.SCHEMA_VERSION);
 
-    final int clOrdIdLen = sbeStrLen(rejectedDecoder.getClOrdId(scratchClOrdId, 0), scratchClOrdId);
-    final int symbolLen = sbeStrLen(rejectedDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
+    final int clOrdIdLen =
+        ProjectionUtil.sbeStrLen(rejectedDecoder.getClOrdId(scratchClOrdId, 0), scratchClOrdId);
+    final int symbolLen =
+        ProjectionUtil.sbeStrLen(rejectedDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
     final int accountLen =
-        sbeStrLen(rejectedDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
+        ProjectionUtil.sbeStrLen(
+            rejectedDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
 
     final OrderView view = new OrderView();
     view.setClOrdId(scratchClOrdId, 0, clOrdIdLen);
@@ -282,8 +295,20 @@ public final class OrderProjection implements Projection {
     view.setCreatedAt(rejectedDecoder.timestamp());
     view.setLastUpdatedAt(rejectedDecoder.timestamp());
 
-    // Index by clOrdId and accountCode only (no orderId on rejection)
+    // Index by clOrdId and accountCode only (no orderId on rejection).
+    // Handle duplicate clOrdId: remove old view from account index before overwriting.
     probeClOrdId.set(scratchClOrdId, 0, clOrdIdLen);
+    final OrderView existingReject = byClOrdId.get(probeClOrdId);
+    if (existingReject != null && existingReject.ordStatus() == OrdStatusEnum.Rejected) {
+      // Duplicate clOrdId rejection — remove old view from account index, rejectCount stays same
+      probeAccountCode.set(existingReject.accountCode(), 0, existingReject.accountCodeLen());
+      final ObjectHashSet<OrderView> oldAccountSet = byAccountCode.get(probeAccountCode);
+      if (oldAccountSet != null) {
+        oldAccountSet.remove(existingReject);
+      }
+    } else {
+      rejectCount++;
+    }
     byClOrdId.put(probeClOrdId.copyOf(), view);
 
     probeAccountCode.set(scratchAccountCode, 0, accountLen);
@@ -303,7 +328,8 @@ public final class OrderProjection implements Projection {
         OrderFilledEventDecoder.BLOCK_LENGTH,
         OrderFilledEventDecoder.SCHEMA_VERSION);
 
-    final int orderIdLen = sbeStrLen(filledDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
+    final int orderIdLen =
+        ProjectionUtil.sbeStrLen(filledDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
     probeOrderId.set(scratchOrderId, 0, orderIdLen);
     final OrderView view = byOrderId.get(probeOrderId);
     if (view == null) {
@@ -318,16 +344,17 @@ public final class OrderProjection implements Projection {
     view.setLeavesQty(newLeavesQty);
     view.setCumQty(newCumQty);
 
-    // VWAP: cumNotional += mulDiv(lastPx, lastQty, PRICE_SCALE)
-    final long fillNotional = mulDiv(lastPx, lastQty, PRICE_SCALE);
+    // VWAP: cumNotional += ProjectionUtil.mulDiv(lastPx, lastQty, PRICE_SCALE)
+    final long fillNotional = ProjectionUtil.mulDiv(lastPx, lastQty, PRICE_SCALE);
     final long newCumNotional = view.cumNotional() + fillNotional;
     view.setCumNotional(newCumNotional);
     if (newCumQty > 0) {
-      view.setAvgPx(mulDiv(newCumNotional, PRICE_SCALE, newCumQty));
+      view.setAvgPx(ProjectionUtil.mulDiv(newCumNotional, PRICE_SCALE, newCumQty));
     }
 
     // ExecId
-    final int execIdLen = sbeStrLen(filledDecoder.getExecId(scratchExecId, 0), scratchExecId);
+    final int execIdLen =
+        ProjectionUtil.sbeStrLen(filledDecoder.getExecId(scratchExecId, 0), scratchExecId);
     view.setLastExecId(scratchExecId, 0, execIdLen);
 
     view.setOrdStatus(newLeavesQty == 0 ? OrdStatusEnum.Filled : OrdStatusEnum.PartiallyFilled);
@@ -344,7 +371,8 @@ public final class OrderProjection implements Projection {
         OrderCanceledEventDecoder.BLOCK_LENGTH,
         OrderCanceledEventDecoder.SCHEMA_VERSION);
 
-    final int orderIdLen = sbeStrLen(canceledDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
+    final int orderIdLen =
+        ProjectionUtil.sbeStrLen(canceledDecoder.getOrderId(scratchOrderId, 0), scratchOrderId);
     probeOrderId.set(scratchOrderId, 0, orderIdLen);
     final OrderView view = byOrderId.get(probeOrderId);
     if (view == null) {
@@ -397,19 +425,13 @@ public final class OrderProjection implements Projection {
    */
   public OrderSnapshot getOrder(final String orderId) {
     final ByteArrayKey key = keyFromString(orderId, 20);
-    long stamp = lock.tryOptimisticRead();
-    OrderView view = byOrderId.get(key);
-    OrderSnapshot result = view != null ? OrderSnapshot.from(view) : null;
-    if (!lock.validate(stamp)) {
-      stamp = lock.readLock();
-      try {
-        view = byOrderId.get(key);
-        result = view != null ? OrderSnapshot.from(view) : null;
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      final OrderView view = byOrderId.get(key);
+      return view != null ? OrderSnapshot.from(view) : null;
+    } finally {
+      lock.unlockRead(stamp);
     }
-    return result;
   }
 
   /**
@@ -420,19 +442,13 @@ public final class OrderProjection implements Projection {
    */
   public OrderSnapshot getOrderByClOrdId(final String clOrdId) {
     final ByteArrayKey key = keyFromString(clOrdId, 20);
-    long stamp = lock.tryOptimisticRead();
-    OrderView view = byClOrdId.get(key);
-    OrderSnapshot result = view != null ? OrderSnapshot.from(view) : null;
-    if (!lock.validate(stamp)) {
-      stamp = lock.readLock();
-      try {
-        view = byClOrdId.get(key);
-        result = view != null ? OrderSnapshot.from(view) : null;
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      final OrderView view = byClOrdId.get(key);
+      return view != null ? OrderSnapshot.from(view) : null;
+    } finally {
+      lock.unlockRead(stamp);
     }
-    return result;
   }
 
   /**
@@ -444,16 +460,11 @@ public final class OrderProjection implements Projection {
   public List<OrderSnapshot> getOrdersByAccount(final String accountCode) {
     final ByteArrayKey key = keyFromString(accountCode, 16);
     final List<OrderSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectAccountOrders(key, result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectAccountOrders(key, result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectAccountOrders(key, result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -467,16 +478,11 @@ public final class OrderProjection implements Projection {
   public List<OrderSnapshot> getOrdersBySymbol(final String symbol) {
     final long symbolPacked = SymbolPacker.pack(symbol);
     final List<OrderSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectSymbolOrders(symbolPacked, result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectSymbolOrders(symbolPacked, result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectSymbolOrders(symbolPacked, result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -488,16 +494,11 @@ public final class OrderProjection implements Projection {
    */
   public List<OrderSnapshot> getActiveOrders() {
     final List<OrderSnapshot> result = new ArrayList<>();
-    long stamp = lock.tryOptimisticRead();
-    collectActiveOrders(result);
-    if (!lock.validate(stamp)) {
-      result.clear();
-      stamp = lock.readLock();
-      try {
-        collectActiveOrders(result);
-      } finally {
-        lock.unlockRead(stamp);
-      }
+    final long stamp = lock.readLock();
+    try {
+      collectActiveOrders(result);
+    } finally {
+      lock.unlockRead(stamp);
     }
     return result;
   }
@@ -510,7 +511,7 @@ public final class OrderProjection implements Projection {
   public int size() {
     final long stamp = lock.readLock();
     try {
-      return byOrderId.size() + countRejects();
+      return byOrderId.size() + rejectCount;
     } finally {
       lock.unlockRead(stamp);
     }
@@ -573,73 +574,9 @@ public final class OrderProjection implements Projection {
             });
   }
 
-  /**
-   * Count rejected orders (in clOrdId index but not in orderId index). Rejected orders have no
-   * orderId so they only appear in the clOrdId secondary index.
-   */
-  private int countRejects() {
-    int rejectCount = 0;
-    for (final OrderView v : byClOrdId.values()) {
-      if (v.ordStatus() == OrdStatusEnum.Rejected) {
-        rejectCount++;
-      }
-    }
-    return rejectCount;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Arithmetic — 128-bit safe multiply-divide for VWAP
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Computes {@code (a * b) / divisor} using 128-bit intermediate to avoid overflow. All values
-   * must be non-negative. Divisor must be positive.
-   *
-   * <p>Fast path: if the product {@code a * b} fits in a signed long, uses direct division. Slow
-   * path: uses {@link java.math.BigInteger} for exact 128-bit arithmetic. The slow path allocates,
-   * but is only hit for large notionals (> ~92 billion units) and is acceptable on the
-   * event-dispatch path since it occurs at most once per fill.
-   *
-   * @param a non-negative multiplicand
-   * @param b non-negative multiplier
-   * @param divisor positive divisor
-   * @return the quotient, or 0 if any input is non-positive
-   */
-  static long mulDiv(final long a, final long b, final long divisor) {
-    if (a <= 0 || b <= 0 || divisor <= 0) {
-      return 0;
-    }
-    final long hi = Math.multiplyHigh(a, b);
-    final long lo = a * b; // lower 64 bits (unsigned wraparound)
-
-    // Fast path: product fits in signed long — no overflow
-    if (hi == 0 && lo >= 0) {
-      return lo / divisor;
-    }
-
-    // Slow path: 128-bit arithmetic via BigInteger.
-    // This allocates but is only reached for large FX notionals (500M+ units at typical prices).
-    // Acceptable on the projection event path — not on the cluster matching-engine hot path.
-    final java.math.BigInteger product =
-        java.math.BigInteger.valueOf(a).multiply(java.math.BigInteger.valueOf(b));
-    return product.divide(java.math.BigInteger.valueOf(divisor)).longValueExact();
-  }
-
   // ---------------------------------------------------------------------------
   // Utilities
   // ---------------------------------------------------------------------------
-
-  /**
-   * Computes the actual string length in an SBE fixed-length char field by scanning for the first
-   * NUL byte. SBE pads shorter strings with 0x00.
-   */
-  private static int sbeStrLen(final int fieldLength, final byte[] data) {
-    int end = fieldLength;
-    while (end > 0 && data[end - 1] == 0) {
-      end--;
-    }
-    return end;
-  }
 
   /**
    * Creates a ByteArrayKey from a String, NUL-padded to the given maxLength. Used on the query path
@@ -650,6 +587,6 @@ public final class OrderProjection implements Projection {
     final byte[] ascii = value.getBytes(StandardCharsets.US_ASCII);
     final int copyLen = Math.min(ascii.length, maxLength);
     System.arraycopy(ascii, 0, padded, 0, copyLen);
-    return ByteArrayKey.copyOf(padded, 0, sbeStrLen(maxLength, padded));
+    return ByteArrayKey.copyOf(padded, 0, ProjectionUtil.sbeStrLen(maxLength, padded));
   }
 }
