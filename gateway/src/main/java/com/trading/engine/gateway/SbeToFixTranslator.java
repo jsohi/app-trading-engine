@@ -8,6 +8,7 @@ import com.trading.engine.messages.sbe.CxlRejResponseToEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
+import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
@@ -592,6 +593,9 @@ public final class SbeToFixTranslator {
     // side (tag 54) — required
     fix.side(mapSide(sbe.side()));
 
+    // ordType (tag 40) — echo back the order type from the domain event
+    fix.ordType(mapOrdType(sbe.ordType()));
+
     // price (tag 44) — optional. Limit orders have a price; market orders use null sentinel.
     long price = sbe.price();
     if (price != OrderCreatedEventDecoder.priceNullValue()) {
@@ -904,6 +908,19 @@ public final class SbeToFixTranslator {
       case FOK -> '4';
       default ->
           throw new IllegalStateException("Unsupported SBE TimeInForce for FIX wire: " + sbe);
+    };
+  }
+
+  /**
+   * Map SBE {@link OrdTypeEnum} to FIX 4.4 OrdType (tag 40) char value. Market='1', Limit='2',
+   * PreviouslyQuoted='D'.
+   */
+  private static char mapOrdType(OrdTypeEnum sbe) {
+    return switch (sbe) {
+      case Market -> '1';
+      case Limit -> '2';
+      case PreviouslyQuoted -> 'D';
+      default -> throw new IllegalStateException("Unsupported SBE OrdType for FIX wire: " + sbe);
     };
   }
 

@@ -102,7 +102,10 @@ public final class EventSink {
     buffer.putLong(offset + HDR_LEN, seqNo, BYTE_ORDER);
     buffer.putLong(offset + HDR_LEN + 8, clusterTimestamp, BYTE_ORDER);
 
-    // 3. Read templateId for journal dispatch
+    // 3. Read templateId for journal dispatch.
+    // Header bytes [offset, offset+HDR_LEN) are not modified by the stamps above
+    // (which target body offsets HDR_LEN+0 and HDR_LEN+8), so the wrap reads the original
+    // templateId.
     journalHeaderDecoder.wrap(buffer, offset);
     final int templateId = journalHeaderDecoder.templateId();
 

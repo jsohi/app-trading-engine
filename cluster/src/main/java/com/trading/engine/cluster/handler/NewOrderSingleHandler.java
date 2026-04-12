@@ -580,42 +580,65 @@ public final class NewOrderSingleHandler implements CommandHandler {
    */
   private ProductTypeEnum safeProductType() {
     final short raw = nosDecoder.productTypeRaw();
-    try {
-      return ProductTypeEnum.get(raw);
-    } catch (final IllegalArgumentException e) {
-      return ProductTypeEnum.NULL_VAL;
-    }
+    return switch (raw) {
+      case 1 -> ProductTypeEnum.Spot;
+      case 2 -> ProductTypeEnum.Forward;
+      case 3 -> ProductTypeEnum.Swap;
+      default -> ProductTypeEnum.NULL_VAL;
+    };
   }
 
   /**
    * Reads the settlType field from the NOS decoder using the raw byte accessor and maps it to the
    * corresponding {@link SettlTypeEnum}. Returns {@link SettlTypeEnum#NULL_VAL} for any
-   * unrecognized wire value. Same pattern as {@link #safeProductType()}.
+   * unrecognized wire value. Zero-allocation switch — no exception-as-control-flow.
    *
    * @return the resolved settle type enum, or {@code NULL_VAL} if the wire value is unrecognized
    */
   private SettlTypeEnum safeSettlType() {
     final short raw = nosDecoder.settlTypeRaw();
-    try {
-      return SettlTypeEnum.get(raw);
-    } catch (final IllegalArgumentException e) {
-      return SettlTypeEnum.NULL_VAL;
-    }
+    return switch (raw) {
+      case 0 -> SettlTypeEnum.Regular;
+      case 1 -> SettlTypeEnum.Cash;
+      case 2 -> SettlTypeEnum.NextDay;
+      case 3 -> SettlTypeEnum.TPlus2;
+      case 4 -> SettlTypeEnum.TPlus3;
+      case 5 -> SettlTypeEnum.TPlus4;
+      case 6 -> SettlTypeEnum.Future;
+      case 7 -> SettlTypeEnum.WhenAndIfIssued;
+      case 8 -> SettlTypeEnum.SellersOption;
+      case 9 -> SettlTypeEnum.TPlus5;
+      case 10 -> SettlTypeEnum.BrokenDate;
+      case 11 -> SettlTypeEnum.FXSpotNextDay;
+      default -> SettlTypeEnum.NULL_VAL;
+    };
   }
 
   /**
    * Reads the tenor field from the NOS decoder using the raw byte accessor and maps it to the
    * corresponding {@link TenorEnum}. Returns {@link TenorEnum#NULL_VAL} for any unrecognized wire
-   * value. Same pattern as {@link #safeProductType()}.
+   * value. Zero-allocation switch — no exception-as-control-flow.
    *
    * @return the resolved tenor enum, or {@code NULL_VAL} if the wire value is unrecognized
    */
   private TenorEnum safeTenor() {
     final short raw = nosDecoder.tenorRaw();
-    try {
-      return TenorEnum.get(raw);
-    } catch (final IllegalArgumentException e) {
-      return TenorEnum.NULL_VAL;
-    }
+    return switch (raw) {
+      case 1 -> TenorEnum.ON;
+      case 2 -> TenorEnum.TN;
+      case 3 -> TenorEnum.SN;
+      case 4 -> TenorEnum.W1;
+      case 5 -> TenorEnum.W2;
+      case 6 -> TenorEnum.M1;
+      case 7 -> TenorEnum.M2;
+      case 8 -> TenorEnum.M3;
+      case 9 -> TenorEnum.M6;
+      case 10 -> TenorEnum.M9;
+      case 11 -> TenorEnum.Y1;
+      case 12 -> TenorEnum.Y2;
+      case 13 -> TenorEnum.IMM;
+      case 14 -> TenorEnum.BRK;
+      default -> TenorEnum.NULL_VAL;
+    };
   }
 }
