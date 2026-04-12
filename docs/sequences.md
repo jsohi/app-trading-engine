@@ -23,7 +23,7 @@ sequenceDiagram
 
     M->>K: PlaceOrder (Aeron UDP, replicated)
     activate K
-    K->>K: NewOrderSingleHandler.validate()
+    K->>K: NewOrderSingleHandler.validateNewOrder()
     K->>K: OrderBook.add()
     K->>K: EventSink.emit(OrderCreated)
     K-->>M: OrderCreated (egress)

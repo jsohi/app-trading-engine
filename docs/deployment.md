@@ -10,9 +10,9 @@ localhost
 ├── Media Driver 1        (shared memory: /tmp/aeron-node-1)
 ├── Media Driver 2        (shared memory: /tmp/aeron-node-2)
 ├── Media Driver GW       (shared memory: /tmp/aeron-gateway)
-├── Cluster Node 0        (leader,   port 9000, aeron-dir: /tmp/aeron-node-0)
-├── Cluster Node 1        (follower, port 9001, aeron-dir: /tmp/aeron-node-1)
-├── Cluster Node 2        (follower, port 9002, aeron-dir: /tmp/aeron-node-2)
+├── Cluster Node 0        (leader,   ingress 20110, consensus 20220, aeron-dir: /tmp/aeron-node-0)
+├── Cluster Node 1        (follower, ingress 21110, consensus 21220, aeron-dir: /tmp/aeron-node-1)
+├── Cluster Node 2        (follower, ingress 22110, consensus 22220, aeron-dir: /tmp/aeron-node-2)
 ├── Gateway               (FIX acceptor, port 9880)
 ├── Pricing Service       (Aeron IPC)
 ├── Babl WebSocket Server (port 8443)
@@ -84,7 +84,9 @@ localhost
 | 5173 | Vite dev server | HTTP | Dev mode only, hot reload | Internal only |
 | 8443 | Babl WebSocket | WS (binary) | Browser streaming (SBE frames) | Internal only |
 | 8444 | FIX Client Bridge | WS (JSON) | Browser RFQ/order entry | Internal only |
-| 9000-9002 | Cluster nodes | Aeron UDP | Inter-node consensus | Internal only |
+| 20110/21110/22110 | Cluster ingress | Aeron UDP | Client-to-cluster commands | Internal only |
+| 20220/21220/22220 | Cluster consensus | Aeron UDP | Inter-node Raft consensus | Internal only |
+| 8010-8012 | Archive control | Aeron UDP | Archive recording control | Internal only |
 | 9090 | Prometheus | HTTP | Metrics scraping | Internal only |
 | 3000 | Grafana | HTTP | Dashboards (anonymous auth) | Internal only |
 | 3100 | Loki | HTTP | Log ingestion (push API) | Internal only |

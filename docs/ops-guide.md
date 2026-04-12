@@ -1039,7 +1039,7 @@ done
 tail -100 logs/trading-engine.log
 
 # Check for port conflicts
-for port in 20110 20220 20330 20440 21110 21220 21330 21440 22110 22220 22330 22440 8010 8011 8012 9880; do
+for port in 20110 20220 20330 20440 21110 21220 21330 21440 22110 22220 22330 22440 8010 8011 8012 9880 8443 8444 9090 3000 3100 9464; do
   if lsof -i :$port > /dev/null 2>&1; then
     echo "Port $port is in use: $(lsof -i :$port | tail -1)"
   fi
@@ -1090,5 +1090,5 @@ kill <launcher_pid>
 
 # Force shutdown (last resort)
 kill -9 <launcher_pid>
-for f in logs/pids/media-driver-*.pid; do kill -9 $(cat $f) 2>/dev/null; done
+for f in logs/pids/media-driver-*.pid; do [ -s "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null; done
 ```

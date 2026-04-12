@@ -268,7 +268,7 @@ graph LR
 
 ## Post-Plan Backlog
 
-49 additional issues were created during implementation (outside the original 68-issue wave plan). These are tracked in Linear but not assigned to specific waves.
+53 additional issues were created during implementation (outside the original 68-issue wave plan). These are tracked in Linear but not assigned to specific waves.
 
 | Category | Issues | Status | Notes |
 |----------|--------|--------|-------|
