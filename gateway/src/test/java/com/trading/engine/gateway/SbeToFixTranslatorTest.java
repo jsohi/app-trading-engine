@@ -12,10 +12,13 @@ import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
+import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
+import com.trading.engine.messages.sbe.TimeInForceEnum;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -562,5 +565,144 @@ class SbeToFixTranslatorTest {
     SbeToFixTranslator translator = new SbeToFixTranslator();
     assertThrows(
         IllegalStateException.class, () -> translator.translateExecutionReport(sbeDec, fix));
+  }
+
+  // ===========================================================================
+  // OrderCreatedEvent → ExecutionReport (ExecType=New)
+  // ===========================================================================
+
+  @Test
+  void translateOrderCreatedEventMapsAllFields() {
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
+    com.trading.engine.messages.sbe.OrderCreatedEventEncoder enc =
+        new com.trading.engine.messages.sbe.OrderCreatedEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(1_712_491_200_000_000_000L);
+    enc.orderId("ORDER-1");
+    enc.execId("EXEC-1");
+    enc.clOrdId("ORD-1");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.ordType(OrdTypeEnum.Limit);
+    enc.timeInForce(TimeInForceEnum.Day);
+    enc.price(110_000_000L); // 1.10
+    enc.orderQty(100_000_000_000L); // 1000.0
+    enc.quoteId("");
+    enc.accountCode("ACCT-1");
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.settlDate("20260409");
+    enc.settlType(SettlTypeEnum.TPlus2);
+    enc.currency("EUR");
+    enc.settlCurrency("USD");
+    enc.tenor(TenorEnum.NULL_VAL);
+
+    MessageHeaderDecoder hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    com.trading.engine.messages.sbe.OrderCreatedEventDecoder sbeDec =
+        new com.trading.engine.messages.sbe.OrderCreatedEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    ExecutionReportEncoder fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    new SbeToFixTranslator().translateOrderCreatedEvent(sbeDec, fix);
+
+    MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
+    long encoded = fix.encode(wire, 0);
+    int wireOffset = (int) (encoded >>> 32);
+    int wireLen = (int) encoded;
+
+    ExecutionReportDecoder fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+
+    assertEquals("ORDER-1", fixDec.orderIDAsString());
+    assertEquals("EXEC-1", fixDec.execIDAsString());
+    assertEquals("ORD-1", fixDec.clOrdIDAsString());
+    assertEquals('0', fixDec.execType()); // New
+    assertEquals('0', fixDec.ordStatus()); // New
+    assertEquals("EURUSD", fixDec.symbolAsString());
+    assertEquals('1', fixDec.side()); // Buy
+    // price: 110_000_000 → 1.1; FIX wire normalises to value=11, scale=1
+    assertEquals(11L, fixDec.price().value());
+    assertEquals(1, fixDec.price().scale());
+    // orderQty: 100_000_000_000 → 1000.0
+    assertEquals(1000L, fixDec.orderQty().value());
+    assertEquals(0, fixDec.orderQty().scale());
+    // leavesQty = orderQty for New
+    assertEquals(1000L, fixDec.leavesQty().value());
+    assertEquals(0, fixDec.leavesQty().scale());
+    // cumQty = 0 for New
+    assertEquals(0L, fixDec.cumQty().value());
+    // avgPx = 0 for New
+    assertEquals(0L, fixDec.avgPx().value());
+    assertEquals('0', fixDec.timeInForce()); // Day
+    assertEquals("EUR", fixDec.currencyAsString());
+    assertEquals("USD", fixDec.settlCurrencyAsString());
+    assertEquals('3', fixDec.settlType()); // T+2
+    assertEquals("20260409", fixDec.settlDateAsString());
+    assertEquals("ACCT-1", fixDec.accountAsString());
+  }
+
+  // ===========================================================================
+  // OrderRejectedEvent → ExecutionReport (ExecType=Rejected)
+  // ===========================================================================
+
+  @Test
+  void translateOrderRejectedEventMapsAllFields() {
+    MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
+    com.trading.engine.messages.sbe.OrderRejectedEventEncoder enc =
+        new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(1_712_491_200_000_000_000L);
+    enc.clOrdId("ORD-FAIL-1");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.rejectReason(RejectReasonEnum.UnknownSymbol);
+    enc.accountCode("ACCT-1");
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.currency("EUR");
+    enc.text("Unknown symbol EURUSD");
+
+    MessageHeaderDecoder hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    com.trading.engine.messages.sbe.OrderRejectedEventDecoder sbeDec =
+        new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    ExecutionReportEncoder fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    new SbeToFixTranslator().translateOrderRejectedEvent(sbeDec, fix);
+
+    MutableAsciiBuffer wire = new MutableAsciiBuffer(new byte[2048]);
+    long encoded = fix.encode(wire, 0);
+    int wireOffset = (int) (encoded >>> 32);
+    int wireLen = (int) encoded;
+
+    ExecutionReportDecoder fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+
+    assertEquals("NONE", fixDec.orderIDAsString()); // sentinel — no engine order ID
+    assertEquals("NONE", fixDec.execIDAsString()); // sentinel — no exec ID
+    assertEquals("ORD-FAIL-1", fixDec.clOrdIDAsString());
+    assertEquals('8', fixDec.execType()); // Rejected
+    assertEquals('8', fixDec.ordStatus()); // Rejected
+    assertEquals("EURUSD", fixDec.symbolAsString());
+    assertEquals('1', fixDec.side()); // Buy
+    // leavesQty = 0 for rejection
+    assertEquals(0L, fixDec.leavesQty().value());
+    // cumQty = 0 for rejection
+    assertEquals(0L, fixDec.cumQty().value());
+    // avgPx = 0 for rejection
+    assertEquals(0L, fixDec.avgPx().value());
+    // ordRejReason: UnknownSymbol → FIX 1
+    assertEquals(1, fixDec.ordRejReason());
+    assertEquals("Unknown symbol EURUSD", fixDec.textAsString());
+    assertEquals("EUR", fixDec.currencyAsString());
+    assertEquals("ACCT-1", fixDec.accountAsString());
   }
 }

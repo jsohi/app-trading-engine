@@ -9,9 +9,13 @@ import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
+import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
+import com.trading.engine.messages.sbe.TimeInForceEnum;
 import java.util.concurrent.TimeUnit;
 import uk.co.real_logic.artio.fields.DecimalFloat;
 import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
@@ -134,6 +138,23 @@ public final class SbeToFixTranslator {
   private final byte[] ocrText =
       new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.textLength()];
 
+  // OrderCreatedEvent char fields (prefix "oc" = orderCreated):
+  private final byte[] ocOrderId = new byte[OrderCreatedEventDecoder.orderIdLength()];
+  private final byte[] ocExecId = new byte[OrderCreatedEventDecoder.execIdLength()];
+  private final byte[] ocClOrdId = new byte[OrderCreatedEventDecoder.clOrdIdLength()];
+  private final byte[] ocSymbol = new byte[OrderCreatedEventDecoder.symbolLength()];
+  private final byte[] ocSettlDate = new byte[OrderCreatedEventDecoder.settlDateLength()];
+  private final byte[] ocCurrency = new byte[OrderCreatedEventDecoder.currencyLength()];
+  private final byte[] ocSettlCurrency = new byte[OrderCreatedEventDecoder.settlCurrencyLength()];
+  private final byte[] ocAccountCode = new byte[OrderCreatedEventDecoder.accountCodeLength()];
+
+  // OrderRejectedEvent char fields (prefix "or" = orderRejected):
+  private final byte[] orClOrdId = new byte[OrderRejectedEventDecoder.clOrdIdLength()];
+  private final byte[] orSymbol = new byte[OrderRejectedEventDecoder.symbolLength()];
+  private final byte[] orAccountCode = new byte[OrderRejectedEventDecoder.accountCodeLength()];
+  private final byte[] orCurrency = new byte[OrderRejectedEventDecoder.currencyLength()];
+  private final byte[] orText = new byte[OrderRejectedEventDecoder.textLength()];
+
   /**
    * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
    * char fields applies to {@link UtcTimestampEncoder#buffer()}: it's the encoder's internal buffer
@@ -145,6 +166,12 @@ public final class SbeToFixTranslator {
 
   /** Same per-field rationale as {@link #erTransactTime}, for OrderCancelReject. */
   private final byte[] ocrTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for OrderCreatedEvent. */
+  private final byte[] ocTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for OrderRejectedEvent. */
+  private final byte[] orTransactTime = new byte[32];
 
   /** Same per-field rationale as {@link #erTransactTime}, for Quote.transactTime. */
   private final byte[] qTransactTime = new byte[32];
@@ -526,8 +553,217 @@ public final class SbeToFixTranslator {
   }
 
   // ---------------------------------------------------------------------------
+  // OrderCreatedEvent → ExecutionReport (35=8, ExecType=New)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE OrderCreatedEvent (template 100) into a FIX 4.4 ExecutionReport with
+   * ExecType=New ('0') and OrdStatus=New ('0'). The cluster emits this domain event when a
+   * NewOrderSingle is accepted into the order book. The FIX mapping synthesises the required ER
+   * fields that do not exist on the domain event (LeavesQty=orderQty, CumQty=0, AvgPx=0).
+   *
+   * @param sbe the decoder positioned over a complete OrderCreatedEvent message
+   * @param fix the Artio encoder — caller must populate the FIX session header before {@code
+   *     encode}
+   */
+  public void translateOrderCreatedEvent(OrderCreatedEventDecoder sbe, ExecutionReportEncoder fix) {
+    // orderId (tag 37) — required
+    sbe.getOrderId(ocOrderId, 0);
+    fix.orderID(ocOrderId, 0, trimNulls(ocOrderId));
+
+    // execId (tag 17) — required
+    sbe.getExecId(ocExecId, 0);
+    fix.execID(ocExecId, 0, trimNulls(ocExecId));
+
+    // clOrdId (tag 11) — required
+    sbe.getClOrdId(ocClOrdId, 0);
+    fix.clOrdID(ocClOrdId, 0, trimNulls(ocClOrdId));
+
+    // execType (tag 150) — New ('0')
+    fix.execType('0');
+
+    // ordStatus (tag 39) — New ('0')
+    fix.ordStatus('0');
+
+    // symbol (tag 55) — required
+    sbe.getSymbol(ocSymbol, 0);
+    fix.instrument().symbol(ocSymbol, 0, trimNulls(ocSymbol));
+
+    // side (tag 54) — required
+    fix.side(mapSide(sbe.side()));
+
+    // price (tag 44) — optional. Limit orders have a price; market orders use null sentinel.
+    long price = sbe.price();
+    if (price != OrderCreatedEventDecoder.priceNullValue()) {
+      FixedPoint.toDecimalFloat(price, dec);
+      fix.price(dec);
+    }
+
+    // orderQty (tag 38) — required, via OrderQtyData component
+    FixedPoint.toDecimalFloat(sbe.orderQty(), dec);
+    fix.orderQtyData().orderQty(dec);
+
+    // leavesQty (tag 151) — for a New ack, leavesQty = orderQty (nothing filled yet)
+    FixedPoint.toDecimalFloat(sbe.orderQty(), dec);
+    fix.leavesQty(dec);
+
+    // cumQty (tag 14) — zero for a New ack
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.cumQty(dec);
+
+    // avgPx (tag 6) — zero for a New ack (no fills yet). Required by FIX 4.4 ER.
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.avgPx(dec);
+
+    // transactTime (tag 60) — required. SBE uint64 epoch nanos → FIX UTC timestamp ASCII.
+    int tsLen = tsEnc.encodeFrom(sbe.timestamp(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, ocTransactTime, 0, tsLen);
+    fix.transactTime(ocTransactTime, 0, tsLen);
+
+    // timeInForce (tag 59) — optional
+    if (sbe.timeInForce() != TimeInForceEnum.NULL_VAL) {
+      fix.timeInForce(mapTimeInForce(sbe.timeInForce()));
+    }
+
+    // settlType (tag 63) — optional
+    if (sbe.settlType() != SettlTypeEnum.NULL_VAL) {
+      fix.settlType(mapSettlTypeToFix(sbe.settlType()));
+    }
+
+    // settlDate (tag 64) — optional
+    sbe.getSettlDate(ocSettlDate, 0);
+    int trimmed = trimNulls(ocSettlDate);
+    if (trimmed > 0) {
+      fix.settlDate(ocSettlDate, 0, trimmed);
+    }
+
+    // currency (tag 15) — optional
+    sbe.getCurrency(ocCurrency, 0);
+    trimmed = trimNulls(ocCurrency);
+    if (trimmed > 0) {
+      fix.currency(ocCurrency, 0, trimmed);
+    }
+
+    // settlCurrency (tag 120) — optional
+    sbe.getSettlCurrency(ocSettlCurrency, 0);
+    trimmed = trimNulls(ocSettlCurrency);
+    if (trimmed > 0) {
+      fix.settlCurrency(ocSettlCurrency, 0, trimmed);
+    }
+
+    // account (tag 1) — optional
+    sbe.getAccountCode(ocAccountCode, 0);
+    trimmed = trimNulls(ocAccountCode);
+    if (trimmed > 0) {
+      fix.account(ocAccountCode, 0, trimmed);
+    }
+
+    // productType / tenor — APP-45 (custom tags 10013/10001 not in stock FIX 4.4)
+  }
+
+  // ---------------------------------------------------------------------------
+  // OrderRejectedEvent → ExecutionReport (35=8, ExecType=Rejected)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE OrderRejectedEvent (template 101) into a FIX 4.4 ExecutionReport with
+   * ExecType=Rejected ('8') and OrdStatus=Rejected ('8'). The cluster emits this domain event when
+   * a NewOrderSingle fails validation. OrderID and ExecID are zero-filled (the order was never
+   * assigned an engine ID). The reject reason is mapped to FIX OrdRejReason (tag 103) and the
+   * human-readable reason text goes to tag 58.
+   *
+   * @param sbe the decoder positioned over a complete OrderRejectedEvent message
+   * @param fix the Artio encoder — caller must populate the FIX session header before {@code
+   *     encode}
+   */
+  public void translateOrderRejectedEvent(
+      OrderRejectedEventDecoder sbe, ExecutionReportEncoder fix) {
+    // orderID (tag 37) — required but not assigned for a rejection. FIX 4.4 requires the field
+    // to be present; use "NONE" as a sentinel per industry convention (CME iLink uses "0").
+    fix.orderID(NONE_ORDER_ID, 0, NONE_ORDER_ID.length);
+
+    // execID (tag 17) — required but not assigned for a rejection; same sentinel.
+    fix.execID(NONE_EXEC_ID, 0, NONE_EXEC_ID.length);
+
+    // clOrdId (tag 11) — required
+    sbe.getClOrdId(orClOrdId, 0);
+    fix.clOrdID(orClOrdId, 0, trimNulls(orClOrdId));
+
+    // execType (tag 150) — Rejected ('8')
+    fix.execType('8');
+
+    // ordStatus (tag 39) — Rejected ('8')
+    fix.ordStatus('8');
+
+    // symbol (tag 55) — required
+    sbe.getSymbol(orSymbol, 0);
+    fix.instrument().symbol(orSymbol, 0, trimNulls(orSymbol));
+
+    // side (tag 54) — required
+    fix.side(mapSide(sbe.side()));
+
+    // leavesQty (tag 151) — 0 for a rejection (no open quantity)
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.leavesQty(dec);
+
+    // cumQty (tag 14) — 0 for a rejection
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.cumQty(dec);
+
+    // avgPx (tag 6) — 0 for a rejection. Required by FIX 4.4 ER.
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.avgPx(dec);
+
+    // ordRejReason (tag 103) — map domain RejectReasonEnum to FIX int
+    if (sbe.rejectReason() != RejectReasonEnum.NULL_VAL) {
+      fix.ordRejReason(mapRejectReason(sbe.rejectReason()));
+    }
+
+    // text (tag 58) — optional, human-readable rejection reason
+    sbe.getText(orText, 0);
+    int trimmed = trimNulls(orText);
+    if (trimmed > 0) {
+      fix.text(orText, 0, trimmed);
+    }
+
+    // transactTime (tag 60) — required
+    int tsLen = tsEnc.encodeFrom(sbe.timestamp(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, orTransactTime, 0, tsLen);
+    fix.transactTime(orTransactTime, 0, tsLen);
+
+    // currency (tag 15) — optional
+    sbe.getCurrency(orCurrency, 0);
+    trimmed = trimNulls(orCurrency);
+    if (trimmed > 0) {
+      fix.currency(orCurrency, 0, trimmed);
+    }
+
+    // account (tag 1) — optional
+    sbe.getAccountCode(orAccountCode, 0);
+    trimmed = trimNulls(orAccountCode);
+    if (trimmed > 0) {
+      fix.account(orAccountCode, 0, trimmed);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Sentinel OrderID for rejected orders that were never assigned an engine-side order ID. FIX 4.4
+   * requires tag 37 to be present on every ExecutionReport; "NONE" follows the CME iLink convention
+   * of using a placeholder when no real ID exists.
+   */
+  private static final byte[] NONE_ORDER_ID =
+      "NONE".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+  /**
+   * Sentinel ExecID for rejected orders that were never assigned an execution ID. Same rationale as
+   * {@link #NONE_ORDER_ID}.
+   */
+  private static final byte[] NONE_EXEC_ID =
+      "NONE".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
   /**
    * Find the length of the non-null prefix of {@code field}. SBE char fields are fixed length and
@@ -652,6 +888,55 @@ public final class SbeToFixTranslator {
       case BrokenDate -> 'B';
       case FXSpotNextDay -> 'C';
       default -> throw new IllegalStateException("Unsupported SBE SettlType for FIX wire: " + sbe);
+    };
+  }
+
+  /**
+   * Map SBE {@link TimeInForceEnum} to FIX 4.4 TimeInForce (tag 59) char value. The SBE enum's
+   * short values were chosen to match the FIX wire char's numeric value (Day=0 → '0', GTC=1 → '1',
+   * IOC=3 → '3', FOK=4 → '4'), so the mapping is a direct cast to char after adding '0'.
+   */
+  private static char mapTimeInForce(TimeInForceEnum sbe) {
+    return switch (sbe) {
+      case Day -> '0';
+      case GTC -> '1';
+      case IOC -> '3';
+      case FOK -> '4';
+      default ->
+          throw new IllegalStateException("Unsupported SBE TimeInForce for FIX wire: " + sbe);
+    };
+  }
+
+  /**
+   * Map SBE {@link RejectReasonEnum} to FIX 4.4 OrdRejReason (tag 103) int value. The domain enum
+   * carries fine-grained reasons (e.g., AccountSuspended, BookFull) that have no direct FIX
+   * counterpart; those map to the closest standard FIX value or to {@code 99} (Other). The mapping
+   * preserves enough information for downstream clients to distinguish the major categories
+   * (unknown symbol, duplicate, account issues) while the full detail lives in tag 58 (Text).
+   */
+  private static int mapRejectReason(RejectReasonEnum sbe) {
+    return switch (sbe) {
+      case UnknownSymbol -> 1; // FIX: Unknown symbol
+      case InsufficientQuantity -> 13; // FIX: Incorrect quantity
+      case InvalidPrice -> 99; // FIX: Other (no standard "invalid price" code)
+      case InvalidQuantity -> 13; // FIX: Incorrect quantity
+      case DuplicateClOrdId -> 6; // FIX: Duplicate Order
+      case QuoteNotFound -> 99; // FIX: Other
+      case QuoteExpired -> 99; // FIX: Other
+      case OrderNotFound -> 5; // FIX: Unknown order
+      case BookFull -> 99; // FIX: Other
+      case AccountNotFound -> 15; // FIX: Unknown account
+      case AccountSuspended -> 99; // FIX: Other
+      case AccountNoTradePermission -> 99; // FIX: Other
+      case AccountNoQuotePermission -> 99; // FIX: Other
+      case OrderExceedsMaxSize -> 3; // FIX: Order exceeds limit
+      case DuplicateAccountCode -> 99; // FIX: Other
+      case UnknownCurrency -> 99; // FIX: Other
+      case InvalidCurrencyCode -> 99; // FIX: Other
+      case InvalidAccountId -> 15; // FIX: Unknown account
+      case InvalidLimitValue -> 99; // FIX: Other
+      default ->
+          throw new IllegalStateException("Unsupported SBE RejectReason for FIX wire: " + sbe);
     };
   }
 }

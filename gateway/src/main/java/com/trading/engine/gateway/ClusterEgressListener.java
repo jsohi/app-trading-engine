@@ -5,6 +5,8 @@ import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import io.aeron.cluster.client.ControlledEgressListener;
 import io.aeron.cluster.codecs.EventCode;
@@ -42,11 +44,15 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final ExecutionReportDecoder erDecoder = new ExecutionReportDecoder();
   private final OrderCancelRejectDecoder cxlRejDecoder = new OrderCancelRejectDecoder();
   private final QuoteDecoder quoteDecoder = new QuoteDecoder();
+  private final OrderCreatedEventDecoder orderCreatedDecoder = new OrderCreatedEventDecoder();
+  private final OrderRejectedEventDecoder orderRejectedDecoder = new OrderRejectedEventDecoder();
 
   // --- Scratch buffers for correlation key extraction (zero-alloc) ---
   private final byte[] clOrdIdScratch = new byte[ExecutionReportDecoder.clOrdIdLength()];
   private final byte[] cxlClOrdIdScratch = new byte[OrderCancelRejectDecoder.clOrdIdLength()];
   private final byte[] quoteReqIdScratch = new byte[QuoteDecoder.quoteReqIdLength()];
+  private final byte[] ocClOrdIdScratch = new byte[OrderCreatedEventDecoder.clOrdIdLength()];
+  private final byte[] orClOrdIdScratch = new byte[OrderRejectedEventDecoder.clOrdIdLength()];
 
   // --- Collaborators (injected, not owned) ---
   private final SbeToFixTranslator translator;
@@ -132,6 +138,8 @@ public final class ClusterEgressListener implements ControlledEgressListener {
       case OrderCancelRejectDecoder.TEMPLATE_ID ->
           handleOrderCancelReject(buffer, offset, timestamp);
       case QuoteDecoder.TEMPLATE_ID -> handleQuote(buffer, offset, timestamp);
+      case OrderCreatedEventDecoder.TEMPLATE_ID -> handleOrderCreated(buffer, offset, timestamp);
+      case OrderRejectedEventDecoder.TEMPLATE_ID -> handleOrderRejected(buffer, offset, timestamp);
       default -> {
         LOG.warn().append("Unhandled egress templateId=").append(templateId).commit();
         yield Action.CONTINUE;
@@ -271,6 +279,64 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     return Action.ABORT;
   }
 
+  private Action handleOrderCreated(
+      final DirectBuffer buffer, final int offset, final long timestamp) {
+    orderCreatedDecoder.wrap(
+        buffer,
+        offset + MessageHeaderDecoder.ENCODED_LENGTH,
+        headerDecoder.blockLength(),
+        headerDecoder.version());
+    orderCreatedDecoder.getClOrdId(ocClOrdIdScratch, 0);
+    final int clOrdIdLen = trimNullPadding(ocClOrdIdScratch);
+
+    lastCorrelationScratch = ocClOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
+
+    final long sessionKey = sessionLookup.findByCorrelationId(ocClOrdIdScratch, 0, clOrdIdLen);
+    if (sessionKey == SessionLookup.NULL_SESSION) {
+      inFlightTracker.onResponseReceived(ocClOrdIdScratch, 0, clOrdIdLen);
+      LOG.info().append("Orphaned OrderCreatedEvent: clOrdIdLen=").append(clOrdIdLen).commit();
+      return Action.CONTINUE;
+    }
+
+    final boolean delivered =
+        callback.onEgressMessage(sessionKey, OrderCreatedEventDecoder.TEMPLATE_ID, timestamp);
+    if (delivered) {
+      inFlightTracker.onResponseReceived(ocClOrdIdScratch, 0, clOrdIdLen);
+      return Action.CONTINUE;
+    }
+    return Action.ABORT;
+  }
+
+  private Action handleOrderRejected(
+      final DirectBuffer buffer, final int offset, final long timestamp) {
+    orderRejectedDecoder.wrap(
+        buffer,
+        offset + MessageHeaderDecoder.ENCODED_LENGTH,
+        headerDecoder.blockLength(),
+        headerDecoder.version());
+    orderRejectedDecoder.getClOrdId(orClOrdIdScratch, 0);
+    final int clOrdIdLen = trimNullPadding(orClOrdIdScratch);
+
+    lastCorrelationScratch = orClOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
+
+    final long sessionKey = sessionLookup.findByCorrelationId(orClOrdIdScratch, 0, clOrdIdLen);
+    if (sessionKey == SessionLookup.NULL_SESSION) {
+      inFlightTracker.onResponseReceived(orClOrdIdScratch, 0, clOrdIdLen);
+      LOG.info().append("Orphaned OrderRejectedEvent: clOrdIdLen=").append(clOrdIdLen).commit();
+      return Action.CONTINUE;
+    }
+
+    final boolean delivered =
+        callback.onEgressMessage(sessionKey, OrderRejectedEventDecoder.TEMPLATE_ID, timestamp);
+    if (delivered) {
+      inFlightTracker.onResponseReceived(orClOrdIdScratch, 0, clOrdIdLen);
+      return Action.CONTINUE;
+    }
+    return Action.ABORT;
+  }
+
   // ===========================================================================
   // Accessors — callback reads pre-wrapped decoders without re-decoding
   // ===========================================================================
@@ -302,6 +368,22 @@ public final class ClusterEgressListener implements ControlledEgressListener {
    */
   public QuoteDecoder quoteDecoder() {
     return quoteDecoder;
+  }
+
+  /**
+   * Returns the pre-wrapped OrderCreatedEvent decoder. Valid only when the last {@code onMessage}
+   * invocation handled templateId {@link OrderCreatedEventDecoder#TEMPLATE_ID}.
+   */
+  public OrderCreatedEventDecoder orderCreatedDecoder() {
+    return orderCreatedDecoder;
+  }
+
+  /**
+   * Returns the pre-wrapped OrderRejectedEvent decoder. Valid only when the last {@code onMessage}
+   * invocation handled templateId {@link OrderRejectedEventDecoder#TEMPLATE_ID}.
+   */
+  public OrderRejectedEventDecoder orderRejectedDecoder() {
+    return orderRejectedDecoder;
   }
 
   /** Returns the SBE-to-FIX translator for use by the callback. */
