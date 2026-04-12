@@ -206,6 +206,16 @@ public final class OrderBook {
   }
 
   /**
+   * Returns {@code true} if the order pool is exhausted (no free slots available). Used as a
+   * pre-validation guard to reject orders before generating IDs or encoding events.
+   *
+   * @return {@code true} if {@link #acquire(long)} would return {@code null}
+   */
+  public boolean isFull() {
+    return freeTop == 0;
+  }
+
+  /**
    * Drop every order from the book and return all pooled slots to the free-list. Called by {@link
    * #restoreFrom} before decoding a snapshot fragment so a smaller snapshot does not leave orphan
    * entries from the previous state.
