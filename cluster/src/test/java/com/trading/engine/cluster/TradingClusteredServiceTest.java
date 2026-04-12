@@ -402,6 +402,27 @@ class TradingClusteredServiceTest {
     assertEquals(RejectReasonEnum.UnknownSymbol, dec.rejectReason());
   }
 
+  @Test
+  void bookFullRejectedBeforeIdGeneration() {
+    // Fill the order book to capacity (128 slots).
+    for (int i = 0; i < 128; i++) {
+      final byte[] cmd = encodeOrder("CL-" + i, "EURUSD", OrdTypeEnum.Limit, 1L, 5L, "ACME", "USD");
+      dispatch(new UnsafeBuffer(cmd), cmd.length);
+    }
+    assertEquals(128, orderBook.size());
+    // The next order must be rejected with BookFull — no IDs should be wasted.
+    final long orderCounterBefore = orderIdGen.currentCounter();
+    final byte[] overflow =
+        encodeOrder("CL-OVERFLOW", "EURUSD", OrdTypeEnum.Limit, 1L, 5L, "ACME", "USD");
+    dispatch(new UnsafeBuffer(overflow), overflow.length);
+    // Verify rejection.
+    final var lastMsg = session.messages.get(session.messages.size() - 1);
+    final OrderRejectedEventDecoder dec = decodeOrderRejected(lastMsg);
+    assertEquals(RejectReasonEnum.BookFull, dec.rejectReason());
+    // Verify no ID counter space was wasted (guard fires before generateOrderId).
+    assertEquals(orderCounterBefore, orderIdGen.currentCounter());
+  }
+
   private byte[] encodeOrder(
       final String clOrdId,
       final String symbol,

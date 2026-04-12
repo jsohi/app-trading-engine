@@ -152,6 +152,7 @@ public final class EventSink {
     for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
       final long result = session.offer(src, offset, length);
       if (result >= 0L || result == MOCKED_OFFER) {
+        resetIdleStrategy();
         return;
       }
       if (result == BACK_PRESSURED || result == ADMIN_ACTION) {
@@ -161,10 +162,19 @@ public final class EventSink {
         continue;
       }
       // Non-retryable — quarantine the session so the cluster framework tears it down.
+      resetIdleStrategy();
       session.close();
       return;
     }
     // Retry exhausted on persistent BACK_PRESSURED / ADMIN_ACTION.
+    resetIdleStrategy();
     session.close();
+  }
+
+  /** Reset the idle strategy after a retry loop to prevent elevated park time on the next call. */
+  private void resetIdleStrategy() {
+    if (cluster != null) {
+      cluster.idleStrategy().reset();
+    }
   }
 }
