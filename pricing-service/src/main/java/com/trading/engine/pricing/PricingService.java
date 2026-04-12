@@ -536,7 +536,8 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
 
     // --- Step 5: Compute bid/offer spread ---
 
-    // Default to Client tier for v1; account-type resolution from config to be wired later.
+    // TODO(APP-208): resolve account type from PriceRequest field (schema change pending).
+    // Default to Client tier until accountType is added to PriceRequest SBE message.
     final AccountTypeEnum accountType = AccountTypeEnum.Client;
 
     spreadModel.compute(

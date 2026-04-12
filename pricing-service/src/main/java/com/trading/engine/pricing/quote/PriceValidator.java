@@ -213,7 +213,7 @@ public final class PriceValidator {
 
     // Step 0: Validate side.
     if (side != SIDE_BUY && side != SIDE_SELL) {
-      result.setRejected(RejectReason.QUOTE_NOT_FOUND, TEXT_INVALID_SIDE);
+      result.setRejected(RejectReason.INVALID_REQUEST, TEXT_INVALID_SIDE);
       return result;
     }
 
@@ -295,6 +295,9 @@ public final class PriceValidator {
    * codes that have no schema counterpart use values in the 100+ range to avoid collisions.
    */
   public static final class RejectReason {
+
+    /** Invalid request parameter (e.g., unknown side value). Pricing-specific code (101). */
+    public static final int INVALID_REQUEST = 101;
 
     /** Quote not found in the active quotes store. Maps to RejectReasonEnum.QuoteNotFound (6). */
     public static final int QUOTE_NOT_FOUND = 6;
