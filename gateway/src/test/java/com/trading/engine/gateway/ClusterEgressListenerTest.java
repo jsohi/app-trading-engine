@@ -12,8 +12,13 @@ import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectEncoder;
+import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import com.trading.engine.messages.sbe.QuoteEncoder;
+import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
@@ -291,6 +296,146 @@ class ClusterEgressListenerTest {
   }
 
   // ===========================================================================
+  // OrderCreatedEvent dispatch
+  // ===========================================================================
+
+  @Test
+  void onMessage_orderCreatedEvent_dispatchesToCallback() {
+    final int len = encodeOrderCreatedEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(SESSION_KEY, lastSessionKey.get());
+    assertEquals(OrderCreatedEventDecoder.TEMPLATE_ID, lastTemplateId.get());
+    assertEquals(TIMESTAMP, lastTimestamp.get());
+  }
+
+  @Test
+  void onMessage_orderCreatedEvent_sessionNotFound_continues() {
+    final int len = encodeOrderCreatedEvent("UNKNOWN-CL-ORD-ID");
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(-1, lastSessionKey.get());
+  }
+
+  @Test
+  void onMessage_orderCreatedEvent_callbackReturnsFalse_aborts() {
+    callbackDelivers = false;
+    final int len = encodeOrderCreatedEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.ABORT, action);
+  }
+
+  @Test
+  void onMessage_orderCreatedEvent_clearsInFlightEntry() {
+    final byte[] id = CL_ORD_ID.getBytes(StandardCharsets.US_ASCII);
+    inFlightTracker.onCommandSent(id, 0, id.length, 1_000L);
+    assertEquals(1, inFlightTracker.size());
+
+    final int len = encodeOrderCreatedEvent(CL_ORD_ID);
+    listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(0, inFlightTracker.size());
+  }
+
+  @Test
+  void orderCreatedDecoder_positionedAfterOnMessage() {
+    final int len = encodeOrderCreatedEvent(CL_ORD_ID);
+    listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    final var dec = listener.orderCreatedDecoder();
+    final byte[] scratch = new byte[OrderCreatedEventDecoder.clOrdIdLength()];
+    dec.getClOrdId(scratch, 0);
+    final String decoded =
+        new String(
+            scratch, 0, ClusterEgressListener.trimNullPadding(scratch), StandardCharsets.US_ASCII);
+    assertEquals(CL_ORD_ID, decoded);
+  }
+
+  // ===========================================================================
+  // OrderRejectedEvent dispatch
+  // ===========================================================================
+
+  @Test
+  void onMessage_orderRejectedEvent_dispatchesToCallback() {
+    final int len = encodeOrderRejectedEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(SESSION_KEY, lastSessionKey.get());
+    assertEquals(OrderRejectedEventDecoder.TEMPLATE_ID, lastTemplateId.get());
+    assertEquals(TIMESTAMP, lastTimestamp.get());
+  }
+
+  @Test
+  void onMessage_orderRejectedEvent_sessionNotFound_continues() {
+    final int len = encodeOrderRejectedEvent("UNKNOWN-CL-ORD-ID");
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(-1, lastSessionKey.get());
+  }
+
+  @Test
+  void onMessage_orderRejectedEvent_callbackReturnsFalse_aborts() {
+    callbackDelivers = false;
+    final int len = encodeOrderRejectedEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.ABORT, action);
+  }
+
+  @Test
+  void onMessage_orderRejectedEvent_clearsInFlightEntry() {
+    final byte[] id = CL_ORD_ID.getBytes(StandardCharsets.US_ASCII);
+    inFlightTracker.onCommandSent(id, 0, id.length, 1_000L);
+    assertEquals(1, inFlightTracker.size());
+
+    final int len = encodeOrderRejectedEvent(CL_ORD_ID);
+    listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(0, inFlightTracker.size());
+  }
+
+  @Test
+  void orderRejectedDecoder_positionedAfterOnMessage() {
+    final int len = encodeOrderRejectedEvent(CL_ORD_ID);
+    listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    final var dec = listener.orderRejectedDecoder();
+    final byte[] scratch = new byte[OrderRejectedEventDecoder.clOrdIdLength()];
+    dec.getClOrdId(scratch, 0);
+    final String decoded =
+        new String(
+            scratch, 0, ClusterEgressListener.trimNullPadding(scratch), StandardCharsets.US_ASCII);
+    assertEquals(CL_ORD_ID, decoded);
+  }
+
+  // ===========================================================================
+  // Decoder accessor coverage for new decoders
+  // ===========================================================================
+
+  @Test
+  void decoderAccessors_returnNonNull_newDecoders() {
+    assertNotNull(listener.orderCreatedDecoder());
+    assertNotNull(listener.orderRejectedDecoder());
+  }
+
+  @Test
+  void decoderAccessors_returnSameInstance_newDecoders() {
+    assertSame(listener.orderCreatedDecoder(), listener.orderCreatedDecoder());
+    assertSame(listener.orderRejectedDecoder(), listener.orderRejectedDecoder());
+  }
+
+  // ===========================================================================
   // SBE encoding helpers
   // ===========================================================================
 
@@ -314,6 +459,23 @@ class ClusterEgressListenerTest {
     final var enc = new QuoteEncoder();
     enc.wrapAndApplyHeader(buffer, 0, headerEncoder);
     enc.quoteReqId(quoteReqId);
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  private int encodeOrderCreatedEvent(final String clOrdId) {
+    final var enc = new OrderCreatedEventEncoder();
+    enc.wrapAndApplyHeader(buffer, 0, headerEncoder);
+    enc.clOrdId(clOrdId);
+    enc.side(SideEnum.Buy);
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  private int encodeOrderRejectedEvent(final String clOrdId) {
+    final var enc = new OrderRejectedEventEncoder();
+    enc.wrapAndApplyHeader(buffer, 0, headerEncoder);
+    enc.clOrdId(clOrdId);
+    enc.side(SideEnum.Buy);
+    enc.rejectReason(RejectReasonEnum.UnknownSymbol);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
 }
