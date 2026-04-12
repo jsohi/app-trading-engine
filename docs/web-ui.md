@@ -55,7 +55,7 @@ Babl sends binary SBE frame
          ▼
 ┌─── Web Worker ─────────────────────────────────┐
 │                                                 │
-│  1. Decode SBE:  QuoteCreatedEventDecoder        │
+│  1. Decode SBE:  QuoteCreatedEventDecoder (1)    │
 │     symbol: "EUR/USD"                           │
 │     bid: 108500000 (int64)                      │
 │     ask: 108520000 (int64)                      │
@@ -73,6 +73,9 @@ Babl sends binary SBE frame
 │  5. postMessage({ type: 'price', data })        │
 │                                                 │
 └─────────────────────┬───────────────────────────┘
+(1) Provisional — QuoteCreatedEvent (105) is the closest existing SBE
+    message with bid/ask fields. A dedicated streaming price event may
+    be added when PricingService (APP-29) is implemented.
                       │
                       ▼
 ┌─── Main Thread ─────────────────────────────────┐

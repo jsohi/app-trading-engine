@@ -23,7 +23,7 @@ log retention, and common troubleshooting scenarios.
 
 ### Architecture
 
-```
+```text
 FIX Clients ──TCP:9880──► Artio FIX Gateway ──IPC──► Aeron Cluster (3-node Raft)
                               │                            │
                               ▼                            ▼
@@ -66,7 +66,7 @@ FIX Clients ──TCP:9880──► Artio FIX Gateway ──IPC──► Aeron C
 
 ### Directory Structure
 
-```
+```text
 <baseDir>/                        # Default: cluster-data/
   archive-0/                      # Aeron Archive data for node 0
   archive-1/                      # Aeron Archive data for node 1
@@ -582,7 +582,10 @@ Artio uses a native binary format for FIX message logging:
 **Using Artio's built-in log reader:**
 
 ```bash
-# Read FIX message logs using Artio's FixMessageLogger
+# Read FIX message logs using Artio's built-in log reader.
+# NOTE: The exact class name may vary by Artio version. Verify against
+# Artio 0.175 Javadoc before use. If FixMessageLogger is not available,
+# check for FixArchiveScanner or ReplayQuery in the Artio API.
 java -cp <classpath> uk.co.real_logic.artio.engine.logger.FixMessageLogger \
   fix-logs/
 ```
@@ -590,14 +593,15 @@ java -cp <classpath> uk.co.real_logic.artio.engine.logger.FixMessageLogger \
 **Filtering by session or time range:**
 
 ```bash
-# Custom reader to filter FIX messages (pseudo-code -- implement per Artio API)
-# Filter by SenderCompID, time range, message type (MsgType tag 35)
-java -cp <classpath> com.trading.engine.tools.FixLogReader \
-  --log-dir=fix-logs \
-  --sender-comp-id=CLIENT1 \
-  --start-time="2026-04-12T00:00:00Z" \
-  --end-time="2026-04-12T23:59:59Z" \
-  --msg-type=D  # NewOrderSingle
+# Custom reader for filtered FIX message queries.
+# This tool does not exist yet -- implement using Artio's ReplayQuery API.
+# Filter by SenderCompID, time range, message type (MsgType tag 35).
+# java -cp <classpath> com.trading.engine.tools.FixLogReader \
+#   --log-dir=fix-logs \
+#   --sender-comp-id=CLIENT1 \
+#   --start-time="2026-04-12T00:00:00Z" \
+#   --end-time="2026-04-12T23:59:59Z" \
+#   --msg-type=D
 ```
 
 **Key FIX message types for audit:**
@@ -629,7 +633,7 @@ java -cp <classpath> com.trading.engine.tools.FixLogReader \
 position 0 on recovery. Truncating the archive will cause projections to produce
 incomplete or inconsistent read models.
 
-```
+```text
 WARNING: Truncating the Aeron Archive log is a data-loss event.
 Projections do NOT snapshot -- they replay the ENTIRE event stream on startup.
 ```
@@ -676,6 +680,8 @@ snapshot is a 7-fragment envelope:
 5. `CurrencySnapshot` (template 208)
 6. `RiskLimitSnapshot` (template 209)
 7. `OrderBookSnapshot` (template 202)
+
+**Note:** Templates 203 (`RfqStateSnapshot`) and 204 (`PositionSnapshot`) are defined in the SBE schema but are **not included** in the current snapshot envelope. `RfqStateMachine` (APP-30) and `PositionTracker` are not yet implemented. When added, the fragment count will increase accordingly.
 
 **Retention policy:**
 
@@ -1095,4 +1101,3 @@ kill <launcher_pid>
 # Force shutdown (last resort)
 kill -9 <launcher_pid>
 for f in logs/pids/media-driver-*.pid; do [ -s "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null; done
-```
