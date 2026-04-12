@@ -10,6 +10,7 @@ import com.trading.engine.gateway.SbeToFixTranslator;
 import com.trading.engine.gateway.SessionRegistry;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.IdleStrategy;
@@ -126,7 +127,12 @@ public final class GatewayLauncher {
     //   1. Launches the Artio FIX engine + library
     //   2. Delegates to clusterClient.onStart() (via guard flag) → connects to cluster
     final var agentRunner = new AgentRunner(idleStrategy, errorHandler, null, fixGateway);
-    AgentRunner.startOnThread(agentRunner);
+    try {
+      AgentRunner.startOnThread(agentRunner);
+    } catch (final RuntimeException e) {
+      CloseHelper.closeAll(agentRunner, clusterClient);
+      throw e;
+    }
 
     LOG.info(
         "Gateway launched: {}:{} aeronDir={} ingressEndpoints={}",

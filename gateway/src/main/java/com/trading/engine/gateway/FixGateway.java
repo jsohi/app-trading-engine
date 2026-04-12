@@ -211,7 +211,7 @@ public final class FixGateway implements Agent {
     // Delegating here (instead of a manual call in the launcher) ensures the lifecycle contract
     // is respected and prevents double-start if FixGateway is later composed into a
     // DynamicCompositeAgent.
-    if (!clusterClientStarted && clusterClient != null) {
+    if (!clusterClientStarted) {
       clusterClient.onStart();
       clusterClientStarted = true;
     }
@@ -361,6 +361,9 @@ public final class FixGateway implements Agent {
   /**
    * Called by {@link ClusterEgressListener} when a cluster response arrives. Translates SBE → FIX
    * and sends to the correct Artio session.
+   *
+   * <p><b>Visibility:</b> Public for cross-package method reference from {@link
+   * com.trading.engine.launcher.GatewayLauncher}. Not intended for external callers.
    */
   public boolean onEgressMessage(
       final long sessionKey, final int templateId, final long timestamp) {
