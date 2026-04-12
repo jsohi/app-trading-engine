@@ -719,6 +719,7 @@
     <sbe:message name="PriceValidationRequest" id="52"
                  description="Internal: cluster asks pricing service to validate an inbound order's price (e.g., AcceptQuote). Carries the full order context — account, FX product context (productType, settlDate/Type, currency pair, tenor), and per-leg detail — so the pricer can apply account-specific tiering and leg-level checks for swaps.">
         <field name="quoteId"       id="117"   type="QuoteID"/>
+        <field name="quoteReqId"   id="131"   type="QuoteReqID"    description="Original PriceRequest identifier — the pricing service keys stored quotes by quoteReqId, so the orchestrator must forward it here for validation lookup."/>
         <field name="symbol"        id="55"    type="Symbol"/>
         <field name="side"          id="54"    type="SideEnum"/>
         <field name="price"         id="44"    type="int64" presence="optional" description="Order price to validate, fixed-point 10^-8 (null for market orders — mirrors NewOrderSingle/NewOrderMultileg)"/>
