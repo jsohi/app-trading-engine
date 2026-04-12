@@ -356,11 +356,15 @@ done
 To force a specific node to step down as leader (e.g., for planned maintenance):
 
 ```bash
-# Use ClusterTool to invalidate the current leader's service mark
+# Use ClusterTool to initiate orderly shutdown of the leader node.
+# This triggers a clean snapshot, drains in-flight messages, and steps down.
+# Remaining nodes will elect a new leader.
 java -cp <classpath> io.aeron.cluster.ClusterTool \
-  cluster-data/cluster-<LEADER_NODE_ID> invalidate-latest-snapshot
+  cluster-data/cluster-<LEADER_NODE_ID> shutdown
 
-# Then stop the leader node -- remaining nodes will elect a new leader
+# Note: `invalidate-latest-snapshot` is for CORRUPTION RECOVERY only,
+# not for planned failover. Using it for maintenance risks unnecessary
+# full replay from archive on restart.
 ```
 
 **Planned maintenance procedure:**
