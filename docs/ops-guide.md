@@ -533,7 +533,6 @@ rm -rf /tmp/aeron-gateway
 ps aux | grep -E "(MediaDriverLauncher|TradingEngineLauncher)" | grep -v grep
 
 # Verify no stale shared memory
-ls -la /dev/shm/aeron-trading* 2>/dev/null
 ls -la /tmp/aeron-node-* 2>/dev/null
 ls -la /tmp/aeron-gateway 2>/dev/null
 ```
@@ -907,11 +906,8 @@ tail -100 logs/media-driver-0.stdout.log
 
 2. **If shared memory is corrupted:**
    ```bash
-   # Remove the shared memory segment
-   rm -rf /dev/shm/aeron-trading*
-
-   # Remove the CnC directory
-   rm -rf /tmp/aeron-node-0
+   # Remove the Aeron media driver directories
+   rm -rf /tmp/aeron-node-0 /tmp/aeron-node-1 /tmp/aeron-node-2 /tmp/aeron-gateway
    ```
 
 3. **Restart the media driver:**

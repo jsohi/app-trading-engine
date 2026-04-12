@@ -82,6 +82,7 @@ graph TB
     gateway --> launcher
     media-driver["media-driver"] --> launcher
     pricing-service --> launcher
+    projections --> launcher
     reference-data --> launcher
     websocket-server --> launcher
 
