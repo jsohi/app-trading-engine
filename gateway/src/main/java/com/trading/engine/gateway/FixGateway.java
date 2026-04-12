@@ -100,7 +100,10 @@ public final class FixGateway implements Agent {
   // doWork(). If external shutdown coordination is needed, the caller must signal the AgentRunner
   // to stop, which then calls onClose() on the correct thread.
   private boolean draining;
+
+  /** Guards against double-start of clusterClient; set once in onStart(). */
   private boolean clusterClientStarted;
+
   private long lastSweepNs;
 
   /**
