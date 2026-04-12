@@ -166,10 +166,9 @@ the gateway, including Logon/Logout, orders, executions, and rejects.
 
 **Not implemented.** The trading engine processes data in-memory:
 
-- **Aeron shared memory** (`/dev/shm/aeron-trading/`) -- IPC publications and log buffers
-  reside in shared memory. Access is controlled by OS-level file permissions on the
-  `/dev/shm` directory.
-- **Aeron Archive recordings** (`/tmp/cluster-*/recording-log/`) -- Raft log segments and
+- **Aeron shared memory** (`/tmp/aeron-node-N/`, `/tmp/aeron-gateway/`) -- IPC publications
+  and log buffers reside in shared memory. Access is controlled by OS-level file permissions.
+- **Aeron Archive recordings** (`cluster-data/archive-N/`) -- Raft log segments and
   snapshots are stored as raw binary files. They contain the full event history (orders,
   fills, positions) in SBE-encoded form.
 - **Artio FIX logs** (`fix-logs/`) -- plaintext FIX messages on disk.
@@ -269,7 +268,7 @@ Pre-deployment checklist for any environment beyond localhost:
 - [ ] Restrict ports 8443, 8444, 9000-9002 to internal network only
 - [ ] Configure OS firewall rules per Section 2.2
 - [ ] Run trading engine processes under a dedicated, unprivileged OS user
-- [ ] Set `/dev/shm/aeron-trading/` permissions to `0700` for the engine user
+- [ ] Set `/tmp/aeron-node-*/` and `/tmp/aeron-gateway/` permissions to `0700` for the engine user
 - [ ] Restrict filesystem permissions on Artio FIX log directory
 - [ ] Restrict filesystem permissions on Aeron Archive recording directories
 - [ ] Enable volume-level encryption for disks containing FIX logs and Archive recordings

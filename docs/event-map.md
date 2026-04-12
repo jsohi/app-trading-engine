@@ -137,13 +137,14 @@ OrderProjection
             fillQty, fillPx, account, timestamp
 
 PositionProjection
-├── getPosition(String account, String symbol)  → PositionSnapshot
+├── getPosition(String symbol, String account, String settlDate)  → PositionSnapshot
 ├── getPositionsByAccount(String)               → List<PositionSnapshot>
 ├── getPositionsBySymbol(String)                → List<PositionSnapshot>
 ├── getAllPositions()                            → List<PositionSnapshot>
 ├── size()                                      → int
-└── Fields: account, symbol, netQuantity, avgPrice, realizedPnl,
-            lastUpdated
+└── Fields: symbol, accountCode, settlDate, currency, settlCurrency,
+            netQty, buyQty, sellQty, avgBuyPx, avgSellPx,
+            lastUpdatedAt, lastSequenceNumber
 
 QuoteProjection (planned — APP-26, not yet implemented)
 ├── getByQuoteReqId(String)      → QuoteView
