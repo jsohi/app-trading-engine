@@ -182,7 +182,7 @@ public final class TradingEngineLauncher {
 
       // ===== Step 9: Launch gateway =====
       stepStart = System.nanoTime();
-      // TODO(APP-185): make idle strategy configurable via LauncherConfig
+      // TODO(APP-203): make idle strategy configurable via LauncherConfig
       gatewayRef.set(
           GatewayLauncher.launch(
               config.fixHost(),
@@ -267,7 +267,7 @@ public final class TradingEngineLauncher {
           collector);
       LOG.info("Account reference data loaded successfully");
 
-      // TODO(APP-196): load currencies and risk limits when loaders are implemented
+      // TODO(APP-204): load currencies and risk limits when loaders are implemented
     }
   }
 

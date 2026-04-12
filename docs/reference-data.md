@@ -14,17 +14,24 @@ STARTUP SEQUENCE:
 
 RUNTIME (PlaceOrder):
   FIX NOS (account="ACME-001") -> Gateway -> SBE NOS -> Cluster
-    -> PlaceOrderHandler:
-        1. accountStore.getByCode(accountBuffer, offset, length) -> AccountState
-        2. null -> reject UNKNOWN_ACCOUNT
-        3. status != ACTIVE -> reject ACCOUNT_SUSPENDED
-        4. !canTrade -> reject ACCOUNT_NO_TRADE_PERMISSION
-        5. orderQty > maxOrderSize -> reject ORDER_EXCEEDS_MAX_SIZE
-        6. proceed with order validation
+    -> NewOrderSingleHandler (via CommandHandler dispatch):
+        1. symbol must not be empty -> reject UNKNOWN_SYMBOL
+        2. orderQty must be positive -> reject INVALID_QUANTITY
+        3. limit orders must have positive price -> reject INVALID_PRICE
+        4. accountCode must not be empty -> reject ACCOUNT_NOT_FOUND
+        5. accountStore.getByCode(buffer, offset, length) -> AccountState
+        6. null -> reject ACCOUNT_NOT_FOUND
+        7. status != ACTIVE -> reject ACCOUNT_SUSPENDED
+        8. !canTrade -> reject ACCOUNT_NO_TRADE_PERMISSION
+        9. currency must be 3 uppercase ASCII letters -> reject INVALID_CURRENCY_CODE
+       10. currency must exist in CurrencyStore -> reject UNKNOWN_CURRENCY
+       11. orderQty > maxOrderSize risk limit -> reject ORDER_EXCEEDS_MAX_SIZE
+       12. OrderBook must not be full -> reject BOOK_FULL
+       13. proceed with order creation
 
 RUNTIME (QuoteRequest):
   FIX QuoteRequest (account="ACME-001") -> Gateway -> Cluster
-    -> QuoteRequestHandler:
+    -> QuoteRequestHandler (planned — APP-30):
         1. accountStore.getByCode(accountBuffer, offset, length) -> AccountState
         2. null -> reject UNKNOWN_ACCOUNT
         3. status != ACTIVE -> reject ACCOUNT_SUSPENDED
@@ -41,13 +48,14 @@ The NOS SBE message carries `account` as `char[16]` (the string code, e.g., "ACM
 
 ```text
 AccountStore:
-  primary:   Long2ObjectHashMap<AccountState>           (keyed by accountId - for snapshots, idempotent upsert)
-  secondary: Object2ObjectHashMap<DirectBuffer, AccountState>  (keyed by accountCode - for runtime validation)
+  primary:   Long2ObjectHashMap<AccountState>                   (keyed by accountId — for snapshots, idempotent upsert)
+  secondary: Object2ObjectHashMap<ByteArrayKey, AccountState>   (keyed by accountCode — for runtime validation)
+  sidecar:   Long2ObjectHashMap<ByteArrayKey>                   (accountId → ByteArrayKey — for safe mutation tracking)
 ```
 
-Both indexes are populated atomically during `LoadAccountHandler.onCommand()` (deterministic, replicated). Lookup by account code wraps the SBE decoder's account field in a reusable `UnsafeBuffer` — zero allocation.
+Both indexes are populated atomically during `LoadAccountHandler.onCommand()` (deterministic, replicated). Lookup by account code uses a reusable scratch `ByteArrayKey` wrapping the SBE decoder's account field — zero allocation on the hot lookup path.
 
-**DirectBuffer key safety:** `DirectBuffer` is a mutable wrapper, so using it directly as a hash key from the incoming SBE message is unsafe — the underlying buffer will be reused. On insertion, the `accountCode` bytes must be **copied into a dedicated, immutable `UnsafeBuffer`** owned by the AccountStore. This copy happens once per `LoadAccountHandler.onCommand()` (not on the hot lookup path). For lookups, a reusable thread-local `UnsafeBuffer` wrapping the SBE decoder's account field is safe because lookups are read-only and single-threaded.
+**ByteArrayKey safety:** The secondary index uses a custom `ByteArrayKey` wrapper (defensive-copy approach) rather than raw `DirectBuffer` keys. `DirectBuffer` is a mutable wrapper whose underlying buffer is reused by the SBE decoder, making it unsafe as a hash key. On insertion, `ByteArrayKey` copies the `accountCode` bytes into an owned `byte[]`. This copy happens once per `LoadAccountHandler.onCommand()` (not on the hot lookup path). For lookups, a reusable scratch `ByteArrayKey` is safe because lookups are read-only and single-threaded.
 
 ### API
 

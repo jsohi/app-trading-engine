@@ -8,7 +8,7 @@ graph TB
         React["React 19 App"]
         AG1["AG Grid: Orders Blotter"]
         AG2["AG Grid: Positions Blotter"]
-        AG3["AG Grid: Quotes Blotter"]
+        AG3["AG Grid: Quotes Blotter (planned — APP-26)"]
         RFQ["RFQ Trading Panel"]
         EVT["Event Log Viewer"]
         Store["useSyncExternalStore<br/>(RxJS → React bridge)"]
@@ -55,7 +55,7 @@ Babl sends binary SBE frame
          ▼
 ┌─── Web Worker ─────────────────────────────────┐
 │                                                 │
-│  1. Decode SBE:  PriceUpdateDecoder             │
+│  1. Decode SBE:  QuoteCreatedEventDecoder        │
 │     symbol: "EUR/USD"                           │
 │     bid: 108500000 (int64)                      │
 │     ask: 108520000 (int64)                      │

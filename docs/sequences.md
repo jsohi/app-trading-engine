@@ -23,22 +23,22 @@ sequenceDiagram
 
     M->>K: PlaceOrder (Aeron UDP, replicated)
     activate K
-    K->>K: PlaceOrderHandler.validate()
+    K->>K: NewOrderSingleHandler.validate()
     K->>K: OrderBook.add()
-    K->>K: EventSink.emit(OrderAccepted)
-    K-->>M: OrderAccepted (egress)
+    K->>K: EventSink.emit(OrderCreated)
+    K-->>M: OrderCreated (egress)
     deactivate K
 
     par FIX response
-        M-->>G: OrderAccepted (Aeron IPC)
+        M-->>G: OrderCreated (Aeron IPC)
         activate G
         G->>G: SbeToFixTranslator.decode()
         G-->>C: FIX 4.4 ExecutionReport (35=8, OrdStatus=0)
         deactivate G
     and Projection update
-        M-->>P: OrderAccepted (Aeron IPC)
+        M-->>P: OrderCreated (Aeron IPC)
         activate P
-        P->>P: OrderProjection.onOrderAccepted()
+        P->>P: OrderProjection.onEvent(OrderCreated)
         P->>Q: updated OrderView
         deactivate P
     and Browser streaming
@@ -66,7 +66,7 @@ Total (FIX-to-FIX):        ~0.15 ms
 
 ## 2. RFQ Full Flow
 
-Request-for-quote: client asks for a price, Pricing Service responds, client accepts, order fills.
+Request-for-quote: client asks for a price, Pricing Service responds, client accepts, order fills. **(Planned — APP-29, APP-30. QuoteRequestHandler, RfqStateMachine, RFQ Orchestrator, and Pricing Service are not yet implemented.)**
 
 ```mermaid
 sequenceDiagram
@@ -82,7 +82,7 @@ sequenceDiagram
     G->>K: QuoteRequest (SBE)
 
     activate K
-    K->>K: QuoteRequestHandler.validate()
+    K->>K: QuoteRequestHandler.validate() (planned)
     K->>K: RfqStateMachine → REQUESTED
     K-->>O: QuoteRequested (event)
     deactivate K
@@ -140,7 +140,7 @@ sequenceDiagram
     G->>N0: PlaceOrder (via Media Driver)
     N0->>N1: Replicate log entry
     N0->>N2: Replicate log entry
-    N0-->>G: OrderAccepted
+    N0-->>G: OrderCreated
     G-->>C: ExecutionReport
 
     Note over N0: Node 0 crashes!
@@ -157,7 +157,7 @@ sequenceDiagram
     C->>G: PlaceOrder (next order)
     G->>N1: PlaceOrder (via Media Driver)
     N1->>N2: Replicate log entry
-    N1-->>G: OrderAccepted
+    N1-->>G: OrderCreated
     G-->>C: ExecutionReport
 
     Note over N1,N2: Service continues with 2/3 nodes

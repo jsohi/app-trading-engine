@@ -263,3 +263,22 @@ graph LR
 | 11 | Final Deliverable | 2 |
 | 12 | Production Hardening | 10 |
 | | **Total** | **68** |
+
+---
+
+## Post-Plan Backlog
+
+49 additional issues were created during implementation (outside the original 68-issue wave plan). These are tracked in Linear but not assigned to specific waves.
+
+| Category | Issues | Status | Notes |
+|----------|--------|--------|-------|
+| Schema refinements | APP-117, 118, 119, 120, 121 | All Done | FX currency tags, NewOrderMultileg, OrderCancelReject, ValidUntilTime, expanded enums |
+| Reference data extensions | APP-125, 127, 128, 129 | APP-127 Done | Holiday calendars, CurrencyStore, MIC codes, LEI/Parties |
+| Cluster hardening | APP-134 through APP-143 | All Backlog | Idle strategy, graceful shutdown, auth SPI, observability, buffer tuning, CnC validation, standby nodes, snapshot pinning |
+| Infrastructure/DevOps | APP-145 through APP-149 | All Backlog | E2E test harness, Terraform/Packer/Ansible, Cloud Dev/Perf/Prod environments |
+| Code review improvements | APP-150 through APP-170 | APP-150 Done | Atomic snapshots, session lifecycle, circuit breaker, admin commands, monitoring, config, health, logging, auth, hash collision, thread safety, CI, UI, projection monitoring, FIX auth, gateway throttling/metrics/TLS/reject journal |
+| Snapshot tuning | APP-175, 176 | All Backlog | Snapshot frequency config, handler unification |
+| Order matching | APP-180 | Backlog | Price-time priority with fills and partial fills |
+| Follow-ups | APP-200 | Backlog | APP-22 follow-ups: BookFull test, EventSink emit test, idle strategy reset |
+| TODO tracking | APP-203, 204, 205 | All Backlog | Idle strategy config, currency/risk-limit loading, FIX logDir config |
+| Bug fix | APP-206 | Backlog | ClOrdID uniqueness enforcement missing |

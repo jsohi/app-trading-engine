@@ -6,21 +6,23 @@
 stateDiagram-v2
     [*] --> PendingNew: PlaceOrder received
 
-    PendingNew --> New: OrderAccepted
+    PendingNew --> New: OrderCreated
     PendingNew --> Rejected: OrderRejected
 
-    New --> PartiallyFilled: OrderPartiallyFilled
-    New --> Filled: OrderFilled
-    New --> Cancelled: OrderCancelled
+    New --> PartiallyFilled: OrderFilled (leavesQty > 0)
+    New --> Filled: OrderFilled (leavesQty == 0)
+    New --> Canceled: OrderCanceled
 
-    PartiallyFilled --> PartiallyFilled: OrderPartiallyFilled
-    PartiallyFilled --> Filled: OrderFilled
-    PartiallyFilled --> Cancelled: OrderCancelled
+    PartiallyFilled --> PartiallyFilled: OrderFilled (leavesQty > 0)
+    PartiallyFilled --> Filled: OrderFilled (leavesQty == 0)
+    PartiallyFilled --> Canceled: OrderCanceled
 
     Filled --> [*]
-    Cancelled --> [*]
+    Canceled --> [*]
     Rejected --> [*]
 ```
+
+**Note:** There is no separate `OrderPartiallyFilled` event in the SBE schema. Partial fills use `OrderFilledEvent` (template 102) with `leavesQty > 0`. A full fill is `OrderFilledEvent` with `leavesQty == 0`.
 
 ### Rejection Reasons
 
@@ -29,7 +31,13 @@ stateDiagram-v2
 | `UNKNOWN_SYMBOL` | Symbol not in OrderBook |
 | `INVALID_QUANTITY` | qty <= 0 or not int64 |
 | `INVALID_PRICE` | price <= 0 (fixed-point) |
-| `DUPLICATE_CLORDID` | clOrdId already exists |
+| `DUPLICATE_CLORDID` | clOrdId already exists (APP-206: enforcement pending) |
+| `ACCOUNT_NOT_FOUND` | Account code not in AccountStore |
+| `ACCOUNT_SUSPENDED` | Account status is not Active |
+| `ACCOUNT_NO_TRADE_PERMISSION` | Account lacks CAN_TRADE permission |
+| `INVALID_CURRENCY_CODE` | Currency not 3 uppercase ASCII letters |
+| `UNKNOWN_CURRENCY` | Currency not in CurrencyStore |
+| `ORDER_EXCEEDS_MAX_SIZE` | orderQty exceeds account's maxOrderSize |
 | `BOOK_FULL` | OrderBook capacity exceeded |
 
 ---

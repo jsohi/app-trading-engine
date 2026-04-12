@@ -6,10 +6,13 @@ All processes run on localhost, single JVM per service, shared filesystem for Ae
 
 ```
 localhost
-├── Media Driver          (shared memory: /dev/shm/aeron-trading)
-├── Cluster Node 0        (leader,   port 9000, aeron-dir: /tmp/cluster-0)
-├── Cluster Node 1        (follower, port 9001, aeron-dir: /tmp/cluster-1)
-├── Cluster Node 2        (follower, port 9002, aeron-dir: /tmp/cluster-2)
+├── Media Driver 0        (shared memory: /tmp/aeron-node-0)
+├── Media Driver 1        (shared memory: /tmp/aeron-node-1)
+├── Media Driver 2        (shared memory: /tmp/aeron-node-2)
+├── Media Driver GW       (shared memory: /tmp/aeron-gateway)
+├── Cluster Node 0        (leader,   port 9000, aeron-dir: /tmp/aeron-node-0)
+├── Cluster Node 1        (follower, port 9001, aeron-dir: /tmp/aeron-node-1)
+├── Cluster Node 2        (follower, port 9002, aeron-dir: /tmp/aeron-node-2)
 ├── Gateway               (FIX acceptor, port 9880)
 ├── Pricing Service       (Aeron IPC)
 ├── Babl WebSocket Server (port 8443)
@@ -75,33 +78,40 @@ localhost
 
 ## Port Map
 
-| Port | Service | Protocol | Purpose |
-|------|---------|----------|---------|
-| 5173 | Vite dev server | HTTP | Dev mode only, hot reload |
-| 9880 | Gateway (Artio) | FIX 4.4 TCP | Counterparty FIX sessions |
-| 8443 | Babl WebSocket | WS (binary) | Browser streaming (SBE frames) |
-| 8444 | FIX Client Bridge | WS (JSON) | Browser RFQ/order entry |
-| 9000-9002 | Cluster nodes | Aeron UDP | Inter-node consensus |
-| 9090 | Prometheus | HTTP | Metrics scraping |
-| 3000 | Grafana | HTTP | Dashboards (anonymous auth) |
-| 3100 | Loki | HTTP | Log ingestion (push API) |
-| 9464 | EventLogger | HTTP | Prometheus metrics endpoint |
+| Port | Service | Protocol | Purpose | Network |
+|------|---------|----------|---------|---------|
+| 9880 | Gateway (Artio) | FIX 4.4 TCP | Counterparty FIX sessions | **External** |
+| 5173 | Vite dev server | HTTP | Dev mode only, hot reload | Internal only |
+| 8443 | Babl WebSocket | WS (binary) | Browser streaming (SBE frames) | Internal only |
+| 8444 | FIX Client Bridge | WS (JSON) | Browser RFQ/order entry | Internal only |
+| 9000-9002 | Cluster nodes | Aeron UDP | Inter-node consensus | Internal only |
+| 9090 | Prometheus | HTTP | Metrics scraping | Internal only |
+| 3000 | Grafana | HTTP | Dashboards (anonymous auth) | Internal only |
+| 3100 | Loki | HTTP | Log ingestion (push API) | Internal only |
+| 9464 | EventLogger | HTTP | Prometheus metrics endpoint | Internal only |
 
 ## Aeron Directory Layout
 
 ```
-/dev/shm/aeron-trading/          # Media Driver shared memory
+/tmp/aeron-node-0/               # Node 0 Aeron media driver directory
 ├── cnc.dat                      # Command-and-control file
 ├── images/                      # Log buffers
-│   ├── cluster-0.log
-│   ├── cluster-1.log
-│   └── cluster-2.log
 └── publications/                # IPC publications
 
-/tmp/cluster-0/                  # Node 0 cluster directory
-├── recording-log/               # Aeron Archive recordings (NEVER truncated)
-├── consensus-module/            # Raft state
-└── snapshots/                   # Periodic write-model snapshots (last 3 retained)
+/tmp/aeron-node-1/               # Node 1 Aeron media driver directory
+/tmp/aeron-node-2/               # Node 2 Aeron media driver directory
+/tmp/aeron-gateway/              # Gateway Aeron media driver directory
+
+cluster-data/                    # Configurable via LauncherConfig (default: cluster-data)
+├── cluster-0/                   # Node 0 cluster state
+│   ├── recording-log/           # Aeron Archive recordings (NEVER truncated)
+│   ├── consensus-module/        # Raft state
+│   └── snapshots/               # Periodic write-model snapshots (last 3 retained)
+├── cluster-1/                   # Node 1 cluster state
+├── cluster-2/                   # Node 2 cluster state
+├── archive-0/                   # Node 0 archive directory
+├── archive-1/                   # Node 1 archive directory
+└── archive-2/                   # Node 2 archive directory
 ```
 
 ## Archive Log Retention Policy

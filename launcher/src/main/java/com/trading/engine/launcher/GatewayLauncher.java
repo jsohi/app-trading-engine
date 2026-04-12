@@ -97,7 +97,7 @@ public final class GatewayLauncher {
             fixHost,
             fixPort,
             "aeron:ipc",
-            "fix-logs", // TODO(APP-198): resolve against configurable logDir
+            "fix-logs", // TODO(APP-205): resolve against configurable logDir
             "TRADING",
             Set.of("CLIENT1", "CLIENT2", "FIX_BRIDGE"),
             registry,
