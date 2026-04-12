@@ -31,12 +31,20 @@ public final class GatewayComponents implements AutoCloseable {
     this.clusterClient = Objects.requireNonNull(clusterClient, "clusterClient");
   }
 
-  /** Returns the agent runner wrapping the FIX gateway. */
+  /**
+   * Returns the agent runner wrapping the FIX gateway duty cycle.
+   *
+   * @return the agent runner; never null
+   */
   public AgentRunner agentRunner() {
     return agentRunner;
   }
 
-  /** Returns the cluster client. */
+  /**
+   * Returns the cluster client used for cluster communication.
+   *
+   * @return the cluster client; never null
+   */
   public ClusterClient clusterClient() {
     return clusterClient;
   }

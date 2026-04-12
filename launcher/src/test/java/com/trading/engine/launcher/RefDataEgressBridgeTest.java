@@ -38,14 +38,14 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void nullCollector_throwsNpe() {
+  void constructor_nullCollector_throwsNpe() {
     assertThrows(NullPointerException.class, () -> new RefDataEgressBridge(null));
   }
 
   // ===== Single event routing =====
 
   @Test
-  void singleAccountLoadedEvent_routesToOnLoaded() {
+  void onMessage_singleAccountLoadedEvent_routesToOnLoaded() {
     final int length = encodeAccountLoaded(buffer, 0);
 
     final var result = bridge.onMessage(1L, 0L, buffer, 0, length, null);
@@ -56,7 +56,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void singleAccountLoadRejectedEvent_routesToOnRejected() {
+  void onMessage_singleAccountLoadRejectedEvent_routesToOnRejected() {
     final int length = encodeAccountLoadRejected(buffer, 0, "duplicate account");
 
     final var result = bridge.onMessage(1L, 0L, buffer, 0, length, null);
@@ -64,11 +64,11 @@ class RefDataEgressBridgeTest {
     assertEquals(Action.CONTINUE, result);
     assertEquals(0, collector.loadedCount());
     assertEquals(1, collector.rejectedCount());
-    assertEquals("duplicate account", collector.rejectionReasons().getFirst().trim());
+    assertEquals("duplicate account", collector.rejectionReasons().getFirst());
   }
 
   @Test
-  void singleCurrencyLoadedEvent_routesToOnLoaded() {
+  void onMessage_singleCurrencyLoadedEvent_routesToOnLoaded() {
     final int length = encodeCurrencyLoaded(buffer, 0);
 
     bridge.onMessage(1L, 0L, buffer, 0, length, null);
@@ -77,17 +77,17 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void singleCurrencyLoadRejectedEvent_routesToOnRejected() {
+  void onMessage_singleCurrencyLoadRejectedEvent_routesToOnRejected() {
     final int length = encodeCurrencyLoadRejected(buffer, 0, "invalid ISO code");
 
     bridge.onMessage(1L, 0L, buffer, 0, length, null);
 
     assertEquals(1, collector.rejectedCount());
-    assertEquals("invalid ISO code", collector.rejectionReasons().getFirst().trim());
+    assertEquals("invalid ISO code", collector.rejectionReasons().getFirst());
   }
 
   @Test
-  void singleRiskLimitLoadedEvent_routesToOnLoaded() {
+  void onMessage_singleRiskLimitLoadedEvent_routesToOnLoaded() {
     final int length = encodeRiskLimitLoaded(buffer, 0);
 
     bridge.onMessage(1L, 0L, buffer, 0, length, null);
@@ -96,19 +96,19 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void singleRiskLimitLoadRejectedEvent_routesToOnRejected() {
+  void onMessage_singleRiskLimitLoadRejectedEvent_routesToOnRejected() {
     final int length = encodeRiskLimitLoadRejected(buffer, 0, "limit too high");
 
     bridge.onMessage(1L, 0L, buffer, 0, length, null);
 
     assertEquals(1, collector.rejectedCount());
-    assertEquals("limit too high", collector.rejectionReasons().getFirst().trim());
+    assertEquals("limit too high", collector.rejectionReasons().getFirst());
   }
 
   // ===== Batch processing =====
 
   @Test
-  void batchOfThreeLoadedEvents_onLoadedCalledThreeTimes() {
+  void onMessage_batchOfThreeLoadedEvents_onLoadedCalledThreeTimes() {
     int offset = 0;
     offset += encodeAccountLoaded(buffer, offset);
     offset += encodeAccountLoaded(buffer, offset);
@@ -121,7 +121,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void mixedBatch_twoLoadedOneRejected_correctRouting() {
+  void onMessage_mixedBatch_twoLoadedOneRejected_correctRouting() {
     int offset = 0;
     offset += encodeAccountLoaded(buffer, offset);
     offset += encodeAccountLoaded(buffer, offset);
@@ -134,7 +134,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void mixedBatch_allSixEventTypes_correctRouting() {
+  void onMessage_mixedBatch_allSixEventTypes_correctRouting() {
     int offset = 0;
     offset += encodeAccountLoaded(buffer, offset);
     offset += encodeAccountLoadRejected(buffer, offset, "acct reject");
@@ -152,7 +152,7 @@ class RefDataEgressBridgeTest {
   // ===== Edge cases =====
 
   @Test
-  void unknownTemplateId_ignoredNoCollectorCalls() {
+  void onMessage_unknownTemplateId_ignoredNoCollectorCalls() {
     // Write a header with an unknown template ID (999)
     headerEncoder.wrap(buffer, 0);
     headerEncoder.blockLength(50).templateId(999).schemaId(1).version(1);
@@ -169,7 +169,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void truncatedFragment_processesCompleteMessagesOnly() {
+  void onMessage_truncatedFragment_processesCompleteMessagesOnly() {
     int offset = 0;
     offset += encodeAccountLoaded(buffer, offset);
     // Add partial header (less than HEADER_LENGTH bytes of a second message)
@@ -181,7 +181,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void truncatedBody_processesCompleteMessagesOnly() {
+  void onMessage_truncatedBody_processesCompleteMessagesOnly() {
     int offset = 0;
     offset += encodeAccountLoaded(buffer, offset);
     // Write a valid header for a second message but truncate the body
@@ -200,7 +200,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void nonZeroOffset_messagesDecodedCorrectly() {
+  void onMessage_nonZeroOffset_messagesDecodedCorrectly() {
     final int startOffset = 64; // simulate fragment starting mid-buffer
     final int length = encodeAccountLoaded(buffer, startOffset);
 
@@ -210,7 +210,7 @@ class RefDataEgressBridgeTest {
   }
 
   @Test
-  void emptyFragment_noCollectorCalls() {
+  void onMessage_emptyFragment_noCollectorCalls() {
     bridge.onMessage(1L, 0L, buffer, 0, 0, null);
 
     assertEquals(0, collector.loadedCount());

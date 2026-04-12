@@ -536,6 +536,12 @@ public final class ClusterClient implements Agent, AutoCloseable {
                 + reconnectBaseDelayNs
                 + ")");
       }
+      if (!ownsAeronClient) {
+        throw new IllegalStateException(
+            "ownsAeronClient(false) requires an external Aeron client via"
+                + " AeronCluster.Context.aeron(), which is not yet supported by this builder."
+                + " Use ownsAeronClient(true) (default).");
+      }
       return new ClusterClient(this);
     }
   }

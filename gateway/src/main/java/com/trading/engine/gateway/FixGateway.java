@@ -364,6 +364,12 @@ public final class FixGateway implements Agent {
    *
    * <p><b>Visibility:</b> Public for cross-package method reference from {@link
    * com.trading.engine.launcher.GatewayLauncher}. Not intended for external callers.
+   *
+   * @param sessionKey Artio session key identifying the target FIX session
+   * @param templateId SBE template ID of the cluster response message
+   * @param timestamp cluster timestamp (epoch nanoseconds) of the response event
+   * @return {@code true} if the message was delivered or the session is gone (ACK either way);
+   *     {@code false} if the Artio session's send buffer is full (backpressure)
    */
   public boolean onEgressMessage(
       final long sessionKey, final int templateId, final long timestamp) {

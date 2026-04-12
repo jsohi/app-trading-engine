@@ -127,15 +127,15 @@ final class RefDataEgressBridge implements ControlledEgressListener {
         case ACCOUNT_LOADED, CURRENCY_LOADED, RISK_LIMIT_LOADED -> collector.onLoaded();
         case ACCOUNT_LOAD_REJECTED -> {
           acctRejDecoder.wrap(buffer, bodyOffset, blockLen, headerDecoder.version());
-          collector.onRejected(acctRejDecoder.text());
+          collector.onRejected(acctRejDecoder.text().trim());
         }
         case CURRENCY_LOAD_REJECTED -> {
           ccyRejDecoder.wrap(buffer, bodyOffset, blockLen, headerDecoder.version());
-          collector.onRejected(ccyRejDecoder.text());
+          collector.onRejected(ccyRejDecoder.text().trim());
         }
         case RISK_LIMIT_LOAD_REJECTED -> {
           riskRejDecoder.wrap(buffer, bodyOffset, blockLen, headerDecoder.version());
-          collector.onRejected(riskRejDecoder.text());
+          collector.onRejected(riskRejDecoder.text().trim());
         }
         default -> {
           // Ignore unknown template IDs — future ref-data types will be added here.

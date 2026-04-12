@@ -19,7 +19,7 @@ class GatewayLauncherValidationTest {
   // ===== fixHost =====
 
   @Test
-  void nullFixHost_throwsNpe() {
+  void launch_nullFixHost_throwsNpe() {
     final var ex =
         assertThrows(
             NullPointerException.class,
@@ -28,7 +28,7 @@ class GatewayLauncherValidationTest {
   }
 
   @Test
-  void blankFixHost_throwsIae() {
+  void launch_blankFixHost_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -39,7 +39,7 @@ class GatewayLauncherValidationTest {
   // ===== fixPort =====
 
   @Test
-  void portZero_throwsIae() {
+  void launch_portZero_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -48,14 +48,14 @@ class GatewayLauncherValidationTest {
   }
 
   @Test
-  void portNegative_throwsIae() {
+  void launch_portNegative_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> GatewayLauncher.launch("localhost", -1, "/tmp/aeron", "0=localhost:20110", IDLE));
   }
 
   @Test
-  void portAboveMax_throwsIae() {
+  void launch_portAboveMax_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -68,7 +68,7 @@ class GatewayLauncherValidationTest {
   // ===== aeronDir =====
 
   @Test
-  void nullAeronDir_throwsNpe() {
+  void launch_nullAeronDir_throwsNpe() {
     final var ex =
         assertThrows(
             NullPointerException.class,
@@ -77,7 +77,7 @@ class GatewayLauncherValidationTest {
   }
 
   @Test
-  void blankAeronDir_throwsIae() {
+  void launch_blankAeronDir_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -88,7 +88,7 @@ class GatewayLauncherValidationTest {
   // ===== ingressEndpoints =====
 
   @Test
-  void nullIngressEndpoints_throwsNpe() {
+  void launch_nullIngressEndpoints_throwsNpe() {
     final var ex =
         assertThrows(
             NullPointerException.class,
@@ -97,7 +97,7 @@ class GatewayLauncherValidationTest {
   }
 
   @Test
-  void blankIngressEndpoints_throwsIae() {
+  void launch_blankIngressEndpoints_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -108,7 +108,7 @@ class GatewayLauncherValidationTest {
   // ===== idleStrategy =====
 
   @Test
-  void nullIdleStrategy_throwsNpe() {
+  void launch_nullIdleStrategy_throwsNpe() {
     final var ex =
         assertThrows(
             NullPointerException.class,
