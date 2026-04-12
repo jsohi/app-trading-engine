@@ -21,7 +21,7 @@ allowlist. The engine acts as a FIX 4.4 acceptor (TargetCompID = `TRADING`).
 validators before the session is established:
 
 ```java
-// FixGateway.java, lines 178-181
+// FixGateway.java — FixGateway constructor
 MessageValidationStrategy.targetCompId(targetCompId)
     .and(MessageValidationStrategy.senderCompId(allowedSenderCompIds));
 ```
@@ -52,7 +52,7 @@ GatewayLauncher.java:
 ```
 
 **Current configuration.** The allowed SenderCompID set is hardcoded in
-`GatewayLauncher.java` (line 102):
+`GatewayLauncher.java` (`launch()` method):
 
 ```java
 Set.of("CLIENT1", "CLIENT2", "FIX_BRIDGE")
@@ -236,7 +236,7 @@ consensus.
 ### APP-157: Externalize CompID Allowlist
 
 Move the hardcoded `Set.of("CLIENT1", "CLIENT2", "FIX_BRIDGE")` from
-`GatewayLauncher.java` (line 102) to an external configuration source (properties file,
+`GatewayLauncher.java` to an external configuration source (properties file,
 environment variable, or configuration service). This enables operational management of
 FIX client access without recompilation.
 
