@@ -147,6 +147,17 @@ final class RefDataEgressBridge implements ControlledEgressListener {
     return Action.CONTINUE;
   }
 
+  /**
+   * Receives cluster session lifecycle notifications. Logs at debug level only — no action needed
+   * during startup ref-data loading.
+   *
+   * @param correlationId correlation ID associated with the session event
+   * @param clusterSessionId cluster session ID
+   * @param leadershipTermId Raft leadership term ID at the time of the event
+   * @param leaderMemberId current leader member ID
+   * @param code session event code (e.g., OK, ERROR, CLOSED)
+   * @param detail broker-provided event detail text
+   */
   @Override
   public void onSessionEvent(
       final long correlationId,
@@ -163,6 +174,15 @@ final class RefDataEgressBridge implements ControlledEgressListener {
         detail);
   }
 
+  /**
+   * Receives leader-change notifications. Logs at debug level only — the temporary ref-data
+   * connection does not need to take action on leader changes.
+   *
+   * @param clusterSessionId cluster session ID
+   * @param leadershipTermId new Raft leadership term ID
+   * @param leaderMemberId new leader member ID
+   * @param ingressEndpoints ingress endpoints advertised by the new leader
+   */
   @Override
   public void onNewLeader(
       final long clusterSessionId,
