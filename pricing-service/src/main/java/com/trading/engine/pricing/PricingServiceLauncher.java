@@ -471,14 +471,16 @@ public final class PricingServiceLauncher {
   // ===========================================================================
 
   /**
-   * Pads a symbol string to the 8-byte SBE Symbol type with null-byte padding. Symbols shorter than
-   * 8 characters are right-padded with {@code \0} bytes per SBE fixed-length char convention.
+   * Pads a symbol string to the 8-byte SBE Symbol type with space-padding. Symbols shorter than 8
+   * characters are right-padded with {@code ' '} (0x20) bytes per FIX/SBE fixed-length char
+   * convention. This is consistent with how Artio and the gateway encode Symbol fields.
    *
    * @param symbol the symbol name (e.g., "EURUSD"); must be {@code <= 8} characters
    * @return 8-byte array suitable for SBE Symbol fields
    */
   private static byte[] padSymbol(final String symbol) {
     final byte[] padded = new byte[8];
+    java.util.Arrays.fill(padded, (byte) ' ');
     final byte[] src = symbol.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, padded, 0, Math.min(src.length, 8));
     return padded;

@@ -233,7 +233,7 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
    * invocation. Limits per-tick CPU consumption and ensures the sweep and market data adapter get a
    * fair share of the duty cycle.
    */
-  private final int pollLimit = 10;
+  private final int pollLimit = 128;
 
   // ===========================================================================
   // Constructor
@@ -485,20 +485,38 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
       }
       case Forward -> {
         // Forward: mid-rate = spot + forward points for the settlement tenor.
-        final int daysToSettlement = tenorToDays(decoder.tenor());
+        // For BRK (broken date) tenors, parse the actual settlDate from the message
+        // rather than using a static approximation. The settlDate field is YYYYMMDD ASCII.
+        int daysToSettlement = tenorToDays(decoder.tenor());
+        if (decoder.tenor() == com.trading.engine.messages.sbe.TenorEnum.BRK) {
+          daysToSettlement = parseSettlDateDays(decoder);
+        }
         final long fwdPoints =
             forwardPointSource.forwardPoints(
                 decoderBuffer, symbolOff, SYMBOL_LENGTH, daysToSettlement);
         midRate = spotMid + fwdPoints;
       }
       case Swap -> {
-        // Swap: near leg at spot, far leg at spot + far forward points.
-        // For v1, use tenor as the far leg tenor; near leg is spot (0 days).
-        final int farDays = tenorToDays(decoder.tenor());
+        // Swap: near leg + far leg, each priced from spot + forward points.
+        // Read near/far tenors from the NoLegs group (leg 0 = near, leg 1 = far).
+        // Falls back to header tenor for the far leg if NoLegs is empty.
+        int nearDays = 0; // default: near = spot
+        int farDays = tenorToDays(decoder.tenor()); // default: header tenor
+        final var legs = decoder.noLegs();
+        if (legs.count() >= 2) {
+          legs.next(); // leg 0 = near
+          nearDays = tenorToDays(legs.legTenor());
+          legs.next(); // leg 1 = far
+          farDays = tenorToDays(legs.legTenor());
+        } else if (legs.count() == 1) {
+          legs.next();
+          farDays = tenorToDays(legs.legTenor());
+        }
+        final long nearFwdPoints =
+            forwardPointSource.forwardPoints(decoderBuffer, symbolOff, SYMBOL_LENGTH, nearDays);
         final long farFwdPoints =
             forwardPointSource.forwardPoints(decoderBuffer, symbolOff, SYMBOL_LENGTH, farDays);
-        // The "swap points" are the forward points for the far leg (since near = spot = 0).
-        swapPoints = farFwdPoints;
+        swapPoints = farFwdPoints - nearFwdPoints;
         // For the spread model, use the far-leg outright as the mid-rate.
         midRate = spotMid + farFwdPoints;
       }
@@ -560,7 +578,7 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
         orderQty, // bidSize = orderQty (full fill)
         orderQty, // offerSize = orderQty (full fill)
         validUntil,
-        midRate,
+        spotMid, // Store SPOT mid for last-look — not the outright (forward-adjusted) rate.
         nanoClock.nanoTime());
 
     // --- Step 8: Encode PriceResponse ---
@@ -780,6 +798,65 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
       return TENOR_TO_DAYS[idx];
     }
     return 0;
+  }
+
+  /** Pre-allocated scratch for settlDate parsing. */
+  private final byte[] settlDateScratch = new byte[8];
+
+  /**
+   * Parses the settlDate field (YYYYMMDD ASCII) from a PriceRequest and estimates the number of
+   * calendar days from today. Uses a simplified 30-day-month approximation for the difference
+   * calculation — sufficient for forward point interpolation. A precise business-day calculation
+   * requires a holiday calendar (APP-125).
+   *
+   * <p><b>Allocation:</b> zero allocation — uses pre-allocated scratch buffer.
+   *
+   * @param decoder the PriceRequest decoder positioned on the current message
+   * @return estimated calendar days to settlement, or 30 as fallback if parsing fails
+   */
+  private int parseSettlDateDays(final PriceRequestDecoder decoder) {
+    decoder.getSettlDate(settlDateScratch, 0);
+    // Parse YYYYMMDD: Y=scratch[0..3], M=scratch[4..5], D=scratch[6..7]
+    final int year = parseDigits(settlDateScratch, 0, 4);
+    final int month = parseDigits(settlDateScratch, 4, 2);
+    final int day = parseDigits(settlDateScratch, 6, 2);
+    if (year == 0 || month == 0) {
+      return 30; // fallback for empty/invalid settlDate
+    }
+    // Approximate days from epoch-ish anchor using 30-day months.
+    // The absolute value doesn't matter — only the relative difference between tenors matters
+    // for forward point interpolation.
+    final int settlDayCount = year * 365 + month * 30 + day;
+    // Estimate "today" the same way for a consistent delta.
+    final long nowNanos = epochClock.nanoTime();
+    final long nowDays = nowNanos / 86_400_000_000_000L; // epoch nanos to days
+    // Approximate current date components from epoch days (since ~1970).
+    final int nowYear = (int) (1970 + nowDays / 365);
+    final int nowMonth = (int) ((nowDays % 365) / 30) + 1;
+    final int nowDay = (int) ((nowDays % 365) % 30) + 1;
+    final int todayDayCount = nowYear * 365 + nowMonth * 30 + nowDay;
+    final int delta = settlDayCount - todayDayCount;
+    return Math.max(delta, 1); // at least 1 day for any forward
+  }
+
+  /**
+   * Parses ASCII digits from a byte array into an integer. Zero allocation.
+   *
+   * @param buf source bytes (ASCII '0'..'9')
+   * @param offset start offset
+   * @param length number of digits
+   * @return the parsed integer, or 0 if any byte is not a digit
+   */
+  private static int parseDigits(final byte[] buf, final int offset, final int length) {
+    int result = 0;
+    for (int i = 0; i < length; i++) {
+      final int d = buf[offset + i] - '0';
+      if (d < 0 || d > 9) {
+        return 0;
+      }
+      result = result * 10 + d;
+    }
+    return result;
   }
 
   /**
