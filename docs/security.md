@@ -45,7 +45,7 @@ enforces two capacity gates before the session is admitted:
 If either limit is exceeded, the session is immediately logged out and disconnected. A
 stateless `NoOpSessionHandler` is returned to avoid leaking resources.
 
-```
+```text
 GatewayLauncher.java:
   MAX_SESSIONS = 64
   MAX_SESSIONS_PER_COMP_ID = 4
@@ -92,7 +92,7 @@ ports should not be published to the host network.
 connections, validating tokens on the HTTP upgrade request before establishing the
 WebSocket session.
 
-### 1.3 Cluster Inter-Node Communication (Ports 20110-22220)
+### 1.3 Cluster Inter-Node Communication (Ports 20110-22440)
 
 **Currently UNAUTHENTICATED.**
 
@@ -100,7 +100,7 @@ Aeron Cluster uses UDP for consensus (Raft log replication, leader election, hea
 The Aeron Cluster library does not natively support mutual TLS or any transport-layer
 authentication on inter-node communication.
 
-A rogue process that can reach ports 20110-22220 could theoretically inject consensus
+A rogue process that can reach ports 20110-22440 could theoretically inject consensus
 messages or disrupt leader election. This risk is mitigated by:
 
 - Deploying all cluster nodes on a private network segment
@@ -134,7 +134,7 @@ the idiomatic extension point provided by Aeron Cluster for authentication.
 
 For any environment beyond localhost development:
 
-```
+```text
 ALLOW  tcp/9880  FROM counterparty-CIDRs   # FIX clients
 ALLOW  tcp/8443  FROM web-ui-container      # Babl WebSocket (internal proxy only)
 ALLOW  tcp/8444  FROM web-ui-container      # FIX Client Bridge (internal proxy only)
@@ -186,7 +186,7 @@ level (e.g., LUKS, dm-crypt, AWS EBS encryption).
 
 - **FIX sessions (port 9880):** Plaintext TCP. No TLS/FIXS. `TODO(APP-169)` plans
   mutual TLS (FIXS -- FIX over TLS) for counterparty connections.
-- **Cluster communication (ports 20110-22220):** Plaintext UDP. Aeron does not natively
+- **Cluster communication (ports 20110-22440):** Plaintext UDP. Aeron does not natively
   support TLS on its transport. `TODO(APP-136)` is the planned mitigation.
 - **WebSocket (ports 8443, 8444):** Plaintext `ws://`. No `wss://` (TLS). For production,
   TLS termination should be handled by a reverse proxy (nginx, HAProxy) in front of the
@@ -265,7 +265,7 @@ traffic in transit and provides cryptographic identity verification of counterpa
 
 Pre-deployment checklist for any environment beyond localhost:
 
-- [ ] Restrict ports 8443, 8444, 20110-22220 to internal network only
+- [ ] Restrict ports 8443, 8444, 20110-22440 to internal network only
 - [ ] Configure OS firewall rules per Section 2.2
 - [ ] Run trading engine processes under a dedicated, unprivileged OS user
 - [ ] Set `/tmp/aeron-node-*/` and `/tmp/aeron-gateway/` permissions to `0700` for the engine user
