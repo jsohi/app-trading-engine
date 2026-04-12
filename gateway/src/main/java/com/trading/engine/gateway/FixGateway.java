@@ -100,6 +100,7 @@ public final class FixGateway implements Agent {
   // doWork(). If external shutdown coordination is needed, the caller must signal the AgentRunner
   // to stop, which then calls onClose() on the correct thread.
   private boolean draining;
+  private boolean clusterClientStarted;
   private long lastSweepNs;
 
   /**
@@ -205,6 +206,15 @@ public final class FixGateway implements Agent {
 
     library = FixLibrary.connect(libConfig);
     LOG.info().append("FIX Library connected").commit();
+
+    // Start cluster client within the Agent lifecycle — called exactly once by AgentRunner.
+    // Delegating here (instead of a manual call in the launcher) ensures the lifecycle contract
+    // is respected and prevents double-start if FixGateway is later composed into a
+    // DynamicCompositeAgent.
+    if (!clusterClientStarted && clusterClient != null) {
+      clusterClient.onStart();
+      clusterClientStarted = true;
+    }
 
     lastSweepNs = nanoClock.nanoTime();
   }
@@ -352,7 +362,8 @@ public final class FixGateway implements Agent {
    * Called by {@link ClusterEgressListener} when a cluster response arrives. Translates SBE → FIX
    * and sends to the correct Artio session.
    */
-  boolean onEgressMessage(final long sessionKey, final int templateId, final long timestamp) {
+  public boolean onEgressMessage(
+      final long sessionKey, final int templateId, final long timestamp) {
     final GatewaySession session = registry.findSession(sessionKey);
     if (session == null || !session.isConnected()) {
       if (session != null) {

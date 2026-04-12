@@ -16,5 +16,7 @@ application {
     applicationDefaultJvmArgs =
         listOf(
             "-DLog4jContextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
+            "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
         )
 }

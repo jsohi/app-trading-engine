@@ -1,0 +1,244 @@
+package com.trading.engine.launcher;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import org.junit.jupiter.api.Test;
+
+/** Tests for {@link LauncherConfig} — immutable record validation and system property parsing. */
+class LauncherConfigTest {
+
+  // ===== Valid construction =====
+
+  @Test
+  void validConfig_allFieldsAccessible() {
+    final var config =
+        new LauncherConfig("localhost", 9880, 3, "cluster-data", "logs", 10, "accounts.yaml");
+
+    assertEquals("localhost", config.fixHost());
+    assertEquals(9880, config.fixPort());
+    assertEquals(3, config.nodeCount());
+    assertEquals("cluster-data", config.baseDir());
+    assertEquals("logs", config.logDir());
+    assertEquals(10, config.driverShutdownTimeoutSeconds());
+    assertEquals("accounts.yaml", config.accountsFile());
+  }
+
+  @Test
+  void boundaryPorts_accepted() {
+    new LauncherConfig("localhost", 1, 1, "data", "logs", 1, "a.yaml");
+    new LauncherConfig("localhost", 65535, 1, "data", "logs", 1, "a.yaml");
+  }
+
+  // ===== fixHost validation =====
+
+  @Test
+  void nullFixHost_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new LauncherConfig(null, 9880, 3, "data", "logs", 10, "a.yaml"));
+    assertEquals("fix.host must not be blank", ex.getMessage());
+  }
+
+  @Test
+  void blankFixHost_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("  ", 9880, 3, "data", "logs", 10, "a.yaml"));
+  }
+
+  // ===== fixPort validation =====
+
+  @Test
+  void portZero_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new LauncherConfig("localhost", 0, 3, "data", "logs", 10, "a.yaml"));
+    assertEquals("fix.port must be in [1, 65535], got: 0", ex.getMessage());
+  }
+
+  @Test
+  void portNegative_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", -1, 3, "data", "logs", 10, "a.yaml"));
+  }
+
+  @Test
+  void portAboveMax_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new LauncherConfig("localhost", 65536, 3, "data", "logs", 10, "a.yaml"));
+    assertEquals("fix.port must be in [1, 65535], got: 65536", ex.getMessage());
+  }
+
+  // ===== nodeCount validation =====
+
+  @Test
+  void nodeCountZero_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 0, "data", "logs", 10, "a.yaml"));
+  }
+
+  @Test
+  void nodeCountAboveMax_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                new LauncherConfig(
+                    "localhost", 9880, ClusterConfig.MAX_NODES + 1, "data", "logs", 10, "a.yaml"));
+    assertEquals(
+        "cluster.nodeCount must be in [1, " + ClusterConfig.MAX_NODES + "], got: 4",
+        ex.getMessage());
+  }
+
+  // ===== baseDir validation =====
+
+  @Test
+  void nullBaseDir_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, null, "logs", 10, "a.yaml"));
+  }
+
+  @Test
+  void blankBaseDir_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "", "logs", 10, "a.yaml"));
+  }
+
+  // ===== logDir validation =====
+
+  @Test
+  void nullLogDir_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "data", null, 10, "a.yaml"));
+  }
+
+  @Test
+  void blankLogDir_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "data", "  ", 10, "a.yaml"));
+  }
+
+  // ===== driverShutdownTimeoutSeconds validation =====
+
+  @Test
+  void zeroTimeout_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", 0, "a.yaml"));
+    assertEquals("driver.shutdown.timeout.seconds must be > 0, got: 0", ex.getMessage());
+  }
+
+  @Test
+  void negativeTimeout_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", -5, "a.yaml"));
+  }
+
+  // ===== accountsFile validation =====
+
+  @Test
+  void nullAccountsFile_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", 10, null));
+  }
+
+  @Test
+  void blankAccountsFile_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", 10, "  "));
+  }
+
+  // ===== System property parsing =====
+
+  @Test
+  void fromSystemProperties_usesDefaults() {
+    final String[] keys = {
+      "fix.host",
+      "fix.port",
+      "cluster.nodeCount",
+      "cluster.baseDir",
+      "log.dir",
+      "driver.shutdown.timeout.seconds",
+      "accounts.file"
+    };
+    // Save and clear any overrides from other tests
+    final String[] saved = new String[keys.length];
+    for (int i = 0; i < keys.length; i++) {
+      saved[i] = System.getProperty(keys[i]);
+      System.clearProperty(keys[i]);
+    }
+    try {
+      final var config = LauncherConfig.fromSystemProperties();
+
+      assertEquals("localhost", config.fixHost());
+      assertEquals(9880, config.fixPort());
+      assertEquals(3, config.nodeCount());
+      assertEquals("cluster-data", config.baseDir());
+      assertEquals("logs", config.logDir());
+      assertEquals(10, config.driverShutdownTimeoutSeconds());
+      assertEquals("accounts.yaml", config.accountsFile());
+    } finally {
+      for (int i = 0; i < keys.length; i++) {
+        if (saved[i] != null) {
+          System.setProperty(keys[i], saved[i]);
+        }
+      }
+    }
+  }
+
+  @Test
+  void fromSystemProperties_customValues() {
+    System.setProperty("fix.host", "0.0.0.0");
+    System.setProperty("fix.port", "5555");
+    System.setProperty("cluster.nodeCount", "1");
+    System.setProperty("cluster.baseDir", "/var/cluster");
+    System.setProperty("log.dir", "/var/log");
+    System.setProperty("driver.shutdown.timeout.seconds", "30");
+    System.setProperty("accounts.file", "/etc/accounts.yaml");
+
+    try {
+      final var config = LauncherConfig.fromSystemProperties();
+
+      assertEquals("0.0.0.0", config.fixHost());
+      assertEquals(5555, config.fixPort());
+      assertEquals(1, config.nodeCount());
+      assertEquals("/var/cluster", config.baseDir());
+      assertEquals("/var/log", config.logDir());
+      assertEquals(30, config.driverShutdownTimeoutSeconds());
+      assertEquals("/etc/accounts.yaml", config.accountsFile());
+    } finally {
+      System.clearProperty("fix.host");
+      System.clearProperty("fix.port");
+      System.clearProperty("cluster.nodeCount");
+      System.clearProperty("cluster.baseDir");
+      System.clearProperty("log.dir");
+      System.clearProperty("driver.shutdown.timeout.seconds");
+      System.clearProperty("accounts.file");
+    }
+  }
+
+  @Test
+  void fromSystemProperties_nonNumericPort_throwsNumberFormat() {
+    System.setProperty("fix.port", "abc");
+    try {
+      assertThrows(NumberFormatException.class, LauncherConfig::fromSystemProperties);
+    } finally {
+      System.clearProperty("fix.port");
+    }
+  }
+}

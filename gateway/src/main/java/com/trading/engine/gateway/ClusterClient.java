@@ -69,6 +69,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
   private final ErrorHandler errorHandler;
   private final NanoClock nanoClock;
   private final InFlightTracker inFlightTracker;
+  private final boolean ownsAeronClient;
 
   // --- Pre-allocated callback (zero-alloc on doWork hot path) ---
   private final InFlightTracker.TimeoutCallback timeoutCallback = this::onRequestTimeout;
@@ -95,6 +96,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
     this.errorHandler = requireNonNull(builder.errorHandler, "errorHandler");
     this.nanoClock = builder.nanoClock;
     this.inFlightTracker = requireNonNull(builder.inFlightTracker, "inFlightTracker");
+    this.ownsAeronClient = builder.ownsAeronClient;
   }
 
   /** Create a new builder for configuring a {@link ClusterClient}. */
@@ -284,7 +286,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
             .controlledEgressListener(egressListener)
             .messageTimeoutNs(messageTimeoutNs)
             .errorHandler(errorHandler)
-            .ownsAeronClient(false);
+            .ownsAeronClient(ownsAeronClient);
     try {
       aeronCluster = AeronCluster.connect(ctx);
       state = State.CONNECTED;
@@ -413,6 +415,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
     ErrorHandler errorHandler;
     NanoClock nanoClock = SystemNanoClock.INSTANCE;
     InFlightTracker inFlightTracker;
+    boolean ownsAeronClient = true;
 
     Builder() {}
 
@@ -494,8 +497,45 @@ public final class ClusterClient implements Agent, AutoCloseable {
       return this;
     }
 
-    /** Build the {@link ClusterClient}. Validates that all required fields are set. */
+    /**
+     * Controls whether the {@link AeronCluster} created during {@link ClusterClient#connect()} owns
+     * (and closes) its internally-created {@link io.aeron.Aeron} client.
+     *
+     * <p>Set {@code true} (default) when the ClusterClient manages its own Aeron lifecycle. Set
+     * {@code false} only when sharing an externally-managed Aeron client via {@link
+     * AeronCluster.Context#aeron(io.aeron.Aeron)}.
+     *
+     * <p><b>WARNING:</b> Setting {@code false} without providing an external Aeron client via the
+     * context leaks an Aeron instance on every reconnect cycle.
+     *
+     * @param ownsAeronClient true if AeronCluster should close its Aeron client on close
+     * @return this builder
+     */
+    public Builder ownsAeronClient(final boolean ownsAeronClient) {
+      this.ownsAeronClient = ownsAeronClient;
+      return this;
+    }
+
+    /**
+     * Build the {@link ClusterClient}. Validates that all required fields are set and timing
+     * parameters are within valid ranges.
+     *
+     * @throws NullPointerException if any required field is null
+     * @throws IllegalArgumentException if reconnect delay parameters are invalid
+     */
     public ClusterClient build() {
+      if (reconnectBaseDelayNs <= 0) {
+        throw new IllegalArgumentException(
+            "reconnectBaseDelayNs must be > 0, got: " + reconnectBaseDelayNs);
+      }
+      if (reconnectMaxDelayNs < reconnectBaseDelayNs) {
+        throw new IllegalArgumentException(
+            "reconnectMaxDelayNs ("
+                + reconnectMaxDelayNs
+                + ") must be >= reconnectBaseDelayNs ("
+                + reconnectBaseDelayNs
+                + ")");
+      }
       return new ClusterClient(this);
     }
   }
