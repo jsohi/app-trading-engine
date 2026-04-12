@@ -203,14 +203,24 @@ class LauncherConfigTest {
 
   @Test
   void fromSystemProperties_customValues() {
-    System.setProperty("fix.host", "0.0.0.0");
-    System.setProperty("fix.port", "5555");
-    System.setProperty("cluster.nodeCount", "1");
-    System.setProperty("cluster.baseDir", "/var/cluster");
-    System.setProperty("log.dir", "/var/log");
-    System.setProperty("driver.shutdown.timeout.seconds", "30");
-    System.setProperty("accounts.file", "/etc/accounts.yaml");
-
+    final String[] keys = {
+      "fix.host",
+      "fix.port",
+      "cluster.nodeCount",
+      "cluster.baseDir",
+      "log.dir",
+      "driver.shutdown.timeout.seconds",
+      "accounts.file"
+    };
+    final String[] values = {
+      "0.0.0.0", "5555", "1", "/var/cluster", "/var/log", "30", "/etc/accounts.yaml"
+    };
+    // Save originals before overwriting
+    final String[] saved = new String[keys.length];
+    for (int i = 0; i < keys.length; i++) {
+      saved[i] = System.getProperty(keys[i]);
+      System.setProperty(keys[i], values[i]);
+    }
     try {
       final var config = LauncherConfig.fromSystemProperties();
 
@@ -222,13 +232,13 @@ class LauncherConfigTest {
       assertEquals(30, config.driverShutdownTimeoutSeconds());
       assertEquals("/etc/accounts.yaml", config.accountsFile());
     } finally {
-      System.clearProperty("fix.host");
-      System.clearProperty("fix.port");
-      System.clearProperty("cluster.nodeCount");
-      System.clearProperty("cluster.baseDir");
-      System.clearProperty("log.dir");
-      System.clearProperty("driver.shutdown.timeout.seconds");
-      System.clearProperty("accounts.file");
+      for (int i = 0; i < keys.length; i++) {
+        if (saved[i] != null) {
+          System.setProperty(keys[i], saved[i]);
+        } else {
+          System.clearProperty(keys[i]);
+        }
+      }
     }
   }
 

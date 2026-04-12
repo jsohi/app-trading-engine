@@ -189,19 +189,33 @@ public final class TradingEngineLauncher {
               aeronDirs[gwIndex],
               ingressEndpoints,
               new BackoffIdleStrategy()));
-      LOG.info("Step 9 complete: gateway launched in {}ms", elapsedMs(stepStart));
+      LOG.info("Step 9 complete: gateway thread started in {}ms", elapsedMs(stepStart));
+
+      // ===== Step 10: Wait for gateway readiness =====
+      // AgentRunner.startOnThread() only spawns the thread — FixGateway.onStart() runs
+      // asynchronously (launches Artio engine, connects ClusterClient). Poll until the
+      // cluster client is connected before declaring SYSTEM_READY.
+      stepStart = System.nanoTime();
+      final long readinessDeadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (!gatewayRef.get().clusterClient().isConnected()) {
+        if (System.nanoTime() > readinessDeadlineNs) {
+          throw new IllegalStateException("Gateway failed to connect to cluster within 30 seconds");
+        }
+        Thread.sleep(100);
+      }
+      LOG.info("Step 10 complete: gateway connected to cluster in {}ms", elapsedMs(stepStart));
 
     } catch (final Exception e) {
       LOG.error("Startup failed", e);
       throw e; // JVM exits main() → shutdown hook fires → orderly cleanup
     }
 
-    // ===== Step 10: SYSTEM_READY (P1-7) =====
+    // ===== Step 11: SYSTEM_READY (P1-7) =====
     LOG.info(
         "SYSTEM_READY: trading engine fully operational, total startup={}ms",
         elapsedMs(launchStartNs));
 
-    // ===== Step 11: Block until shutdown signal =====
+    // ===== Step 12: Block until shutdown signal =====
     barrier.await();
     LOG.info("Shutdown signal received — exiting main()");
   }
