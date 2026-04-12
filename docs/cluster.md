@@ -70,7 +70,7 @@ onSessionMessage(clientSession, timestamp, buffer, offset, length):
     2. Route to CommandHandler (PlaceOrder, CancelOrder, QuoteRequest...)
     3. Validate (symbol exists? quantity > 0? no duplicate clOrdId?)
     4. Apply to write model (OrderBook.add(), RfqStateMachine.transition())
-    5. Emit event to replicated log (OrderAccepted, OrderRejected...)
+    5. Emit event to replicated log (OrderCreated, OrderRejected...)
     6. Aeron replicates log entry to followers
     7. After majority ack → event committed → published to egress
 ```

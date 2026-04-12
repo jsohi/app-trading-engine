@@ -10,7 +10,7 @@ graph LR
         direction TB
         CMD["Commands"]
         CH["CommandHandlers"]
-        WM["Write Model<br/>(OrderBook, RfqStateMachine)"]
+        WM["Write Model<br/>(OrderBook, RfqStateMachine (planned — APP-30))"]
         ES["EventSink"]
         CMD --> CH --> WM --> ES
     end
@@ -24,8 +24,8 @@ graph LR
         SEQ["EventSequencer<br/>(gapless ordering)"]
         OP["OrderProjection"]
         PP["PositionProjection"]
-        QP["QuoteProjection"]
-        LOG["EventLogger"]
+        QP["QuoteProjection (planned — APP-26)"]
+        LOG["EventLogger (planned — APP-41)"]
         SEQ --> OP
         SEQ --> PP
         SEQ --> QP
@@ -85,13 +85,13 @@ There is no traditional database. The Aeron Cluster log IS the database.
 ┌─────────────────────────────────────────────────────┐
 │                 Aeron Cluster Log                    │
 │                                                     │
-│  Seq 1: OrderAccepted  {clOrdId=001, sym=EURUSD}   │
-│  Seq 2: OrderAccepted  {clOrdId=002, sym=GBPUSD}   │
+│  Seq 1: OrderCreated   {clOrdId=001, sym=EURUSD}   │
+│  Seq 2: OrderCreated   {clOrdId=002, sym=GBPUSD}   │
 │  Seq 3: QuoteRequested {reqId=R001, sym=EURUSD}     │
 │  Seq 4: QuoteCreated   {reqId=R001, bid, ask}       │
 │  Seq 5: OrderFilled    {clOrdId=003, fillPx, qty}   │
 │  Seq 6: ── SNAPSHOT ── {orderBook state at seq 6}   │
-│  Seq 7: OrderCancelled {clOrdId=001}                │
+│  Seq 7: OrderCanceled  {clOrdId=001}                │
 │  ...                                                │
 └─────────────────────────────────────────────────────┘
 ```
@@ -104,9 +104,9 @@ Node restarts
      ▼
 Load latest snapshot (seq 6)
      │
-     │  Write model only: OrderBook, RfqStateMachine,
-     │  AccountStore, PositionTracker, IdGenerator,
-     │  EventSequencer
+     │  Write model only: OrderBook, AccountStore,
+     │  RfqStateMachine (planned — APP-30),
+     │  IdGenerator, EventSequencer
      │
      ▼
 Replay events 7 → latest
@@ -163,18 +163,33 @@ sequenceDiagram
 
 ```java
 public interface Projection {
-    // Called for every event, in sequence order
-    void onEvent(DirectBuffer buffer, int offset, int length,
-                 int templateId, long sequence, long timestamp);
+    /**
+     * Consume one event from the cluster's event stream.
+     *
+     * @param seqNo     the event's sequence number from the EventConsumer
+     * @param eventType raw EventTypeEnum wire value (e.g. 100 for OrderCreatedEvent)
+     * @param buffer    read-only view of the event payload — do NOT retain past the call
+     * @param offset    start offset of the event bytes inside buffer
+     * @param length    number of event bytes starting at offset
+     */
+    void onEvent(long seqNo, int eventType,
+                 DirectBuffer buffer, int offset, int length);
 
-    // Reset state (for replay from scratch)
+    /**
+     * The latest seqNo this projection has finished processing, or 0 if no event
+     * has been consumed. Used by ProjectionRegistry.getLag() and
+     * ProjectionRegistry.isHealthy() for diagnostics.
+     */
+    long lastProcessedSequence();
+
+    /** Clear all in-memory state back to initial empty state, reset lastProcessedSequence to 0. */
     void reset();
 }
 ```
 
-All projections implement this interface. The EventSequencer calls `onEvent` for each event in order. Projections decode the SBE message and update their internal state.
+All projections implement this interface. The EventConsumer calls `onEvent` for each event in order. Projections decode the SBE message and update their internal state.
 
-**Note:** Projections do not have snapshot methods. They always recover by calling `reset()` followed by replaying all events from Aeron Archive position 0. Write-model snapshots (templates 200-206) are consumed exclusively by `TradingClusteredService` during restore — they never flow through projections.
+**Note:** Projections do not have snapshot methods. They always recover by calling `reset()` followed by replaying all events from Aeron Archive position 0. Write-model snapshots (templates 200-209) are consumed exclusively by `TradingClusteredService` during restore — they never flow through projections.
 
 ## Consistency Model
 
@@ -182,7 +197,7 @@ All projections implement this interface. The EventSequencer calls `onEvent` for
 Timeline:
 ─────────────────────────────────────────────────────▶
 
-Write:    PlaceOrder ──▶ Cluster validates ──▶ OrderAccepted emitted
+Write:    PlaceOrder ──▶ Cluster validates ──▶ OrderCreated emitted
                                                       │
                                                       │ ~1-5 μs
                                                       ▼

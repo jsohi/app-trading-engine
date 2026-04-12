@@ -23,9 +23,9 @@ graph TB
     end
 
     subgraph ReadSide["Read Side"]
-        Projections["Projections<br/>Order · Position · Quote"]
-        QueryService["QueryService"]
-        EventLogger["EventLogger"]
+        Projections["Projections<br/>Order · Position · Account"]
+        QueryService["QueryService (planned — APP-26)"]
+        EventLogger["EventLogger (planned — APP-41)"]
     end
 
     subgraph Observability["Observability (optional profile)"]
@@ -62,6 +62,7 @@ Build order flows top-to-bottom. No circular dependencies.
 ```mermaid
 graph TB
     messages["messages<br/>(SBE codecs)"]
+    fix-codecs["fix-codecs<br/>(FIX 4.4 codecs)"]
 
     messages --> cluster
     messages --> gateway
@@ -72,6 +73,10 @@ graph TB
     messages --> websocket-server["websocket-server"]
     messages --> event-logger["event-logger"]
     messages --> sbe-ts-generator["sbe-typescript-generator"]
+    messages --> launcher
+
+    fix-codecs --> gateway
+    fix-codecs --> fix-client-bridge
 
     cluster --> launcher
     gateway --> launcher
@@ -81,7 +86,6 @@ graph TB
     websocket-server --> launcher
 
     projections --> query-service["query-service"]
-    cluster --> query-service
 
     gateway --> fix-client-bridge
 
