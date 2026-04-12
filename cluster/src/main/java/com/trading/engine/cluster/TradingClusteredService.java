@@ -2,35 +2,26 @@ package com.trading.engine.cluster;
 
 import static io.aeron.Publication.ADMIN_ACTION;
 import static io.aeron.Publication.BACK_PRESSURED;
-import static io.aeron.cluster.service.ClientSession.MOCKED_OFFER;
 
+import com.trading.engine.cluster.handler.CommandHandler;
+import com.trading.engine.cluster.handler.EventSink;
+import com.trading.engine.cluster.handler.NewOrderSingleHandler;
 import com.trading.engine.cluster.journal.EventJournal;
-import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
-import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
-import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
-import com.trading.engine.messages.sbe.ExecTypeEnum;
-import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.IdGeneratorSnapshotDecoder;
 import com.trading.engine.messages.sbe.IdGeneratorSnapshotEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
-import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
-import com.trading.engine.messages.sbe.OrdStatusEnum;
-import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
-import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
-import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
-import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
-import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
 import io.aeron.ExclusivePublication;
@@ -45,49 +36,55 @@ import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.Int2ObjectHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
- * The keystone cluster service for Wave 4. Wires every deterministic state-machine component from
- * Wave 3 into a single {@link ClusteredService}:
+ * The keystone cluster service for Wave 4. Dispatches inbound commands to handler implementations
+ * and manages snapshot encode/restore for the deterministic state machine.
+ *
+ * <p><b>Dual handler pattern (APP-176):</b>
  *
  * <ul>
- *   <li>Ref-data commands (templateIds 11-16) are dispatched to the {@link ReferenceDataRegistry}
- *       and the resulting events are journaled and replied to the client session.
- *   <li>{@code NewOrderSingle} commands are validated against the account master, currency master,
- *       and per-account risk limits; on success a pooled {@link OrderState} is acquired from the
- *       {@link OrderBook}, an {@code OrderCreatedEvent} is journaled, and an {@code
- *       ExecutionReport(New)} is replied to the client session. On failure an {@code
- *       OrderRejectedEvent} is journaled and an {@code ExecutionReport(Rejected)} is replied.
- *   <li>{@link #onTakeSnapshot(ExclusivePublication)} emits a six-fragment envelope: {@code
- *       SnapshotTaken} (header, templateId 200) + {@code EventSequencerSnapshot} (206) + {@code
- *       IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201) + {@code CurrencySnapshot} (208)
- *       + {@code RiskLimitSnapshot} (209) + {@code OrderBookSnapshot} (202). The header carries a
- *       CRC32C checksum covering the concatenated body bytes in publish order; {@link #onStart}
- *       verifies the checksum before handing control back to the cluster framework.
+ *   <li><b>Reference-data commands</b> (templateIds 11-16) are dispatched to the legacy {@link
+ *       ReferenceDataRegistry} interface. The registry pre-stamps sequence numbers and timestamps
+ *       in its event buffer; the service commits the sequence, journals the event, and offers it to
+ *       the client session.
+ *   <li><b>Trading commands</b> (e.g., {@code NewOrderSingle}) are dispatched via a {@link
+ *       CommandHandler} map keyed by SBE template ID. Each handler decodes, validates, encodes
+ *       domain events, and emits them through the {@link EventSink} pipeline (sequence stamping,
+ *       journaling, session offer). State mutation is handled by the handler via {@link
+ *       TradingState}.
  * </ul>
  *
- * <p>Phase 1 scope: {@code NewOrderSingle} is only ACKed (no matching, no fills). Follow-up issues
- * add matching, cancel/replace, fills, and the RFQ/position stores.
+ * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits a seven-fragment envelope: {@code
+ * SnapshotTaken} (header, templateId 200) + {@code EventSequencerSnapshot} (206) + {@code
+ * IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201) + {@code CurrencySnapshot} (208) +
+ * {@code RiskLimitSnapshot} (209) + {@code OrderBookSnapshot} (202). The header carries a CRC32C
+ * checksum covering the concatenated body bytes in publish order; {@link #onStart} verifies the
+ * checksum before handing control back to the cluster framework.
  *
  * <p><b>Determinism.</b> Every mutation is driven by either (a) a cluster-supplied message and
  * timestamp or (b) a cluster-supplied snapshot fragment. No wall-clock, no randomness, no heap
  * allocation on the hot path.
  *
  * <p><b>Threading.</b> Not thread-safe — single-threaded cluster duty cycle only.
+ *
+ * @see CommandHandler
+ * @see EventSink
+ * @see TradingState
+ * @see ReferenceDataRegistry
  */
 public final class TradingClusteredService implements ClusteredService {
 
   static final int NOT_HANDLED = -1;
 
   /**
-   * Maximum number of times {@link #offerToSession} / {@link #offerFragment} will retry a
-   * back-pressured offer before giving up (and closing the session / throwing on the snapshot
-   * path). Bounded tightly so even Aeron's default {@code BackoffIdleStrategy} — whose max park is
-   * ~1 ms — keeps the total retry wall-time (≈ 128 ms worst case) well under a 500 ms cluster
-   * heartbeat budget, so a single slow session can never trigger spurious leader elections. A
-   * follow-up issue will move session egress off the duty cycle entirely and remove this retry
-   * loop.
+   * Maximum number of times {@link #offerFragment} will retry a back-pressured offer before giving
+   * up (throwing on the snapshot path). Bounded tightly so even Aeron's default {@code
+   * BackoffIdleStrategy} — whose max park is ~1 ms — keeps the total retry wall-time (≈ 128 ms
+   * worst case) well under a 500 ms cluster heartbeat budget, so a single slow snapshot can never
+   * trigger spurious leader elections.
    */
   private static final int MAX_BACKPRESSURE_RETRY = 128;
 
@@ -118,26 +115,22 @@ public final class TradingClusteredService implements ClusteredService {
   static final int SNAPSHOT_HARD_CAP_MULTIPLIER = 2;
 
   // ===== Collaborators =====
-  private final IdGenerator orderIdGen;
-  private final IdGenerator execIdGen;
-  private final OrderBook orderBook;
-  private final EventSequencer eventSequencer;
+  private final TradingState tradingState;
+  private final EventSink eventSink;
   private final EventJournal eventJournal;
   private final AccountStore accountStore;
   private final CurrencyStore currencyStore;
   private final RiskLimitStore riskLimitStore;
   private final ReferenceDataRegistry referenceDataRegistry;
+  private final Int2ObjectHashMap<CommandHandler> commandHandlers;
 
   // ===== Pre-allocated SBE flyweights (zero allocation on the hot path) =====
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
   // Dedicated decoder used exclusively by {@link #appendToJournal} so the inbound command's
-  // header-wrap state on {@link #headerDecoder} is never clobbered mid-flow.
+  // header-wrap state on {@link #headerDecoder} is never clobbered mid-flow. The ref-data
+  // dispatch path journals events locally (not through EventSink), so it needs its own decoder.
   private final MessageHeaderDecoder journalHeaderDecoder = new MessageHeaderDecoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
-  private final NewOrderSingleDecoder nosDecoder = new NewOrderSingleDecoder();
-  private final ExecutionReportEncoder erEncoder = new ExecutionReportEncoder();
-  private final OrderCreatedEventEncoder orderCreatedEncoder = new OrderCreatedEventEncoder();
-  private final OrderRejectedEventEncoder orderRejectedEncoder = new OrderRejectedEventEncoder();
 
   // Snapshot encoders / decoders.
   private final SnapshotTakenEncoder snapshotTakenEncoder = new SnapshotTakenEncoder();
@@ -150,27 +143,8 @@ public final class TradingClusteredService implements ClusteredService {
   private final IdGeneratorSnapshotDecoder idGenSnapDecoder = new IdGeneratorSnapshotDecoder();
 
   // ===== Pre-allocated scratch buffers =====
-  // Sized at 8 KiB so the variable-length text/reason fields on OrderRejectedEvent and
-  // ExecutionReport can never exceed the fixed-size encoder window on any realistic path.
-  // Allocated once at construction — no hot-path allocation.
-  private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[8 * 1024]);
+  // Ref-data event buffer used by the legacy ReferenceDataRegistry dispatch path.
   private final UnsafeBuffer refDataEventBuffer = new UnsafeBuffer(new byte[8 * 1024]);
-  private final byte[] orderIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
-  private final byte[] execIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
-  private final byte[] clOrdIdScratch = new byte[OrderState.CL_ORD_ID_LENGTH];
-  private final byte[] symbolScratch = new byte[OrderState.SYMBOL_LENGTH];
-  private final byte[] accountCodeScratch = new byte[AccountStore.MAX_ACCOUNT_CODE_LENGTH];
-  // Current-NewOrderSingle currency bytes. Extracted once at the top of handleNewOrderSingle
-  // and read by both the happy-path encoders and the reject path so the rejected
-  // ExecutionReport can ship the correct currency (not stale bytes left in egressBuffer from
-  // the previous message).
-  private byte currencyByte0;
-  private byte currencyByte1;
-  private byte currencyByte2;
-  // Reusable UnsafeBuffer wrappers around orderIdScratch / execIdScratch so the hot-path
-  // IdGenerator.nextInto(...) call does not allocate on every NewOrderSingle.
-  private final UnsafeBuffer orderIdScratchBuffer = new UnsafeBuffer(orderIdScratch);
-  private final UnsafeBuffer execIdScratchBuffer = new UnsafeBuffer(execIdScratch);
 
   // ===== Snapshot staging buffers =====
   private final MutableDirectBuffer snapshotHeaderBuf = new ExpandableArrayBuffer(64);
@@ -217,20 +191,29 @@ public final class TradingClusteredService implements ClusteredService {
 
   private Cluster cluster;
 
+  /**
+   * Creates a TradingClusteredService wired with the given state, event pipeline, and reference
+   * data infrastructure.
+   *
+   * @param tradingState the event-sourced order lifecycle state (must not be null)
+   * @param eventSink the centralized event emission pipeline (must not be null)
+   * @param eventJournal the bounded event journal for projection catch-up (must not be null)
+   * @param accountStore the account reference data store (must not be null)
+   * @param currencyStore the currency reference data store (must not be null)
+   * @param riskLimitStore the risk limit store (must not be null)
+   * @param referenceDataRegistry the ref-data command dispatcher + snapshot registry (must not be
+   *     null)
+   */
   public TradingClusteredService(
-      final IdGenerator orderIdGen,
-      final IdGenerator execIdGen,
-      final OrderBook orderBook,
-      final EventSequencer eventSequencer,
+      final TradingState tradingState,
+      final EventSink eventSink,
       final EventJournal eventJournal,
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore,
       final ReferenceDataRegistry referenceDataRegistry) {
-    this.orderIdGen = notNull(orderIdGen, "orderIdGen");
-    this.execIdGen = notNull(execIdGen, "execIdGen");
-    this.orderBook = notNull(orderBook, "orderBook");
-    this.eventSequencer = notNull(eventSequencer, "eventSequencer");
+    this.tradingState = notNull(tradingState, "tradingState");
+    this.eventSink = notNull(eventSink, "eventSink");
     this.eventJournal = notNull(eventJournal, "eventJournal");
     this.accountStore = notNull(accountStore, "accountStore");
     this.currencyStore = notNull(currencyStore, "currencyStore");
@@ -249,6 +232,13 @@ public final class TradingClusteredService implements ClusteredService {
         RiskLimitStore.SNAPSHOT_TEMPLATE_ID,
         riskLimitStore,
         "riskLimitStore");
+
+    // Register trading command handlers. Each handler is keyed by its SBE template ID for
+    // O(1) dispatch in onSessionMessage.
+    this.commandHandlers = new Int2ObjectHashMap<>();
+    final var nosHandler =
+        new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
+    commandHandlers.put(nosHandler.commandTemplateId(), nosHandler);
   }
 
   private static void requireSameStore(
@@ -280,6 +270,7 @@ public final class TradingClusteredService implements ClusteredService {
   @Override
   public void onStart(final Cluster cluster, final Image snapshotImage) {
     this.cluster = cluster;
+    eventSink.setCluster(cluster);
     if (snapshotImage == null) {
       return;
     }
@@ -340,30 +331,37 @@ public final class TradingClusteredService implements ClusteredService {
     headerDecoder.wrap(buffer, offset);
     final int templateId = headerDecoder.templateId();
 
-    // 1. Try ref-data command dispatch (templateIds 11..16).
-    final long refDataSeqNo = eventSequencer.currentSequence() + 1L;
+    // 1. Ref-data dispatch (templateIds 11-16) — legacy ReferenceDataRegistry path.
+    // Ref-data handlers pre-stamp seqNo+timestamp, so pass next sequence BEFORE dispatch.
+    final long refDataSeqNo = eventSink.sequencer().currentSequence() + 1L;
     final int refDataEventLen =
         referenceDataRegistry.dispatchCommand(
             headerDecoder, buffer, offset, length, refDataEventBuffer, 0, refDataSeqNo, timestamp);
     if (refDataEventLen > 0) {
-      // Commit the sequence number (currentSequence() advances).
-      eventSequencer.nextSequence();
-      // Append to journal for projection catch-up; read the event templateId from the emitted
-      // buffer rather than the command header.
+      eventSink.sequencer().nextSequence(); // commit
       appendToJournal(refDataSeqNo, refDataEventBuffer, 0, refDataEventLen);
-      offerToSession(session, refDataEventBuffer, 0, refDataEventLen);
+      eventSink.offerToSession(session, refDataEventBuffer, 0, refDataEventLen);
       return;
     }
     // refDataEventLen == NOT_HANDLED → fall through to trading command dispatch.
 
-    switch (templateId) {
-      case NewOrderSingleDecoder.TEMPLATE_ID ->
-          handleNewOrderSingle(session, timestamp, buffer, offset);
-      default -> {
-        // Unknown templateId — silently drop in Phase 1. A future PR will add structured logging
-        // via GFLog.
-      }
+    // 2. Trading command dispatch via CommandHandler map.
+    final var handler = commandHandlers.get(templateId);
+    if (handler != null) {
+      handler.onCommand(
+          session,
+          timestamp,
+          buffer,
+          offset,
+          length,
+          headerDecoder.blockLength(),
+          headerDecoder.version(),
+          eventSink);
+      return;
     }
+
+    // 3. Unknown templateId — silently drop in Phase 1. A future PR will add structured logging
+    // via GFLog.
   }
 
   @Override
@@ -426,7 +424,7 @@ public final class TradingClusteredService implements ClusteredService {
               + " bytes) exceeds hard limit ("
               + hardCap
               + " bytes) — investigate state growth (order count: "
-              + orderBook.size()
+              + tradingState.orderBook().size()
               + ")");
     }
     // Guard against int overflow before narrowing — unreachable under normal conditions (order
@@ -505,7 +503,7 @@ public final class TradingClusteredService implements ClusteredService {
                 + maxMessageLength
                 + " max; try doubling term-length)"
                 + " and restart all nodes. Order count: "
-                + orderBook.size());
+                + tradingState.orderBook().size());
       }
     }
 
@@ -523,307 +521,7 @@ public final class TradingClusteredService implements ClusteredService {
   }
 
   // ===========================================================================
-  // NewOrderSingle handler
-  // ===========================================================================
-
-  private void handleNewOrderSingle(
-      final ClientSession session,
-      final long timestamp,
-      final DirectBuffer buffer,
-      final int offset) {
-    nosDecoder.wrap(
-        buffer,
-        offset + MessageHeaderDecoder.ENCODED_LENGTH,
-        headerDecoder.blockLength(),
-        headerDecoder.version());
-
-    // Extract primitive fields + copy char arrays into scratch buffers.
-    final long orderQty = nosDecoder.orderQty();
-    final var ordType = nosDecoder.ordType();
-    final long price = nosDecoder.price();
-    final var side = nosDecoder.side();
-    nosDecoder.getClOrdId(clOrdIdScratch, 0);
-    nosDecoder.getSymbol(symbolScratch, 0);
-    final int symbolLen = trimTrailingZeros(symbolScratch, OrderState.SYMBOL_LENGTH);
-    nosDecoder.getAccountCode(accountCodeScratch, 0);
-    final int accountCodeLen =
-        trimTrailingZeros(accountCodeScratch, AccountStore.MAX_ACCOUNT_CODE_LENGTH);
-    final byte ccy0 = nosDecoder.currency(0);
-    final byte ccy1 = nosDecoder.currency(1);
-    final byte ccy2 = nosDecoder.currency(2);
-    // Stash on the service so emitOrderRejected can write them into the ER reject — the shared
-    // egressBuffer would otherwise leak the previous message's currency bytes.
-    currencyByte0 = ccy0;
-    currencyByte1 = ccy1;
-    currencyByte2 = ccy2;
-
-    final var account =
-        validateNewOrder(
-            session,
-            timestamp,
-            side,
-            ordType,
-            orderQty,
-            price,
-            symbolLen,
-            accountCodeLen,
-            ccy0,
-            ccy1,
-            ccy2);
-    if (account == null) {
-      return;
-    }
-    admitNewOrder(session, timestamp, account, side, ordType, orderQty, price, ccy0, ccy1, ccy2);
-  }
-
-  /**
-   * Run every pre-trade validation for a decoded NewOrderSingle. On the first failure, emits the
-   * corresponding {@code OrderRejectedEvent} + {@code ExecutionReport(Rejected)} and returns {@code
-   * null}. On success returns the resolved {@link AccountState} — the caller reuses it for the
-   * happy path to avoid a second lookup.
-   */
-  private AccountState validateNewOrder(
-      final ClientSession session,
-      final long timestamp,
-      final SideEnum side,
-      final OrdTypeEnum ordType,
-      final long orderQty,
-      final long price,
-      final int symbolLen,
-      final int accountCodeLen,
-      final byte ccy0,
-      final byte ccy1,
-      final byte ccy2) {
-    if (symbolLen == 0) {
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.UnknownSymbol, "symbol is empty");
-      return null;
-    }
-    if (orderQty <= 0L) {
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.InvalidQuantity, "orderQty must be > 0");
-      return null;
-    }
-    if (ordType == OrdTypeEnum.Limit && price <= 0L) {
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.InvalidPrice, "limit price must be > 0");
-      return null;
-    }
-    if (accountCodeLen == 0) {
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.AccountNotFound, "accountCode is empty");
-      return null;
-    }
-    final var account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen);
-    if (account == null) {
-      emitOrderRejected(
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.AccountNotFound,
-          "account not in AccountStore");
-      return null;
-    }
-    if (account.status() != AccountStatusEnum.Active) {
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.AccountSuspended, "account not active");
-      return null;
-    }
-    if (!account.canTrade()) {
-      emitOrderRejected(
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.AccountNoTradePermission,
-          "account lacks CAN_TRADE");
-      return null;
-    }
-    final int ccyPacked = CurrencyStore.packCodeOrInvalid(ccy0, ccy1, ccy2);
-    if (ccyPacked == CurrencyStore.INVALID_PACKED_CODE) {
-      emitOrderRejected(
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.InvalidCurrencyCode,
-          "currency is not 3 uppercase ASCII letters");
-      return null;
-    }
-    if (!currencyStore.contains(ccyPacked)) {
-      emitOrderRejected(
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.UnknownCurrency,
-          "currency not in CurrencyStore");
-      return null;
-    }
-    final var riskLimit = riskLimitStore.get(account.accountId());
-    if (riskLimit != null && riskLimit.maxOrderSize() > 0L && orderQty > riskLimit.maxOrderSize()) {
-      emitOrderRejected(
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.OrderExceedsMaxSize,
-          "orderQty exceeds account maxOrderSize");
-      return null;
-    }
-    return account;
-  }
-
-  /**
-   * Happy path: generate ids, acquire a pooled {@link OrderState}, populate it from the decoded
-   * command, and emit {@code OrderCreatedEvent} (journaled) + {@code ExecutionReport(New)} (session
-   * only). On pool exhaustion emits a {@code BookFull} rejection instead.
-   */
-  private void admitNewOrder(
-      final ClientSession session,
-      final long timestamp,
-      final AccountState account,
-      final SideEnum side,
-      final OrdTypeEnum ordType,
-      final long orderQty,
-      final long price,
-      final byte ccy0,
-      final byte ccy1,
-      final byte ccy2) {
-    // Generate ids. nextInto advances the counter; currentCounter() after the call gives the
-    // counter value that was just assigned — we use it as the primitive OrderBook key. The
-    // scratch wrappers (orderIdScratchBuffer / execIdScratchBuffer) are pre-allocated fields so
-    // this path performs zero heap allocation.
-    orderIdGen.nextInto(orderIdScratchBuffer, 0);
-    final long orderKey = orderIdGen.currentCounter();
-    execIdGen.nextInto(execIdScratchBuffer, 0);
-
-    final var state = orderBook.acquire(orderKey);
-    if (state == null) {
-      // Pool exhaustion — emit BookFull reject.
-      emitOrderRejected(
-          session, timestamp, side, RejectReasonEnum.BookFull, "order book pool exhausted");
-      return;
-    }
-    state.setOrderIdBytes(orderIdScratch, 0);
-    state.setClOrdIdBytes(clOrdIdScratch, 0);
-    state.setSymbolBytes(symbolScratch, 0);
-    state.setAccountId(account.accountId());
-    state.setSide(side);
-    state.setOrdType(ordType);
-    state.setTimeInForce(nosDecoder.timeInForce());
-    state.setPrice(price);
-    state.setOrderQty(orderQty);
-    state.setLeavesQty(orderQty);
-    state.setCumQty(0L);
-    state.setOrdStatus(OrdStatusEnum.New);
-    state.setTransactTime(timestamp);
-
-    // Emit OrderCreatedEvent → journal + session.
-    final long seqNo = eventSequencer.nextSequence();
-    final int eventLen = encodeOrderCreatedEvent(seqNo, timestamp, state, ccy0, ccy1, ccy2);
-    appendToJournal(seqNo, egressBuffer, 0, eventLen);
-    offerToSession(session, egressBuffer, 0, eventLen);
-
-    // Emit ExecutionReport(New) ACK → session only (not journaled — ER is a transport-level
-    // reply, not a domain event).
-    final int erLen = encodeExecutionReportNew(timestamp, state, ccy0, ccy1, ccy2);
-    offerToSession(session, egressBuffer, 0, erLen);
-  }
-
-  private int encodeOrderCreatedEvent(
-      final long seqNo,
-      final long timestamp,
-      final OrderState state,
-      final byte ccy0,
-      final byte ccy1,
-      final byte ccy2) {
-    orderCreatedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    orderCreatedEncoder.sequenceNumber(seqNo);
-    orderCreatedEncoder.timestamp(timestamp);
-    state.copyOrderIdTo(orderIdScratch, 0);
-    orderCreatedEncoder.putOrderId(orderIdScratch, 0);
-    state.copyClOrdIdTo(clOrdIdScratch, 0);
-    orderCreatedEncoder.putClOrdId(clOrdIdScratch, 0);
-    state.copySymbolTo(symbolScratch, 0);
-    orderCreatedEncoder.putSymbol(symbolScratch, 0);
-    orderCreatedEncoder.side(state.side());
-    orderCreatedEncoder.ordType(state.ordType());
-    orderCreatedEncoder.price(state.price());
-    orderCreatedEncoder.orderQty(state.orderQty());
-    orderCreatedEncoder.putCurrency(ccy0, ccy1, ccy2);
-    return MessageHeaderEncoder.ENCODED_LENGTH + orderCreatedEncoder.encodedLength();
-  }
-
-  private int encodeExecutionReportNew(
-      final long timestamp,
-      final OrderState state,
-      final byte ccy0,
-      final byte ccy1,
-      final byte ccy2) {
-    erEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    state.copyOrderIdTo(orderIdScratch, 0);
-    erEncoder.putOrderId(orderIdScratch, 0);
-    erEncoder.putExecId(execIdScratch, 0);
-    state.copyClOrdIdTo(clOrdIdScratch, 0);
-    erEncoder.putClOrdId(clOrdIdScratch, 0);
-    erEncoder.execType(ExecTypeEnum.New);
-    erEncoder.ordStatus(OrdStatusEnum.New);
-    state.copySymbolTo(symbolScratch, 0);
-    erEncoder.putSymbol(symbolScratch, 0);
-    erEncoder.side(state.side());
-    erEncoder.leavesQty(state.leavesQty());
-    erEncoder.cumQty(state.cumQty());
-    erEncoder.avgPx(0L);
-    erEncoder.transactTime(timestamp);
-    erEncoder.putCurrency(ccy0, ccy1, ccy2);
-    return MessageHeaderEncoder.ENCODED_LENGTH + erEncoder.encodedLength();
-  }
-
-  private void emitOrderRejected(
-      final ClientSession session,
-      final long timestamp,
-      final SideEnum side,
-      final RejectReasonEnum reason,
-      final String text) {
-    final long seqNo = eventSequencer.nextSequence();
-    orderRejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    orderRejectedEncoder.sequenceNumber(seqNo);
-    orderRejectedEncoder.timestamp(timestamp);
-    orderRejectedEncoder.putClOrdId(clOrdIdScratch, 0);
-    // Symbol may be zero-padded from the decoder; pass the scratch verbatim.
-    orderRejectedEncoder.putSymbol(symbolScratch, 0);
-    orderRejectedEncoder.side(side);
-    orderRejectedEncoder.rejectReason(reason);
-    // Account code may be empty — still ship the 16-byte scratch (zero-padded tail is valid SBE).
-    orderRejectedEncoder.putAccountCode(accountCodeScratch, 0);
-    orderRejectedEncoder.text(text);
-    final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderRejectedEncoder.encodedLength();
-    appendToJournal(seqNo, egressBuffer, 0, eventLen);
-    offerToSession(session, egressBuffer, 0, eventLen);
-
-    // Transport-level ExecutionReport(Rejected) ACK.
-    erEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    // OrderID is unassigned for a reject — leave the 20-byte scratch zero-filled.
-    java.util.Arrays.fill(orderIdScratch, (byte) 0);
-    erEncoder.putOrderId(orderIdScratch, 0);
-    java.util.Arrays.fill(execIdScratch, (byte) 0);
-    erEncoder.putExecId(execIdScratch, 0);
-    erEncoder.putClOrdId(clOrdIdScratch, 0);
-    erEncoder.execType(ExecTypeEnum.Rejected);
-    erEncoder.ordStatus(OrdStatusEnum.Rejected);
-    erEncoder.putSymbol(symbolScratch, 0);
-    erEncoder.side(side);
-    erEncoder.leavesQty(0L);
-    erEncoder.cumQty(0L);
-    erEncoder.avgPx(0L);
-    erEncoder.transactTime(timestamp);
-    // Always write the current NOS's currency bytes so the rejected ER never leaks stale
-    // currency bytes from the previous message in the shared egressBuffer.
-    erEncoder.putCurrency(currencyByte0, currencyByte1, currencyByte2);
-    erEncoder.text(text);
-    final int erLen = MessageHeaderEncoder.ENCODED_LENGTH + erEncoder.encodedLength();
-    offerToSession(session, egressBuffer, 0, erLen);
-  }
-
-  // ===========================================================================
-  // Journal + session offer helpers
+  // Journal helper (ref-data dispatch path — trading commands use EventSink)
   // ===========================================================================
 
   private void appendToJournal(
@@ -836,44 +534,13 @@ public final class TradingClusteredService implements ClusteredService {
     eventJournal.append(seqNo, eventType, src, srcOffset, srcLength);
   }
 
-  private void offerToSession(
-      final ClientSession session, final DirectBuffer src, final int offset, final int length) {
-    if (session == null) {
-      return; // Unit tests may pass null for the unused ref-data session case.
-    }
-    // Phase-1 back-pressure strategy: a bounded retry on the duty-cycle thread. A single slow
-    // client can cause head-of-line blocking for other sessions while we retry; a follow-up
-    // issue will move session egress off the duty cycle. Crucially, if retries exhaust or the
-    // session returns a non-retryable result (NOT_CONNECTED / CLOSED / MAX_POSITION_EXCEEDED),
-    // we MUST NOT silently drop the reply — the underlying event is already journaled, so a
-    // client that does not see an ACK could safely replay a duplicate business command. Close
-    // the session instead, which forces the client to reconnect and resync from the journal.
-    for (int attempt = 0; attempt < MAX_BACKPRESSURE_RETRY; attempt++) {
-      final long result = session.offer(src, offset, length);
-      if (result >= 0L || result == MOCKED_OFFER) {
-        return;
-      }
-      if (result == BACK_PRESSURED || result == ADMIN_ACTION) {
-        if (cluster != null) {
-          cluster.idleStrategy().idle();
-        }
-        continue;
-      }
-      // Non-retryable — quarantine the session so the cluster framework tears it down rather
-      // than leaving the client in an inconsistent state.
-      session.close();
-      return;
-    }
-    // Retry exhausted on persistent BACK_PRESSURED / ADMIN_ACTION — same treatment.
-    session.close();
-  }
-
   private void offerFragment(
       final ExclusivePublication pub, final MutableDirectBuffer buf, final int length) {
     if (pub == null) {
       return; // Test path uses the pre-encoded fragments directly from the scratch buffers.
     }
-    // Unlike offerToSession, a failed snapshot offer is non-recoverable: a truncated snapshot
+    // Unlike EventSink.offerToSession, a failed snapshot offer is non-recoverable: a truncated
+    // snapshot
     // leaves the cluster unable to recover on restart. Throw on any non-retryable return code
     // (NOT_CONNECTED / CLOSED / MAX_POSITION_EXCEEDED) and on retry exhaustion so the cluster
     // framework surfaces the failure rather than silently shipping a corrupted snapshot.
@@ -914,18 +581,18 @@ public final class TradingClusteredService implements ClusteredService {
   void encodeSnapshotFragments(final long snapshotTimestamp) {
     // 1. EventSequencer — SBE message is one long field (next-sequence-to-assign).
     eventSeqSnapEncoder.wrapAndApplyHeader(eventSeqSnapBuf, 0, headerEncoder);
-    eventSeqSnapEncoder.nextSequence(eventSequencer.currentSequence() + 1L);
+    eventSeqSnapEncoder.nextSequence(eventSink.sequencer().currentSequence() + 1L);
     eventSeqSnapLen = MessageHeaderEncoder.ENCODED_LENGTH + eventSeqSnapEncoder.encodedLength();
 
     // 2. IdGeneratorSnapshot — two entries (ORD, EXE).
     idGenSnapEncoder.wrapAndApplyHeader(idGenSnapBuf, 0, headerEncoder);
     final var idGenGroup = idGenSnapEncoder.noGeneratorsCount(2);
     idGenGroup.next();
-    idGenGroup.prefix(orderIdGen.prefix());
-    idGenGroup.counter(orderIdGen.currentCounter());
+    idGenGroup.prefix(tradingState.orderIdGen().prefix());
+    idGenGroup.counter(tradingState.orderIdGen().currentCounter());
     idGenGroup.next();
-    idGenGroup.prefix(execIdGen.prefix());
-    idGenGroup.counter(execIdGen.currentCounter());
+    idGenGroup.prefix(tradingState.execIdGen().prefix());
+    idGenGroup.counter(tradingState.execIdGen().currentCounter());
     idGenSnapLen = MessageHeaderEncoder.ENCODED_LENGTH + idGenSnapEncoder.encodedLength();
 
     // 3-5. Ref-data stores — each returns the total bytes including header.
@@ -934,7 +601,7 @@ public final class TradingClusteredService implements ClusteredService {
     riskLimitSnapLen = riskLimitStore.snapshotTo(riskLimitSnapBuf, 0);
 
     // 6. OrderBookSnapshot.
-    orderBookSnapLen = orderBook.snapshotTo(orderBookSnapBuf, 0);
+    orderBookSnapLen = tradingState.snapshotOrderBookTo(orderBookSnapBuf, 0);
 
     // CRC32C over the six body fragments in publish order.
     crc.reset();
@@ -956,7 +623,7 @@ public final class TradingClusteredService implements ClusteredService {
 
     // Finally, encode the SnapshotTaken header.
     snapshotTakenEncoder.wrapAndApplyHeader(snapshotHeaderBuf, 0, headerEncoder);
-    snapshotTakenEncoder.lastSequenceNumber(eventSequencer.currentSequence());
+    snapshotTakenEncoder.lastSequenceNumber(eventSink.sequencer().currentSequence());
     snapshotTakenEncoder.snapshotTimestamp(snapshotTimestamp);
     snapshotTakenEncoder.snapshotVersion(SUPPORTED_SNAPSHOT_VERSION);
     snapshotTakenEncoder.storeCount((short) SNAPSHOT_STORE_COUNT);
@@ -1092,7 +759,7 @@ public final class TradingClusteredService implements ClusteredService {
 
     // 2. Reset destination ref-data state so smaller snapshots don't leave orphans behind.
     referenceDataRegistry.resetAll();
-    orderBook.clear();
+    tradingState.clearOrderBook();
     // Track whether each of the six required fragments has been seen so we can reject
     // CRC-valid but semantically incomplete snapshots (missing or duplicated fragments).
     eventSeqFragmentSeen = false;
@@ -1198,7 +865,7 @@ public final class TradingClusteredService implements ClusteredService {
           headerDecoder.version());
       // Route through the SBE decoder (not eventSequencer.loadFrom, which reads raw bytes)
       // so future block-length padding does not silently corrupt the restored counter.
-      eventSequencer.setNextSequence(eventSeqSnapDecoder.nextSequence());
+      eventSink.sequencer().setNextSequence(eventSeqSnapDecoder.nextSequence());
       return MessageHeaderDecoder.ENCODED_LENGTH + wireBlockLength;
     }
     if (templateId == IdGeneratorSnapshotDecoder.TEMPLATE_ID) {
@@ -1215,11 +882,11 @@ public final class TradingClusteredService implements ClusteredService {
       while (group.hasNext()) {
         group.next();
         final long counter = group.counter();
-        if (prefixMatches(group, orderIdGen.prefix())) {
-          orderIdGen.setCounter(counter);
+        if (prefixMatches(group, tradingState.orderIdGen().prefix())) {
+          tradingState.orderIdGen().setCounter(counter);
           orderIdGenRestored = true;
-        } else if (prefixMatches(group, execIdGen.prefix())) {
-          execIdGen.setCounter(counter);
+        } else if (prefixMatches(group, tradingState.execIdGen().prefix())) {
+          tradingState.execIdGen().setCounter(counter);
           execIdGenRestored = true;
         } else {
           // Snapshot carries an IdGenerator prefix we don't recognize — refuse to silently drop
@@ -1235,7 +902,7 @@ public final class TradingClusteredService implements ClusteredService {
         throw new IllegalStateException("duplicate OrderBookSnapshot fragment in snapshot");
       }
       orderBookFragmentSeen = true;
-      return orderBook.restoreFrom(src, offset);
+      return tradingState.restoreOrderBookFrom(src, offset);
     }
     // Ref-data snapshots (Account 201, Currency 208, RiskLimit 209) route via the registry.
     if (templateId == AccountSnapshotDecoder.TEMPLATE_ID) {
@@ -1263,18 +930,6 @@ public final class TradingClusteredService implements ClusteredService {
 
   private static final String UNREGISTERED_ID_PREFIX_MESSAGE =
       "IdGeneratorSnapshot contains an unregistered prefix (expected ORD or EXE)";
-
-  // ===========================================================================
-  // Misc
-  // ===========================================================================
-
-  private static int trimTrailingZeros(final byte[] bytes, final int upToLength) {
-    int len = upToLength;
-    while (len > 0 && bytes[len - 1] == 0) {
-      len--;
-    }
-    return len;
-  }
 
   /**
    * Compare the full 8-byte prefix carried by an {@code IdGeneratorSnapshot} record against a known

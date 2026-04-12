@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
@@ -18,19 +19,17 @@ import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
-import com.trading.engine.messages.sbe.ExecTypeEnum;
-import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleEncoder;
-import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
@@ -69,6 +68,8 @@ class TradingClusteredServiceTest {
   private OrderBook orderBook;
   private EventSequencer eventSequencer;
   private EventJournal eventJournal;
+  private TradingState tradingState;
+  private EventSink eventSink;
   private AccountStore accountStore;
   private CurrencyStore currencyStore;
   private RiskLimitStore riskLimitStore;
@@ -84,6 +85,8 @@ class TradingClusteredServiceTest {
     orderBook = new OrderBook(128);
     eventSequencer = new EventSequencer();
     eventJournal = new EventJournal(64);
+    tradingState = new TradingState(orderBook, orderIdGen, execIdGen);
+    eventSink = new EventSink(eventSequencer, eventJournal);
     accountStore = new AccountStore();
     currencyStore = new CurrencyStore();
     riskLimitStore = new RiskLimitStore();
@@ -100,10 +103,8 @@ class TradingClusteredServiceTest {
 
     service =
         new TradingClusteredService(
-            orderIdGen,
-            execIdGen,
-            orderBook,
-            eventSequencer,
+            tradingState,
+            eventSink,
             eventJournal,
             accountStore,
             currencyStore,
@@ -207,7 +208,7 @@ class TradingClusteredServiceTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void validNewOrderSingleEmitsOrderCreatedAndExecutionReportNew() {
+  void validNewOrderSingleEmitsOrderCreatedEvent() {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     final int len =
         encodeNewOrderSingle(
@@ -222,10 +223,9 @@ class TradingClusteredServiceTest {
             "USD");
     dispatch(buf, len);
 
-    // Expect two messages on the session: OrderCreatedEvent + ExecutionReport(New).
-    assertEquals(2, session.messages.size());
+    // Expect one message on the session: OrderCreatedEvent (gateway handles ER now).
+    assertEquals(1, session.messages.size());
     assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(0));
-    assertTemplateId(ExecutionReportDecoder.TEMPLATE_ID, session.messages.get(1));
 
     // Decode the OrderCreatedEvent.
     final OrderCreatedEventDecoder created = decodeOrderCreated(session.messages.get(0));
@@ -234,14 +234,6 @@ class TradingClusteredServiceTest {
     assertEquals(SideEnum.Buy, created.side());
     assertEquals(OrdTypeEnum.Limit, created.ordType());
     assertEquals(5L * PRICE_SCALE, created.orderQty());
-
-    // Decode the ExecutionReport ACK.
-    final ExecutionReportDecoder er = decodeExecutionReport(session.messages.get(1));
-    assertEquals(ExecTypeEnum.New, er.execType());
-    assertEquals(OrdStatusEnum.New, er.ordStatus());
-    assertEquals(5L * PRICE_SCALE, er.leavesQty());
-    assertEquals(0L, er.cumQty());
-    assertEquals(TIMESTAMP, er.transactTime());
 
     // OrderBook now has one active order keyed by the ORD counter (=1).
     assertEquals(1, orderBook.size());
@@ -255,10 +247,10 @@ class TradingClusteredServiceTest {
   }
 
   @Test
-  void rejectedExecutionReportCarriesCurrentOrdersCurrency() {
+  void rejectedOrderCarriesCurrentOrdersCurrency() {
     // Regression for the egressBuffer currency-leak: emit a happy-path order with USD, then
-    // submit a reject-triggering order with EUR — the rejected ExecutionReport must carry EUR,
-    // not the stale USD bytes left in egressBuffer.
+    // submit a reject-triggering order with EUR — the OrderRejectedEvent must carry EUR,
+    // not the stale USD bytes left in the handler's egress buffer.
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     int len =
         encodeNewOrderSingle(
@@ -289,12 +281,12 @@ class TradingClusteredServiceTest {
             "EUR");
     dispatch(buf, len);
 
-    assertEquals(2, session.messages.size());
-    final ExecutionReportDecoder er = decodeExecutionReport(session.messages.get(1));
-    assertEquals(ExecTypeEnum.Rejected, er.execType());
-    assertEquals((byte) 'E', er.currency(0));
-    assertEquals((byte) 'U', er.currency(1));
-    assertEquals((byte) 'R', er.currency(2));
+    assertEquals(1, session.messages.size());
+    final OrderRejectedEventDecoder rejected = decodeOrderRejected(session.messages.get(0));
+    assertEquals(RejectReasonEnum.InvalidQuantity, rejected.rejectReason());
+    assertEquals((byte) 'E', rejected.currency(0));
+    assertEquals((byte) 'U', rejected.currency(1));
+    assertEquals((byte) 'R', rejected.currency(2));
   }
 
   @Test
@@ -318,8 +310,8 @@ class TradingClusteredServiceTest {
     assertNotNull(orderBook.get(1L));
     assertNotNull(orderBook.get(2L));
     assertNotNull(orderBook.get(3L));
-    // Three orders → three OrderCreatedEvent + three ExecutionReport → 6 messages.
-    assertEquals(6, session.messages.size());
+    // Three orders → three OrderCreatedEvent (gateway handles ER now) → 3 messages.
+    assertEquals(3, session.messages.size());
     assertEquals(3L, orderIdGen.currentCounter());
     assertEquals(3L, execIdGen.currentCounter());
   }
@@ -439,17 +431,12 @@ class TradingClusteredServiceTest {
     final UnsafeBuffer wrapper = new UnsafeBuffer(commandBytes);
     dispatch(wrapper, commandBytes.length);
 
-    // Two replies: OrderRejectedEvent + ExecutionReport(Rejected).
-    assertEquals(2, session.messages.size());
+    // One reply: OrderRejectedEvent (gateway handles ER now).
+    assertEquals(1, session.messages.size());
     assertTemplateId(OrderRejectedEventDecoder.TEMPLATE_ID, session.messages.get(0));
-    assertTemplateId(ExecutionReportDecoder.TEMPLATE_ID, session.messages.get(1));
 
     final OrderRejectedEventDecoder rejected = decodeOrderRejected(session.messages.get(0));
     assertEquals(expected, rejected.rejectReason());
-
-    final ExecutionReportDecoder er = decodeExecutionReport(session.messages.get(1));
-    assertEquals(ExecTypeEnum.Rejected, er.execType());
-    assertEquals(OrdStatusEnum.Rejected, er.ordStatus());
 
     // No order should have been admitted to the book.
     assertEquals(0, orderBook.size());
@@ -755,6 +742,8 @@ class TradingClusteredServiceTest {
       OrderBook orderBook,
       EventSequencer eventSequencer,
       EventJournal eventJournal,
+      TradingState tradingState,
+      EventSink eventSink,
       AccountStore accountStore,
       CurrencyStore currencyStore,
       RiskLimitStore riskLimitStore,
@@ -766,27 +755,28 @@ class TradingClusteredServiceTest {
    * stores are populated with the standard 3 accounts, 2 currencies, and 1 risk limit.
    */
   private ServiceBundle createServiceBundle(final boolean seed) {
-    final IdGenerator ordGen = new IdGenerator("ORD");
-    final IdGenerator exeGen = new IdGenerator("EXE");
-    final OrderBook book = new OrderBook(128);
-    final EventSequencer seq = new EventSequencer();
-    final EventJournal journal = new EventJournal(64);
-    final AccountStore accounts = new AccountStore();
-    final CurrencyStore currencies = new CurrencyStore();
-    final RiskLimitStore limits = new RiskLimitStore();
+    final var ordGen = new IdGenerator("ORD");
+    final var exeGen = new IdGenerator("EXE");
+    final var book = new OrderBook(128);
+    final var seq = new EventSequencer();
+    final var journal = new EventJournal(64);
+    final var state = new TradingState(book, ordGen, exeGen);
+    final var sink = new EventSink(seq, journal);
+    final var accounts = new AccountStore();
+    final var currencies = new CurrencyStore();
+    final var limits = new RiskLimitStore();
     if (seed) {
       seedReferenceData(accounts, currencies, limits);
     }
-    final ReferenceDataRegistry reg = new ReferenceDataRegistry();
+    final var reg = new ReferenceDataRegistry();
     reg.registerStore(accounts);
     reg.registerStore(currencies);
     reg.registerStore(limits);
-    final TradingClusteredService svc =
-        new TradingClusteredService(
-            ordGen, exeGen, book, seq, journal, accounts, currencies, limits, reg);
+    final var svc =
+        new TradingClusteredService(state, sink, journal, accounts, currencies, limits, reg);
     svc.onStart(cluster, null);
     return new ServiceBundle(
-        ordGen, exeGen, book, seq, journal, accounts, currencies, limits, reg, svc);
+        ordGen, exeGen, book, seq, journal, state, sink, accounts, currencies, limits, reg, svc);
   }
 
   private TradingClusteredService freshService() {
@@ -842,9 +832,8 @@ class TradingClusteredServiceTest {
             "ACME",
             "USD");
     service.onSessionMessage(bpSession, TIMESTAMP, buf, 0, len, null);
-    // The two messages eventually landed despite the back-pressure response on the first two
-    // attempts.
-    assertEquals(2, bpSession.messages.size());
+    // The message eventually landed despite the back-pressure response on the first two attempts.
+    assertEquals(1, bpSession.messages.size());
     // Idler was tickled at least twice (once per retry — two back-pressured attempts).
     assertTrue(cluster.idleCount >= 2);
   }
@@ -868,10 +857,8 @@ class TradingClusteredServiceTest {
         IllegalArgumentException.class,
         () ->
             new TradingClusteredService(
-                orderIdGen,
-                execIdGen,
-                orderBook,
-                eventSequencer,
+                tradingState,
+                eventSink,
                 eventJournal,
                 differentAccountStore, // different instance than what is registered
                 currencyStore,
@@ -910,9 +897,7 @@ class TradingClusteredServiceTest {
         () ->
             new TradingClusteredService(
                 null,
-                execIdGen,
-                orderBook,
-                eventSequencer,
+                eventSink,
                 eventJournal,
                 accountStore,
                 currencyStore,
@@ -944,15 +929,6 @@ class TradingClusteredServiceTest {
     final MessageHeaderDecoder hd = new MessageHeaderDecoder();
     hd.wrap(buf, 0);
     final OrderRejectedEventDecoder d = new OrderRejectedEventDecoder();
-    d.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hd.blockLength(), hd.version());
-    return d;
-  }
-
-  private static ExecutionReportDecoder decodeExecutionReport(final byte[] bytes) {
-    final UnsafeBuffer buf = new UnsafeBuffer(bytes);
-    final MessageHeaderDecoder hd = new MessageHeaderDecoder();
-    hd.wrap(buf, 0);
-    final ExecutionReportDecoder d = new ExecutionReportDecoder();
     d.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hd.blockLength(), hd.version());
     return d;
   }
@@ -1095,23 +1071,25 @@ class TradingClusteredServiceTest {
    */
   @Test
   void onTakeSnapshot_nearCapacityOrderBookRoundTrip() {
-    final IdGenerator ordGen = new IdGenerator("ORD");
-    final IdGenerator exeGen = new IdGenerator("EXE");
-    final OrderBook bigBook = new OrderBook(2048);
-    final EventSequencer seq = new EventSequencer();
-    final EventJournal journal = new EventJournal(2048);
-    final AccountStore accounts = new AccountStore();
-    final CurrencyStore currencies = new CurrencyStore();
-    final RiskLimitStore limits = new RiskLimitStore();
+    final var ordGen = new IdGenerator("ORD");
+    final var exeGen = new IdGenerator("EXE");
+    final var bigBook = new OrderBook(2048);
+    final var seq = new EventSequencer();
+    final var journal = new EventJournal(2048);
+    final var bigState = new TradingState(bigBook, ordGen, exeGen);
+    final var bigSink = new EventSink(seq, journal);
+    final var accounts = new AccountStore();
+    final var currencies = new CurrencyStore();
+    final var limits = new RiskLimitStore();
     seedReferenceData(accounts, currencies, limits);
     // Remove the 10-unit max order size limit so we can place many orders.
-    final RiskLimitState bigLimit = new RiskLimitState();
+    final var bigLimit = new RiskLimitState();
     bigLimit.setAccountId(1L);
     bigLimit.setMaxOrderSize(0L); // 0 = unlimited
     bigLimit.setStatus(AccountStatusEnum.Active);
     limits.put(bigLimit);
 
-    final ReferenceDataRegistry reg = new ReferenceDataRegistry();
+    final var reg = new ReferenceDataRegistry();
     reg.registerStore(accounts);
     reg.registerStore(currencies);
     reg.registerStore(limits);
@@ -1119,9 +1097,8 @@ class TradingClusteredServiceTest {
     reg.registerLoader(new LoadCurrencyHandler(currencies));
     reg.registerLoader(new LoadRiskLimitHandler(limits, accounts));
 
-    final TradingClusteredService svc =
-        new TradingClusteredService(
-            ordGen, exeGen, bigBook, seq, journal, accounts, currencies, limits, reg);
+    final var svc =
+        new TradingClusteredService(bigState, bigSink, journal, accounts, currencies, limits, reg);
     svc.onStart(cluster, null);
 
     // Place 1000 orders.
@@ -1158,24 +1135,24 @@ class TradingClusteredServiceTest {
             + svc.orderBookSnapLength();
 
     // Build a fresh service with matching capacity and restore.
-    final IdGenerator freshOrdGen = new IdGenerator("ORD");
-    final IdGenerator freshExeGen = new IdGenerator("EXE");
-    final OrderBook freshBook = new OrderBook(2048);
-    final EventSequencer freshSeq = new EventSequencer();
-    final EventJournal freshJournal = new EventJournal(2048);
-    final AccountStore freshAccounts = new AccountStore();
-    final CurrencyStore freshCurrencies = new CurrencyStore();
-    final RiskLimitStore freshLimits = new RiskLimitStore();
-    final ReferenceDataRegistry freshReg = new ReferenceDataRegistry();
+    final var freshOrdGen = new IdGenerator("ORD");
+    final var freshExeGen = new IdGenerator("EXE");
+    final var freshBook = new OrderBook(2048);
+    final var freshSeq = new EventSequencer();
+    final var freshJournal = new EventJournal(2048);
+    final var freshState = new TradingState(freshBook, freshOrdGen, freshExeGen);
+    final var freshSink = new EventSink(freshSeq, freshJournal);
+    final var freshAccounts = new AccountStore();
+    final var freshCurrencies = new CurrencyStore();
+    final var freshLimits = new RiskLimitStore();
+    final var freshReg = new ReferenceDataRegistry();
     freshReg.registerStore(freshAccounts);
     freshReg.registerStore(freshCurrencies);
     freshReg.registerStore(freshLimits);
-    final TradingClusteredService freshSvc =
+    final var freshSvc =
         new TradingClusteredService(
-            freshOrdGen,
-            freshExeGen,
-            freshBook,
-            freshSeq,
+            freshState,
+            freshSink,
             freshJournal,
             freshAccounts,
             freshCurrencies,

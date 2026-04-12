@@ -13,8 +13,11 @@ import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
+import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
+import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 import io.aeron.cluster.service.ClientSession;
 import java.util.Objects;
@@ -445,12 +448,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
     orderCreatedEncoder.putQuoteId(quoteIdScratch, 0);
 
     orderCreatedEncoder.putAccountCode(accountCodeScratch, 0);
-    orderCreatedEncoder.productType(nosDecoder.productType());
+    orderCreatedEncoder.productType(safeProductType());
 
     // SettlDate — FIX tag 64, 8-byte fixed-length ASCII.
     nosDecoder.getSettlDate(settlDateScratch, 0);
     orderCreatedEncoder.putSettlDate(settlDateScratch, 0);
-    orderCreatedEncoder.settlType(nosDecoder.settlType());
+    orderCreatedEncoder.settlType(safeSettlType());
 
     // Currency — FIX tag 15, 3-byte fixed-length ASCII.
     orderCreatedEncoder.putCurrency(ccy0, ccy1, ccy2);
@@ -461,7 +464,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
     final byte sc2 = nosDecoder.settlCurrency(2);
     orderCreatedEncoder.putSettlCurrency(sc0, sc1, sc2);
 
-    orderCreatedEncoder.tenor(nosDecoder.tenor());
+    orderCreatedEncoder.tenor(safeTenor());
 
     // Emit via EventSink — stamps seqNo + timestamp, appends to journal, offers to session.
     final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCreatedEncoder.encodedLength();
@@ -531,8 +534,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
     // Account code may be empty — still ship the 16-byte scratch (zero-padded tail is valid SBE).
     orderRejectedEncoder.putAccountCode(accountCodeScratch, 0);
     // ProductType — use the decoded value if available. The decoder has been wrapped for all
-    // reject paths (wrap happens before any validation), so productType() is always safe to read.
-    orderRejectedEncoder.productType(nosDecoder.productType());
+    // reject paths (wrap happens before any validation), so the raw byte is always readable.
+    // Use safeProductType() to handle unrecognized wire values gracefully.
+    orderRejectedEncoder.productType(safeProductType());
     // Currency bytes — stashed from the current NOS decode pass.
     orderRejectedEncoder.putCurrency(currencyByte0, currencyByte1, currencyByte2);
     orderRejectedEncoder.text(text);
@@ -563,5 +567,55 @@ public final class NewOrderSingleHandler implements CommandHandler {
       end--;
     }
     return end;
+  }
+
+  /**
+   * Reads the productType field from the NOS decoder using the raw byte accessor and maps it to the
+   * corresponding {@link ProductTypeEnum}. Returns {@link ProductTypeEnum#NULL_VAL} for any
+   * unrecognized wire value (including 0, which SBE zero-fills on an unset field). This avoids the
+   * {@link IllegalArgumentException} that {@code nosDecoder.productType()} throws for unknown
+   * values.
+   *
+   * @return the resolved product type enum, or {@code NULL_VAL} if the wire value is unrecognized
+   */
+  private ProductTypeEnum safeProductType() {
+    final short raw = nosDecoder.productTypeRaw();
+    try {
+      return ProductTypeEnum.get(raw);
+    } catch (final IllegalArgumentException e) {
+      return ProductTypeEnum.NULL_VAL;
+    }
+  }
+
+  /**
+   * Reads the settlType field from the NOS decoder using the raw byte accessor and maps it to the
+   * corresponding {@link SettlTypeEnum}. Returns {@link SettlTypeEnum#NULL_VAL} for any
+   * unrecognized wire value. Same pattern as {@link #safeProductType()}.
+   *
+   * @return the resolved settle type enum, or {@code NULL_VAL} if the wire value is unrecognized
+   */
+  private SettlTypeEnum safeSettlType() {
+    final short raw = nosDecoder.settlTypeRaw();
+    try {
+      return SettlTypeEnum.get(raw);
+    } catch (final IllegalArgumentException e) {
+      return SettlTypeEnum.NULL_VAL;
+    }
+  }
+
+  /**
+   * Reads the tenor field from the NOS decoder using the raw byte accessor and maps it to the
+   * corresponding {@link TenorEnum}. Returns {@link TenorEnum#NULL_VAL} for any unrecognized wire
+   * value. Same pattern as {@link #safeProductType()}.
+   *
+   * @return the resolved tenor enum, or {@code NULL_VAL} if the wire value is unrecognized
+   */
+  private TenorEnum safeTenor() {
+    final short raw = nosDecoder.tenorRaw();
+    try {
+      return TenorEnum.get(raw);
+    } catch (final IllegalArgumentException e) {
+      return TenorEnum.NULL_VAL;
+    }
   }
 }

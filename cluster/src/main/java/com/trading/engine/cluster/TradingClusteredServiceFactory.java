@@ -1,5 +1,6 @@
 package com.trading.engine.cluster;
 
+import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
@@ -9,6 +10,7 @@ import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.cluster.state.TradingState;
 
 /**
  * Canonical wiring for {@link TradingClusteredService}. Both the launcher (production bootstrap)
@@ -38,18 +40,20 @@ public final class TradingClusteredServiceFactory {
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore) {
-    final IdGenerator orderIdGen = new IdGenerator("ORD");
-    final IdGenerator execIdGen = new IdGenerator("EXE");
+    final var orderIdGen = new IdGenerator("ORD");
+    final var execIdGen = new IdGenerator("EXE");
     // Default capacities (~65k each) for production bootstrap. The existing unit test in
     // TradingClusteredServiceTest uses the int-capacity constructors (128 / 64) to keep its
     // scratch buffers small — a deliberate divergence: the factory is for production, the test
     // is for assertion surface, and both go through the same store-wiring path so the
     // requireSameStore consistency check is unaffected.
-    final OrderBook orderBook = new OrderBook();
-    final EventSequencer eventSequencer = new EventSequencer();
-    final EventJournal eventJournal = new EventJournal();
+    final var orderBook = new OrderBook();
+    final var eventSequencer = new EventSequencer();
+    final var eventJournal = new EventJournal();
+    final var tradingState = new TradingState(orderBook, orderIdGen, execIdGen);
+    final var eventSink = new EventSink(eventSequencer, eventJournal);
 
-    final ReferenceDataRegistry registry = new ReferenceDataRegistry();
+    final var registry = new ReferenceDataRegistry();
     registry.registerStore(accountStore);
     registry.registerStore(currencyStore);
     registry.registerStore(riskLimitStore);
@@ -58,10 +62,8 @@ public final class TradingClusteredServiceFactory {
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
 
     return new TradingClusteredService(
-        orderIdGen,
-        execIdGen,
-        orderBook,
-        eventSequencer,
+        tradingState,
+        eventSink,
         eventJournal,
         accountStore,
         currencyStore,
