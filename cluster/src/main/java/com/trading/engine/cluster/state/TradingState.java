@@ -75,9 +75,13 @@ public final class TradingState {
     this.orderBook = Objects.requireNonNull(orderBook, "orderBook");
     this.orderIdGen = Objects.requireNonNull(orderIdGen, "orderIdGen");
     this.execIdGen = Objects.requireNonNull(execIdGen, "execIdGen");
-    this.orderIdScratch = new byte[orderIdGen.idByteLength()];
+    // Scratch buffers sized to the SBE field length (OrderState.ORDER_ID_LENGTH = 20 bytes),
+    // not the generator's idByteLength (e.g. 15 for "ORD"). The generator writes its shorter
+    // ID left-aligned; the remaining bytes stay zero-padded, matching the SBE char[20] semantics
+    // expected by OrderCreatedEventEncoder.putOrderId / putExecId.
+    this.orderIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
     this.orderIdScratchBuffer = new UnsafeBuffer(orderIdScratch);
-    this.execIdScratch = new byte[execIdGen.idByteLength()];
+    this.execIdScratch = new byte[OrderState.ORDER_ID_LENGTH];
     this.execIdScratchBuffer = new UnsafeBuffer(execIdScratch);
   }
 

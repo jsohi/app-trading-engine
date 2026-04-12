@@ -128,9 +128,9 @@ public final class EventSink {
   }
 
   /**
-   * Offers a message to a client session with bounded-retry backpressure handling. Package-private
-   * — accessible from {@link com.trading.engine.cluster.TradingClusteredService} for the ref-data
-   * dispatch path.
+   * Offers a message to a client session with bounded-retry backpressure handling. Public so that
+   * {@link com.trading.engine.cluster.TradingClusteredService} can call it for the ref-data
+   * dispatch path (which journals events separately and then offers to session).
    *
    * <p>If retries exhaust or the session returns a non-retryable result (NOT_CONNECTED, CLOSED,
    * MAX_POSITION_EXCEEDED), the session is closed. The underlying domain event is already
@@ -141,7 +141,7 @@ public final class EventSink {
    * @param offset the start offset
    * @param length the message length
    */
-  void offerToSession(
+  public void offerToSession(
       final ClientSession session, final DirectBuffer src, final int offset, final int length) {
     if (session == null) {
       return; // Unit tests may pass null for the unused ref-data session case.
