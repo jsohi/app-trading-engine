@@ -264,7 +264,7 @@ public final class PricingServiceLauncher {
             spreadConfigs, defaultSpreadConfig, tierConfig, skewModel, volatilityMonitor);
 
     // --- Step 9: Construct QuoteManager ---
-    final QuoteManager quoteManager = new QuoteManager(DEFAULT_MAX_ACTIVE_QUOTES);
+    final QuoteManager quoteManager = new QuoteManager(config.maxActiveQuotes());
 
     // --- Step 10: Construct PriceValidator ---
     final PriceValidator priceValidator = new PriceValidator(quoteManager, marketDataAdapter);
@@ -359,9 +359,9 @@ public final class PricingServiceLauncher {
                 cache,
                 TradingClocks.nanoClock(),
                 prng,
-                DEFAULT_SYNTHETIC_UPDATE_INTERVAL_NS,
-                DEFAULT_SYNTHETIC_VOLATILITY_BPS,
-                DEFAULT_SYNTHETIC_MEAN_REVERSION,
+                config.syntheticUpdateIntervalNanos(),
+                config.syntheticVolatilityBps(),
+                config.syntheticMeanReversionStrength(),
                 SYMBOL_BYTES.length);
         for (int i = 0; i < SYMBOL_BYTES.length; i++) {
           adapter.registerSymbol(i, SYMBOL_BYTES[i], BASE_MID_RATES[i]);

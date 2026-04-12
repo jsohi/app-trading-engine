@@ -4,7 +4,6 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.pricing.ByteArrayKey;
 import java.util.Iterator;
-import java.util.Map;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2ObjectHashMap;
 
@@ -241,10 +240,12 @@ public final class QuoteManager {
   public int expireStale(final long nowEpochNanos) {
     int expiredCount = 0;
 
-    final Iterator<Map.Entry<ByteArrayKey, QuoteEntry>> it = activeQuotes.entrySet().iterator();
+    // Agrona's Object2ObjectHashMap.values() returns a reusable ValueCollection whose
+    // iterator is allocation-free. Using values().iterator() avoids the EntryIterator
+    // wrapper that entrySet().iterator() creates.
+    final Iterator<QuoteEntry> it = activeQuotes.values().iterator();
     while (it.hasNext()) {
-      final Map.Entry<ByteArrayKey, QuoteEntry> mapEntry = it.next();
-      final QuoteEntry entry = mapEntry.getValue();
+      final QuoteEntry entry = it.next();
       if (entry.isExpired(nowEpochNanos)) {
         it.remove();
         entry.reset();
