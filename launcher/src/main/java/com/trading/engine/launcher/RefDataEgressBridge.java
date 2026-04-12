@@ -81,6 +81,7 @@ final class RefDataEgressBridge implements ControlledEgressListener {
   /**
    * @param collector receives {@link ResponseCollector#onLoaded()} and {@link
    *     ResponseCollector#onRejected(String)} callbacks for each decoded event
+   * @throws NullPointerException if collector is null
    */
   RefDataEgressBridge(final ResponseCollector collector) {
     if (collector == null) {
