@@ -76,7 +76,11 @@ public final class ClusterClient implements Agent, AutoCloseable {
 
   // --- Mutable state ---
   private AeronCluster aeronCluster;
-  private State state = State.DISCONNECTED;
+  // Volatile: state is read cross-thread by TradingEngineLauncher's readiness poll
+  // (main thread calls isConnected() while the gateway thread writes in connect()).
+  // All hot-path reads are on the single duty-cycle thread, so volatile has no
+  // performance impact on the steady-state path.
+  private volatile State state = State.DISCONNECTED;
   private long lastKeepAliveNs;
   private long lastTimeoutCheckNs;
   private long reconnectDeadlineNs;
