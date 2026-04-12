@@ -103,4 +103,39 @@ class EventSinkTest {
     assertEquals(0, RiskLimitLoadRejectedEventEncoder.sequenceNumberEncodingOffset());
     assertEquals(8, RiskLimitLoadRejectedEventEncoder.timestampEncodingOffset());
   }
+
+  /**
+   * Verifies that {@link EventSink#emit} stamps the correct seqNo and timestamp at the expected
+   * byte positions in the buffer, journals the event, and returns the assigned sequence number.
+   */
+  @Test
+  void emitStampsSequenceAndTimestampAtCorrectOffsets() {
+    final var sequencer = new com.trading.engine.cluster.sequencer.EventSequencer();
+    final var journal = new com.trading.engine.cluster.journal.EventJournal(16);
+    final var sink = new EventSink(sequencer, journal);
+
+    // Encode a minimal OrderCreatedEvent (just header + enough body for seqNo + timestamp)
+    final var buf = new org.agrona.concurrent.UnsafeBuffer(new byte[512]);
+    final var hdr = new com.trading.engine.messages.sbe.MessageHeaderEncoder();
+    final var enc = new OrderCreatedEventEncoder();
+    enc.wrapAndApplyHeader(buf, 0, hdr);
+    enc.sequenceNumber(0L); // placeholder
+    enc.timestamp(0L); // placeholder
+    int totalLen =
+        com.trading.engine.messages.sbe.MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+
+    long clusterTimestamp = 999_000_000L;
+    long seqNo = sink.emit(null, clusterTimestamp, buf, 0, totalLen);
+
+    // Verify seqNo = 1 (first sequence from a fresh EventSequencer)
+    assertEquals(1L, seqNo);
+
+    // Verify the buffer was stamped at the correct positions
+    int hdrLen = com.trading.engine.messages.sbe.MessageHeaderEncoder.ENCODED_LENGTH;
+    assertEquals(1L, buf.getLong(hdrLen, java.nio.ByteOrder.LITTLE_ENDIAN));
+    assertEquals(clusterTimestamp, buf.getLong(hdrLen + 8, java.nio.ByteOrder.LITTLE_ENDIAN));
+
+    // Verify journal received the event
+    assertEquals(1L, journal.highestSequence());
+  }
 }
