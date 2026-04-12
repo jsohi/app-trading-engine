@@ -11,7 +11,7 @@ class LauncherConfigTest {
   // ===== Valid construction =====
 
   @Test
-  void validConfig_allFieldsAccessible() {
+  void constructor_validConfig_allFieldsAccessible() {
     final var config =
         new LauncherConfig("localhost", 9880, 3, "cluster-data", "logs", 10, "accounts.yaml");
 
@@ -25,7 +25,7 @@ class LauncherConfigTest {
   }
 
   @Test
-  void boundaryPorts_accepted() {
+  void constructor_boundaryPorts_accepted() {
     new LauncherConfig("localhost", 1, 1, "data", "logs", 1, "a.yaml");
     new LauncherConfig("localhost", 65535, 1, "data", "logs", 1, "a.yaml");
   }
@@ -33,7 +33,7 @@ class LauncherConfigTest {
   // ===== fixHost validation =====
 
   @Test
-  void nullFixHost_throwsIae() {
+  void constructor_nullFixHost_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -42,7 +42,7 @@ class LauncherConfigTest {
   }
 
   @Test
-  void blankFixHost_throwsIae() {
+  void constructor_blankFixHost_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("  ", 9880, 3, "data", "logs", 10, "a.yaml"));
@@ -51,7 +51,7 @@ class LauncherConfigTest {
   // ===== fixPort validation =====
 
   @Test
-  void portZero_throwsIae() {
+  void constructor_portZero_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -60,14 +60,14 @@ class LauncherConfigTest {
   }
 
   @Test
-  void portNegative_throwsIae() {
+  void constructor_portNegative_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", -1, 3, "data", "logs", 10, "a.yaml"));
   }
 
   @Test
-  void portAboveMax_throwsIae() {
+  void constructor_portAboveMax_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -78,14 +78,14 @@ class LauncherConfigTest {
   // ===== nodeCount validation =====
 
   @Test
-  void nodeCountZero_throwsIae() {
+  void constructor_nodeCountZero_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 0, "data", "logs", 10, "a.yaml"));
   }
 
   @Test
-  void nodeCountAboveMax_throwsIae() {
+  void constructor_nodeCountAboveMax_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -100,14 +100,14 @@ class LauncherConfigTest {
   // ===== baseDir validation =====
 
   @Test
-  void nullBaseDir_throwsIae() {
+  void constructor_nullBaseDir_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, null, "logs", 10, "a.yaml"));
   }
 
   @Test
-  void blankBaseDir_throwsIae() {
+  void constructor_blankBaseDir_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "", "logs", 10, "a.yaml"));
@@ -116,14 +116,14 @@ class LauncherConfigTest {
   // ===== logDir validation =====
 
   @Test
-  void nullLogDir_throwsIae() {
+  void constructor_nullLogDir_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "data", null, 10, "a.yaml"));
   }
 
   @Test
-  void blankLogDir_throwsIae() {
+  void constructor_blankLogDir_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "data", "  ", 10, "a.yaml"));
@@ -132,7 +132,7 @@ class LauncherConfigTest {
   // ===== driverShutdownTimeoutSeconds validation =====
 
   @Test
-  void zeroTimeout_throwsIae() {
+  void constructor_zeroTimeout_throwsIae() {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
@@ -141,7 +141,7 @@ class LauncherConfigTest {
   }
 
   @Test
-  void negativeTimeout_throwsIae() {
+  void constructor_negativeTimeout_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", -5, "a.yaml"));
@@ -150,14 +150,14 @@ class LauncherConfigTest {
   // ===== accountsFile validation =====
 
   @Test
-  void nullAccountsFile_throwsIae() {
+  void constructor_nullAccountsFile_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", 10, null));
   }
 
   @Test
-  void blankAccountsFile_throwsIae() {
+  void constructor_blankAccountsFile_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
         () -> new LauncherConfig("localhost", 9880, 3, "data", "logs", 10, "  "));
