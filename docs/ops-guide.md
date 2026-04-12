@@ -1007,10 +1007,10 @@ java -cp <classpath> io.aeron.samples.AeronStat \
 2. Check gateway media driver health (section 2.1)
 3. Verify ingress endpoints are reachable:
    ```bash
-   # Default ingress endpoints
+   # Default ingress endpoints (Aeron UDP — use -u flag for UDP scan)
    # 0=localhost:20110,1=localhost:21110,2=localhost:22110
    for port in 20110 21110 22110; do
-     nc -zv localhost $port 2>&1
+     nc -zuv localhost $port 2>&1
    done
    ```
 4. Check the gateway's AeronStat for connection errors:
