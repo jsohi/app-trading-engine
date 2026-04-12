@@ -31,7 +31,7 @@ import org.apache.logging.log4j.Logger;
  * <p><b>Startup invariant.</b> MediaDriver → Cluster → ReferenceData (await ALL acks) → Gateway.
  * The FIX acceptor must NOT bind until all reference data is confirmed loaded.
  *
- * <p><b>Startup sequence (11 steps):</b>
+ * <p><b>Startup sequence (12 steps):</b>
  *
  * <ol>
  *   <li>Parse + validate config via {@link LauncherConfig#fromSystemProperties()}
@@ -43,6 +43,7 @@ import org.apache.logging.log4j.Logger;
  *   <li>Launch cluster nodes via {@link ClusterNodeLauncher#launch}
  *   <li>Load reference data (subsumes leader election via {@link AeronCluster#connect})
  *   <li>Launch gateway via {@link GatewayLauncher#launch}
+ *   <li>Wait for gateway cluster client to reach CONNECTED state (30 s timeout)
  *   <li>Log SYSTEM_READY event with total startup time
  *   <li>Block on {@link ShutdownSignalBarrier#await()}
  * </ol>
