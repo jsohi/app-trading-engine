@@ -64,6 +64,16 @@ public final class ClientTierConfig {
    */
   public ClientTierConfig(
       final int houseMultiplier, final int clientMultiplier, final int marketMakerMultiplier) {
+    if (houseMultiplier <= 0) {
+      throw new IllegalArgumentException("houseMultiplier must be > 0, got " + houseMultiplier);
+    }
+    if (clientMultiplier <= 0) {
+      throw new IllegalArgumentException("clientMultiplier must be > 0, got " + clientMultiplier);
+    }
+    if (marketMakerMultiplier <= 0) {
+      throw new IllegalArgumentException(
+          "marketMakerMultiplier must be > 0, got " + marketMakerMultiplier);
+    }
     this.multipliers = new int[ACCOUNT_TYPE_COUNT];
     this.multipliers[AccountTypeEnum.House.value()] = houseMultiplier;
     this.multipliers[AccountTypeEnum.Client.value()] = clientMultiplier;

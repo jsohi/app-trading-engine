@@ -105,6 +105,12 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
   /** Reject text for stale market data beyond the hard threshold. */
   private static final byte[] TEXT_STALE_MARKET_DATA = "Stale market data".getBytes();
 
+  /** Reject text for unsupported product type. */
+  private static final byte[] TEXT_UNSUPPORTED_PRODUCT_TYPE = "Unsupported product type".getBytes();
+
+  /** Reject text for non-positive order quantity. */
+  private static final byte[] TEXT_INVALID_ORDER_QTY = "Invalid order quantity".getBytes();
+
   /** SBE Symbol field length (8 bytes). */
   private static final int SYMBOL_LENGTH = PriceRequestDecoder.symbolLength();
 
@@ -435,6 +441,20 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
     final long transactTime = decoder.transactTime();
     final ProductTypeEnum productType = decoder.productType();
 
+    // --- Step 0: Validate order quantity ---
+
+    if (orderQty <= 0) {
+      return encodeRejectedPriceResponse(
+          decoderBuffer,
+          quoteReqIdOff,
+          symbolOff,
+          transactTime,
+          productType,
+          QuoteRejectReasonEnum.Other.value(),
+          TEXT_INVALID_ORDER_QTY,
+          TEXT_INVALID_ORDER_QTY.length);
+    }
+
     // --- Step 1: Look up spot mid-rate ---
 
     final long spotMid = marketDataAdapter.midRate(decoderBuffer, symbolOff, SYMBOL_LENGTH);
@@ -452,6 +472,11 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
     }
 
     // --- Step 2: Staleness check ---
+    // Note: midRate() and lastUpdateNanos() perform two separate hash map probes on the same
+    // symbol key. Combining them into a single lookup (returning an entry with both fields)
+    // would save one probe, but the cost is negligible (two O(1) Agrona hash map gets on the
+    // same warm cache line) and the API clarity of separate methods outweighs the micro-
+    // optimisation. Revisit only if profiling shows contention on the probe key.
 
     final long dataAge =
         nanoClock.nanoTime()
@@ -521,12 +546,21 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
         midRate = spotMid + farFwdPoints;
       }
       default -> {
-        // Unknown product type -- treat as Spot for resilience.
+        // Unknown product type -- reject rather than silently defaulting to Spot.
         LOG.warn()
-            .append("Unknown productType=")
+            .append("Unsupported productType=")
             .append(productType.value())
-            .append(", defaulting to Spot")
+            .append(", rejecting")
             .commit();
+        return encodeRejectedPriceResponse(
+            decoderBuffer,
+            quoteReqIdOff,
+            symbolOff,
+            transactTime,
+            productType,
+            QuoteRejectReasonEnum.Other.value(),
+            TEXT_UNSUPPORTED_PRODUCT_TYPE,
+            TEXT_UNSUPPORTED_PRODUCT_TYPE.length);
       }
     }
 
@@ -805,15 +839,21 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
   private final byte[] settlDateScratch = new byte[8];
 
   /**
-   * Parses the settlDate field (YYYYMMDD ASCII) from a PriceRequest and estimates the number of
-   * calendar days from today. Uses a simplified 30-day-month approximation for the difference
-   * calculation — sufficient for forward point interpolation. A precise business-day calculation
-   * requires a holiday calendar (APP-125).
+   * Parses the settlDate field (YYYYMMDD ASCII) from a PriceRequest and computes the number of
+   * calendar days from today using Howard Hinnant's {@code days_from_civil} algorithm (Rata Die
+   * epoch). Both the settlement date and today's date are converted to a linear day count via the
+   * same formula, ensuring an exact calendar-day difference with correct handling of leap years and
+   * variable-length months.
    *
-   * <p><b>Allocation:</b> zero allocation — uses pre-allocated scratch buffer.
+   * <p>A precise <em>business-day</em> calculation requires a holiday calendar (APP-125); this
+   * method returns raw calendar days, which is sufficient for forward point interpolation on the
+   * pricing hot path.
+   *
+   * <p><b>Allocation:</b> zero allocation — uses pre-allocated scratch buffer and integer math
+   * only.
    *
    * @param decoder the PriceRequest decoder positioned on the current message
-   * @return estimated calendar days to settlement, or 30 as fallback if parsing fails
+   * @return calendar days to settlement, or 30 as fallback if parsing fails
    */
   private int parseSettlDateDays(final PriceRequestDecoder decoder) {
     decoder.getSettlDate(settlDateScratch, 0);
@@ -821,23 +861,44 @@ public final class PricingService implements Agent, PricingMessageDispatcher.Pri
     final int year = parseDigits(settlDateScratch, 0, 4);
     final int month = parseDigits(settlDateScratch, 4, 2);
     final int day = parseDigits(settlDateScratch, 6, 2);
-    if (year == 0 || month == 0) {
+    if (year == 0 || month == 0 || day == 0) {
       return 30; // fallback for empty/invalid settlDate
     }
-    // Approximate days from epoch-ish anchor using 30-day months.
-    // The absolute value doesn't matter — only the relative difference between tenors matters
-    // for forward point interpolation.
-    final int settlDayCount = year * 365 + month * 30 + day;
-    // Estimate "today" the same way for a consistent delta.
+
+    final long settlEpochDays = civilToEpochDays(year, month, day);
+
+    // Derive today's epoch day from the epoch nanosecond clock.
     final long nowNanos = epochClock.nanoTime();
-    final long nowDays = nowNanos / 86_400_000_000_000L; // epoch nanos to days
-    // Approximate current date components from epoch days (since ~1970).
-    final int nowYear = (int) (1970 + nowDays / 365);
-    final int nowMonth = (int) ((nowDays % 365) / 30) + 1;
-    final int nowDay = (int) ((nowDays % 365) % 30) + 1;
-    final int todayDayCount = nowYear * 365 + nowMonth * 30 + nowDay;
-    final int delta = settlDayCount - todayDayCount;
-    return Math.max(delta, 1); // at least 1 day for any forward
+    final long todayEpochDays = nowNanos / 86_400_000_000_000L; // epoch nanos -> epoch days
+
+    final long delta = settlEpochDays - todayEpochDays;
+    return (int) Math.max(delta, 1); // at least 1 day for any forward
+  }
+
+  /**
+   * Converts a civil date (year, month, day) to Unix epoch days (days since 1970-01-01) using
+   * Howard Hinnant's {@code days_from_civil} algorithm. The result increases by exactly 1 for each
+   * calendar day, correctly accounting for leap years and variable-length months.
+   *
+   * <p>Reference: <a href="https://howardhinnant.github.io/date_algorithms.html">chrono-Compatible
+   * Low-Level Date Algorithms</a>.
+   *
+   * <p><b>Allocation:</b> zero allocation — pure integer arithmetic.
+   *
+   * @param y year (e.g. 2026)
+   * @param m month (1-12)
+   * @param d day of month (1-31)
+   * @return days since 1970-01-01 (Unix epoch)
+   */
+  static long civilToEpochDays(final int y, final int m, final int d) {
+    // Shift year so that March is the first month (simplifies leap year handling).
+    final long yr = (m <= 2) ? (long) y - 1 : y;
+    final long era = (yr >= 0 ? yr : yr - 399) / 400;
+    final long yoe = yr - era * 400; // year of era [0, 399]
+    final long mAdj = (m > 2) ? m - 3 : m + 9; // month adjusted [0, 11], Mar=0
+    final long doy = (153 * mAdj + 2) / 5 + d - 1; // day of year [0, 365]
+    final long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era [0, 146096]
+    return era * 146_097 + doe - 719_468; // convert Rata Die -> Unix epoch days
   }
 
   /**

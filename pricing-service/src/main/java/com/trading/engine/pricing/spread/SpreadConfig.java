@@ -93,6 +93,9 @@ public final class SpreadConfig {
     if (pipSize <= 0) {
       throw new IllegalArgumentException("pipSize must be > 0, got " + pipSize);
     }
+    if (minQuoteSize < 0) {
+      throw new IllegalArgumentException("minQuoteSize must be >= 0, got " + minQuoteSize);
+    }
     if (quantityThreshold <= 0) {
       throw new IllegalArgumentException("quantityThreshold must be > 0, got " + quantityThreshold);
     }

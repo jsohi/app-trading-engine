@@ -146,6 +146,18 @@ public final class PricingMessageDispatcher implements ControlledFragmentHandler
   public Action onFragment(
       final DirectBuffer buffer, final int offset, final int length, final Header header) {
 
+    // Guard: fragment must be at least as large as the SBE message header to be decodable.
+    // A truncated fragment could originate from a corrupted log buffer or a misbehaving producer.
+    if (length < MessageHeaderDecoder.ENCODED_LENGTH) {
+      LOG.warn()
+          .append("Fragment too short for SBE header: length=")
+          .append(length)
+          .append(" required=")
+          .append(MessageHeaderDecoder.ENCODED_LENGTH)
+          .commit();
+      return Action.CONTINUE;
+    }
+
     headerDecoder.wrap(buffer, offset);
     final int templateId = headerDecoder.templateId();
 
