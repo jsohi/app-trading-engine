@@ -139,6 +139,25 @@ public final class OrchestratorService
   private final byte[] settlCurrencyScratch = new byte[RfqState.SETTL_CURRENCY_LENGTH];
 
   /**
+   * Pre-allocated UnsafeBuffer view over {@link #nosScratch} for decoding the stashed NOS to
+   * extract ClOrdId for reject ExecutionReports. Zero allocation — wraps the existing scratch.
+   */
+  private final UnsafeBuffer stashedNosView = new UnsafeBuffer(nosScratch);
+
+  /**
+   * Pre-allocated SBE header decoder for decoding the stashed NOS header. Used to extract
+   * blockLength/version before wrapping the NOS body decoder.
+   */
+  private final com.trading.engine.messages.sbe.MessageHeaderDecoder stashedHeaderDecoder =
+      new com.trading.engine.messages.sbe.MessageHeaderDecoder();
+
+  /**
+   * Pre-allocated SBE NOS decoder for extracting ClOrdId from the stashed NOS fragment. Zero
+   * allocation on the hot path — pre-allocated, re-wrapped on each use.
+   */
+  private final NewOrderSingleDecoder stashedNosDecoder = new NewOrderSingleDecoder();
+
+  /**
    * Pre-allocated reap callback. Captured ONCE at construction to avoid per-doWork() lambda
    * allocation (this::onRfqExpired would allocate on every call).
    */
@@ -604,8 +623,26 @@ public final class OrchestratorService
         return Action.CONTINUE;
       }
 
-      // Build reject from RfqState fields (zero-alloc: pre-allocated instance scratch arrays)
-      Arrays.fill(clOrdIdScratch, (byte) 0);
+      // Extract ClOrdId from the stashed NOS (zero-alloc: pre-allocated decoders + scratch)
+      final int stashedNosLen = rfq.putNosInto(nosScratch, 0);
+      if (stashedNosLen >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH) {
+        stashedNosView.wrap(nosScratch, 0, stashedNosLen);
+        stashedHeaderDecoder.wrap(stashedNosView, 0);
+        if (stashedNosLen
+            >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH
+                + stashedHeaderDecoder.blockLength()) {
+          stashedNosDecoder.wrap(
+              stashedNosView,
+              com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH,
+              stashedHeaderDecoder.blockLength(),
+              stashedHeaderDecoder.version());
+          stashedNosDecoder.getClOrdId(clOrdIdScratch, 0);
+        } else {
+          Arrays.fill(clOrdIdScratch, (byte) 0);
+        }
+      } else {
+        Arrays.fill(clOrdIdScratch, (byte) 0);
+      }
       rfq.putQuoteReqIdInto(quoteReqIdScratch, 0);
       rfq.putSymbolInto(symbolScratch, 0);
       rfq.putSettlDateInto(settlDateScratch, 0);
