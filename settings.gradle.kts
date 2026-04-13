@@ -10,6 +10,7 @@ include(
     "launcher",
     "media-driver",
     "messages",
+    "orchestrator",
     "pricing-service",
     "projections",
     "reference-data",
