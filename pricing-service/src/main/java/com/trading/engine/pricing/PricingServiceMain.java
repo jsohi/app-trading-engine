@@ -2,6 +2,7 @@ package com.trading.engine.pricing;
 
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
+import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -105,14 +106,16 @@ public final class PricingServiceMain {
 
     // --- Register shutdown hook EARLY (before resource creation) ---
     final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-    final PricingComponents[] componentsHolder = new PricingComponents[1];
+    // AtomicReference ensures safe publication of the PricingComponents reference to the
+    // shutdown hook thread, which runs on a different thread from main().
+    final AtomicReference<PricingComponents> componentsRef = new AtomicReference<>();
 
     Runtime.getRuntime()
         .addShutdownHook(
             new Thread(
                 () -> {
                   LOG.info().append("Shutdown hook triggered -- closing pricing service").commit();
-                  final PricingComponents components = componentsHolder[0];
+                  final PricingComponents components = componentsRef.get();
                   if (components != null) {
                     components.close();
                   }
@@ -124,7 +127,7 @@ public final class PricingServiceMain {
     try {
       final PricingComponents components =
           PricingServiceLauncher.launch(aeronDir, config, idleStrategy);
-      componentsHolder[0] = components;
+      componentsRef.set(components);
 
       final long startupMs = (System.nanoTime() - launchStartNs) / 1_000_000L;
       LOG.info().append("Pricing service ready: startupMs=").append(startupMs).commit();

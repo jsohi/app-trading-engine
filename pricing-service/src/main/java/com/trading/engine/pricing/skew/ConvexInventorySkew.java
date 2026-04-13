@@ -1,5 +1,7 @@
 package com.trading.engine.pricing.skew;
 
+import com.epam.deltix.gflog.api.Log;
+import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.pricing.PricingMath;
 import org.agrona.DirectBuffer;
 
@@ -58,6 +60,8 @@ import org.agrona.DirectBuffer;
  * @see PricingMath#mulDiv(long, long, long)
  */
 public final class ConvexInventorySkew implements InventorySkewModel {
+
+  private static final Log LOG = LogFactory.getLog(ConvexInventorySkew.class);
 
   /**
    * Basis-point divisor for converting bps to a unit fraction. {@code 1 bp = 1/10,000 = 0.0001}.
@@ -127,6 +131,14 @@ public final class ConvexInventorySkew implements InventorySkewModel {
     }
     if (alphaX100 <= 0) {
       throw new IllegalArgumentException("alphaX100 must be > 0, got: " + alphaX100);
+    }
+    if (alphaX100 != 200) {
+      LOG.warn()
+          .append("ConvexInventorySkew: alphaX100=")
+          .append(alphaX100)
+          .append(" but only quadratic (alpha=2.0, alphaX100=200) is implemented; ")
+          .append("the supplied value will be stored but ignored in v1")
+          .commit();
     }
 
     this.positionSource = positionSource;

@@ -71,6 +71,12 @@ public final class MidRateCache {
   private final UnsafeBuffer preloadScratch = new UnsafeBuffer(new byte[SYMBOL_LENGTH]);
 
   /**
+   * Pre-allocated scratch buffer for padding short symbol byte arrays to exactly {@link
+   * #SYMBOL_LENGTH} bytes during {@link #preload}. Avoids per-call allocation.
+   */
+  private final byte[] preloadPadBuffer = new byte[SYMBOL_LENGTH];
+
+  /**
    * Constructs an empty cache. Symbols are added via {@link #preload} at startup or via {@link
    * #put} during operation.
    */
@@ -161,19 +167,28 @@ public final class MidRateCache {
       throw new IllegalArgumentException(
           "symbol length " + symbol.length + " exceeds max " + SYMBOL_LENGTH);
     }
+    // Pad short symbols to exactly SYMBOL_LENGTH bytes with space (0x20) padding, matching
+    // the SBE convention for fixed-width char fields. This ensures that lookups from SBE
+    // decoder buffers (which always present exactly 8 bytes) match preloaded entries whose
+    // source byte[] may be shorter (e.g., "EURUSD" as 6 bytes).
+    final byte[] padded = preloadPadBuffer;
+    System.arraycopy(symbol, 0, padded, 0, symbol.length);
+    for (int i = symbol.length; i < SYMBOL_LENGTH; i++) {
+      padded[i] = ' '; // SBE pads fixed char[] with spaces
+    }
     // Use DirectBuffer overload to avoid aliasing the external byte[] in the probe key.
     // wrapForProbe(byte[]) sets probeKey.data = symbol (external reference), which would
     // corrupt the probe if the caller later mutates the array. The DirectBuffer overload
     // copies bytes into the probe's own backing array.
-    preloadScratch.wrap(symbol, 0, symbol.length);
-    probeKey.set(preloadScratch, 0, symbol.length);
+    preloadScratch.wrap(padded, 0, SYMBOL_LENGTH);
+    probeKey.set(preloadScratch, 0, SYMBOL_LENGTH);
     final MidRateEntry existing = entries.get(probeKey);
     if (existing != null) {
       LOG.warn().append("preload: duplicate symbol overwritten, midRate=").append(midRate).commit();
       existing.update(midRate, lastUpdateNanos);
       return;
     }
-    final ByteArrayKey insertKey = ByteArrayKey.copyOf(symbol, 0, symbol.length);
+    final ByteArrayKey insertKey = ByteArrayKey.copyOf(preloadScratch, 0, SYMBOL_LENGTH);
     final MidRateEntry entry = new MidRateEntry();
     entry.update(midRate, lastUpdateNanos);
     entries.put(insertKey, entry);
