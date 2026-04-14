@@ -309,6 +309,38 @@ public final class RfqStateMachine {
   }
 
   /**
+   * Transitions an RFQ from {@link RfqState.State#QUOTED} to {@link RfqState.State#REJECTED}.
+   * Removes from maps and releases the pool slot. Used when the NOS is too large for the stash
+   * buffer — the RFQ can never complete and should be released immediately rather than waiting for
+   * the QUOTED timeout.
+   *
+   * @param quoteIdBytes quoteId bytes for lookup
+   * @param offset offset into quoteIdBytes
+   * @param len length of quoteId bytes
+   * @return the RfqState if transition succeeded, or {@code null} if not found or wrong state
+   */
+  public RfqState rejectQuoted(final byte[] quoteIdBytes, final int offset, final int len) {
+
+    final var rfq = probeByQuoteId(quoteIdBytes, offset, len);
+    if (rfq == null || rfq.state() != RfqState.State.QUOTED) {
+      if (rfq != null) {
+        LOG.warn()
+            .append("rejectQuoted: unexpected state=")
+            .append(rfq.state().name())
+            .append(" for quoteId at poolIndex=")
+            .append(rfq.poolIndex())
+            .commit();
+      }
+      return null;
+    }
+
+    rfq.setState(RfqState.State.REJECTED);
+    removeFromMaps(rfq);
+    releaseSlot(rfq);
+    return rfq;
+  }
+
+  /**
    * Transitions an RFQ from {@link RfqState.State#PENDING_VALIDATION} to {@link
    * RfqState.State#COMPLETED}. Removes from maps and releases the pool slot.
    *
