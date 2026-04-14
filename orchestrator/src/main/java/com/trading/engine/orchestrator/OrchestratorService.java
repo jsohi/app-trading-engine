@@ -535,6 +535,8 @@ public final class OrchestratorService
       if (gwResult != Action.CONTINUE) {
         return gwResult;
       }
+      // Release pool slot immediately — the RFQ can never complete (NOS always too large)
+      stateMachine.rejectQuoted(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
       return Action.CONTINUE;
     }
 
@@ -590,6 +592,10 @@ public final class OrchestratorService
       // ensures the discarded quoteId is never stored in the state machine.
       final int quoteIdLen = quoteIdGenerator.nextInto(encodingBuffer, 0);
       encodingBuffer.getBytes(0, quoteIdScratch, 0, quoteIdLen);
+      // Zero tail bytes so the full 20-byte scratch is clean for downstream lookups
+      if (quoteIdLen < RfqState.QUOTE_ID_LENGTH) {
+        Arrays.fill(quoteIdScratch, quoteIdLen, RfqState.QUOTE_ID_LENGTH, (byte) 0);
+      }
 
       // Find RfqState for identity fields
       final var rfq =
@@ -745,15 +751,69 @@ public final class OrchestratorService
   private void onRfqExpired(final RfqState state) {
     reapExpiredCount++;
 
-    final int len =
-        encoder.encodeQuoteRequestReject(
-            encodingBuffer,
-            0,
-            state,
-            QuoteRejectReasonEnum.TooLateToEnter,
-            TEXT_RFQ_EXPIRED,
-            TEXT_RFQ_EXPIRED.length,
-            epochClock.nanoTime());
+    final int len;
+    if (state.nosLength() > 0) {
+      // RFQ was in PENDING_VALIDATION — the client submitted a NOS, so the correct FIX response
+      // is a reject ExecutionReport (35=8) with ClOrdID (tag 11) recovered from the stashed NOS.
+      final int stashedNosLen = state.putNosInto(nosScratch, 0);
+      if (stashedNosLen >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH) {
+        stashedNosView.wrap(nosScratch, 0, stashedNosLen);
+        stashedHeaderDecoder.wrap(stashedNosView, 0);
+        if (stashedNosLen
+            >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH
+                + stashedHeaderDecoder.blockLength()) {
+          stashedNosDecoder.wrap(
+              stashedNosView,
+              com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH,
+              stashedHeaderDecoder.blockLength(),
+              stashedHeaderDecoder.version());
+          stashedNosDecoder.getClOrdId(clOrdIdScratch, 0);
+        } else {
+          Arrays.fill(clOrdIdScratch, (byte) 0);
+        }
+      } else {
+        Arrays.fill(clOrdIdScratch, (byte) 0);
+      }
+      state.putQuoteIdInto(quoteIdScratch, 0);
+      state.putSymbolInto(symbolScratch, 0);
+      state.putSettlDateInto(settlDateScratch, 0);
+      state.putCurrencyInto(currencyScratch, 0);
+      state.putSettlCurrencyInto(settlCurrencyScratch, 0);
+      len =
+          encoder.encodeRejectExecutionReport(
+              encodingBuffer,
+              0,
+              clOrdIdScratch,
+              0,
+              quoteIdScratch,
+              0,
+              symbolScratch,
+              0,
+              state.sideRaw(),
+              TEXT_RFQ_EXPIRED,
+              TEXT_RFQ_EXPIRED.length,
+              epochClock.nanoTime(),
+              state.productTypeRaw(),
+              settlDateScratch,
+              0,
+              state.settlTypeRaw(),
+              currencyScratch,
+              0,
+              settlCurrencyScratch,
+              0,
+              state.tenorRaw());
+    } else {
+      // RFQ was in PENDING_PRICE or QUOTED — no NOS was submitted, send QuoteRequestReject
+      len =
+          encoder.encodeQuoteRequestReject(
+              encodingBuffer,
+              0,
+              state,
+              QuoteRejectReasonEnum.TooLateToEnter,
+              TEXT_RFQ_EXPIRED,
+              TEXT_RFQ_EXPIRED.length,
+              epochClock.nanoTime());
+    }
 
     final var reapGwResult = offerToGateway(len);
     if (reapGwResult != Action.CONTINUE) {
