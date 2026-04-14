@@ -420,9 +420,9 @@ public final class RfqStateMachine {
    * @return the number of RFQs expired in this sweep
    */
   public int reapExpired(final long nowNanos, final ReapCallback callback) {
-    // Floor of pool.length / 3 guarantees full coverage in ≤ 3 sweeps, ensuring sparse RFQs
-    // are checked within the smallest timeout window (5s) at 1s sweep intervals.
-    final int scanLimit = Math.min(Math.max(activeCount * 2, pool.length / 3), pool.length);
+    // Ceiling division (pool.length + 2) / 3 guarantees full coverage in exactly 3 sweeps,
+    // ensuring sparse RFQs are checked within the smallest timeout window (5s) at 1s intervals.
+    final int scanLimit = Math.min(Math.max(activeCount * 2, (pool.length + 2) / 3), pool.length);
     int expired = 0;
 
     for (int i = 0; i < scanLimit; i++) {
