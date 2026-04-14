@@ -1,12 +1,16 @@
 package com.trading.engine.orchestrator.codec;
 
 import com.trading.engine.messages.sbe.ExecTypeEnum;
+import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
+import com.trading.engine.messages.sbe.PriceRequestEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.QuoteEncoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.QuoteRequestDecoder;
+import com.trading.engine.messages.sbe.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.QuoteStatusEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -48,19 +52,16 @@ public final class OrchestratorMessageEncoder {
   private static final int CHAR_SCRATCH_LEN = 24;
 
   /** Text scratch sized to the SBE Text field length (64 bytes). */
-  private static final int TEXT_SCRATCH_LEN =
-      com.trading.engine.messages.sbe.QuoteRequestRejectEncoder.textLength();
+  private static final int TEXT_SCRATCH_LEN = QuoteRequestRejectEncoder.textLength();
 
   // Static init: validate scratch sizes against all SBE char fields written by this encoder
   static {
     final int maxCharField =
         Math.max(
-            com.trading.engine.messages.sbe.PriceRequestEncoder.quoteReqIdLength(),
+            PriceRequestEncoder.quoteReqIdLength(),
             Math.max(
-                com.trading.engine.messages.sbe.QuoteEncoder.quoteIdLength(),
-                Math.max(
-                    com.trading.engine.messages.sbe.QuoteEncoder.symbolLength(),
-                    com.trading.engine.messages.sbe.ExecutionReportEncoder.orderIdLength())));
+                QuoteEncoder.quoteIdLength(),
+                Math.max(QuoteEncoder.symbolLength(), ExecutionReportEncoder.orderIdLength())));
     if (maxCharField > CHAR_SCRATCH_LEN) {
       throw new IllegalStateException(
           "OrchestratorMessageEncoder CHAR_SCRATCH_LEN="

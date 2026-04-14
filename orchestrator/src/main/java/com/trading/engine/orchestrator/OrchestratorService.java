@@ -8,6 +8,7 @@ import static com.trading.engine.orchestrator.OrchestratorConstants.PRICING_POLL
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.BooleanType;
+import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.PriceResponseDecoder;
 import com.trading.engine.messages.sbe.PriceValidationResponseDecoder;
@@ -21,6 +22,7 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 import org.agrona.CloseHelper;
@@ -77,30 +79,28 @@ public final class OrchestratorService
 
   // --- Pre-allocated reject text constants (ASCII byte arrays, explicit charset) ---
   private static final byte[] TEXT_POOL_EXHAUSTED =
-      "RFQ pool exhausted".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "RFQ pool exhausted".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_DUPLICATE_QUOTE_REQ_ID =
-      "Duplicate quoteReqId".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Duplicate quoteReqId".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_UNKNOWN_QUOTE_ID =
-      "Unknown or expired quoteId".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Unknown or expired quoteId".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_NOS_TOO_LARGE =
-      "Internal: NOS too large".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-  private static final byte[] TEXT_RFQ_EXPIRED =
-      "RFQ expired".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Internal: NOS too large".getBytes(StandardCharsets.US_ASCII);
+  private static final byte[] TEXT_RFQ_EXPIRED = "RFQ expired".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_PRICING_REJECTED =
-      "Pricing service declined quote".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Pricing service declined quote".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_NULL_PRICES =
-      "Internal: accepted PriceResponse with null prices"
-          .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Internal: accepted PriceResponse with null prices".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_INVALID_SYMBOL =
-      "Empty symbol".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Empty symbol".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_INVALID_QTY =
-      "Non-positive orderQty".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Non-positive orderQty".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_INVALID_SIDE =
-      "Invalid side".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Invalid side".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_INVALID_ACCOUNT =
-      "Empty accountCode".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Empty accountCode".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] TEXT_VALIDATION_FAILED =
-      "Price validation failed".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Price validation failed".getBytes(StandardCharsets.US_ASCII);
 
   // --- Injected dependencies (all final, all non-null) ---
   private final Subscription gatewaySubscription;
@@ -150,8 +150,7 @@ public final class OrchestratorService
    * Pre-allocated SBE header decoder for decoding the stashed NOS header. Used to extract
    * blockLength/version before wrapping the NOS body decoder.
    */
-  private final com.trading.engine.messages.sbe.MessageHeaderDecoder stashedHeaderDecoder =
-      new com.trading.engine.messages.sbe.MessageHeaderDecoder();
+  private final MessageHeaderDecoder stashedHeaderDecoder = new MessageHeaderDecoder();
 
   /**
    * Pre-allocated SBE NOS decoder for extracting ClOrdID (tag 11) from the stashed NOS fragment.
@@ -688,15 +687,14 @@ public final class OrchestratorService
       // Extract ClOrdID (tag 11) from the stashed NOS (zero-alloc: pre-allocated decoders +
       // scratch)
       final int stashedNosLen = rfq.putNosInto(nosScratch, 0);
-      if (stashedNosLen >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH) {
+      if (stashedNosLen >= MessageHeaderDecoder.ENCODED_LENGTH) {
         stashedNosView.wrap(nosScratch, 0, stashedNosLen);
         stashedHeaderDecoder.wrap(stashedNosView, 0);
         if (stashedNosLen
-            >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH
-                + stashedHeaderDecoder.blockLength()) {
+            >= MessageHeaderDecoder.ENCODED_LENGTH + stashedHeaderDecoder.blockLength()) {
           stashedNosDecoder.wrap(
               stashedNosView,
-              com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH,
+              MessageHeaderDecoder.ENCODED_LENGTH,
               stashedHeaderDecoder.blockLength(),
               stashedHeaderDecoder.version());
           stashedNosDecoder.getClOrdId(clOrdIdScratch, 0);
@@ -758,15 +756,14 @@ public final class OrchestratorService
       // RFQ was in PENDING_VALIDATION — the client submitted a NOS, so the correct FIX response
       // is a reject ExecutionReport (35=8) with ClOrdID (tag 11) recovered from the stashed NOS.
       final int stashedNosLen = state.putNosInto(nosScratch, 0);
-      if (stashedNosLen >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH) {
+      if (stashedNosLen >= MessageHeaderDecoder.ENCODED_LENGTH) {
         stashedNosView.wrap(nosScratch, 0, stashedNosLen);
         stashedHeaderDecoder.wrap(stashedNosView, 0);
         if (stashedNosLen
-            >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH
-                + stashedHeaderDecoder.blockLength()) {
+            >= MessageHeaderDecoder.ENCODED_LENGTH + stashedHeaderDecoder.blockLength()) {
           stashedNosDecoder.wrap(
               stashedNosView,
-              com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH,
+              MessageHeaderDecoder.ENCODED_LENGTH,
               stashedHeaderDecoder.blockLength(),
               stashedHeaderDecoder.version());
           stashedNosDecoder.getClOrdId(clOrdIdScratch, 0);
