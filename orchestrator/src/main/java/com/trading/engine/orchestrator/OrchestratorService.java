@@ -678,8 +678,10 @@ public final class OrchestratorService
     } else {
       // Validation failed: encode reject ExecutionReport (publish-before-mutate)
       final var rfq = stateMachine.findByQuoteId(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
-      if (rfq == null) {
-        LOG.warn().append("PriceValidationResponse invalid: no matching RFQ").commit();
+      if (rfq == null || rfq.state() != RfqState.State.PENDING_VALIDATION) {
+        LOG.warn()
+            .append("PriceValidationResponse invalid: no matching PENDING_VALIDATION RFQ")
+            .commit();
         return Action.CONTINUE;
       }
 
@@ -955,8 +957,7 @@ public final class OrchestratorService
       publicationFailures++;
       return -1;
     }
-    // Retries exhausted (transient back-pressure)
-    publicationFailures++;
+    // Retries exhausted (transient back-pressure) — tracked by callers via backPressureAborts
     return 0;
   }
 
