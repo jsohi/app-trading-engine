@@ -44,12 +44,20 @@ public final class OrchestratorComponents implements AutoCloseable {
     this.ownsAeron = ownsAeron;
   }
 
-  /** Returns the agent runner wrapping the orchestrator service duty cycle. */
+  /**
+   * Returns the agent runner wrapping the orchestrator service duty cycle.
+   *
+   * @return the orchestrator agent runner, never null
+   */
   public AgentRunner agentRunner() {
     return agentRunner;
   }
 
-  /** Returns the Aeron client, or {@code null} if this holder does not track it. */
+  /**
+   * Returns the Aeron client, or {@code null} if this holder does not track it.
+   *
+   * @return the Aeron client, or null if not owned
+   */
   public Aeron aeron() {
     return aeron;
   }

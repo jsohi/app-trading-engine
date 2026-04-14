@@ -133,7 +133,7 @@ public final class OrchestratorService
 
   // Pre-allocated scratch arrays for reject ExecutionReport encoding — avoids hot-path allocation
   private final byte[] clOrdIdScratch =
-      new byte[RfqState.QUOTE_REQ_ID_LENGTH]; // ClOrdID = 20 bytes
+      new byte[RfqState.QUOTE_REQ_ID_LENGTH]; // ClOrdID (tag 11) = 20 bytes
   private final byte[] symbolScratch = new byte[RfqState.SYMBOL_LENGTH];
   private final byte[] settlDateScratch = new byte[RfqState.SETTL_DATE_LENGTH];
   private final byte[] currencyScratch = new byte[RfqState.CURRENCY_LENGTH];
@@ -141,7 +141,8 @@ public final class OrchestratorService
 
   /**
    * Pre-allocated UnsafeBuffer view over {@link #nosScratch} for decoding the stashed NOS to
-   * extract ClOrdId for reject ExecutionReports. Zero allocation — wraps the existing scratch.
+   * extract ClOrdID (tag 11) for reject ExecutionReports. Zero allocation — wraps the existing
+   * scratch.
    */
   private final UnsafeBuffer stashedNosView = new UnsafeBuffer(nosScratch);
 
@@ -153,8 +154,8 @@ public final class OrchestratorService
       new com.trading.engine.messages.sbe.MessageHeaderDecoder();
 
   /**
-   * Pre-allocated SBE NOS decoder for extracting ClOrdId from the stashed NOS fragment. Zero
-   * allocation on the hot path — pre-allocated, re-wrapped on each use.
+   * Pre-allocated SBE NOS decoder for extracting ClOrdID (tag 11) from the stashed NOS fragment.
+   * Zero allocation on the hot path — pre-allocated, re-wrapped on each use.
    */
   private final NewOrderSingleDecoder stashedNosDecoder = new NewOrderSingleDecoder();
 
@@ -224,6 +225,7 @@ public final class OrchestratorService
   // Agent lifecycle
   // ===========================================================================
 
+  /** {@inheritDoc} Initialises the sweep timer and logs startup configuration. */
   @Override
   public void onStart() {
     lastSweepNanos = nanoClock.nanoTime();
@@ -241,6 +243,12 @@ public final class OrchestratorService
         .commit();
   }
 
+  /**
+   * {@inheritDoc} Polls pricing responses, then gateway inbound, then runs an incremental timeout
+   * sweep if the sweep interval has elapsed.
+   *
+   * @return the total number of fragments polled plus expired RFQs reaped
+   */
   @Override
   public int doWork() {
     int workCount = 0;
@@ -275,6 +283,10 @@ public final class OrchestratorService
     return workCount;
   }
 
+  /**
+   * {@inheritDoc} Drains all active RFQs via a full reap sweep, then closes Aeron subscriptions and
+   * publications via {@link CloseHelper#closeAll}.
+   */
   @Override
   public void onClose() {
     final int active = stateMachine.activeCount();
@@ -294,6 +306,11 @@ public final class OrchestratorService
     LOG.info().append("Orchestrator shutdown complete").commit();
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * @return {@code "orchestrator"}
+   */
   @Override
   public String roleName() {
     return "orchestrator";
@@ -303,6 +320,17 @@ public final class OrchestratorService
   // Gateway message handlers
   // ===========================================================================
 
+  /**
+   * Handles an inbound QuoteRequest (tag 35=R) from the gateway. Validates fields, checks for
+   * duplicate/re-delivery, acquires a pool slot, and publishes a PriceRequest to the pricing
+   * service.
+   *
+   * @param decoder pre-wrapped QuoteRequest SBE decoder
+   * @param buffer the underlying fragment buffer
+   * @param offset start offset of the fragment
+   * @param length fragment length in bytes
+   * @return {@link Action#CONTINUE} on success, {@link Action#ABORT} on transient back-pressure
+   */
   @Override
   public Action onQuoteRequest(
       final QuoteRequestDecoder decoder,
@@ -322,8 +350,9 @@ public final class OrchestratorService
               failText,
               failText.length,
               epochClock.nanoTime());
-      if (!offerToGateway(len)) {
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
       return Action.CONTINUE;
     }
@@ -355,28 +384,19 @@ public final class OrchestratorService
               TEXT_DUPLICATE_QUOTE_REQ_ID,
               TEXT_DUPLICATE_QUOTE_REQ_ID.length,
               epochClock.nanoTime());
-      if (!offerToGateway(len)) {
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
       return Action.CONTINUE;
     }
 
-    // 3. Encode PriceRequest from decoder and publish BEFORE acquiring pool slot
-    // (publish-before-mutate). The decoder overload reads all fields directly from the
-    // QuoteRequestDecoder, so no RfqState is needed yet.
-    final int prLen = encoder.encodePriceRequest(encodingBuffer, 0, decoder);
-    final var pricingResult = offerToPricingOrAbort(prLen);
-    if (pricingResult != Action.CONTINUE) {
-      return pricingResult;
-    }
-
-    // 4. Pricing publication succeeded — now acquire pool slot (state mutation).
+    // 3. Acquire pool slot FIRST — reject early if pool is exhausted (no orphan PriceRequest).
+    // On ABORT re-delivery, the duplicate check at step 2 will find the existing RFQ in
+    // PENDING_PRICE and retry the PriceRequest publication, so mutate-first is safe here.
     final long nowNanos = nanoClock.nanoTime();
     final var rfq = stateMachine.onQuoteRequest(decoder, nowNanos);
     if (rfq == null) {
-      // Pool exhausted after successful pricing publication. The pricing service will produce a
-      // PriceResponse for a quoteReqId that has no RfqState; the orphan response will be
-      // discarded in onPriceResponse (no matching PENDING_PRICE RFQ). Reject to the client.
       poolFullRejects++;
       final int len =
           encoder.encodeQuoteRequestReject(
@@ -387,15 +407,30 @@ public final class OrchestratorService
               TEXT_POOL_EXHAUSTED,
               TEXT_POOL_EXHAUSTED.length,
               epochClock.nanoTime());
-      if (!offerToGateway(len)) {
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
       return Action.CONTINUE;
     }
 
-    return Action.CONTINUE;
+    // 4. Encode PriceRequest from the acquired RfqState and publish. On ABORT, the re-delivered
+    // fragment hits the PENDING_PRICE re-delivery path at step 2, which retries publication.
+    final int prLen = encoder.encodePriceRequest(encodingBuffer, 0, rfq);
+    return offerToPricingOrAbort(prLen);
   }
 
+  /**
+   * Handles an inbound NewOrderSingle (tag 35=D) from the gateway. Routes to cluster bypass (no
+   * quoteId), re-delivery retry (PENDING_VALIDATION), or validates the quote, stashes the NOS, and
+   * publishes a PriceValidationRequest to the pricing service.
+   *
+   * @param decoder pre-wrapped NewOrderSingle SBE decoder
+   * @param buffer the underlying fragment buffer (retained for NOS stash)
+   * @param offset start offset of the fragment
+   * @param length fragment length in bytes
+   * @return {@link Action#CONTINUE} on success, {@link Action#ABORT} on transient back-pressure
+   */
   @Override
   public Action onNewOrderSingle(
       final NewOrderSingleDecoder decoder,
@@ -452,32 +487,22 @@ public final class OrchestratorService
               settlCurrencyScratch,
               0,
               (byte) 0);
-      if (!offerToGateway(len)) {
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
       return Action.CONTINUE;
     }
 
-    // 3. Encode PriceValidationRequest FIRST (publish-before-mutate), then transition state
-    final int pvLen =
-        encoder.encodePriceValidationRequest(
-            encodingBuffer, 0, rfq, decoder, epochClock.nanoTime());
-    final var pricingResult = offerToPricingOrAbort(pvLen);
-    if (pricingResult == Action.ABORT) {
-      return Action.ABORT;
-    }
-
-    // Publication succeeded → now mutate state (QUOTED → PENDING_VALIDATION, stash NOS)
+    // 3. Stash NOS and transition state FIRST (QUOTED → PENDING_VALIDATION). On ABORT
+    // re-delivery, the PENDING_VALIDATION re-delivery path at step 2 retries publication.
     final long nowNanos = nanoClock.nanoTime();
     final var transitioned =
         stateMachine.onNewOrderSingleWithQuote(
             quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH, buffer, offset, length, nowNanos);
 
     if (transitioned == null) {
-      // NOS too large for stash buffer (or unexpected state race — should not happen after
-      // publish-before-mutate, but defensive). The PriceValidationRequest was already sent; the
-      // pricing service will respond, and onPriceValidationResponse will not find the RFQ (it
-      // was never transitioned). Log and reject. Use rfq fields for meaningful FIX reject.
+      // NOS too large for stash buffer — reject immediately, no orphan validation request.
       decoder.getClOrdId(clOrdIdScratch, 0);
       rfq.putSymbolInto(symbolScratch, 0);
       rfq.putSettlDateInto(settlDateScratch, 0);
@@ -506,21 +531,36 @@ public final class OrchestratorService
               settlCurrencyScratch,
               0,
               rfq.tenorRaw());
-      if (!offerToGateway(len)) {
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
       return Action.CONTINUE;
     }
 
-    // PriceValidationRequest was already published before state mutation (publish-before-mutate).
-    // State transition succeeded — nothing more to encode.
-    return Action.CONTINUE;
+    // 4. Stash succeeded — encode and publish PriceValidationRequest. On ABORT, the re-delivered
+    // NOS fragment hits the PENDING_VALIDATION re-delivery path at step 2.
+    final int pvLen =
+        encoder.encodePriceValidationRequest(
+            encodingBuffer, 0, rfq, decoder, epochClock.nanoTime());
+    return offerToPricingOrAbort(pvLen);
   }
 
   // ===========================================================================
   // Pricing response handlers
   // ===========================================================================
 
+  /**
+   * Handles an inbound PriceResponse from the pricing service. Routes accepted responses to the
+   * Quote encoding path (PENDING_PRICE → QUOTED), or rejected responses to the QuoteRequestReject
+   * path (PENDING_PRICE → REJECTED).
+   *
+   * @param decoder pre-wrapped PriceResponse SBE decoder
+   * @param buffer the underlying fragment buffer
+   * @param offset start offset of the fragment
+   * @param length fragment length in bytes
+   * @return {@link Action#CONTINUE} on success, {@link Action#ABORT} on transient back-pressure
+   */
   @Override
   public Action onPriceResponse(
       final PriceResponseDecoder decoder,
@@ -564,10 +604,10 @@ public final class OrchestratorService
           encoder.encodeQuote(
               encodingBuffer, 0, rfq, quoteIdScratch, 0, quoteIdLen, epochClock.nanoTime());
 
-      // Attempt publication — if fails, ABORT (no state mutation)
-      if (!offerToGateway(quoteLen)) {
-        backPressureAborts++;
-        return Action.ABORT;
+      // Attempt publication — if transient back-pressure, ABORT (no state mutation)
+      final var gwResult = offerToGateway(quoteLen);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
 
       // Publication succeeded: now mutate state
@@ -588,6 +628,17 @@ public final class OrchestratorService
     }
   }
 
+  /**
+   * Handles an inbound PriceValidationResponse from the pricing service. Valid responses forward
+   * the stashed NOS to the cluster (PENDING_VALIDATION → COMPLETED). Invalid responses encode a
+   * reject ExecutionReport with ClOrdID (tag 11) from the stashed NOS and transition to REJECTED.
+   *
+   * @param decoder pre-wrapped PriceValidationResponse SBE decoder
+   * @param buffer the underlying fragment buffer
+   * @param offset start offset of the fragment
+   * @param length fragment length in bytes
+   * @return {@link Action#CONTINUE} on success, {@link Action#ABORT} on transient back-pressure
+   */
   @Override
   public Action onPriceValidationResponse(
       final PriceValidationResponseDecoder decoder,
@@ -598,13 +649,17 @@ public final class OrchestratorService
     decoder.getQuoteId(quoteIdScratch, 0);
 
     if (decoder.valid() == BooleanType.True) {
-      // Read the stashed NOS bytes BEFORE releasing the pool slot, which zeros the flat buffer.
+      // Defensive: verify RFQ exists and is in the expected PENDING_VALIDATION state
       final var rfq = stateMachine.findByQuoteId(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
-      if (rfq != null) {
-        nosScratchLength = rfq.putNosInto(nosScratch, 0);
-      } else {
-        nosScratchLength = 0;
+      if (rfq == null || rfq.state() != RfqState.State.PENDING_VALIDATION) {
+        LOG.warn()
+            .append("PriceValidationResponse valid: no matching PENDING_VALIDATION RFQ")
+            .commit();
+        return Action.CONTINUE;
       }
+
+      // Read the stashed NOS bytes BEFORE releasing the pool slot, which zeros the flat buffer.
+      nosScratchLength = rfq.putNosInto(nosScratch, 0);
 
       // Now release the pool slot — flat buffer is zeroed after this call
       stateMachine.onValidationValid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
@@ -622,7 +677,8 @@ public final class OrchestratorService
         return Action.CONTINUE;
       }
 
-      // Extract ClOrdId from the stashed NOS (zero-alloc: pre-allocated decoders + scratch)
+      // Extract ClOrdID (tag 11) from the stashed NOS (zero-alloc: pre-allocated decoders +
+      // scratch)
       final int stashedNosLen = rfq.putNosInto(nosScratch, 0);
       if (stashedNosLen >= com.trading.engine.messages.sbe.MessageHeaderDecoder.ENCODED_LENGTH) {
         stashedNosView.wrap(nosScratch, 0, stashedNosLen);
@@ -672,9 +728,9 @@ public final class OrchestratorService
               0,
               rfq.tenorRaw());
 
-      if (!offerToGateway(len)) {
-        backPressureAborts++;
-        return Action.ABORT;
+      final var gwResult = offerToGateway(len);
+      if (gwResult != Action.CONTINUE) {
+        return gwResult;
       }
 
       stateMachine.onValidationInvalid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
@@ -699,12 +755,12 @@ public final class OrchestratorService
             TEXT_RFQ_EXPIRED.length,
             epochClock.nanoTime());
 
-    if (!offerToGateway(len)) {
+    final var reapGwResult = offerToGateway(len);
+    if (reapGwResult != Action.CONTINUE) {
       LOG.warn()
-          .append("Reap notification dropped: publication failed for poolIndex=")
+          .append("Reap notification dropped: publication back-pressured for poolIndex=")
           .append(state.poolIndex())
           .commit();
-      publicationFailures++;
     }
 
     // Pool slot release is handled by RfqStateMachine.reapExpired/reapAll in a finally block.
@@ -757,11 +813,33 @@ public final class OrchestratorService
 
   /**
    * Attempts to offer the encoded message to the gateway publication with bounded retries. Returns
-   * {@code true} if the offer succeeded, {@code false} if all retries were exhausted or the
-   * publication is in a terminal state.
+   * {@link Action#CONTINUE} on success or terminal publication error (drop the message — the client
+   * will time out), or {@link Action#ABORT} on transient back-pressure (so Aeron re-delivers the
+   * inbound fragment).
+   *
+   * <p>Terminal failures (NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED) are mapped to CONTINUE to
+   * avoid infinite ABORT loops on a permanently broken publication.
+   *
+   * @param encodedLength number of bytes in the encoding buffer to offer
+   * @return {@link Action#CONTINUE} on success or terminal drop, {@link Action#ABORT} on transient
+   *     back-pressure
    */
-  private boolean offerToGateway(final int encodedLength) {
-    return offerWithRetry(gatewayPublication, encodingBuffer, 0, encodedLength) > 0;
+  private Action offerToGateway(final int encodedLength) {
+    final int result = offerWithRetry(gatewayPublication, encodingBuffer, 0, encodedLength);
+    if (result > 0) {
+      return Action.CONTINUE;
+    }
+    if (result == 0) {
+      // Transient: retries exhausted on BACK_PRESSURED/ADMIN_ACTION — ABORT for re-delivery
+      backPressureAborts++;
+      return Action.ABORT;
+    }
+    // Terminal: NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED — drop (CONTINUE) to avoid spin loop.
+    // The client will time out via RFQ expiry and receive a QuoteRequestReject.
+    LOG.warn()
+        .append("Gateway publication terminal: dropping message to avoid ABORT loop")
+        .commit();
+    return Action.CONTINUE;
   }
 
   /**
@@ -841,9 +919,9 @@ public final class OrchestratorService
         encoder.encodeQuoteRequestReject(
             encodingBuffer, 0, rfq, reason, text, text.length, epochClock.nanoTime());
 
-    if (!offerToGateway(len)) {
-      backPressureAborts++;
-      return Action.ABORT;
+    final var gwResult = offerToGateway(len);
+    if (gwResult != Action.CONTINUE) {
+      return gwResult;
     }
 
     stateMachine.onPriceResponseRejected(quoteReqIdScratch, 0, RfqState.QUOTE_REQ_ID_LENGTH);

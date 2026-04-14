@@ -101,6 +101,17 @@ public final class GatewayMessageDispatcher implements ControlledFragmentHandler
     this.handler = handler;
   }
 
+  /**
+   * Dispatches one inbound Aeron fragment from the gateway after SBE header/body length validation.
+   * Decodes the template ID and delegates to the appropriate handler method.
+   *
+   * @param buffer inbound fragment buffer
+   * @param offset fragment start offset within the buffer
+   * @param length fragment length in bytes
+   * @param header Aeron logbuffer header metadata
+   * @return {@link Action#CONTINUE} when consumed, or handler-provided action (including {@link
+   *     Action#ABORT} for back-pressure re-delivery)
+   */
   @Override
   public Action onFragment(
       final DirectBuffer buffer, final int offset, final int length, final Header header) {

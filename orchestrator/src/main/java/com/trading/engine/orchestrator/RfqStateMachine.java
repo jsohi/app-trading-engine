@@ -378,16 +378,19 @@ public final class RfqStateMachine {
    * and releases the pool slot in a {@code finally} block (preventing slot leaks if the callback
    * throws).
    *
-   * <p>Bounded work per duty cycle: scans up to {@code min(activeCount * 2, pool.length)} entries
-   * starting from the {@code reapCursor} position (ring-buffer style). This prevents unbounded
-   * latency spikes while ensuring all active entries are eventually checked.
+   * <p>Bounded work per duty cycle: scans {@code min(max(activeCount * 2, pool.length / 3),
+   * pool.length)} entries starting from the {@code reapCursor} position (ring-buffer style). The
+   * {@code pool.length / 3} floor guarantees a full pool sweep in at most 3 passes, even when
+   * {@code activeCount} is low — preventing sparse RFQs from missing their timeout deadlines.
    *
    * @param nowNanos current monotonic time
    * @param callback invoked for each expired RFQ
    * @return the number of RFQs expired in this sweep
    */
   public int reapExpired(final long nowNanos, final ReapCallback callback) {
-    final int scanLimit = Math.min(activeCount * 2, pool.length);
+    // Floor of pool.length / 3 guarantees full coverage in ≤ 3 sweeps, ensuring sparse RFQs
+    // are checked within the smallest timeout window (5s) at 1s sweep intervals.
+    final int scanLimit = Math.min(Math.max(activeCount * 2, pool.length / 3), pool.length);
     int expired = 0;
 
     for (int i = 0; i < scanLimit; i++) {
