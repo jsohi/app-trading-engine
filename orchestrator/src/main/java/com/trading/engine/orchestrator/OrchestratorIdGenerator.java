@@ -120,7 +120,11 @@ public final class OrchestratorIdGenerator {
     this.counter = 0L;
   }
 
-  /** Returns the prefix supplied at construction. */
+  /**
+   * Returns the prefix supplied at construction.
+   *
+   * @return the ID prefix string (e.g., "QTE")
+   */
   public String prefix() {
     return prefix;
   }
