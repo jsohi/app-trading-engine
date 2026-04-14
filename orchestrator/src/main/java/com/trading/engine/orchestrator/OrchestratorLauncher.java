@@ -16,6 +16,8 @@ import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.orchestrator.codec.OrchestratorMessageEncoder;
 import io.aeron.Aeron;
+import io.aeron.ExclusivePublication;
+import io.aeron.Subscription;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.AgentRunner;
@@ -111,19 +113,22 @@ public final class OrchestratorLauncher {
   private static OrchestratorComponents launchWithAeron(
       final Aeron aeron, final IdleStrategy idleStrategy, final boolean ownsAeron) {
 
-    // --- Step 3: Create gateway inbound subscription ---
-    final var gatewaySubscription = aeron.addSubscription(IPC_CHANNEL, GATEWAY_REQUEST_STREAM_ID);
+    // --- Step 3-6: Create Aeron IPC resources ---
+    Subscription gatewaySubscription = null;
+    ExclusivePublication gatewayPublication = null;
+    ExclusivePublication pricingPublication = null;
+    Subscription pricingSubscription = null;
 
-    // --- Step 4: Create gateway outbound publication ---
-    final var gatewayPublication =
-        aeron.addExclusivePublication(IPC_CHANNEL, GATEWAY_RESPONSE_STREAM_ID);
-
-    // --- Step 5: Create pricing outbound publication ---
-    final var pricingPublication =
-        aeron.addExclusivePublication(IPC_CHANNEL, PRICING_REQUEST_STREAM_ID);
-
-    // --- Step 6: Create pricing inbound subscription ---
-    final var pricingSubscription = aeron.addSubscription(IPC_CHANNEL, PRICING_RESPONSE_STREAM_ID);
+    try {
+      gatewaySubscription = aeron.addSubscription(IPC_CHANNEL, GATEWAY_REQUEST_STREAM_ID);
+      gatewayPublication = aeron.addExclusivePublication(IPC_CHANNEL, GATEWAY_RESPONSE_STREAM_ID);
+      pricingPublication = aeron.addExclusivePublication(IPC_CHANNEL, PRICING_REQUEST_STREAM_ID);
+      pricingSubscription = aeron.addSubscription(IPC_CHANNEL, PRICING_RESPONSE_STREAM_ID);
+    } catch (final RuntimeException e) {
+      CloseHelper.closeAll(
+          gatewaySubscription, gatewayPublication, pricingPublication, pricingSubscription);
+      throw e;
+    }
 
     // --- Step 7: Construct OrchestratorIdGenerator ---
     final var quoteIdGenerator = new OrchestratorIdGenerator("QTE");

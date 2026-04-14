@@ -23,6 +23,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import java.util.Arrays;
 import java.util.Objects;
+import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.EpochNanoClock;
@@ -286,11 +287,9 @@ public final class OrchestratorService
     // Full reap: transition ALL active RFQs to EXPIRED, publish notifications
     stateMachine.reapAll(nanoClock.nanoTime(), reapCallback);
 
-    // Close subscriptions first, then publications
-    gatewaySubscription.close();
-    pricingSubscription.close();
-    gatewayPublication.close();
-    pricingPublication.close();
+    // Close subscriptions first (stop ingest), then publications (stop outbound)
+    CloseHelper.closeAll(
+        gatewaySubscription, pricingSubscription, gatewayPublication, pricingPublication);
 
     LOG.info().append("Orchestrator shutdown complete").commit();
   }
