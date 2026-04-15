@@ -277,7 +277,7 @@ public final class FixSessionHandler implements SessionHandler {
       final int sbeLen = translator.translateQuoteRequest(quoteReqDecoder, sbeBuffer, 0);
       final int corrLen =
           copyCharsToBytes(quoteReqDecoder.quoteReqID(), quoteReqDecoder.quoteReqIDLength());
-      // QuoteRequests always route to orchestrator (never directly to cluster)
+      // QuoteRequests route to orchestrator if available; fall back to cluster if not wired
       if (orchestratorPublication != null) {
         return offerToOrchestratorAndRegister(sbeLen, corrLen, messageType);
       }
@@ -396,7 +396,7 @@ public final class FixSessionHandler implements SessionHandler {
     }
 
     // Terminal: orchestrator NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED.
-    // Send type-specific FIX reject (not a generic BusinessMessageReject).
+    // Send a BusinessMessageReject (35=j) to the client.
     orchestratorPubFailures++;
     LOG.warn()
         .append("Orchestrator offer failed: result=")
