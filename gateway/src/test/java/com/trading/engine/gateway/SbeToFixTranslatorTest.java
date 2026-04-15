@@ -1,5 +1,7 @@
 package com.trading.engine.gateway;
 
+import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeExecutionReport;
+import static com.trading.engine.testsupport.sbe.SbeTestEncoder.encodeExecutionReport;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,11 +32,13 @@ class SbeToFixTranslatorTest {
   void roundTripFilledExecutionReport() {
     // Build an SBE ExecutionReport flyweight (representing a Filled Buy of EUR/USD).
     MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
-    encodeSbeExecReport(
+    encodeExecutionReport(
         sbeBuf,
+        0,
         "ORDER-1",
         "EXEC-1",
         "ORD-1",
+        "",
         ExecTypeEnum.Fill,
         OrdStatusEnum.Filled,
         "EURUSD",
@@ -44,13 +48,16 @@ class SbeToFixTranslatorTest {
         110_000_000L, // 1.10 avgPx
         1_712_491_200_000_000_000L, // 2024-04-07T12:00:00 nanos (arbitrary)
         "FILLED",
+        ProductTypeEnum.NULL_VAL,
         "20260409",
         SettlTypeEnum.TPlus2,
         "EUR",
-        "USD");
+        "USD",
+        TenorEnum.NULL_VAL);
 
     // Decode the SBE side via flyweight
-    com.trading.engine.messages.sbe.ExecutionReportDecoder sbeDec = decodeSbeExecReport(sbeBuf);
+    com.trading.engine.messages.sbe.ExecutionReportDecoder sbeDec =
+        decodeExecutionReport(sbeBuf, 0);
 
     // Translate into a FIX encoder
     ExecutionReportEncoder fix = new ExecutionReportEncoder();
@@ -92,11 +99,13 @@ class SbeToFixTranslatorTest {
   @Test
   void rejectsNullValSideOnSbeSide() {
     MutableDirectBuffer sbeBuf = new ExpandableArrayBuffer(512);
-    encodeSbeExecReport(
+    encodeExecutionReport(
         sbeBuf,
+        0,
         "ORD-X",
         "EXE-X",
         "C-X",
+        "",
         ExecTypeEnum.New,
         OrdStatusEnum.New,
         "X",
@@ -106,12 +115,15 @@ class SbeToFixTranslatorTest {
         0L,
         1L,
         "",
+        ProductTypeEnum.NULL_VAL,
         "",
         SettlTypeEnum.NULL_VAL,
         "",
-        "");
+        "",
+        TenorEnum.NULL_VAL);
 
-    com.trading.engine.messages.sbe.ExecutionReportDecoder sbeDec = decodeSbeExecReport(sbeBuf);
+    com.trading.engine.messages.sbe.ExecutionReportDecoder sbeDec =
+        decodeExecutionReport(sbeBuf, 0);
     ExecutionReportEncoder fix = new ExecutionReportEncoder();
     HeaderEncoder hdr = fix.header();
     hdr.senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
@@ -120,67 +132,6 @@ class SbeToFixTranslatorTest {
     SbeToFixTranslator translator = new SbeToFixTranslator();
     assertThrows(
         IllegalStateException.class, () -> translator.translateExecutionReport(sbeDec, fix));
-  }
-
-  // -------------------------------------------------------------------------
-  // Helpers
-  // -------------------------------------------------------------------------
-
-  private static void encodeSbeExecReport(
-      MutableDirectBuffer buf,
-      String orderId,
-      String execId,
-      String clOrdId,
-      ExecTypeEnum execType,
-      OrdStatusEnum ordStatus,
-      String symbol,
-      SideEnum side,
-      long leavesQty,
-      long cumQty,
-      long avgPx,
-      long transactTimeNanos,
-      String text,
-      String settlDate,
-      SettlTypeEnum settlType,
-      String currency,
-      String settlCurrency) {
-    com.trading.engine.messages.sbe.ExecutionReportEncoder enc =
-        new com.trading.engine.messages.sbe.ExecutionReportEncoder();
-    enc.wrapAndApplyHeader(buf, 0, new MessageHeaderEncoder());
-    enc.clOrdId(clOrdId);
-    enc.orderId(orderId);
-    enc.execId(execId);
-    enc.quoteId("");
-    enc.execType(execType);
-    enc.ordStatus(ordStatus);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.leavesQty(leavesQty);
-    enc.cumQty(cumQty);
-    enc.avgPx(avgPx);
-    enc.transactTime(transactTimeNanos);
-    enc.text(text);
-    enc.productType(ProductTypeEnum.NULL_VAL);
-    enc.settlDate(settlDate);
-    enc.settlType(settlType);
-    enc.currency(currency);
-    enc.settlCurrency(settlCurrency);
-    enc.tenor(TenorEnum.NULL_VAL);
-    enc.noLegsCount(0);
-  }
-
-  private static com.trading.engine.messages.sbe.ExecutionReportDecoder decodeSbeExecReport(
-      MutableDirectBuffer buf) {
-    MessageHeaderDecoder hdrDec = new MessageHeaderDecoder();
-    hdrDec.wrap(buf, 0);
-    com.trading.engine.messages.sbe.ExecutionReportDecoder dec =
-        new com.trading.engine.messages.sbe.ExecutionReportDecoder();
-    dec.wrap(
-        buf,
-        MessageHeaderDecoder.ENCODED_LENGTH,
-        com.trading.engine.messages.sbe.ExecutionReportDecoder.BLOCK_LENGTH,
-        com.trading.engine.messages.sbe.ExecutionReportDecoder.SCHEMA_VERSION);
-    return dec;
   }
 
   // ===========================================================================

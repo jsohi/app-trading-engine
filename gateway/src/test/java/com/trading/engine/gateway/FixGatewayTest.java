@@ -1,5 +1,6 @@
 package com.trading.engine.gateway;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.zeroPad;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -103,29 +104,22 @@ class FixGatewayTest {
    */
   private int encodeSbeExecutionReport(final String clOrdId) {
     sbeErEncoder.wrapAndApplyHeader(sbeBuffer, 0, sbeHeaderEncoder);
-    sbeErEncoder.putOrderId(padBytes("ORD-001", 20), 0);
-    sbeErEncoder.putExecId(padBytes("EXE-001", 20), 0);
-    sbeErEncoder.putClOrdId(padBytes(clOrdId, 20), 0);
+    sbeErEncoder.putOrderId(zeroPad("ORD-001", 20), 0);
+    sbeErEncoder.putExecId(zeroPad("EXE-001", 20), 0);
+    sbeErEncoder.putClOrdId(zeroPad(clOrdId, 20), 0);
     sbeErEncoder.execType(ExecTypeEnum.New);
     sbeErEncoder.ordStatus(OrdStatusEnum.New);
-    sbeErEncoder.putSymbol(padBytes("EURUSD", 8), 0);
+    sbeErEncoder.putSymbol(zeroPad("EURUSD", 8), 0);
     sbeErEncoder.side(SideEnum.Buy);
     sbeErEncoder.leavesQty(100_000_000L);
     sbeErEncoder.cumQty(0L);
     sbeErEncoder.avgPx(com.trading.engine.messages.sbe.ExecutionReportEncoder.avgPxNullValue());
     sbeErEncoder.transactTime(TIMESTAMP);
-    sbeErEncoder.putText(padBytes("", 64), 0);
+    sbeErEncoder.putText(zeroPad("", 64), 0);
     sbeErEncoder.putCurrency(new byte[] {'U', 'S', 'D'}, 0);
     sbeErEncoder.putSettlCurrency(new byte[] {'U', 'S', 'D'}, 0);
     sbeErEncoder.noLegsCount(0);
     return MessageHeaderEncoder.ENCODED_LENGTH + sbeErEncoder.encodedLength();
-  }
-
-  private static byte[] padBytes(final String s, final int len) {
-    final byte[] result = new byte[len];
-    final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
-    System.arraycopy(src, 0, result, 0, Math.min(src.length, len));
-    return result;
   }
 
   // ===========================================================================

@@ -1,10 +1,11 @@
 package com.trading.engine.pricing.market;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.spacePad;
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.wrapSymbol;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.trading.engine.messages.FixedPointScale;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,7 +31,7 @@ class DeterministicMarketDataAdapterTest {
   private static final NanoClock FIXED_CLOCK = () -> PRELOAD_NANOS;
 
   /** SBE Symbol field width — 8 bytes, right-padded with spaces per convention. */
-  private static final int SYMBOL_LENGTH = 8;
+  private static final int SYMBOL_LENGTH = SbeFieldUtil.SYMBOL_LENGTH;
 
   private MidRateCache cache;
   private DeterministicMarketDataAdapter adapter;
@@ -40,7 +41,7 @@ class DeterministicMarketDataAdapterTest {
     cache = new MidRateCache();
 
     // Preload EURUSD: right-pad to 8 bytes with spaces (SBE Symbol convention).
-    final byte[] eurusd = rightPadSymbol("EURUSD");
+    final byte[] eurusd = spacePad("EURUSD", SbeFieldUtil.SYMBOL_LENGTH);
     cache.preload(eurusd, EURUSD_MID, PRELOAD_NANOS);
 
     adapter = new DeterministicMarketDataAdapter(cache, FIXED_CLOCK);
@@ -88,29 +89,5 @@ class DeterministicMarketDataAdapterTest {
   void lastUpdateNanos_unknownSymbol_returnsZero() {
     final UnsafeBuffer symbolBuf = wrapSymbol("GBPUSD");
     assertEquals(0L, adapter.lastUpdateNanos(symbolBuf, 0, SYMBOL_LENGTH));
-  }
-
-  // ------------------------------------------------------------------
-  // Helpers
-  // ------------------------------------------------------------------
-
-  /**
-   * Right-pads a symbol string to {@link #SYMBOL_LENGTH} bytes with spaces, matching the SBE {@code
-   * Symbol} type convention.
-   */
-  private static byte[] rightPadSymbol(final String symbol) {
-    final byte[] padded = new byte[SYMBOL_LENGTH];
-    Arrays.fill(padded, (byte) ' ');
-    final byte[] raw = symbol.getBytes(StandardCharsets.US_ASCII);
-    System.arraycopy(raw, 0, padded, 0, Math.min(raw.length, SYMBOL_LENGTH));
-    return padded;
-  }
-
-  /**
-   * Wraps a right-padded symbol string in an {@link UnsafeBuffer} suitable for passing to the
-   * adapter's query methods.
-   */
-  private static UnsafeBuffer wrapSymbol(final String symbol) {
-    return new UnsafeBuffer(rightPadSymbol(symbol));
   }
 }
