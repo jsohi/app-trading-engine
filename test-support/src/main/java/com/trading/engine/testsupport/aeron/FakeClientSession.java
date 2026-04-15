@@ -116,7 +116,12 @@ public final class FakeClientSession implements ClientSession {
   }
 
   /**
-   * Delegates to {@link #offer(DirectBuffer, int, int)} using the first vector.
+   * Delegates to {@link #offer(DirectBuffer, int, int)} using the first vector only.
+   *
+   * <p><b>Note:</b> Real Aeron {@link ClientSession#offer(DirectBufferVector[])} composes all
+   * vectors into a single message. This test double only uses {@code vectors[0]}, which matches how
+   * the cluster service actually calls it (always a single-vector array). If multi-vector support
+   * is needed, extend this method.
    *
    * @param vectors the buffer vectors to offer; must contain at least one non-null element
    * @return result of offering the first vector

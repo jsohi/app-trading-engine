@@ -46,6 +46,7 @@ public final class AccountFixtures {
    * @param status account lifecycle status
    * @param capabilities bitfield of {@link AccountState.Capabilities} flags
    * @return a new {@link AccountState} ready for insertion into an {@link AccountStore}
+   * @throws IllegalArgumentException if {@code baseCcy} is not exactly 3 ASCII bytes
    */
   public static AccountState account(
       final long id,
