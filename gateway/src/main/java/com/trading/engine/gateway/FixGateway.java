@@ -130,7 +130,7 @@ public final class FixGateway implements Agent {
   private boolean clusterClientStarted;
 
   private long lastSweepNs;
-  private long correlationTtlNs = DEFAULT_CORRELATION_TTL_NS;
+  private final long correlationTtlNs = DEFAULT_CORRELATION_TTL_NS;
 
   /**
    * @param bindAddress TCP bind address for FIX connections
@@ -206,17 +206,13 @@ public final class FixGateway implements Agent {
     }
     this.orchestratorRequestPub = orchRequestPub;
 
-    // Separate translator for orchestrator responses (same single-threaded duty cycle)
-    this.orchestratorTranslator = new SbeToFixTranslator();
+    // Reuse the egress listener's translator — safe because the single-threaded duty cycle
+    // processes orchestrator responses and cluster egress sequentially, never concurrently.
+    this.orchestratorTranslator = egressListener.translator();
 
     this.orchestratorResponseListener =
         new OrchestratorResponseListener(
-            registry,
-            registry,
-            clusterClient,
-            inFlightTracker,
-            nanoClock,
-            this::onOrchestratorResponse);
+            registry, registry, clusterClient, nanoClock, this::onOrchestratorResponse);
     this.orchestratorResponseSub = orchResponseSub;
     this.orchestratorAssembler = new ControlledFragmentAssembler(orchestratorResponseListener);
   }
