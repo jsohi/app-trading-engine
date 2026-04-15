@@ -443,10 +443,12 @@ public final class OrchestratorService
     // 1. Extract quoteId; check if empty (all 0x00 = direct order bypass)
     decoder.getQuoteId(quoteIdScratch, 0);
     if (isAllZero(quoteIdScratch, RfqState.QUOTE_ID_LENGTH)) {
-      // NOS bypass: the gateway routes NOS-without-quoteId directly to the cluster,
-      // so this path should never be reached. Defensive guard — fail loud if it is.
-      throw new IllegalStateException(
-          "NOS bypass reached orchestrator — gateway should route directly to cluster");
+      // NOS bypass: the gateway should route NOS-without-quoteId directly to the cluster.
+      // If this path is reached, the gateway routing is misconfigured. Log a warning and
+      // forward to the gateway (which will forward to cluster) rather than crashing the
+      // orchestrator service.
+      LOG.warn().append("Unexpected NOS bypass in orchestrator — forwarding to gateway").commit();
+      return offerRawToGateway(buffer, offset, length);
     }
 
     // 2. Lookup by quoteId for re-delivery or new transition
@@ -677,6 +679,10 @@ public final class OrchestratorService
       if (nosResult != Action.CONTINUE) {
         // ABORT: state NOT mutated, RFQ still in PENDING_VALIDATION. On re-delivery,
         // the validation response will be re-processed and the NOS re-forwarded.
+        // This cannot loop indefinitely: if the gateway publication is permanently down
+        // (NOT_CONNECTED), offerRawToGateway returns CONTINUE (drops the NOS). If
+        // transiently back-pressured, ABORT retries on the next duty cycle and the RFQ's
+        // PENDING_VALIDATION expiry (5s) provides an upper bound.
         return nosResult;
       }
 
