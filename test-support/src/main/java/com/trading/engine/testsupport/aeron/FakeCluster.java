@@ -22,6 +22,10 @@ import org.agrona.concurrent.IdleStrategy;
  *
  * <p>Not thread-safe — intended for single-threaded cluster service tests.
  *
+ * <p><b>Allocation.</b> Allocates an {@link IdleStrategy} wrapper at construction. {@link
+ * #context()} lazily allocates and caches a {@link ClusteredServiceContainer.Context} when an error
+ * handler is set. All other methods are allocation-free.
+ *
  * <p><b>Field visibility:</b> {@code idleCount} is {@code public} to preserve direct-field-access
  * from existing test call sites. The error handler is exposed via {@link
  * #setErrorHandler(ErrorHandler)}.
@@ -135,7 +139,10 @@ public final class FakeCluster implements Cluster {
 
   /** {@inheritDoc} */
   @Override
-  public void forEachClientSession(final Consumer<? super ClientSession> action) {}
+  public void forEachClientSession(final Consumer<? super ClientSession> action) {
+    java.util.Objects.requireNonNull(action, "action must not be null");
+    // No-op — fake cluster has no sessions to iterate
+  }
 
   /** {@inheritDoc} */
   @Override
