@@ -5,6 +5,7 @@ import com.trading.engine.messages.sbe.AccountLoadedEventEncoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
+import com.trading.engine.messages.sbe.BooleanType;
 import com.trading.engine.messages.sbe.CancelOrderRequestEncoder;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
@@ -26,7 +27,16 @@ import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderFilledEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
+import com.trading.engine.messages.sbe.PriceRequestEncoder;
+import com.trading.engine.messages.sbe.PriceResponseEncoder;
+import com.trading.engine.messages.sbe.PriceValidationRequestEncoder;
+import com.trading.engine.messages.sbe.PriceValidationResponseEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.QuoteEncoder;
+import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
+import com.trading.engine.messages.sbe.QuoteRequestEncoder;
+import com.trading.engine.messages.sbe.QuoteRequestRejectEncoder;
+import com.trading.engine.messages.sbe.QuoteStatusEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
@@ -1269,6 +1279,303 @@ public final class SbeTestEncoder {
 
     // Single-leg report — must still write the repeating-group header with count=0
     enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  // -----------------------------------------------------------------------
+  // RFQ / Orchestrator messages
+  // -----------------------------------------------------------------------
+
+  /**
+   * Encodes a {@link QuoteRequestEncoder} (template 1, FIX MsgType=R) with sensible defaults.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param orderQty quantity in fixed-point 10^8 (tag 38)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRequest(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty,
+      final String accountCode) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new QuoteRequestEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteReqId(quoteReqId);
+    enc.symbol(symbol);
+    enc.side(side);
+    enc.orderQty(orderQty);
+    enc.accountCode(accountCode);
+    enc.productType(ProductTypeEnum.Spot);
+    enc.settlDate("20260101");
+    enc.settlType(SettlTypeEnum.Regular);
+    enc.tenor(TenorEnum.SN);
+    enc.currency("USD");
+    enc.settlCurrency("EUR");
+    enc.transactTime(0L);
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteEncoder} (template 2, FIX MsgType=S) with sensible defaults.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param quoteId QuoteID (tag 117)
+   * @param symbol instrument symbol (tag 55)
+   * @param side order side (tag 54)
+   * @param bidPx bid price in fixed-point 10^8 (tag 132)
+   * @param offerPx offer price in fixed-point 10^8 (tag 133)
+   * @param transactTime epoch nanos (tag 60)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuote(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String quoteId,
+      final String symbol,
+      final SideEnum side,
+      final long bidPx,
+      final long offerPx,
+      final long transactTime) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new QuoteEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteReqId(quoteReqId);
+    enc.quoteId(quoteId);
+    enc.symbol(symbol);
+    enc.side(side);
+    enc.bidPx(bidPx);
+    enc.offerPx(offerPx);
+    enc.bidSize(100_000_000L);
+    enc.offerSize(100_000_000L);
+    enc.quoteStatus(QuoteStatusEnum.Accepted);
+    enc.text("");
+    enc.transactTime(transactTime);
+    enc.validUntil(transactTime + 30_000_000_000L);
+    enc.productType(ProductTypeEnum.Spot);
+    enc.settlDate("20260101");
+    enc.settlType(SettlTypeEnum.Regular);
+    enc.tenor(TenorEnum.SN);
+    enc.currency("USD");
+    enc.settlCurrency("EUR");
+    enc.swapPoints(QuoteEncoder.swapPointsNullValue());
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteRequestRejectEncoder} (template 3, FIX MsgType=AG).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param reason reject reason (tag 658)
+   * @param symbol instrument symbol (tag 55)
+   * @param side order side (tag 54)
+   * @param text free-text reject reason (tag 58)
+   * @param transactTime epoch nanos (tag 60)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRequestReject(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final QuoteRejectReasonEnum reason,
+      final String symbol,
+      final SideEnum side,
+      final String text,
+      final long transactTime) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new QuoteRequestRejectEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteReqId(quoteReqId);
+    enc.quoteRejectReason(reason);
+    enc.symbol(symbol);
+    enc.side(side);
+    enc.transactTime(transactTime);
+    enc.text(text);
+    enc.productType(ProductTypeEnum.Spot);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link PriceRequestEncoder} (template 50) — orchestrator → pricing service.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param symbol instrument symbol (tag 55)
+   * @param side order side (tag 54)
+   * @param orderQty quantity in fixed-point 10^8 (tag 38)
+   * @return total encoded length including SBE header
+   */
+  public static int encodePriceRequest(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new PriceRequestEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteReqId(quoteReqId);
+    enc.symbol(symbol);
+    enc.side(side);
+    enc.orderQty(orderQty);
+    enc.productType(ProductTypeEnum.Spot);
+    enc.settlDate("20260101");
+    enc.settlType(SettlTypeEnum.Regular);
+    enc.tenor(TenorEnum.SN);
+    enc.currency("USD");
+    enc.settlCurrency("EUR");
+    enc.accountCode("ACCT001");
+    enc.transactTime(0L);
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link PriceResponseEncoder} (template 51) — pricing service → orchestrator.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param symbol instrument symbol (tag 55)
+   * @param accepted true if pricing service produced a quote; false to decline
+   * @param bidPx bid price in fixed-point 10^8 (use null value when declined)
+   * @param offerPx offer price in fixed-point 10^8 (use null value when declined)
+   * @param transactTime epoch nanos (tag 60)
+   * @return total encoded length including SBE header
+   */
+  public static int encodePriceResponse(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String symbol,
+      final boolean accepted,
+      final long bidPx,
+      final long offerPx,
+      final long transactTime) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new PriceResponseEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteReqId(quoteReqId);
+    enc.symbol(symbol);
+    enc.bidPx(bidPx);
+    enc.offerPx(offerPx);
+    enc.bidSize(accepted ? 100_000_000L : PriceResponseEncoder.bidSizeNullValue());
+    enc.offerSize(accepted ? 100_000_000L : PriceResponseEncoder.offerSizeNullValue());
+    enc.validUntil(
+        accepted ? transactTime + 30_000_000_000L : PriceResponseEncoder.validUntilNullValue());
+    enc.accepted(accepted ? BooleanType.True : BooleanType.False);
+    enc.quoteRejectReason(accepted ? QuoteRejectReasonEnum.NULL_VAL : QuoteRejectReasonEnum.Other);
+    enc.transactTime(transactTime);
+    enc.text("");
+    enc.productType(ProductTypeEnum.Spot);
+    enc.swapPoints(PriceResponseEncoder.swapPointsNullValue());
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link PriceValidationRequestEncoder} (template 52) — orchestrator → pricing.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteId QuoteID (tag 117)
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param symbol instrument symbol (tag 55)
+   * @param orderQty quantity in fixed-point 10^8 (tag 38)
+   * @param transactTime epoch nanos (tag 60)
+   * @return total encoded length including SBE header
+   */
+  public static int encodePriceValidationRequest(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteId,
+      final String quoteReqId,
+      final String symbol,
+      final long orderQty,
+      final long transactTime) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new PriceValidationRequestEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteId(quoteId);
+    enc.quoteReqId(quoteReqId);
+    enc.symbol(symbol);
+    enc.side(SideEnum.Buy);
+    enc.price(PriceValidationRequestEncoder.priceNullValue()); // explicitly null for market orders
+    enc.orderQty(orderQty);
+    enc.accountCode("ACCT001");
+    enc.transactTime(transactTime);
+    enc.productType(ProductTypeEnum.Spot);
+    enc.settlDate("20260101");
+    enc.settlType(SettlTypeEnum.Regular);
+    enc.currency("USD");
+    enc.settlCurrency("EUR");
+    enc.tenor(TenorEnum.SN);
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link PriceValidationResponseEncoder} (template 53) — pricing → orchestrator.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteId QuoteID (tag 117)
+   * @param valid true if validation passed; false if failed
+   * @param transactTime epoch nanos (tag 60)
+   * @return total encoded length including SBE header
+   */
+  public static int encodePriceValidationResponse(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteId,
+      final boolean valid,
+      final long transactTime) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new PriceValidationResponseEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.quoteId(quoteId);
+    enc.valid(valid ? BooleanType.True : BooleanType.False);
+    enc.rejectReason(valid ? RejectReasonEnum.NULL_VAL : RejectReasonEnum.InvalidPrice);
+    enc.text("");
+    enc.transactTime(transactTime);
 
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }

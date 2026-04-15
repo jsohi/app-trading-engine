@@ -7,6 +7,7 @@ dependencies {
     implementation(libs.gflog.api)
     runtimeOnly(libs.gflog.core)
 
+    testImplementation(project(":test-support"))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
