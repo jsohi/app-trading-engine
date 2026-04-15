@@ -9,11 +9,11 @@ import com.trading.engine.fix.builder.NewOrderSingleEncoder;
 import com.trading.engine.fix.builder.OrderCancelRequestEncoder;
 import com.trading.engine.fix.decoder_flyweight.NewOrderSingleDecoder;
 import com.trading.engine.fix.decoder_flyweight.OrderCancelRequestDecoder;
+import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import java.util.concurrent.TimeUnit;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import uk.co.real_logic.artio.fields.DecimalFloat;
@@ -31,6 +31,7 @@ class FixSessionHandlerTest {
 
   private static final long SESSION_KEY = 42L;
 
+  private final ControllableNanoClock clock = new ControllableNanoClock(1_000_000_000L);
   private FakeGatewaySession gatewaySession;
   private ClusterClient clusterClient;
   private FixToSbeTranslator translator;
@@ -72,7 +73,7 @@ class FixSessionHandlerTest {
             .reconnectMaxDelayNs(TimeUnit.SECONDS.toNanos(10))
             .maxReconnectAttempts(3)
             .errorHandler(e -> {})
-            .nanoClock(SystemNanoClock.INSTANCE)
+            .nanoClock(clock)
             .inFlightTracker(inFlightTracker)
             .build();
 
@@ -88,6 +89,8 @@ class FixSessionHandlerTest {
             rejectEmitter,
             asciiBuffer,
             sbeBuffer,
+            clock,
+            null, // no orchestrator publication — tests exercise cluster-direct path
             () -> draining);
   }
 

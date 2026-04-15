@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ class SessionRegistryTest {
     return new FakeGatewaySession(id);
   }
 
+  private final ControllableNanoClock clock = new ControllableNanoClock(1_000_000_000L);
   private SessionRegistry registry;
 
   @BeforeEach
@@ -36,7 +38,7 @@ class SessionRegistryTest {
   @Test
   void registerAndFindCorrelation() {
     final byte[] clOrdId = "ORD-001".getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(clOrdId, 0, clOrdId.length, 42L);
+    registry.registerCorrelation(clOrdId, 0, clOrdId.length, 42L, clock.nanoTime());
 
     assertEquals(42L, registry.findByCorrelationId(clOrdId, 0, clOrdId.length));
   }
@@ -51,7 +53,7 @@ class SessionRegistryTest {
   @Test
   void removeCorrelationClearsEntry() {
     final byte[] clOrdId = "ORD-002".getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(clOrdId, 0, clOrdId.length, 99L);
+    registry.registerCorrelation(clOrdId, 0, clOrdId.length, 99L, clock.nanoTime());
     assertEquals(99L, registry.findByCorrelationId(clOrdId, 0, clOrdId.length));
 
     registry.removeCorrelation(clOrdId, 0, clOrdId.length);
@@ -63,8 +65,8 @@ class SessionRegistryTest {
   void multipleCorrelationsMappedToSameSession() {
     final byte[] ord1 = "ORD-A".getBytes(StandardCharsets.US_ASCII);
     final byte[] ord2 = "ORD-B".getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(ord1, 0, ord1.length, 10L);
-    registry.registerCorrelation(ord2, 0, ord2.length, 10L);
+    registry.registerCorrelation(ord1, 0, ord1.length, 10L, clock.nanoTime());
+    registry.registerCorrelation(ord2, 0, ord2.length, 10L, clock.nanoTime());
 
     assertEquals(10L, registry.findByCorrelationId(ord1, 0, ord1.length));
     assertEquals(10L, registry.findByCorrelationId(ord2, 0, ord2.length));
@@ -74,8 +76,8 @@ class SessionRegistryTest {
   void correlationsForDifferentSessions() {
     final byte[] ord1 = "ORD-X".getBytes(StandardCharsets.US_ASCII);
     final byte[] ord2 = "ORD-Y".getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(ord1, 0, ord1.length, 100L);
-    registry.registerCorrelation(ord2, 0, ord2.length, 200L);
+    registry.registerCorrelation(ord1, 0, ord1.length, 100L, clock.nanoTime());
+    registry.registerCorrelation(ord2, 0, ord2.length, 200L, clock.nanoTime());
 
     assertEquals(100L, registry.findByCorrelationId(ord1, 0, ord1.length));
     assertEquals(200L, registry.findByCorrelationId(ord2, 0, ord2.length));
@@ -159,8 +161,8 @@ class SessionRegistryTest {
     final byte[] ord2 = "ORD-SWEEP2".getBytes(StandardCharsets.US_ASCII);
 
     // Register correlations for session 10 and 20
-    registry.registerCorrelation(ord1, 0, ord1.length, 10L);
-    registry.registerCorrelation(ord2, 0, ord2.length, 20L);
+    registry.registerCorrelation(ord1, 0, ord1.length, 10L, clock.nanoTime());
+    registry.registerCorrelation(ord2, 0, ord2.length, 20L, clock.nanoTime());
 
     // Only session 10 is actually registered
     registry.tryRegisterSession(10L, 100L, FAKE_SESSION);
@@ -183,8 +185,8 @@ class SessionRegistryTest {
 
     // Register session, add correlations, then disconnect
     registry.tryRegisterSession(10L, 100L, FAKE_SESSION);
-    registry.registerCorrelation(ord1, 0, ord1.length, 10L);
-    registry.registerCorrelation(ord2, 0, ord2.length, 10L);
+    registry.registerCorrelation(ord1, 0, ord1.length, 10L, clock.nanoTime());
+    registry.registerCorrelation(ord2, 0, ord2.length, 10L, clock.nanoTime());
     assertEquals(2, registry.correlationCount());
 
     // Session disconnects
@@ -199,7 +201,7 @@ class SessionRegistryTest {
   void sweepWithNoOrphansRemovesNothing() {
     final byte[] ord = "ORD-OK".getBytes(StandardCharsets.US_ASCII);
     registry.tryRegisterSession(1L, 100L, FAKE_SESSION);
-    registry.registerCorrelation(ord, 0, ord.length, 1L);
+    registry.registerCorrelation(ord, 0, ord.length, 1L, clock.nanoTime());
 
     assertEquals(0, registry.sweepStaleCorrelations());
     assertEquals(1, registry.correlationCount());

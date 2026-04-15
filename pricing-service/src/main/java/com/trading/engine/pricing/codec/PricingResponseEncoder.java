@@ -161,7 +161,7 @@ public final class PricingResponseEncoder {
    * @param validUntil quote expiry in epoch nanos (use {@link
    *     com.trading.engine.messages.sbe.PriceResponseEncoder#validUntilNullValue()} when declined)
    * @param accepted {@code true} if the pricing service produced a quote; {@code false} to decline
-   * @param quoteRejectReason structured decline reason (FIX tag 300) when {@code accepted} is
+   * @param quoteRejectReason structured decline reason (FIX tag 658) when {@code accepted} is
    *     {@code false}; ignored when {@code accepted} is {@code true}
    * @param text free-text explanation bytes (ASCII); may be {@code null} or empty when {@code
    *     accepted} is {@code true}
@@ -214,7 +214,7 @@ public final class PricingResponseEncoder {
     // Accepted flag — BooleanType enum (tag 10034)
     priceResponseEncoder.accepted(accepted ? BooleanType.True : BooleanType.False);
 
-    // QuoteRejectReason (tag 300) — set only when declined; force NULL_VAL when accepted
+    // QuoteRejectReason (tag 658) — set only when declined; force NULL_VAL when accepted
     // to prevent stale reject reasons from leaking through a reused encoder.
     if (accepted) {
       priceResponseEncoder.quoteRejectReason(QuoteRejectReasonEnum.NULL_VAL);

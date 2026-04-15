@@ -7,6 +7,7 @@ dependencies {
     implementation(project(":gateway"))
     implementation(project(":projections"))
     implementation(project(":media-driver"))
+    implementation(project(":orchestrator"))
     implementation(project(":pricing-service"))
     implementation(project(":websocket-server"))
     implementation(project(":reference-data"))

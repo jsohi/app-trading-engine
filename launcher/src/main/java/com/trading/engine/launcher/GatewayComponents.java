@@ -1,6 +1,7 @@
 package com.trading.engine.launcher;
 
 import com.trading.engine.gateway.ClusterClient;
+import io.aeron.Aeron;
 import java.util.Objects;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.AgentRunner;
@@ -21,14 +22,18 @@ public final class GatewayComponents implements AutoCloseable {
 
   private final AgentRunner agentRunner;
   private final ClusterClient clusterClient;
+  private final Aeron ipcAeron;
 
   /**
    * @param agentRunner wraps the {@link com.trading.engine.gateway.FixGateway} duty cycle
    * @param clusterClient cluster connection; closed after the agent runner to allow graceful drain
+   * @param ipcAeron Aeron client for orchestrator IPC; closed after agent runner and cluster client
    */
-  public GatewayComponents(final AgentRunner agentRunner, final ClusterClient clusterClient) {
+  public GatewayComponents(
+      final AgentRunner agentRunner, final ClusterClient clusterClient, final Aeron ipcAeron) {
     this.agentRunner = Objects.requireNonNull(agentRunner, "agentRunner");
     this.clusterClient = Objects.requireNonNull(clusterClient, "clusterClient");
+    this.ipcAeron = ipcAeron; // nullable — null when orchestrator is not wired
   }
 
   /**
@@ -55,6 +60,6 @@ public final class GatewayComponents implements AutoCloseable {
    */
   @Override
   public void close() {
-    CloseHelper.closeAll(agentRunner, clusterClient);
+    CloseHelper.closeAll(agentRunner, clusterClient, ipcAeron);
   }
 }
