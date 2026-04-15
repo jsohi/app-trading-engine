@@ -11,6 +11,8 @@ dependencies {
     // Zero-alloc logging for hot path — no SLF4J, no Log4j2
     implementation(libs.gflog.api)
     runtimeOnly(libs.gflog.core)
+
+    testImplementation(project(":test-support"))
 }
 
 // Ensure no logging frameworks leak in via transitive dependencies

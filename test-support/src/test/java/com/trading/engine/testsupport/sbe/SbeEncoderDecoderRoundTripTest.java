@@ -12,6 +12,8 @@ import com.trading.engine.messages.sbe.CancelOrderRequestDecoder;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
+import com.trading.engine.messages.sbe.ExecTypeEnum;
+import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.LoadAccountBatchDecoder;
 import com.trading.engine.messages.sbe.LoadAccountDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyDecoder;
@@ -19,6 +21,7 @@ import com.trading.engine.messages.sbe.LoadRiskLimitDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.NewOrderSingleEncoder;
+import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
@@ -736,7 +739,8 @@ class SbeEncoderDecoderRoundTripTest {
     final long transactTime = 5_000_000_000L;
     final AccountRecord r1 = new AccountRecord(1L, "ACCT-1", "USD");
     final AccountRecord r2 =
-        new AccountRecord(2L, "ACCT-2", "EUR", AccountRecord.CAN_TRADE | AccountRecord.CAN_RFQ);
+        new AccountRecord(
+            2L, "ACCT-2", "Account ACCT-2", "EUR", AccountRecord.CAN_TRADE | AccountRecord.CAN_RFQ);
     final AccountRecord r3 = new AccountRecord(3L, "ACCT-3", "GBP");
 
     SbeTestEncoder.encodeLoadAccountBatch(buf, 0, transactTime, r1, r2, r3);
@@ -819,6 +823,7 @@ class SbeEncoderDecoderRoundTripTest {
     assertEquals(99L, dec.timestamp());
     assertEquals("GBP", dec.ccyCode());
     assertEquals(RejectReasonEnum.DuplicateAccountCode, dec.rejectReason());
+    assertEquals("dup currency", dec.text().trim());
   }
 
   @Test
@@ -877,13 +882,13 @@ class SbeEncoderDecoderRoundTripTest {
         "EXE-888",
         "CLO-777",
         "",
-        com.trading.engine.messages.sbe.ExecTypeEnum.New,
-        com.trading.engine.messages.sbe.OrdStatusEnum.New,
+        ExecTypeEnum.New,
+        OrdStatusEnum.New,
         "GBPUSD",
         SideEnum.Sell,
         500L * PRICE_SCALE,
         0L,
-        com.trading.engine.messages.sbe.ExecutionReportEncoder.avgPxNullValue(),
+        ExecutionReportEncoder.avgPxNullValue(),
         12345L,
         "",
         ProductTypeEnum.Spot,
@@ -897,13 +902,16 @@ class SbeEncoderDecoderRoundTripTest {
     assertEquals("ORD-999", dec.orderId().trim());
     assertEquals("EXE-888", dec.execId().trim());
     assertEquals("CLO-777", dec.clOrdId().trim());
-    assertEquals(com.trading.engine.messages.sbe.ExecTypeEnum.New, dec.execType());
-    assertEquals(com.trading.engine.messages.sbe.OrdStatusEnum.New, dec.ordStatus());
+    assertEquals("", dec.quoteId().trim());
+    assertEquals(ExecTypeEnum.New, dec.execType());
+    assertEquals(OrdStatusEnum.New, dec.ordStatus());
     assertEquals("GBPUSD", dec.symbol().trim());
     assertEquals(SideEnum.Sell, dec.side());
     assertEquals(500L * PRICE_SCALE, dec.leavesQty());
     assertEquals(0L, dec.cumQty());
+    assertEquals(ExecutionReportEncoder.avgPxNullValue(), dec.avgPx());
     assertEquals(12345L, dec.transactTime());
+    assertEquals("", dec.text().trim());
     assertEquals(ProductTypeEnum.Spot, dec.productType());
     assertEquals("20260415", dec.settlDate().trim());
     assertEquals(SettlTypeEnum.Regular, dec.settlType());

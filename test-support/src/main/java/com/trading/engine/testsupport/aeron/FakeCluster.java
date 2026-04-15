@@ -22,8 +22,9 @@ import org.agrona.concurrent.IdleStrategy;
  *
  * <p>Not thread-safe — intended for single-threaded cluster service tests.
  *
- * <p><b>Field visibility:</b> {@code idleCount} and {@code errorHandler} are {@code public} to
- * preserve direct-field-access from existing test call sites.
+ * <p><b>Field visibility:</b> {@code idleCount} is {@code public} to preserve direct-field-access
+ * from existing test call sites. The error handler is exposed via {@link
+ * #setErrorHandler(ErrorHandler)}.
  *
  * @see FakeClientSession
  */

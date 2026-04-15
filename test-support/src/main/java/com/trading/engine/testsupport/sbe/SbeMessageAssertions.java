@@ -98,7 +98,10 @@ public final class SbeMessageAssertions {
    *     than {@code encodedLengths.length}
    */
   public static void assertMessageCount(
-      final DirectBuffer buffer, final int expectedId, final int... encodedLengths) {
+      final DirectBuffer buffer,
+      final int totalLength,
+      final int expectedId,
+      final int... encodedLengths) {
     final MessageHeaderDecoder header = new MessageHeaderDecoder();
     int offset = 0;
     for (int i = 0; i < encodedLengths.length; i++) {
@@ -108,5 +111,17 @@ public final class SbeMessageAssertions {
           expectedId, header.templateId(), () -> "Unexpected templateId at message #" + msgIndex);
       offset += encodedLengths[i];
     }
+    final int consumed = offset;
+    assertEquals(
+        totalLength,
+        consumed,
+        () ->
+            "Expected exactly "
+                + encodedLengths.length
+                + " messages consuming "
+                + totalLength
+                + " bytes, but consumed "
+                + consumed
+                + " bytes");
   }
 }

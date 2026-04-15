@@ -11,10 +11,11 @@ package com.trading.engine.testsupport.sbe;
  *
  * @param id unique account identifier
  * @param code account code string; max 16 ASCII characters
+ * @param name human-readable account name; max 64 ASCII characters
  * @param baseCcy base currency ISO code; 3 ASCII characters
  * @param capabilities bitfield of account capabilities
  */
-public record AccountRecord(long id, String code, String baseCcy, long capabilities) {
+public record AccountRecord(long id, String code, String name, String baseCcy, long capabilities) {
 
   /** CAN_TRADE capability flag (mirrors {@code AccountState.Capabilities.CAN_TRADE} in cluster). */
   public static final long CAN_TRADE = 1L;
@@ -23,13 +24,14 @@ public record AccountRecord(long id, String code, String baseCcy, long capabilit
   public static final long CAN_RFQ = 2L;
 
   /**
-   * Convenience constructor — defaults capabilities to {@link #CAN_TRADE} only.
+   * Convenience constructor — defaults name to {@code "Account " + code} and capabilities to {@link
+   * #CAN_TRADE} only.
    *
    * @param id unique account identifier
    * @param code account code string
    * @param baseCcy base currency ISO code
    */
   public AccountRecord(final long id, final String code, final String baseCcy) {
-    this(id, code, baseCcy, CAN_TRADE);
+    this(id, code, "Account " + code, baseCcy, CAN_TRADE);
   }
 }
