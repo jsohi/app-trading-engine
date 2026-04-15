@@ -5,6 +5,7 @@ import static io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
 
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
+import com.trading.engine.fix.BusinessRejectReason;
 import com.trading.engine.fix.decoder_flyweight.MassQuoteDecoder;
 import com.trading.engine.fix.decoder_flyweight.MultilegOrderCancelReplaceRequestDecoder;
 import com.trading.engine.fix.decoder_flyweight.NewOrderMultilegDecoder;
@@ -14,6 +15,7 @@ import com.trading.engine.fix.decoder_flyweight.QuoteRequestDecoder;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
+import java.nio.charset.StandardCharsets;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NanoClock;
@@ -56,11 +58,11 @@ public final class FixSessionHandler implements SessionHandler {
   private static final Log LOG = LogFactory.getLog(FixSessionHandler.class);
 
   private static final byte[] CLUSTER_UNAVAILABLE =
-      "Cluster unavailable".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Cluster unavailable".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] ORCHESTRATOR_UNAVAILABLE =
-      "Orchestrator unavailable".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "Orchestrator unavailable".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] SYSTEM_SHUTTING_DOWN =
-      "System shutting down".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      "System shutting down".getBytes(StandardCharsets.US_ASCII);
 
   private final GatewaySession gatewaySession;
   private final long sessionKey;
@@ -164,7 +166,7 @@ public final class FixSessionHandler implements SessionHandler {
           gatewaySession,
           gatewaySession.lastReceivedMsgSeqNum(),
           messageType,
-          com.trading.engine.fix.BusinessRejectReason.OTHER.representation(),
+          BusinessRejectReason.OTHER.representation(),
           SYSTEM_SHUTTING_DOWN,
           0,
           SYSTEM_SHUTTING_DOWN.length);
@@ -189,7 +191,7 @@ public final class FixSessionHandler implements SessionHandler {
         gatewaySession,
         gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
-        com.trading.engine.fix.BusinessRejectReason.UNSUPPORTED_MESSAGE_TYPE.representation(),
+        BusinessRejectReason.UNSUPPORTED_MESSAGE_TYPE.representation(),
         null,
         0,
         0);
@@ -356,7 +358,7 @@ public final class FixSessionHandler implements SessionHandler {
         gatewaySession,
         gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
-        com.trading.engine.fix.BusinessRejectReason.OTHER.representation(),
+        BusinessRejectReason.OTHER.representation(),
         CLUSTER_UNAVAILABLE,
         0,
         CLUSTER_UNAVAILABLE.length);
@@ -406,7 +408,7 @@ public final class FixSessionHandler implements SessionHandler {
         gatewaySession,
         gatewaySession.lastReceivedMsgSeqNum(),
         messageType,
-        com.trading.engine.fix.BusinessRejectReason.OTHER.representation(),
+        BusinessRejectReason.OTHER.representation(),
         ORCHESTRATOR_UNAVAILABLE,
         0,
         ORCHESTRATOR_UNAVAILABLE.length);

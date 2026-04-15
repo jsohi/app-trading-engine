@@ -15,9 +15,11 @@ import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import io.aeron.ControlledFragmentAssembler;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
+import io.aeron.logbuffer.ControlledFragmentHandler;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.Agent;
@@ -27,8 +29,10 @@ import uk.co.real_logic.artio.engine.FixEngine;
 import uk.co.real_logic.artio.library.AcquiringSessionExistsHandler;
 import uk.co.real_logic.artio.library.FixLibrary;
 import uk.co.real_logic.artio.library.LibraryConfiguration;
+import uk.co.real_logic.artio.library.OnMessageInfo;
 import uk.co.real_logic.artio.library.SessionAcquireHandler;
 import uk.co.real_logic.artio.library.SessionHandler;
+import uk.co.real_logic.artio.messages.DisconnectReason;
 import uk.co.real_logic.artio.session.Session;
 import uk.co.real_logic.artio.util.MutableAsciiBuffer;
 import uk.co.real_logic.artio.validation.AuthenticationStrategy;
@@ -599,8 +603,8 @@ public final class FixGateway implements Agent {
   private static final class NoOpSessionHandler implements SessionHandler {
 
     @Override
-    public io.aeron.logbuffer.ControlledFragmentHandler.Action onMessage(
-        final org.agrona.DirectBuffer buffer,
+    public ControlledFragmentHandler.Action onMessage(
+        final DirectBuffer buffer,
         final int offset,
         final int length,
         final int libraryId,
@@ -609,8 +613,8 @@ public final class FixGateway implements Agent {
         final long messageType,
         final long timestampInNs,
         final long position,
-        final uk.co.real_logic.artio.library.OnMessageInfo messageInfo) {
-      return io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
+        final OnMessageInfo messageInfo) {
+      return ControlledFragmentHandler.Action.CONTINUE;
     }
 
     @Override
@@ -624,11 +628,9 @@ public final class FixGateway implements Agent {
         final int libraryId, final Session session, final boolean hasBecomeSlow) {}
 
     @Override
-    public io.aeron.logbuffer.ControlledFragmentHandler.Action onDisconnect(
-        final int libraryId,
-        final Session session,
-        final uk.co.real_logic.artio.messages.DisconnectReason reason) {
-      return io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
+    public ControlledFragmentHandler.Action onDisconnect(
+        final int libraryId, final Session session, final DisconnectReason reason) {
+      return ControlledFragmentHandler.Action.CONTINUE;
     }
   }
 }

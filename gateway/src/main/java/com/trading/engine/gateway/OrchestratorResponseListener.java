@@ -307,16 +307,17 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
       return Action.CONTINUE;
     }
 
-    // Re-register correlation with fresh timestamp (may have been TTL-swept)
-    registry.registerCorrelation(
-        nosClOrdIdScratch, 0, clOrdIdLen, sessionKey, nanoClock.nanoTime());
-
-    // Forward the raw SBE bytes to the cluster (includes SBE header + body)
+    // Forward the raw SBE bytes to the cluster (includes SBE header + body).
+    // Publish-before-mutate: offer FIRST, re-register correlation only on success.
     final long result =
         clusterClient.offerTracked(
             buffer, fragmentOffset, fragmentLength, nosClOrdIdScratch, 0, clOrdIdLen);
 
     if (result >= 0) {
+      // Re-register correlation with fresh timestamp (the original may have been TTL-swept
+      // during a long RFQ lifecycle). Done AFTER successful offer to avoid stale entries.
+      registry.registerCorrelation(
+          nosClOrdIdScratch, 0, clOrdIdLen, sessionKey, nanoClock.nanoTime());
       nosForwardedToCluster++;
       return Action.CONTINUE;
     }
