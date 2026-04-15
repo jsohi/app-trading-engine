@@ -1,8 +1,10 @@
 package com.trading.engine.pricing.forward;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.zeroPad;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.trading.engine.pricing.PricingMath;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,10 +29,10 @@ import org.junit.jupiter.api.Test;
 class ConfigurableForwardPointSourceTest {
 
   /** Symbol bytes for EUR/USD — 8-byte fixed-width SBE Symbol type. */
-  private static final byte[] EURUSD_BYTES = "EURUSD\0\0".getBytes();
+  private static final byte[] EURUSD_BYTES = zeroPad("EURUSD", SbeFieldUtil.SYMBOL_LENGTH);
 
   /** Symbol bytes for an unregistered pair — used to test unknown symbol behaviour. */
-  private static final byte[] GBPJPY_BYTES = "GBPJPY\0\0".getBytes();
+  private static final byte[] GBPJPY_BYTES = zeroPad("GBPJPY", SbeFieldUtil.SYMBOL_LENGTH);
 
   /** Standard tenors in calendar days: 1-month, 3-month, 6-month. */
   private static final int[] TENOR_DAYS = {30, 90, 180};

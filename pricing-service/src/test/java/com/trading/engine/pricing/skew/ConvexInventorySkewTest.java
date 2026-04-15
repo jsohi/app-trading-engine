@@ -1,10 +1,12 @@
 package com.trading.engine.pricing.skew;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.zeroPad;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.FixedPointScale;
 import com.trading.engine.pricing.PricingMath;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,7 +52,7 @@ class ConvexInventorySkewTest {
   private static final int ALPHA_X_100 = 200;
 
   /** Symbol bytes for EUR/USD — 8-byte fixed-width SBE Symbol. */
-  private static final byte[] EURUSD_BYTES = "EURUSD\0\0".getBytes();
+  private static final byte[] EURUSD_BYTES = zeroPad("EURUSD", SbeFieldUtil.SYMBOL_LENGTH);
 
   private ConfigurablePositionSource positionSource;
   private ConvexInventorySkew skew;

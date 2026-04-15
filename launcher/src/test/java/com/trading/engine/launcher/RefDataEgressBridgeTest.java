@@ -3,14 +3,12 @@ package com.trading.engine.launcher;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.trading.engine.messages.sbe.AccountLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventEncoder;
-import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventEncoder;
-import com.trading.engine.messages.sbe.CurrencyLoadedEventEncoder;
+import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
-import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
-import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
+import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import com.trading.refdata.ResponseCollector;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import org.agrona.ExpandableDirectByteBuffer;
@@ -217,52 +215,36 @@ class RefDataEgressBridgeTest {
     assertEquals(0, collector.rejectedCount());
   }
 
-  // ===== SBE encoder helpers =====
+  // ===== SBE encoder helpers — delegate to shared test-support module =====
 
-  /**
-   * Encodes an AccountLoadedEvent at the given offset. Returns total encoded length (header +
-   * block).
-   */
   private int encodeAccountLoaded(final MutableDirectBuffer buf, final int offset) {
-    final var encoder = new AccountLoadedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    encoder.accountId(1);
-    return HEADER_LENGTH + AccountLoadedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeAccountLoadedEvent(buf, offset, 1L, 0L, 1L, "ACCT", "Test", "USD");
   }
 
   private int encodeAccountLoadRejected(
       final MutableDirectBuffer buf, final int offset, final String reason) {
-    final var encoder = new AccountLoadRejectedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    encoder.text(reason);
-    return HEADER_LENGTH + AccountLoadRejectedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeAccountLoadRejectedEvent(
+        buf, offset, 1L, 0L, "ACCT", RejectReasonEnum.DuplicateAccountCode, reason);
   }
 
   private int encodeCurrencyLoaded(final MutableDirectBuffer buf, final int offset) {
-    final var encoder = new CurrencyLoadedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    return HEADER_LENGTH + CurrencyLoadedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeCurrencyLoadedEvent(
+        buf, offset, 1L, 0L, "USD", 840, "US Dollar", 2, CurrencyClassEnum.Fiat);
   }
 
   private int encodeCurrencyLoadRejected(
       final MutableDirectBuffer buf, final int offset, final String reason) {
-    final var encoder = new CurrencyLoadRejectedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    encoder.text(reason);
-    return HEADER_LENGTH + CurrencyLoadRejectedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeCurrencyLoadRejectedEvent(
+        buf, offset, 1L, 0L, "USD", RejectReasonEnum.InvalidCurrencyCode, reason);
   }
 
   private int encodeRiskLimitLoaded(final MutableDirectBuffer buf, final int offset) {
-    final var encoder = new RiskLimitLoadedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    return HEADER_LENGTH + RiskLimitLoadedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeRiskLimitLoadedEvent(buf, offset, 1L, 0L, 1L, 0L, 0L, 0L, 0L);
   }
 
   private int encodeRiskLimitLoadRejected(
       final MutableDirectBuffer buf, final int offset, final String reason) {
-    final var encoder = new RiskLimitLoadRejectedEventEncoder();
-    encoder.wrapAndApplyHeader(buf, offset, headerEncoder);
-    encoder.text(reason);
-    return HEADER_LENGTH + RiskLimitLoadRejectedEventEncoder.BLOCK_LENGTH;
+    return SbeTestEncoder.encodeRiskLimitLoadRejectedEvent(
+        buf, offset, 1L, 0L, 1L, RejectReasonEnum.InvalidLimitValue, reason);
   }
 }

@@ -1,9 +1,11 @@
 package com.trading.engine.pricing.quote;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.zeroPad;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,10 +28,10 @@ class QuoteManagerTest {
   private static final int SMALL_POOL_SIZE = 3;
 
   /** Symbol bytes — 8-byte fixed-width SBE Symbol. */
-  private static final byte[] SYMBOL_BYTES = "EURUSD\0\0".getBytes();
+  private static final byte[] SYMBOL_BYTES = zeroPad("EURUSD", SbeFieldUtil.SYMBOL_LENGTH);
 
   /** Account code bytes — 16-byte fixed-width SBE Account. */
-  private static final byte[] ACCOUNT_BYTES = "ACME-001\0\0\0\0\0\0\0\0".getBytes();
+  private static final byte[] ACCOUNT_BYTES = zeroPad("ACME-001", 16);
 
   private QuoteManager manager;
 
@@ -44,7 +46,7 @@ class QuoteManagerTest {
    */
   @Test
   void allocateAndStore_newQuote_retrievable() {
-    final byte[] qrIdBytes = padQuoteReqId("QR-001");
+    final byte[] qrIdBytes = zeroPad("QR-001", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qrBuf = new UnsafeBuffer(qrIdBytes);
     final UnsafeBuffer symBuf = new UnsafeBuffer(SYMBOL_BYTES);
     final UnsafeBuffer accBuf = new UnsafeBuffer(ACCOUNT_BYTES);
@@ -81,7 +83,7 @@ class QuoteManagerTest {
    */
   @Test
   void allocateAndStore_refresh_replacesOld() {
-    final byte[] qrIdBytes = padQuoteReqId("QR-REFRESH");
+    final byte[] qrIdBytes = zeroPad("QR-REFRESH", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qrBuf = new UnsafeBuffer(qrIdBytes);
     final UnsafeBuffer symBuf = new UnsafeBuffer(SYMBOL_BYTES);
     final UnsafeBuffer accBuf = new UnsafeBuffer(ACCOUNT_BYTES);
@@ -138,7 +140,7 @@ class QuoteManagerTest {
    */
   @Test
   void expireStale_expiredQuote_removed() {
-    final byte[] qrIdBytes = padQuoteReqId("QR-EXPIRED");
+    final byte[] qrIdBytes = zeroPad("QR-EXPIRED", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qrBuf = new UnsafeBuffer(qrIdBytes);
     final UnsafeBuffer symBuf = new UnsafeBuffer(SYMBOL_BYTES);
     final UnsafeBuffer accBuf = new UnsafeBuffer(ACCOUNT_BYTES);
@@ -178,7 +180,7 @@ class QuoteManagerTest {
    */
   @Test
   void expireStale_activeQuote_retained() {
-    final byte[] qrIdBytes = padQuoteReqId("QR-ACTIVE");
+    final byte[] qrIdBytes = zeroPad("QR-ACTIVE", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qrBuf = new UnsafeBuffer(qrIdBytes);
     final UnsafeBuffer symBuf = new UnsafeBuffer(SYMBOL_BYTES);
     final UnsafeBuffer accBuf = new UnsafeBuffer(ACCOUNT_BYTES);
@@ -217,7 +219,7 @@ class QuoteManagerTest {
    */
   @Test
   void lookup_unknownQuoteReqId_returnsNull() {
-    final byte[] qrIdBytes = padQuoteReqId("QR-UNKNOWN");
+    final byte[] qrIdBytes = zeroPad("QR-UNKNOWN", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qrBuf = new UnsafeBuffer(qrIdBytes);
 
     final QuoteEntry result = manager.lookup(qrBuf, 0, qrIdBytes.length);
@@ -237,7 +239,7 @@ class QuoteManagerTest {
 
     // Fill all 3 pool slots.
     for (int i = 0; i < SMALL_POOL_SIZE; i++) {
-      final byte[] qrId = padQuoteReqId("QR-" + i);
+      final byte[] qrId = zeroPad("QR-" + i, QuoteEntry.QUOTE_REQ_ID_LENGTH);
       final UnsafeBuffer qrBuf = new UnsafeBuffer(qrId);
       final QuoteEntry entry = smallManager.allocateAndStore(qrBuf, 0, qrId.length);
       entry.populate(
@@ -262,7 +264,7 @@ class QuoteManagerTest {
     assertEquals(SMALL_POOL_SIZE, smallManager.size(), "Pool should be full");
 
     // Insert a 4th quote — this must evict pool slot 0 (QR-0).
-    final byte[] qr4Bytes = padQuoteReqId("QR-NEW");
+    final byte[] qr4Bytes = zeroPad("QR-NEW", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qr4Buf = new UnsafeBuffer(qr4Bytes);
     final QuoteEntry newEntry = smallManager.allocateAndStore(qr4Buf, 0, qr4Bytes.length);
     newEntry.populate(
@@ -284,7 +286,7 @@ class QuoteManagerTest {
         /* creationNanos= */ 100_000_000L);
 
     // The evicted slot 0 (QR-0) should no longer be retrievable.
-    final byte[] qr0Bytes = padQuoteReqId("QR-0");
+    final byte[] qr0Bytes = zeroPad("QR-0", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qr0Buf = new UnsafeBuffer(qr0Bytes);
     assertNull(
         smallManager.lookup(qr0Buf, 0, qr0Bytes.length),
@@ -296,13 +298,13 @@ class QuoteManagerTest {
         "Newly inserted quote must be retrievable");
 
     // QR-1 and QR-2 should still be present.
-    final byte[] qr1Bytes = padQuoteReqId("QR-1");
+    final byte[] qr1Bytes = zeroPad("QR-1", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qr1Buf = new UnsafeBuffer(qr1Bytes);
     assertNotNull(
         smallManager.lookup(qr1Buf, 0, qr1Bytes.length),
         "QR-1 must survive eviction (slot 1 not yet recycled)");
 
-    final byte[] qr2Bytes = padQuoteReqId("QR-2");
+    final byte[] qr2Bytes = zeroPad("QR-2", QuoteEntry.QUOTE_REQ_ID_LENGTH);
     final UnsafeBuffer qr2Buf = new UnsafeBuffer(qr2Bytes);
     assertNotNull(
         smallManager.lookup(qr2Buf, 0, qr2Bytes.length),
@@ -310,23 +312,5 @@ class QuoteManagerTest {
 
     // Size should still be 3 — one evicted, one added.
     assertEquals(SMALL_POOL_SIZE, smallManager.size(), "Pool size must remain at capacity");
-  }
-
-  // -----------------------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------------------
-
-  /**
-   * Pads a short quoteReqId string to the fixed 20-byte SBE QuoteReqID length with trailing null
-   * bytes. This matches the SBE fixed-width field encoding.
-   *
-   * @param id the short identifier string
-   * @return 20-byte padded array
-   */
-  private static byte[] padQuoteReqId(final String id) {
-    final byte[] padded = new byte[QuoteEntry.QUOTE_REQ_ID_LENGTH];
-    final byte[] src = id.getBytes();
-    System.arraycopy(src, 0, padded, 0, Math.min(src.length, padded.length));
-    return padded;
   }
 }

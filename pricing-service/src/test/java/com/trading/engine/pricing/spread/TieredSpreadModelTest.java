@@ -1,5 +1,7 @@
 package com.trading.engine.pricing.spread;
 
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.spacePad;
+import static com.trading.engine.testsupport.buffer.SbeFieldUtil.wrapSymbol;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -7,8 +9,7 @@ import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.pricing.ByteArrayKey;
 import com.trading.engine.pricing.skew.InventorySkewModel;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.collections.Object2ObjectHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +27,7 @@ import org.junit.jupiter.api.Test;
 class TieredSpreadModelTest {
 
   /** SBE Symbol field width. */
-  private static final int SYMBOL_LENGTH = 8;
+  private static final int SYMBOL_LENGTH = SbeFieldUtil.SYMBOL_LENGTH;
 
   /**
    * EUR/USD mid-rate: 1.085 in fixed-point 10^-8. Chosen because it exercises typical G10 FX
@@ -95,7 +96,7 @@ class TieredSpreadModelTest {
             QTY_MAX_MULT);
 
     symbolConfigs = new Object2ObjectHashMap<>();
-    final byte[] eurusdKey = rightPadSymbol("EURUSD");
+    final byte[] eurusdKey = spacePad("EURUSD", SbeFieldUtil.SYMBOL_LENGTH);
     symbolConfigs.put(ByteArrayKey.owned(eurusdKey, 0, eurusdKey.length), eurusdCfg);
 
     // Conservative defaults for unknown symbols.
@@ -290,29 +291,5 @@ class TieredSpreadModelTest {
     assertTrue(
         roundedSpread >= rawSpread,
         "Rounded spread (" + roundedSpread + ") must be >= raw spread (" + rawSpread + ")");
-  }
-
-  // ------------------------------------------------------------------
-  // Helpers
-  // ------------------------------------------------------------------
-
-  /**
-   * Right-pads a symbol string to {@link #SYMBOL_LENGTH} bytes with spaces, matching the SBE {@code
-   * Symbol} type convention.
-   */
-  private static byte[] rightPadSymbol(final String symbol) {
-    final byte[] padded = new byte[SYMBOL_LENGTH];
-    Arrays.fill(padded, (byte) ' ');
-    final byte[] raw = symbol.getBytes(StandardCharsets.US_ASCII);
-    System.arraycopy(raw, 0, padded, 0, Math.min(raw.length, SYMBOL_LENGTH));
-    return padded;
-  }
-
-  /**
-   * Wraps a right-padded symbol string in an {@link UnsafeBuffer} for passing to spread model query
-   * methods.
-   */
-  private static UnsafeBuffer wrapSymbol(final String symbol) {
-    return new UnsafeBuffer(rightPadSymbol(symbol));
   }
 }
