@@ -953,15 +953,16 @@ public final class OrchestratorService
    * Offers raw fragment bytes to the gateway publication (stream 101) with bounded retries. Used
    * for forwarding validated NOS bytes back to the gateway for cluster submission.
    *
-   * <p>On terminal publication failure (NOT_CONNECTED, CLOSED), the NOS is dropped and the counter
-   * incremented. The FIX client's application-level timeout or the gateway's correlation TTL sweep
-   * will handle cleanup.
+   * <p>On terminal publication failure (NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED), returns
+   * {@link Action#ABORT} so the caller does NOT mutate state. The RFQ remains in PENDING_VALIDATION
+   * and will be reaped by the expiry sweep. Returning CONTINUE on terminal failure would cause the
+   * caller to release the pool slot, permanently losing the order.
    *
    * @param buffer the fragment buffer containing the NOS SBE bytes
    * @param offset start offset within the buffer
    * @param length number of bytes to offer
-   * @return {@link Action#CONTINUE} on success or terminal drop, {@link Action#ABORT} on transient
-   *     back-pressure
+   * @return {@link Action#CONTINUE} on success, {@link Action#ABORT} on transient back-pressure or
+   *     terminal failure
    */
   private Action offerRawToGateway(final DirectBuffer buffer, final int offset, final int length) {
     final int result = offerWithRetry(gatewayPublication, buffer, offset, length);
@@ -972,10 +973,12 @@ public final class OrchestratorService
       backPressureAborts++;
       return Action.ABORT;
     }
-    // Terminal: gateway NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED — drop the NOS.
+    // Terminal: gateway NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED — return ABORT so the
+    // caller does NOT release the pool slot. The RFQ stays in PENDING_VALIDATION and will be
+    // expired by the reaper, which sends an expiry notification to the client.
     nosForwardFailures++;
     LOG.error().append("Gateway publication terminal: NOS forward failed").commit();
-    return Action.CONTINUE;
+    return Action.ABORT;
   }
 
   /**
