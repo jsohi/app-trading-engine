@@ -62,15 +62,10 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
   private final byte[] erClOrdIdScratch = new byte[ExecutionReportDecoder.clOrdIdLength()];
   private final byte[] nosClOrdIdScratch = new byte[NewOrderSingleDecoder.clOrdIdLength()];
 
-  // --- Last-used correlation key (set by handleXxx, read by response callback for cleanup) ---
-  private byte[] lastCorrelationScratch;
-  private int lastCorrelationLen;
-
   // --- Collaborators (injected, not owned) ---
   private final SessionLookup sessionLookup;
   private final SessionRegistry registry;
   private final ClusterClient clusterClient;
-  private final InFlightTracker inFlightTracker;
   private final ResponseCallback callback;
   private final NanoClock nanoClock;
 
@@ -109,7 +104,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
    * @param sessionLookup correlates ClOrdID/QuoteReqID → FIX session key
    * @param registry session + correlation registry for removal and re-registration
    * @param clusterClient cluster client for NOS forwarding (stream 101 → cluster ingress)
-   * @param inFlightTracker tracks pending cluster requests for timeout detection
    * @param nanoClock monotonic clock for correlation re-registration timestamps
    * @param callback delivers decoded responses to the FIX session
    */
@@ -117,7 +111,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
       final SessionLookup sessionLookup,
       final SessionRegistry registry,
       final ClusterClient clusterClient,
-      final InFlightTracker inFlightTracker,
       final NanoClock nanoClock,
       final ResponseCallback callback) {
     if (sessionLookup == null) {
@@ -129,9 +122,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
     if (clusterClient == null) {
       throw new NullPointerException("clusterClient");
     }
-    if (inFlightTracker == null) {
-      throw new NullPointerException("inFlightTracker");
-    }
     if (nanoClock == null) {
       throw new NullPointerException("nanoClock");
     }
@@ -141,7 +131,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
     this.sessionLookup = sessionLookup;
     this.registry = registry;
     this.clusterClient = clusterClient;
-    this.inFlightTracker = inFlightTracker;
     this.nanoClock = nanoClock;
     this.callback = callback;
   }
@@ -219,9 +208,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
     quoteDecoder.getQuoteReqId(quoteReqIdScratch, 0);
     final int quoteReqIdLen = trimNullPadding(quoteReqIdScratch);
 
-    lastCorrelationScratch = quoteReqIdScratch;
-    lastCorrelationLen = quoteReqIdLen;
-
     final long sessionKey = sessionLookup.findByCorrelationId(quoteReqIdScratch, 0, quoteReqIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
       sessionNotFound++;
@@ -249,9 +235,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
     qrrDecoder.wrap(buffer, bodyOffset, blockLength, version);
     qrrDecoder.getQuoteReqId(qrrQuoteReqIdScratch, 0);
     final int quoteReqIdLen = trimNullPadding(qrrQuoteReqIdScratch);
-
-    lastCorrelationScratch = qrrQuoteReqIdScratch;
-    lastCorrelationLen = quoteReqIdLen;
 
     final long sessionKey =
         sessionLookup.findByCorrelationId(qrrQuoteReqIdScratch, 0, quoteReqIdLen);
@@ -327,7 +310,8 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
     }
 
     // Terminal: cluster NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED — drop the NOS.
-    // The client will time out via the InFlightTracker.
+    // The client will time out via their application-level timeout; the gateway's correlation
+    // TTL sweep will clean the registry entry.
     nosClusterOfferFailed++;
     LOG.warn()
         .append("Cluster offer failed for NOS forward: result=")
@@ -340,17 +324,14 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
 
   /**
    * ExecutionReport (templateId=5): orchestrator-sourced reject (validation failure, NOS-too-large,
-   * etc.). Correlate by ClOrdID → callback → remove correlation. Does NOT call {@link
-   * InFlightTracker#onResponseReceived} because these rejects did not transit the cluster.
+   * etc.). Correlate by ClOrdID → callback → remove correlation. These rejects did not transit the
+   * cluster, so no in-flight timeout tracking applies.
    */
   private Action handleRejectExecutionReport(
       final DirectBuffer buffer, final int bodyOffset, final int blockLength, final int version) {
     erDecoder.wrap(buffer, bodyOffset, blockLength, version);
     erDecoder.getClOrdId(erClOrdIdScratch, 0);
     final int clOrdIdLen = trimNullPadding(erClOrdIdScratch);
-
-    lastCorrelationScratch = erClOrdIdScratch;
-    lastCorrelationLen = clOrdIdLen;
 
     final long sessionKey = sessionLookup.findByCorrelationId(erClOrdIdScratch, 0, clOrdIdLen);
     if (sessionKey == SessionLookup.NULL_SESSION) {
@@ -393,16 +374,6 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
    */
   public ExecutionReportDecoder executionReportDecoder() {
     return erDecoder;
-  }
-
-  /** Returns the scratch buffer containing the last-extracted correlation ID bytes. */
-  public byte[] lastCorrelationScratch() {
-    return lastCorrelationScratch;
-  }
-
-  /** Returns the significant byte length of the last-extracted correlation ID. */
-  public int lastCorrelationLen() {
-    return lastCorrelationLen;
   }
 
   // --- Diagnostic counter accessors ---
