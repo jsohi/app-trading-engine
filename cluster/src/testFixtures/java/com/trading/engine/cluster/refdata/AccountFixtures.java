@@ -4,6 +4,7 @@ import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Factory methods for {@link AccountState} test instances. Provides convenient overloads ranging
@@ -56,13 +57,16 @@ public final class AccountFixtures {
     final AccountState s = new AccountState();
     s.setAccountId(id);
     s.setParentAccountId(0L);
-    final byte[] codeBytes = code.getBytes();
+    final byte[] codeBytes = code.getBytes(StandardCharsets.US_ASCII);
     s.setAccountCode(codeBytes, 0, codeBytes.length);
     s.setAcctIdSource(AcctIDSourceEnum.Internal);
-    final byte[] nameBytes = name.getBytes();
+    final byte[] nameBytes = name.getBytes(StandardCharsets.US_ASCII);
     s.setAccountName(nameBytes, 0, nameBytes.length);
     s.setAccountType(AccountTypeEnum.Client);
-    final byte[] ccy = baseCcy.getBytes();
+    final byte[] ccy = baseCcy.getBytes(StandardCharsets.US_ASCII);
+    if (ccy.length != 3) {
+      throw new IllegalArgumentException("baseCcy must be exactly 3 ASCII bytes, was: " + baseCcy);
+    }
     s.setBaseCurrency(ccy[0], ccy[1], ccy[2]);
     s.setStatus(status);
     s.setComplianceStatus(ComplianceStatusEnum.OK);

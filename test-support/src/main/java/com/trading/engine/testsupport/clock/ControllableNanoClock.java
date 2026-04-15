@@ -13,6 +13,10 @@ import org.agrona.concurrent.NanoClock;
  *
  * <p>Not thread-safe — intended for single-threaded JUnit test methods.
  *
+ * <p><b>Allocation.</b> Zero allocation after construction. All operations ({@link #nanoTime()},
+ * {@link #advanceNanos(long)}, {@link #advanceMillis(long)}, {@link #advanceSeconds(long)}, {@link
+ * #setNanos(long)}) are pure arithmetic on a single {@code long} field.
+ *
  * <p>Example usage:
  *
  * <pre>{@code
@@ -55,28 +59,40 @@ public final class ControllableNanoClock implements NanoClock, EpochNanoClock {
   /**
    * Advances the clock by the specified number of nanoseconds.
    *
-   * @param deltaNanos nanoseconds to advance; should be &gt;= 0
+   * @param deltaNanos nanoseconds to advance; must be &gt;= 0
+   * @throws IllegalArgumentException if {@code deltaNanos} is negative
    */
   public void advanceNanos(final long deltaNanos) {
-    nanos += deltaNanos;
+    if (deltaNanos < 0) {
+      throw new IllegalArgumentException("deltaNanos must be >= 0, was: " + deltaNanos);
+    }
+    nanos = Math.addExact(nanos, deltaNanos);
   }
 
   /**
    * Advances the clock by the specified number of milliseconds.
    *
-   * @param deltaMillis milliseconds to advance; should be &gt;= 0
+   * @param deltaMillis milliseconds to advance; must be &gt;= 0
+   * @throws IllegalArgumentException if {@code deltaMillis} is negative
    */
   public void advanceMillis(final long deltaMillis) {
-    nanos += deltaMillis * 1_000_000L;
+    if (deltaMillis < 0) {
+      throw new IllegalArgumentException("deltaMillis must be >= 0, was: " + deltaMillis);
+    }
+    nanos = Math.addExact(nanos, Math.multiplyExact(deltaMillis, 1_000_000L));
   }
 
   /**
    * Advances the clock by the specified number of seconds.
    *
-   * @param deltaSeconds seconds to advance; should be &gt;= 0
+   * @param deltaSeconds seconds to advance; must be &gt;= 0
+   * @throws IllegalArgumentException if {@code deltaSeconds} is negative
    */
   public void advanceSeconds(final long deltaSeconds) {
-    nanos += deltaSeconds * 1_000_000_000L;
+    if (deltaSeconds < 0) {
+      throw new IllegalArgumentException("deltaSeconds must be >= 0, was: " + deltaSeconds);
+    }
+    nanos = Math.addExact(nanos, Math.multiplyExact(deltaSeconds, 1_000_000_000L));
   }
 
   /**

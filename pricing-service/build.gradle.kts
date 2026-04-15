@@ -12,6 +12,7 @@ dependencies {
     // YAML config loading (cold path, startup only)
     implementation(libs.snakeyaml)
 
+    testImplementation(project(":test-support"))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }

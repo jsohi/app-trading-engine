@@ -322,7 +322,7 @@ public final class SbeTestEncoder {
           .parentAccountId(0L)
           .accountCode(r.code())
           .acctIdSource(AcctIDSourceEnum.Internal)
-          .accountName(r.code())
+          .accountName(r.name())
           .accountType(AccountTypeEnum.Client)
           .baseCurrency(r.baseCcy())
           .status(AccountStatusEnum.Active)

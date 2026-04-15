@@ -67,8 +67,12 @@ public final class TestBuffers {
    *
    * @param size initial capacity in bytes; must be &gt; 0
    * @return new {@link ExpandableArrayBuffer} with the given initial capacity
+   * @throws IllegalArgumentException if {@code size} is &lt;= 0
    */
   public static MutableDirectBuffer of(final int size) {
+    if (size <= 0) {
+      throw new IllegalArgumentException("size must be > 0, was: " + size);
+    }
     return new ExpandableArrayBuffer(size);
   }
 }

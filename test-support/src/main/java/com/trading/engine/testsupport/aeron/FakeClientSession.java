@@ -118,11 +118,15 @@ public final class FakeClientSession implements ClientSession {
   /**
    * Delegates to {@link #offer(DirectBuffer, int, int)} using the first vector.
    *
-   * @param vectors the buffer vectors to offer
+   * @param vectors the buffer vectors to offer; must contain at least one non-null element
    * @return result of offering the first vector
+   * @throws IllegalArgumentException if {@code vectors} is null, empty, or has a null first element
    */
   @Override
   public long offer(final DirectBufferVector[] vectors) {
+    if (vectors == null || vectors.length == 0 || vectors[0] == null) {
+      throw new IllegalArgumentException("vectors must contain at least one non-null element");
+    }
     return offer(vectors[0].buffer(), vectors[0].offset(), vectors[0].length());
   }
 
