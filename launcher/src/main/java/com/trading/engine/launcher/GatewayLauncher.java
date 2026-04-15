@@ -131,8 +131,9 @@ public final class GatewayLauncher {
     // Separate Aeron client for IPC — decoupled from ClusterClient's ownsAeronClient lifecycle.
     // ClusterClient reconnect calls closeAeronCluster() which closes its internal Aeron client;
     // a separate IPC client ensures orchestrator streams survive cluster reconnection.
-    final Aeron ipcAeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+    Aeron ipcAeron = null;
     try {
+      ipcAeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
       final ExclusivePublication orchRequestPub =
           ipcAeron.addExclusivePublication(
               "aeron:ipc", GatewayIpcStreamIds.ORCHESTRATOR_REQUEST_STREAM_ID);
