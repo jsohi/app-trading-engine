@@ -8,14 +8,11 @@ import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
-import com.trading.engine.messages.sbe.AcctIDSourceEnum;
-import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.LoadAccountEncoder;
-import com.trading.engine.messages.sbe.LoadCurrencyEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -32,38 +29,16 @@ class LoadAccountHandlerTest {
       final String code,
       final String name,
       final String baseCcy) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadAccountEncoder enc = new LoadAccountEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.accountId(accountId);
-    enc.parentAccountId(0L);
-    enc.accountCode(code);
-    enc.acctIdSource(AcctIDSourceEnum.Internal);
-    enc.accountName(name);
-    enc.accountType(AccountTypeEnum.Client);
-    enc.baseCurrency(baseCcy);
-    enc.status(AccountStatusEnum.Active);
-    enc.complianceStatus(ComplianceStatusEnum.OK);
-    enc.capabilities(AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ);
-    enc.transactTime(0L);
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    return SbeTestEncoder.encodeLoadAccount(dst, 0, accountId, code, name, baseCcy);
   }
 
   /** Pre-load USD into a CurrencyStore so the FK check passes. */
   private static void seedCurrencyStore(final CurrencyStore store, final String code) {
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadCurrencyEncoder enc = new LoadCurrencyEncoder();
-    enc.wrapAndApplyHeader(src, 0, header);
-    enc.ccyCode(code);
-    enc.isoNumeric(840);
-    enc.name("test");
-    enc.decimals((short) 2);
-    enc.currencyClass(CurrencyClassEnum.Fiat);
-    enc.status(AccountStatusEnum.Active);
-    enc.transactTime(0L);
-    final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final int len =
+        SbeTestEncoder.encodeLoadCurrency(
+            src, 0, code, 840, "test", 2, CurrencyClassEnum.Fiat, AccountStatusEnum.Active);
 
     final LoadCurrencyHandler h = new LoadCurrencyHandler(store);
     final MessageHeaderDecoder dec = new MessageHeaderDecoder();

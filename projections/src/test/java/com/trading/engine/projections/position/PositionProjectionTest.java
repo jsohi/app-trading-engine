@@ -12,6 +12,7 @@ import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.util.List;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -35,7 +36,7 @@ class PositionProjectionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Encoding helper
+  // Encoding helpers — single-leg fills delegate to shared SbeTestEncoder
   // ---------------------------------------------------------------------------
 
   private int encodeFill(
@@ -46,31 +47,33 @@ class PositionProjectionTest {
       final String accountCode,
       final String settlDate,
       final long timestamp) {
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
-    final OrderFilledEventEncoder enc = new OrderFilledEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp);
-    enc.execId("EXE-" + seqNo);
-    enc.orderId("ORD-" + seqNo);
-    enc.clOrdId("CLO-" + seqNo);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.lastPx(lastPx);
-    enc.lastQty(lastQty);
-    enc.leavesQty(0);
-    enc.cumQty(lastQty);
-    enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate(settlDate);
-    enc.settlType(SettlTypeEnum.Regular);
-    enc.currency("USD");
-    enc.settlCurrency("USD");
-    enc.tenor(TenorEnum.SN);
-    enc.accountCode(accountCode);
-    enc.noLegsCount(0);
-    return HDR_LEN + enc.encodedLength();
+    ++seqNo;
+    return SbeTestEncoder.encodeOrderFilledEvent(
+        buf,
+        0,
+        seqNo,
+        timestamp,
+        "EXE-" + seqNo,
+        "ORD-" + seqNo,
+        "CLO-" + seqNo,
+        symbol,
+        side,
+        lastPx,
+        lastQty,
+        0,
+        lastQty,
+        accountCode,
+        ProductTypeEnum.Spot,
+        settlDate,
+        SettlTypeEnum.Regular,
+        "USD",
+        "USD",
+        TenorEnum.SN);
   }
 
+  /**
+   * Swap fills have 2 legs — kept inline because the shared encoder only supports noLegsCount(0).
+   */
   private int encodeSwapFill(
       final String symbol,
       final String accountCode,

@@ -78,7 +78,7 @@ subprojects {
 
     // Infra logging: SLF4J API + Log4j2 Async + Disruptor
     // Hot-path modules (cluster, gateway) use GFLog instead — no SLF4J
-    val hotPathModules = setOf("cluster", "gateway")
+    val hotPathModules = setOf("cluster", "gateway", "test-support")
     if (name !in hotPathModules) {
         dependencies {
             "implementation"(rootProject.libs.slf4j.api)

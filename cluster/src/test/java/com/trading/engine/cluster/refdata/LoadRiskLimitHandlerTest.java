@@ -6,10 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.LoadRiskLimitEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -26,17 +26,16 @@ class LoadRiskLimitHandlerTest {
       final long maxOrderNotional,
       final long maxDailyVolume,
       final long maxDailyLossBps) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadRiskLimitEncoder enc = new LoadRiskLimitEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.accountId(accountId);
-    enc.maxOrderSize(maxOrderSize);
-    enc.maxOrderNotional(maxOrderNotional);
-    enc.maxDailyVolume(maxDailyVolume);
-    enc.maxDailyLossBps(maxDailyLossBps);
-    enc.status(AccountStatusEnum.Active);
-    enc.transactTime(0L);
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    return SbeTestEncoder.encodeLoadRiskLimit(
+        dst,
+        0,
+        accountId,
+        maxOrderSize,
+        maxOrderNotional,
+        maxDailyVolume,
+        maxDailyLossBps,
+        AccountStatusEnum.Active,
+        0L);
   }
 
   private static int dispatch(
@@ -52,7 +51,7 @@ class LoadRiskLimitHandlerTest {
   private static AccountStore accountStoreWith(final long... ids) {
     final AccountStore store = new AccountStore();
     for (final long id : ids) {
-      store.put(AccountStoreTest.makeState(id, "ACC" + id, "Account " + id, "USD"));
+      store.put(AccountFixtures.account(id, "ACC" + id, "Account " + id, "USD"));
     }
     return store;
   }

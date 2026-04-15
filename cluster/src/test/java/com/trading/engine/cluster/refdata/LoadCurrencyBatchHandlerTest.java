@@ -9,10 +9,10 @@ import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyBatchEncoder;
-import com.trading.engine.messages.sbe.LoadCurrencyBatchEncoder.NoCurrenciesEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.CurrencyRecord;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -22,26 +22,9 @@ class LoadCurrencyBatchHandlerTest {
   private static final long FIRST_SEQ = 100L;
   private static final long TS = 1_700_000_000_000_000_000L;
 
-  /**
-   * Encode a LoadCurrencyBatch with the given (code, isoNumeric) pairs. All records use decimals=2,
-   * FIAT class, Active status.
-   */
-  private static int encodeBatch(final MutableDirectBuffer dst, final String[][] records) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadCurrencyBatchEncoder enc = new LoadCurrencyBatchEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.transactTime(0L);
-    final NoCurrenciesEncoder group = enc.noCurrenciesCount(records.length);
-    for (final String[] r : records) {
-      group.next();
-      group.ccyCode(r[0]);
-      group.isoNumeric(Integer.parseInt(r[1]));
-      group.name(r[2]);
-      group.decimals((short) 2);
-      group.currencyClass(CurrencyClassEnum.Fiat);
-      group.status(AccountStatusEnum.Active);
-    }
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  /** Encode a LoadCurrencyBatch with the given currency records. */
+  private static int encodeBatch(final MutableDirectBuffer dst, final CurrencyRecord... records) {
+    return SbeTestEncoder.encodeLoadCurrencyBatch(dst, 0, 0L, records);
   }
 
   private static int dispatch(
@@ -63,11 +46,17 @@ class LoadCurrencyBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new String[][] {
-              {"USD", "840", "United States Dollar"},
-              {"EUR", "978", "Euro"},
-              {"JPY", "392", "Japanese Yen"},
-            });
+            new CurrencyRecord(
+                "USD",
+                840,
+                "United States Dollar",
+                2,
+                CurrencyClassEnum.Fiat,
+                AccountStatusEnum.Active),
+            new CurrencyRecord(
+                "EUR", 978, "Euro", 2, CurrencyClassEnum.Fiat, AccountStatusEnum.Active),
+            new CurrencyRecord(
+                "JPY", 392, "Japanese Yen", 2, CurrencyClassEnum.Fiat, AccountStatusEnum.Active));
 
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(2048);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
@@ -104,12 +93,24 @@ class LoadCurrencyBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new String[][] {
-              {"USD", "840", "Dollar"}, // valid
-              {"us1", "0", "Bad"}, // invalid code
-              {"EUR", "978", "Euro"}, // valid
-              {"XYZ", "9999", "BadIso"}, // invalid isoNumeric
-            });
+            new CurrencyRecord(
+                "USD", 840, "Dollar", 2, CurrencyClassEnum.Fiat, AccountStatusEnum.Active), // valid
+            new CurrencyRecord(
+                "us1",
+                0,
+                "Bad",
+                2,
+                CurrencyClassEnum.Fiat,
+                AccountStatusEnum.Active), // invalid code
+            new CurrencyRecord(
+                "EUR", 978, "Euro", 2, CurrencyClassEnum.Fiat, AccountStatusEnum.Active), // valid
+            new CurrencyRecord(
+                "XYZ",
+                9999,
+                "BadIso",
+                2,
+                CurrencyClassEnum.Fiat,
+                AccountStatusEnum.Active)); // invalid isoNumeric
 
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(2048);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
@@ -170,7 +171,7 @@ class LoadCurrencyBatchHandlerTest {
     final LoadCurrencyBatchHandler handler = new LoadCurrencyBatchHandler(store);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(64);
-    final int srcLength = encodeBatch(src, new String[0][]);
+    final int srcLength = encodeBatch(src);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(64);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
 
@@ -190,13 +191,20 @@ class LoadCurrencyBatchHandlerTest {
     final CurrencyStore store = new CurrencyStore();
     final LoadCurrencyBatchHandler handler = new LoadCurrencyBatchHandler(store);
 
-    final String[][] records = new String[200][];
+    final CurrencyRecord[] records = new CurrencyRecord[200];
     for (int i = 0; i < 200; i++) {
       // Generate a synthetic 3-letter code from i: AAA, AAB, ..., AZZ etc.
       final char c0 = (char) ('A' + (i / 676));
       final char c1 = (char) ('A' + ((i / 26) % 26));
       final char c2 = (char) ('A' + (i % 26));
-      records[i] = new String[] {"" + c0 + c1 + c2, String.valueOf(i + 1), "Currency " + i};
+      records[i] =
+          new CurrencyRecord(
+              "" + c0 + c1 + c2,
+              i + 1,
+              "Currency " + i,
+              2,
+              CurrencyClassEnum.Fiat,
+              AccountStatusEnum.Active);
     }
     final MutableDirectBuffer src = new ExpandableArrayBuffer(64 * 1024);
     final int srcLength = encodeBatch(src, records);

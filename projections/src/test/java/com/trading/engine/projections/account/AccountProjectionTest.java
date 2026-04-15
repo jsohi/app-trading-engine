@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
-import com.trading.engine.messages.sbe.AccountLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventEncoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
@@ -16,6 +15,7 @@ import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -85,15 +85,8 @@ class AccountProjectionTest {
 
   private int encodeAccountLoadRejected(
       final String accountCode, final RejectReasonEnum rejectReason, final String text) {
-    final var hdr = new MessageHeaderEncoder();
-    final var enc = new AccountLoadRejectedEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp++);
-    enc.accountCode(accountCode);
-    enc.rejectReason(rejectReason);
-    enc.text(text);
-    return HDR_LEN + enc.encodedLength();
+    return SbeTestEncoder.encodeAccountLoadRejectedEvent(
+        buf, 0, ++seqNo, timestamp++, accountCode, rejectReason, text);
   }
 
   private void dispatch(final int templateId, final int totalLen) {

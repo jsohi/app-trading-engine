@@ -16,6 +16,7 @@ include(
     "reference-data",
     "query-service",
     "sbe-typescript-generator",
+    "test-support",
     "web-ui",
     "websocket-server",
 )

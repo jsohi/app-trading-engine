@@ -13,11 +13,10 @@ import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.LoadAccountEncoder;
-import com.trading.engine.messages.sbe.LoadCurrencyEncoder;
-import com.trading.engine.messages.sbe.LoadRiskLimitEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -164,7 +163,7 @@ class RefDataIntegrationTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Encoders
+  // Encoders — delegate to shared SbeTestEncoder
   // ---------------------------------------------------------------------------
 
   private static int encodeLoadCurrency(
@@ -174,17 +173,16 @@ class RefDataIntegrationTest {
       final String name,
       final int decimals,
       final long transactTime) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadCurrencyEncoder enc = new LoadCurrencyEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.ccyCode(code);
-    enc.isoNumeric(isoNumeric);
-    enc.name(name);
-    enc.decimals((short) decimals);
-    enc.currencyClass(CurrencyClassEnum.Fiat);
-    enc.status(AccountStatusEnum.Active);
-    enc.transactTime(transactTime);
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    return SbeTestEncoder.encodeLoadCurrency(
+        dst,
+        0,
+        code,
+        isoNumeric,
+        name,
+        decimals,
+        CurrencyClassEnum.Fiat,
+        AccountStatusEnum.Active,
+        transactTime);
   }
 
   private static int encodeLoadCurrency(
@@ -196,6 +194,10 @@ class RefDataIntegrationTest {
     return encodeLoadCurrency(dst, code, isoNumeric, name, decimals, 0L);
   }
 
+  /**
+   * Encode a LoadAccount with explicit transactTime. The shared SbeTestEncoder defaults
+   * transactTime to 0, so this overload encodes manually when a non-zero value is needed.
+   */
   private static int encodeLoadAccount(
       final MutableDirectBuffer dst,
       final long accountId,
@@ -206,17 +208,17 @@ class RefDataIntegrationTest {
     final MessageHeaderEncoder header = new MessageHeaderEncoder();
     final LoadAccountEncoder enc = new LoadAccountEncoder();
     enc.wrapAndApplyHeader(dst, 0, header);
-    enc.accountId(accountId);
-    enc.parentAccountId(0L);
-    enc.accountCode(code);
-    enc.acctIdSource(AcctIDSourceEnum.Internal);
-    enc.accountName(name);
-    enc.accountType(AccountTypeEnum.Client);
-    enc.baseCurrency(baseCcy);
-    enc.status(AccountStatusEnum.Active);
-    enc.complianceStatus(ComplianceStatusEnum.OK);
-    enc.capabilities(AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ);
-    enc.transactTime(transactTime);
+    enc.accountId(accountId)
+        .parentAccountId(0L)
+        .accountCode(code)
+        .acctIdSource(AcctIDSourceEnum.Internal)
+        .accountName(name)
+        .accountType(AccountTypeEnum.Client)
+        .baseCurrency(baseCcy)
+        .status(AccountStatusEnum.Active)
+        .complianceStatus(ComplianceStatusEnum.OK)
+        .capabilities(AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ)
+        .transactTime(transactTime);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
 
@@ -226,7 +228,7 @@ class RefDataIntegrationTest {
       final String code,
       final String name,
       final String baseCcy) {
-    return encodeLoadAccount(dst, accountId, code, name, baseCcy, 0L);
+    return SbeTestEncoder.encodeLoadAccount(dst, 0, accountId, code, name, baseCcy);
   }
 
   private static int encodeLoadRiskLimit(
@@ -248,17 +250,16 @@ class RefDataIntegrationTest {
       final long maxDailyVolume,
       final long maxDailyLossBps,
       final long transactTime) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadRiskLimitEncoder enc = new LoadRiskLimitEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.accountId(accountId);
-    enc.maxOrderSize(maxOrderSize);
-    enc.maxOrderNotional(maxOrderNotional);
-    enc.maxDailyVolume(maxDailyVolume);
-    enc.maxDailyLossBps(maxDailyLossBps);
-    enc.status(AccountStatusEnum.Active);
-    enc.transactTime(transactTime);
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    return SbeTestEncoder.encodeLoadRiskLimit(
+        dst,
+        0,
+        accountId,
+        maxOrderSize,
+        maxOrderNotional,
+        maxDailyVolume,
+        maxDailyLossBps,
+        AccountStatusEnum.Active,
+        transactTime);
   }
 
   private static int dispatch(

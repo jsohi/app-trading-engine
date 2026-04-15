@@ -1,5 +1,9 @@
 package com.trading.engine.cluster;
 
+import static com.trading.engine.testsupport.FixedPointTestUtil.PRICE_SCALE;
+import static com.trading.engine.testsupport.sbe.SbeMessageAssertions.assertTemplateId;
+import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderCreated;
+import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderRejected;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -10,20 +14,17 @@ import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
-import com.trading.engine.cluster.refdata.CurrencyState;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.LoadAccountHandler;
 import com.trading.engine.cluster.refdata.LoadCurrencyHandler;
 import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
+import com.trading.engine.cluster.refdata.ReferenceDataSeeder;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
-import com.trading.engine.messages.sbe.AccountTypeEnum;
-import com.trading.engine.messages.sbe.AcctIDSourceEnum;
-import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyEncoder;
@@ -36,24 +37,15 @@ import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
-import io.aeron.DirectBufferVector;
-import io.aeron.Publication;
+import com.trading.engine.testsupport.aeron.FakeClientSession;
+import com.trading.engine.testsupport.aeron.FakeCluster;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.aeron.cluster.codecs.CloseReason;
-import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
-import io.aeron.cluster.service.ClusteredServiceContainer;
-import io.aeron.logbuffer.BufferClaim;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import org.agrona.DirectBuffer;
-import org.agrona.ErrorHandler;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,7 +53,6 @@ import org.junit.jupiter.api.Test;
 class TradingClusteredServiceTest {
 
   private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
-  private static final long PRICE_SCALE = 100_000_000L;
 
   private IdGenerator orderIdGen;
   private IdGenerator execIdGen;
@@ -91,7 +82,7 @@ class TradingClusteredServiceTest {
     currencyStore = new CurrencyStore();
     riskLimitStore = new RiskLimitStore();
 
-    seedReferenceData(accountStore, currencyStore, riskLimitStore);
+    ReferenceDataSeeder.seed(accountStore, currencyStore, riskLimitStore);
 
     registry = new ReferenceDataRegistry();
     registry.registerStore(accountStore);
@@ -121,84 +112,6 @@ class TradingClusteredServiceTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private static AccountState makeAccount(
-      final long id, final String code, final AccountStatusEnum status, final long capabilities) {
-    final AccountState s = new AccountState();
-    s.setAccountId(id);
-    final byte[] codeBytes = code.getBytes();
-    s.setAccountCode(codeBytes, 0, codeBytes.length);
-    s.setAcctIdSource(AcctIDSourceEnum.Internal);
-    final byte[] name = ("Account " + code).getBytes();
-    s.setAccountName(name, 0, name.length);
-    s.setAccountType(AccountTypeEnum.Client);
-    s.setBaseCurrency((byte) 'U', (byte) 'S', (byte) 'D');
-    s.setStatus(status);
-    s.setComplianceStatus(ComplianceStatusEnum.OK);
-    s.setCapabilities(capabilities);
-    s.setTransactTime(0L);
-    return s;
-  }
-
-  private static CurrencyState makeCurrency(final String code, final int isoNumeric) {
-    final CurrencyState c = new CurrencyState();
-    final byte[] codeBytes = code.getBytes();
-    c.setCcyCode(codeBytes, 0);
-    c.setIsoNumeric(isoNumeric);
-    final byte[] name = ("Currency " + code).getBytes();
-    c.setName(name, 0, name.length);
-    c.setDecimals(2);
-    c.setCurrencyClass(CurrencyClassEnum.Fiat);
-    c.setStatus(AccountStatusEnum.Active);
-    c.setTransactTime(0L);
-    return c;
-  }
-
-  /** Seed the 3 accounts, 2 currencies, and 1 risk limit used by all order-processing tests. */
-  private static void seedReferenceData(
-      final AccountStore accounts, final CurrencyStore currencies, final RiskLimitStore limits) {
-    accounts.put(
-        makeAccount(1L, "ACME", AccountStatusEnum.Active, AccountState.Capabilities.CAN_TRADE));
-    accounts.put(
-        makeAccount(
-            2L, "LOCKED", AccountStatusEnum.Suspended, AccountState.Capabilities.CAN_TRADE));
-    accounts.put(makeAccount(3L, "QUOTEONLY", AccountStatusEnum.Active, 0L));
-    currencies.put(
-        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD", 840));
-    currencies.put(
-        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR", 978));
-    final RiskLimitState limit = new RiskLimitState();
-    limit.setAccountId(1L);
-    limit.setMaxOrderSize(10L * PRICE_SCALE);
-    limit.setStatus(AccountStatusEnum.Active);
-    limits.put(limit);
-  }
-
-  private static int encodeNewOrderSingle(
-      final MutableDirectBuffer dst,
-      final String clOrdId,
-      final String symbol,
-      final SideEnum side,
-      final OrdTypeEnum ordType,
-      final long price,
-      final long orderQty,
-      final String accountCode,
-      final String currency) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final NewOrderSingleEncoder enc = new NewOrderSingleEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.clOrdId(clOrdId);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.ordType(ordType);
-    enc.price(price);
-    enc.orderQty(orderQty);
-    enc.timeInForce(TimeInForceEnum.Day);
-    enc.transactTime(0L);
-    enc.accountCode(accountCode);
-    enc.currency(currency);
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-  }
-
   private void dispatch(final MutableDirectBuffer buffer, final int length) {
     service.onSessionMessage(session, TIMESTAMP, buffer, 0, length, null);
   }
@@ -211,8 +124,9 @@ class TradingClusteredServiceTest {
   void validNewOrderSingleEmitsOrderCreatedEvent() {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     final int len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             "CL-1",
             "EURUSD",
             SideEnum.Buy,
@@ -253,8 +167,9 @@ class TradingClusteredServiceTest {
     // not the stale USD bytes left in the handler's egress buffer.
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     int len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             "CL-OK",
             "EURUSD",
             SideEnum.Buy,
@@ -269,8 +184,9 @@ class TradingClusteredServiceTest {
     // Now a reject with a different currency (EUR, which is in the store, but zero qty forces
     // the reject path).
     len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             "CL-BAD",
             "EURUSD",
             SideEnum.Buy,
@@ -294,8 +210,9 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -433,8 +350,9 @@ class TradingClusteredServiceTest {
       final String currency) {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     final int len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             clOrdId,
             symbol,
             SideEnum.Buy,
@@ -519,8 +437,9 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 2; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -571,8 +490,9 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -596,8 +516,9 @@ class TradingClusteredServiceTest {
     final FakeClientSession resSession = new FakeClientSession();
     for (int i = 4; i <= 5; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -616,8 +537,9 @@ class TradingClusteredServiceTest {
     final FakeClientSession fullSession = new FakeClientSession();
     for (int i = 1; i <= 5; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -787,7 +709,7 @@ class TradingClusteredServiceTest {
     final var currencies = new CurrencyStore();
     final var limits = new RiskLimitStore();
     if (seed) {
-      seedReferenceData(accounts, currencies, limits);
+      ReferenceDataSeeder.seed(accounts, currencies, limits);
     }
     final var reg = new ReferenceDataRegistry();
     reg.registerStore(accounts);
@@ -842,8 +764,9 @@ class TradingClusteredServiceTest {
 
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     final int len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             "CL-1",
             "EURUSD",
             SideEnum.Buy,
@@ -897,8 +820,9 @@ class TradingClusteredServiceTest {
 
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     final int len =
-        encodeNewOrderSingle(
+        SbeTestEncoder.encodeNewOrderSingle(
             buf,
+            0,
             "CL-STUCK",
             "EURUSD",
             SideEnum.Buy,
@@ -927,34 +851,6 @@ class TradingClusteredServiceTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Decoding helpers
-  // ---------------------------------------------------------------------------
-
-  private static void assertTemplateId(final int expected, final byte[] bytes) {
-    final MessageHeaderDecoder hd = new MessageHeaderDecoder();
-    hd.wrap(new UnsafeBuffer(bytes), 0);
-    assertEquals(expected, hd.templateId());
-  }
-
-  private static OrderCreatedEventDecoder decodeOrderCreated(final byte[] bytes) {
-    final UnsafeBuffer buf = new UnsafeBuffer(bytes);
-    final MessageHeaderDecoder hd = new MessageHeaderDecoder();
-    hd.wrap(buf, 0);
-    final OrderCreatedEventDecoder d = new OrderCreatedEventDecoder();
-    d.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hd.blockLength(), hd.version());
-    return d;
-  }
-
-  private static OrderRejectedEventDecoder decodeOrderRejected(final byte[] bytes) {
-    final UnsafeBuffer buf = new UnsafeBuffer(bytes);
-    final MessageHeaderDecoder hd = new MessageHeaderDecoder();
-    hd.wrap(buf, 0);
-    final OrderRejectedEventDecoder d = new OrderRejectedEventDecoder();
-    d.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hd.blockLength(), hd.version());
-    return d;
-  }
-
-  // ---------------------------------------------------------------------------
   // Atomic snapshot tests (APP-150)
   // ---------------------------------------------------------------------------
 
@@ -969,8 +865,9 @@ class TradingClusteredServiceTest {
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -1068,7 +965,7 @@ class TradingClusteredServiceTest {
     // Wire a FakeCluster with a real context + error handler.
     final AtomicReference<Throwable> capturedWarning = new AtomicReference<>();
     final FakeCluster warningCluster = new FakeCluster(TIMESTAMP);
-    warningCluster.errorHandler = capturedWarning::set;
+    warningCluster.setErrorHandler(capturedWarning::set);
 
     final ServiceBundle bundle = createServiceBundle(true);
     bundle.service().onStart(warningCluster, null);
@@ -1102,7 +999,7 @@ class TradingClusteredServiceTest {
     final var accounts = new AccountStore();
     final var currencies = new CurrencyStore();
     final var limits = new RiskLimitStore();
-    seedReferenceData(accounts, currencies, limits);
+    ReferenceDataSeeder.seed(accounts, currencies, limits);
     // Remove the 10-unit max order size limit so we can place many orders.
     final var bigLimit = new RiskLimitState();
     bigLimit.setAccountId(1L);
@@ -1128,8 +1025,9 @@ class TradingClusteredServiceTest {
     final FakeClientSession bigSession = new FakeClientSession();
     for (int i = 1; i <= orderCount; i++) {
       final int len =
-          encodeNewOrderSingle(
+          SbeTestEncoder.encodeNewOrderSingle(
               buf,
+              0,
               "CL-" + i,
               "EURUSD",
               SideEnum.Buy,
@@ -1203,190 +1101,5 @@ class TradingClusteredServiceTest {
     assertTrue(assembledLen > 0);
     final long hardCap = (long) TradingClusteredService.SNAPSHOT_HARD_CAP_MULTIPLIER * maxMsg;
     assertTrue(assembledLen < hardCap, "normal snapshot must be under hard cap");
-  }
-
-  // ---------------------------------------------------------------------------
-  // Test doubles
-  // ---------------------------------------------------------------------------
-
-  /** Records every {@code offer(...)} call as a defensive byte[] copy. */
-  static final class FakeClientSession implements ClientSession {
-    final List<byte[]> messages = new ArrayList<>();
-    int pendingBackpressures;
-    boolean alwaysBackpressured;
-    boolean closed;
-
-    @Override
-    public long id() {
-      return 42L;
-    }
-
-    @Override
-    public int responseStreamId() {
-      return 0;
-    }
-
-    @Override
-    public String responseChannel() {
-      return "aeron:ipc";
-    }
-
-    @Override
-    public byte[] encodedPrincipal() {
-      return new byte[0];
-    }
-
-    @Override
-    public void close() {
-      closed = true;
-    }
-
-    @Override
-    public boolean isClosing() {
-      return closed;
-    }
-
-    @Override
-    public long offer(final DirectBuffer buffer, final int offset, final int length) {
-      if (alwaysBackpressured) {
-        return Publication.BACK_PRESSURED;
-      }
-      if (pendingBackpressures > 0) {
-        pendingBackpressures--;
-        return Publication.BACK_PRESSURED;
-      }
-      final byte[] copy = new byte[length];
-      buffer.getBytes(offset, copy);
-      messages.add(copy);
-      return 1L;
-    }
-
-    @Override
-    public long offer(final DirectBufferVector[] vectors) {
-      return offer(vectors[0].buffer(), vectors[0].offset(), vectors[0].length());
-    }
-
-    @Override
-    public long tryClaim(final int length, final BufferClaim bufferClaim) {
-      throw new UnsupportedOperationException();
-    }
-  }
-
-  /** Minimal {@link Cluster} double returning a fixed timestamp. */
-  static final class FakeCluster implements Cluster {
-    private final long time;
-    private final IdleStrategy idleStrategy;
-    int idleCount;
-
-    /**
-     * When non-null, {@link #context()} returns a real {@link ClusteredServiceContainer.Context}
-     * wired with this error handler. Used by the warning-threshold snapshot test (APP-150).
-     */
-    ErrorHandler errorHandler;
-
-    FakeCluster(final long time) {
-      this.time = time;
-      this.idleStrategy =
-          new IdleStrategy() {
-            @Override
-            public void idle(final int workCount) {
-              idleCount++;
-            }
-
-            @Override
-            public void idle() {
-              idleCount++;
-            }
-
-            @Override
-            public void reset() {}
-          };
-    }
-
-    @Override
-    public int memberId() {
-      return 0;
-    }
-
-    @Override
-    public Role role() {
-      return Role.LEADER;
-    }
-
-    @Override
-    public long logPosition() {
-      return 0L;
-    }
-
-    @Override
-    public io.aeron.Aeron aeron() {
-      return null;
-    }
-
-    @Override
-    public ClusteredServiceContainer.Context context() {
-      if (errorHandler != null) {
-        return new ClusteredServiceContainer.Context().errorHandler(errorHandler);
-      }
-      return null;
-    }
-
-    @Override
-    public ClientSession getClientSession(final long clusterSessionId) {
-      return null;
-    }
-
-    @Override
-    public java.util.Collection<ClientSession> clientSessions() {
-      return java.util.List.of();
-    }
-
-    @Override
-    public void forEachClientSession(final Consumer<? super ClientSession> action) {}
-
-    @Override
-    public boolean closeClientSession(final long clusterSessionId) {
-      return false;
-    }
-
-    @Override
-    public long time() {
-      return time;
-    }
-
-    @Override
-    public TimeUnit timeUnit() {
-      return TimeUnit.NANOSECONDS;
-    }
-
-    @Override
-    public boolean scheduleTimer(final long correlationId, final long deadline) {
-      return false;
-    }
-
-    @Override
-    public boolean cancelTimer(final long correlationId) {
-      return false;
-    }
-
-    @Override
-    public long offer(final DirectBuffer buffer, final int offset, final int length) {
-      return 0L;
-    }
-
-    @Override
-    public long offer(final DirectBufferVector[] vectors) {
-      return 0L;
-    }
-
-    @Override
-    public long tryClaim(final int length, final BufferClaim bufferClaim) {
-      return 0L;
-    }
-
-    @Override
-    public IdleStrategy idleStrategy() {
-      return idleStrategy;
-    }
   }
 }
