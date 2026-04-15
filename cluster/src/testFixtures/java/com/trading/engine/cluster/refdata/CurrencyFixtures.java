@@ -2,6 +2,7 @@ package com.trading.engine.cluster.refdata;
 
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Factory methods for {@link CurrencyState} test instances. Provides overloads ranging from fully
@@ -45,10 +46,10 @@ public final class CurrencyFixtures {
       final CurrencyClassEnum cls,
       final AccountStatusEnum status) {
     final CurrencyState c = new CurrencyState();
-    final byte[] codeBytes = code.getBytes();
+    final byte[] codeBytes = code.getBytes(StandardCharsets.US_ASCII);
     c.setCcyCode(codeBytes, 0);
     c.setIsoNumeric(isoNumeric);
-    final byte[] nameBytes = name.getBytes();
+    final byte[] nameBytes = name.getBytes(StandardCharsets.US_ASCII);
     c.setName(nameBytes, 0, nameBytes.length);
     c.setDecimals(decimals);
     c.setCurrencyClass(cls);
