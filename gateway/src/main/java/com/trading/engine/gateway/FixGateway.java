@@ -306,7 +306,7 @@ public final class FixGateway implements Agent {
 
     // 4. Periodic sweeps: stale correlations (disconnected sessions) + TTL expiry (orchestrator)
     final long nowNs = nanoClock.nanoTime();
-    if (nowNs - lastSweepNs >= SWEEP_INTERVAL_NS) {
+    if (nowNs - lastSweepNs >= Math.min(SWEEP_INTERVAL_NS, correlationTtlNs)) {
       final int swept = registry.sweepStaleCorrelations();
       final int ttlExpired = registry.sweepExpiredCorrelations(nowNs, correlationTtlNs);
       if (swept > 0 || ttlExpired > 0) {
