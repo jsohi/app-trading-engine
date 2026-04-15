@@ -8,10 +8,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
+import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
+import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import org.agrona.ExpandableArrayBuffer;
@@ -43,8 +45,7 @@ class FixGatewayTest {
   // SBE encoding helpers
   private final MutableDirectBuffer sbeBuffer = new ExpandableArrayBuffer(512);
   private final MessageHeaderEncoder sbeHeaderEncoder = new MessageHeaderEncoder();
-  private final com.trading.engine.messages.sbe.ExecutionReportEncoder sbeErEncoder =
-      new com.trading.engine.messages.sbe.ExecutionReportEncoder();
+  private final ExecutionReportEncoder sbeErEncoder = new ExecutionReportEncoder();
 
   @BeforeEach
   void setUp() {
@@ -60,7 +61,7 @@ class FixGatewayTest {
             "aeron:ipc",
             "/tmp/fix-logs-test",
             "GATEWAY",
-            java.util.Collections.singletonList("CLIENT"),
+            java.util.List.of("CLIENT"),
             registry,
             new FixToSbeTranslator(),
             new RejectEmitter(),
@@ -114,7 +115,7 @@ class FixGatewayTest {
     sbeErEncoder.side(SideEnum.Buy);
     sbeErEncoder.leavesQty(100_000_000L);
     sbeErEncoder.cumQty(0L);
-    sbeErEncoder.avgPx(com.trading.engine.messages.sbe.ExecutionReportEncoder.avgPxNullValue());
+    sbeErEncoder.avgPx(ExecutionReportEncoder.avgPxNullValue());
     sbeErEncoder.transactTime(TIMESTAMP);
     sbeErEncoder.putText(zeroPad("", 64), 0);
     sbeErEncoder.putCurrency(new byte[] {'U', 'S', 'D'}, 0);
@@ -139,10 +140,9 @@ class FixGatewayTest {
     inFlightTracker.onCommandSent(clOrdIdBytes, 0, clOrdIdBytes.length, clock.nanoTime());
 
     // Drive through egress listener (which calls gateway.onEgressMessage)
-    final io.aeron.logbuffer.ControlledFragmentHandler.Action action =
-        egressListener.onMessage(1L, TIMESTAMP, sbeBuffer, 0, sbeLen, null);
+    final Action action = egressListener.onMessage(1L, TIMESTAMP, sbeBuffer, 0, sbeLen, null);
 
-    assertEquals(io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE, action);
+    assertEquals(Action.CONTINUE, action);
     // Session received the translated FIX ExecutionReport
     assertEquals(1, fakeSession.sentEncoders.size());
     assertTrue(
@@ -214,11 +214,10 @@ class FixGatewayTest {
         clOrdIdBytes, 0, clOrdIdBytes.length, SESSION_KEY, clock.nanoTime());
 
     // Drive through egress listener
-    final io.aeron.logbuffer.ControlledFragmentHandler.Action action =
-        egressListener.onMessage(1L, TIMESTAMP, sbeBuffer, 0, sbeLen, null);
+    final Action action = egressListener.onMessage(1L, TIMESTAMP, sbeBuffer, 0, sbeLen, null);
 
     // Back-pressure → ABORT (message will be re-delivered)
-    assertEquals(io.aeron.logbuffer.ControlledFragmentHandler.Action.ABORT, action);
+    assertEquals(Action.ABORT, action);
     // Correlation NOT removed (will be cleaned on successful re-delivery)
     assertEquals(SESSION_KEY, registry.findByCorrelationId(clOrdIdBytes, 0, clOrdIdBytes.length));
   }
