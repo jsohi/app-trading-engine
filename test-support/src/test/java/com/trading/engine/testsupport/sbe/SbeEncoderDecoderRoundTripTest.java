@@ -16,7 +16,9 @@ import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportEncoder;
 import com.trading.engine.messages.sbe.LoadAccountBatchDecoder;
 import com.trading.engine.messages.sbe.LoadAccountDecoder;
+import com.trading.engine.messages.sbe.LoadCurrencyBatchDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyDecoder;
+import com.trading.engine.messages.sbe.LoadRiskLimitBatchDecoder;
 import com.trading.engine.messages.sbe.LoadRiskLimitDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
@@ -35,6 +37,7 @@ import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
+import com.trading.engine.testsupport.FixedPointTestUtil;
 import com.trading.engine.testsupport.buffer.TestBuffers;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -53,8 +56,7 @@ import org.junit.jupiter.api.Test;
  */
 class SbeEncoderDecoderRoundTripTest {
 
-  private static final long PRICE_SCALE =
-      com.trading.engine.testsupport.FixedPointTestUtil.PRICE_SCALE;
+  private static final long PRICE_SCALE = FixedPointTestUtil.PRICE_SCALE;
 
   // -----------------------------------------------------------------------
   // Commands — template ID + raw decode verification
@@ -840,7 +842,7 @@ class SbeEncoderDecoderRoundTripTest {
 
     final MessageHeaderDecoder hdr = new MessageHeaderDecoder();
     hdr.wrap(buf, 0);
-    final var dec = new com.trading.engine.messages.sbe.LoadCurrencyBatchDecoder();
+    final var dec = new LoadCurrencyBatchDecoder();
     dec.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hdr.blockLength(), hdr.version());
     final var group = dec.noCurrencies();
     assertEquals(2, group.count());
@@ -860,7 +862,7 @@ class SbeEncoderDecoderRoundTripTest {
 
     final MessageHeaderDecoder hdr = new MessageHeaderDecoder();
     hdr.wrap(buf, 0);
-    final var dec = new com.trading.engine.messages.sbe.LoadRiskLimitBatchDecoder();
+    final var dec = new LoadRiskLimitBatchDecoder();
     dec.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hdr.blockLength(), hdr.version());
     final var group = dec.noRiskLimits();
     assertEquals(2, group.count());
