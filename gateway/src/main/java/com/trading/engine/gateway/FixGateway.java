@@ -10,6 +10,8 @@ import com.trading.engine.fix.builder.QuoteEncoder;
 import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import io.aeron.ControlledFragmentAssembler;
@@ -485,6 +487,20 @@ public final class FixGateway implements Agent {
         quoteEncoder.reset();
         egressListener.translator().translateQuote(egressListener.quoteDecoder(), quoteEncoder);
         position = session.trySend(quoteEncoder);
+      }
+      case OrderCreatedEventDecoder.TEMPLATE_ID -> {
+        erEncoder.reset();
+        egressListener
+            .translator()
+            .translateOrderCreatedEvent(egressListener.orderCreatedDecoder(), erEncoder);
+        position = session.trySend(erEncoder);
+      }
+      case OrderRejectedEventDecoder.TEMPLATE_ID -> {
+        erEncoder.reset();
+        egressListener
+            .translator()
+            .translateOrderRejectedEvent(egressListener.orderRejectedDecoder(), erEncoder);
+        position = session.trySend(erEncoder);
       }
       default -> {
         LOG.warn().append("Unknown egress templateId=").append(templateId).commit();
