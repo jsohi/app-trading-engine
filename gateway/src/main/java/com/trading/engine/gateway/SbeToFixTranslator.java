@@ -20,6 +20,7 @@ import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import uk.co.real_logic.artio.fields.DecimalFloat;
 import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
@@ -70,43 +71,28 @@ public final class SbeToFixTranslator {
   // zero-allocation rule. So each char field gets its own byte[] sized to the SBE field length.
   //
   // ExecutionReport char fields:
-  private final byte[] erOrderId =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.orderIdLength()];
-  private final byte[] erExecId =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.execIdLength()];
-  private final byte[] erClOrdId =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.clOrdIdLength()];
-  private final byte[] erSymbol =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.symbolLength()];
-  private final byte[] erText =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.textLength()];
-  private final byte[] erSettlDate =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlDateLength()];
-  private final byte[] erCurrency =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.currencyLength()];
-  private final byte[] erSettlCurrency =
-      new byte[com.trading.engine.messages.sbe.ExecutionReportDecoder.settlCurrencyLength()];
+  private final byte[] erOrderId = new byte[ExecutionReportDecoder.orderIdLength()];
+  private final byte[] erExecId = new byte[ExecutionReportDecoder.execIdLength()];
+  private final byte[] erClOrdId = new byte[ExecutionReportDecoder.clOrdIdLength()];
+  private final byte[] erSymbol = new byte[ExecutionReportDecoder.symbolLength()];
+  private final byte[] erText = new byte[ExecutionReportDecoder.textLength()];
+  private final byte[] erSettlDate = new byte[ExecutionReportDecoder.settlDateLength()];
+  private final byte[] erCurrency = new byte[ExecutionReportDecoder.currencyLength()];
+  private final byte[] erSettlCurrency = new byte[ExecutionReportDecoder.settlCurrencyLength()];
 
   // Quote leg-level char fields (per-leg sliced — same MAX_LEGS rationale as ER):
-  private static final int Q_LEG_SETTL_DATE_LEN =
-      com.trading.engine.messages.sbe.QuoteDecoder.NoLegsDecoder.legSettlDateLength();
-  private static final int Q_LEG_CURRENCY_LEN =
-      com.trading.engine.messages.sbe.QuoteDecoder.NoLegsDecoder.legCurrencyLength();
+  private static final int Q_LEG_SETTL_DATE_LEN = QuoteDecoder.NoLegsDecoder.legSettlDateLength();
+  private static final int Q_LEG_CURRENCY_LEN = QuoteDecoder.NoLegsDecoder.legCurrencyLength();
   private final byte[] qLegSettlDate = new byte[MAX_LEGS * Q_LEG_SETTL_DATE_LEN];
   private final byte[] qLegCurrency = new byte[MAX_LEGS * Q_LEG_CURRENCY_LEN];
 
   // Quote char fields:
-  private final byte[] qQuoteReqId =
-      new byte[com.trading.engine.messages.sbe.QuoteDecoder.quoteReqIdLength()];
-  private final byte[] qQuoteId =
-      new byte[com.trading.engine.messages.sbe.QuoteDecoder.quoteIdLength()];
-  private final byte[] qSymbol =
-      new byte[com.trading.engine.messages.sbe.QuoteDecoder.symbolLength()];
-  private final byte[] qText = new byte[com.trading.engine.messages.sbe.QuoteDecoder.textLength()];
-  private final byte[] qSettlDate =
-      new byte[com.trading.engine.messages.sbe.QuoteDecoder.settlDateLength()];
-  private final byte[] qCurrency =
-      new byte[com.trading.engine.messages.sbe.QuoteDecoder.currencyLength()];
+  private final byte[] qQuoteReqId = new byte[QuoteDecoder.quoteReqIdLength()];
+  private final byte[] qQuoteId = new byte[QuoteDecoder.quoteIdLength()];
+  private final byte[] qSymbol = new byte[QuoteDecoder.symbolLength()];
+  private final byte[] qText = new byte[QuoteDecoder.textLength()];
+  private final byte[] qSettlDate = new byte[QuoteDecoder.settlDateLength()];
+  private final byte[] qCurrency = new byte[QuoteDecoder.currencyLength()];
   // SettlCurrency intentionally absent — not in stock FIX 4.4 Quote(35=S). See translateQuote.
 
   // ExecutionReport leg-level char fields. Sized for up to MAX_LEGS legs sharing the buffer
@@ -124,31 +110,23 @@ public final class SbeToFixTranslator {
   private static final int MAX_LEGS = 8;
 
   private static final int ER_LEG_SETTL_DATE_LEN =
-      com.trading.engine.messages.sbe.ExecutionReportDecoder.NoLegsDecoder.legSettlDateLength();
+      ExecutionReportDecoder.NoLegsDecoder.legSettlDateLength();
   private static final int ER_LEG_CURRENCY_LEN =
-      com.trading.engine.messages.sbe.ExecutionReportDecoder.NoLegsDecoder.legCurrencyLength();
+      ExecutionReportDecoder.NoLegsDecoder.legCurrencyLength();
   private final byte[] erLegSettlDate = new byte[MAX_LEGS * ER_LEG_SETTL_DATE_LEN];
   private final byte[] erLegCurrency = new byte[MAX_LEGS * ER_LEG_CURRENCY_LEN];
 
   // OrderCancelReject char fields:
-  private final byte[] ocrOrderId =
-      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.orderIdLength()];
-  private final byte[] ocrClOrdId =
-      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.clOrdIdLength()];
-  private final byte[] ocrOrigClOrdId =
-      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.origClOrdIdLength()];
-  private final byte[] ocrAccount =
-      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.accountCodeLength()];
-  private final byte[] ocrText =
-      new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.textLength()];
+  private final byte[] ocrOrderId = new byte[OrderCancelRejectDecoder.orderIdLength()];
+  private final byte[] ocrClOrdId = new byte[OrderCancelRejectDecoder.clOrdIdLength()];
+  private final byte[] ocrOrigClOrdId = new byte[OrderCancelRejectDecoder.origClOrdIdLength()];
+  private final byte[] ocrAccount = new byte[OrderCancelRejectDecoder.accountCodeLength()];
+  private final byte[] ocrText = new byte[OrderCancelRejectDecoder.textLength()];
 
   // QuoteRequestReject char fields (prefix "qrr"):
-  private final byte[] qrrQuoteReqId =
-      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.quoteReqIdLength()];
-  private final byte[] qrrSymbol =
-      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.symbolLength()];
-  private final byte[] qrrText =
-      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.textLength()];
+  private final byte[] qrrQuoteReqId = new byte[QuoteRequestRejectDecoder.quoteReqIdLength()];
+  private final byte[] qrrSymbol = new byte[QuoteRequestRejectDecoder.symbolLength()];
+  private final byte[] qrrText = new byte[QuoteRequestRejectDecoder.textLength()];
   private final byte[] qrrTransactTime = new byte[32];
 
   // OrderCreatedEvent char fields (prefix "oc" = orderCreated):
@@ -853,15 +831,13 @@ public final class SbeToFixTranslator {
    * requires tag 37 to be present on every ExecutionReport; "NONE" follows the CME iLink convention
    * of using a placeholder when no real ID exists.
    */
-  private static final byte[] NONE_ORDER_ID =
-      "NONE".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  private static final byte[] NONE_ORDER_ID = "NONE".getBytes(StandardCharsets.US_ASCII);
 
   /**
    * Sentinel ExecID for rejected orders that were never assigned an execution ID. Same rationale as
    * {@link #NONE_ORDER_ID}.
    */
-  private static final byte[] NONE_EXEC_ID =
-      "NONE".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  private static final byte[] NONE_EXEC_ID = "NONE".getBytes(StandardCharsets.US_ASCII);
 
   /**
    * Find the length of the non-null prefix of {@code field}. SBE char fields are fixed length and
