@@ -2,6 +2,8 @@ package com.trading.engine.pricing.codec;
 
 import com.trading.engine.messages.sbe.BooleanType;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.sbe.PriceResponseEncoder;
+import com.trading.engine.messages.sbe.PriceValidationResponseEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
@@ -68,25 +70,21 @@ public final class PricingResponseEncoder {
    * supplied text bytes before passing to the SBE {@code putText} setter, which requires exactly 64
    * source bytes.
    */
-  private static final int TEXT_SCRATCH_LEN =
-      com.trading.engine.messages.sbe.PriceResponseEncoder.textLength();
+  private static final int TEXT_SCRATCH_LEN = PriceResponseEncoder.textLength();
 
   // Class-init sanity check: verify scratch buffers are large enough for all SBE char fields
   // this encoder writes. Belt-and-braces — the runtime copyField helper also checks.
   static {
     final int maxCharField =
         Math.max(
-            com.trading.engine.messages.sbe.PriceResponseEncoder.quoteReqIdLength(),
+            PriceResponseEncoder.quoteReqIdLength(),
             Math.max(
-                com.trading.engine.messages.sbe.PriceResponseEncoder.symbolLength(),
+                PriceResponseEncoder.symbolLength(),
                 Math.max(
-                    com.trading.engine.messages.sbe.PriceResponseEncoder.NoLegsEncoder
-                        .legSettlDateLength(),
+                    PriceResponseEncoder.NoLegsEncoder.legSettlDateLength(),
                     Math.max(
-                        com.trading.engine.messages.sbe.PriceResponseEncoder.NoLegsEncoder
-                            .legCurrencyLength(),
-                        com.trading.engine.messages.sbe.PriceValidationResponseEncoder
-                            .quoteIdLength()))));
+                        PriceResponseEncoder.NoLegsEncoder.legCurrencyLength(),
+                        PriceValidationResponseEncoder.quoteIdLength()))));
     if (maxCharField > CHAR_SCRATCH_LEN) {
       throw new IllegalStateException(
           "PricingResponseEncoder CHAR_SCRATCH_LEN="
@@ -94,10 +92,10 @@ public final class PricingResponseEncoder {
               + " too small for SBE char field "
               + maxCharField);
     }
-    if (com.trading.engine.messages.sbe.PriceResponseEncoder.textLength() != TEXT_SCRATCH_LEN) {
+    if (PriceResponseEncoder.textLength() != TEXT_SCRATCH_LEN) {
       throw new IllegalStateException(
           "TEXT_SCRATCH_LEN mismatch: expected="
-              + com.trading.engine.messages.sbe.PriceResponseEncoder.textLength()
+              + PriceResponseEncoder.textLength()
               + " actual="
               + TEXT_SCRATCH_LEN);
     }
@@ -121,13 +119,11 @@ public final class PricingResponseEncoder {
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
   /** SBE encoder for PriceResponse (templateId=51). */
-  private final com.trading.engine.messages.sbe.PriceResponseEncoder priceResponseEncoder =
-      new com.trading.engine.messages.sbe.PriceResponseEncoder();
+  private final PriceResponseEncoder priceResponseEncoder = new PriceResponseEncoder();
 
   /** SBE encoder for PriceValidationResponse (templateId=53). */
-  private final com.trading.engine.messages.sbe.PriceValidationResponseEncoder
-      validationResponseEncoder =
-          new com.trading.engine.messages.sbe.PriceValidationResponseEncoder();
+  private final PriceValidationResponseEncoder validationResponseEncoder =
+      new PriceValidationResponseEncoder();
 
   /** Construct a response encoder with pre-allocated flyweights and scratch buffers. */
   public PricingResponseEncoder() {}
@@ -141,10 +137,10 @@ public final class PricingResponseEncoder {
    * written with a count of zero.
    *
    * <p>When {@code accepted} is {@code false}, the caller should pass {@link
-   * com.trading.engine.messages.sbe.PriceResponseEncoder#bidPxNullValue()} (and equivalent) for the
-   * price/size/validUntil fields, and supply a meaningful {@code quoteRejectReason} and {@code
-   * text}. When {@code accepted} is {@code true}, {@code quoteRejectReason} is forced to {@link
-   * QuoteRejectReasonEnum#NULL_VAL} regardless of the caller's value.
+   * PriceResponseEncoder#bidPxNullValue()} (and equivalent) for the price/size/validUntil fields,
+   * and supply a meaningful {@code quoteRejectReason} and {@code text}. When {@code accepted} is
+   * {@code true}, {@code quoteRejectReason} is forced to {@link QuoteRejectReasonEnum#NULL_VAL}
+   * regardless of the caller's value.
    *
    * @param buffer target buffer to encode into — must have capacity for at least {@link
    *     com.trading.engine.pricing.PricingConstants#ENCODING_BUFFER_SIZE} bytes from {@code offset}
@@ -153,13 +149,13 @@ public final class PricingResponseEncoder {
    * @param qrOff byte offset within {@code quoteReqId} of the first QuoteReqID byte
    * @param symbol DirectBuffer containing the Symbol bytes (FIX tag 55, 8 bytes)
    * @param sOff byte offset within {@code symbol} of the first Symbol byte
-   * @param bidPx bid price, fixed-point 10^-8 (use {@link
-   *     com.trading.engine.messages.sbe.PriceResponseEncoder#bidPxNullValue()} when declined)
+   * @param bidPx bid price, fixed-point 10^-8 (use {@link PriceResponseEncoder#bidPxNullValue()}
+   *     when declined)
    * @param offerPx offer price, fixed-point 10^-8 (use null value when declined)
    * @param bidSize bid quantity, fixed-point 10^-8 (use null value when declined)
    * @param offerSize offer quantity, fixed-point 10^-8 (use null value when declined)
    * @param validUntil quote expiry in epoch nanos (use {@link
-   *     com.trading.engine.messages.sbe.PriceResponseEncoder#validUntilNullValue()} when declined)
+   *     PriceResponseEncoder#validUntilNullValue()} when declined)
    * @param accepted {@code true} if the pricing service produced a quote; {@code false} to decline
    * @param quoteRejectReason structured decline reason (FIX tag 658) when {@code accepted} is
    *     {@code false}; ignored when {@code accepted} is {@code true}
@@ -169,8 +165,7 @@ public final class PricingResponseEncoder {
    * @param transactTime epoch nanos timestamp (FIX tag 60)
    * @param productType FX product classification (FIX custom tag 10013)
    * @param swapPoints far-near price differential for swaps, fixed-point 10^-8 (use {@link
-   *     com.trading.engine.messages.sbe.PriceResponseEncoder#swapPointsNullValue()} for non-swap
-   *     products)
+   *     PriceResponseEncoder#swapPointsNullValue()} for non-swap products)
    * @return total encoded length in bytes (header + body + empty group header)
    */
   public int encodePriceResponse(
@@ -196,12 +191,11 @@ public final class PricingResponseEncoder {
     priceResponseEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder);
 
     // QuoteReqID (tag 131) — 20-byte fixed char field
-    copyField(
-        quoteReqId, qrOff, com.trading.engine.messages.sbe.PriceResponseEncoder.quoteReqIdLength());
+    copyField(quoteReqId, qrOff, PriceResponseEncoder.quoteReqIdLength());
     priceResponseEncoder.putQuoteReqId(charScratch, 0);
 
     // Symbol (tag 55) — 8-byte fixed char field
-    copyField(symbol, sOff, com.trading.engine.messages.sbe.PriceResponseEncoder.symbolLength());
+    copyField(symbol, sOff, PriceResponseEncoder.symbolLength());
     priceResponseEncoder.putSymbol(charScratch, 0);
 
     // Prices and sizes — fixed-point 10^-8
@@ -320,11 +314,10 @@ public final class PricingResponseEncoder {
 
     // --- Fixed-block fields (same as encodePriceResponse) ---
 
-    copyField(
-        quoteReqId, qrOff, com.trading.engine.messages.sbe.PriceResponseEncoder.quoteReqIdLength());
+    copyField(quoteReqId, qrOff, PriceResponseEncoder.quoteReqIdLength());
     priceResponseEncoder.putQuoteReqId(charScratch, 0);
 
-    copyField(symbol, sOff, com.trading.engine.messages.sbe.PriceResponseEncoder.symbolLength());
+    copyField(symbol, sOff, PriceResponseEncoder.symbolLength());
     priceResponseEncoder.putSymbol(charScratch, 0);
 
     priceResponseEncoder.bidPx(bidPx);
@@ -358,7 +351,7 @@ public final class PricingResponseEncoder {
       copyField(
           legSettlDate[i],
           legSettlDateOff[i],
-          com.trading.engine.messages.sbe.PriceResponseEncoder.NoLegsEncoder.legSettlDateLength());
+          PriceResponseEncoder.NoLegsEncoder.legSettlDateLength());
       legs.putLegSettlDate(charScratch, 0);
 
       // LegSettlType (tag 587) — optional enum
@@ -368,7 +361,7 @@ public final class PricingResponseEncoder {
       copyField(
           legCurrency[i],
           legCurrencyOff[i],
-          com.trading.engine.messages.sbe.PriceResponseEncoder.NoLegsEncoder.legCurrencyLength());
+          PriceResponseEncoder.NoLegsEncoder.legCurrencyLength());
       legs.putLegCurrency(charScratch, 0);
 
       // Per-leg prices and sizes (custom tags 10004-10007) — fixed-point 10^-8
@@ -420,10 +413,7 @@ public final class PricingResponseEncoder {
     validationResponseEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder);
 
     // QuoteID (tag 117) — 20-byte fixed char field
-    copyField(
-        quoteId,
-        qIdOff,
-        com.trading.engine.messages.sbe.PriceValidationResponseEncoder.quoteIdLength());
+    copyField(quoteId, qIdOff, PriceValidationResponseEncoder.quoteIdLength());
     validationResponseEncoder.putQuoteId(charScratch, 0);
 
     // Valid flag — BooleanType enum (custom tag 10035)

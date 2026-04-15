@@ -140,6 +140,8 @@ public final class ClusterEgressListener implements ControlledEgressListener {
       case QuoteDecoder.TEMPLATE_ID -> handleQuote(buffer, offset, timestamp);
       case OrderCreatedEventDecoder.TEMPLATE_ID -> handleOrderCreated(buffer, offset, timestamp);
       case OrderRejectedEventDecoder.TEMPLATE_ID -> handleOrderRejected(buffer, offset, timestamp);
+      // QuoteRequestReject (templateId=3) is NOT handled here — it comes from the orchestrator
+      // via stream 101 (OrchestratorResponseListener), not from the cluster egress.
       default -> {
         LOG.warn().append("Unhandled egress templateId=").append(templateId).commit();
         yield Action.CONTINUE;

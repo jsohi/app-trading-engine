@@ -140,6 +140,13 @@ public final class OrchestratorService
   private final byte[] settlCurrencyScratch = new byte[RfqState.SETTL_CURRENCY_LENGTH];
 
   /**
+   * Pre-allocated scratch for {@link #validateQuoteRequest} — used to read symbol and accountCode
+   * for empty-check validation. Sized for the largest validated field (accountCode = 16 bytes).
+   * Separate from {@link #quoteReqIdScratch} to avoid misleading reuse that could corrupt lookups.
+   */
+  private final byte[] validationScratch = new byte[RfqState.ACCOUNT_CODE_LENGTH];
+
+  /**
    * Pre-allocated UnsafeBuffer view over {@link #nosScratch} for decoding the stashed NOS to
    * extract ClOrdID (tag 11) for reject ExecutionReports. Zero allocation — wraps the existing
    * scratch.
@@ -859,8 +866,8 @@ public final class OrchestratorService
    */
   private byte[] validateQuoteRequest(final QuoteRequestDecoder decoder) {
     // Check symbol not all-zero
-    decoder.getSymbol(quoteReqIdScratch, 0); // reuse scratch
-    if (isAllZero(quoteReqIdScratch, RfqState.SYMBOL_LENGTH)) {
+    decoder.getSymbol(validationScratch, 0);
+    if (isAllZero(validationScratch, RfqState.SYMBOL_LENGTH)) {
       validationFailureReason = QuoteRejectReasonEnum.UnknownSymbol;
       return TEXT_INVALID_SYMBOL;
     }
@@ -875,8 +882,8 @@ public final class OrchestratorService
       return TEXT_INVALID_SIDE;
     }
     // Check accountCode not all-zero
-    decoder.getAccountCode(quoteReqIdScratch, 0); // reuse scratch
-    if (isAllZero(quoteReqIdScratch, RfqState.ACCOUNT_CODE_LENGTH)) {
+    decoder.getAccountCode(validationScratch, 0);
+    if (isAllZero(validationScratch, RfqState.ACCOUNT_CODE_LENGTH)) {
       validationFailureReason = QuoteRejectReasonEnum.Other;
       return TEXT_INVALID_ACCOUNT;
     }
