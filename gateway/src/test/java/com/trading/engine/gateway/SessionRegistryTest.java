@@ -206,4 +206,114 @@ class SessionRegistryTest {
     assertEquals(0, registry.sweepStaleCorrelations());
     assertEquals(1, registry.correlationCount());
   }
+
+  // ===========================================================================
+  // TTL-based correlation expiry
+  // ===========================================================================
+
+  private static final long TTL_NS = 45_000_000_000L; // 45 seconds
+
+  @Test
+  void sweepExpiredCorrelations_removesEntriesOlderThanTtl() {
+    final byte[] ord1 = "ORD-TTL1".getBytes(StandardCharsets.US_ASCII);
+    final byte[] ord2 = "ORD-TTL2".getBytes(StandardCharsets.US_ASCII);
+
+    // Register both at t=1s
+    registry.registerCorrelation(ord1, 0, ord1.length, 10L, clock.nanoTime());
+    registry.registerCorrelation(ord2, 0, ord2.length, 20L, clock.nanoTime());
+    assertEquals(2, registry.correlationCount());
+
+    // Advance past TTL
+    clock.advanceNanos(TTL_NS + 1);
+
+    // Both should be expired
+    final int expired = registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS);
+    assertEquals(2, expired);
+    assertEquals(0, registry.correlationCount());
+
+    // Verify they are actually gone from correlation map
+    assertEquals(SessionLookup.NULL_SESSION, registry.findByCorrelationId(ord1, 0, ord1.length));
+    assertEquals(SessionLookup.NULL_SESSION, registry.findByCorrelationId(ord2, 0, ord2.length));
+  }
+
+  @Test
+  void sweepExpiredCorrelations_retainsRecentEntries() {
+    final byte[] old = "ORD-OLD".getBytes(StandardCharsets.US_ASCII);
+    final byte[] fresh = "ORD-FRESH".getBytes(StandardCharsets.US_ASCII);
+
+    // Register old entry at t=1s
+    registry.registerCorrelation(old, 0, old.length, 10L, clock.nanoTime());
+
+    // Advance 30s, then register fresh entry
+    clock.advanceSeconds(30);
+    registry.registerCorrelation(fresh, 0, fresh.length, 20L, clock.nanoTime());
+
+    // Advance another 20s (old = 50s old, fresh = 20s old, TTL = 45s)
+    clock.advanceSeconds(20);
+
+    final int expired = registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS);
+    assertEquals(1, expired); // only old entry expired
+
+    // Fresh entry still findable
+    assertEquals(20L, registry.findByCorrelationId(fresh, 0, fresh.length));
+    // Old entry gone
+    assertEquals(SessionLookup.NULL_SESSION, registry.findByCorrelationId(old, 0, old.length));
+  }
+
+  @Test
+  void sweepExpiredCorrelations_incrementsTtlExpiredCount() {
+    final byte[] ord = "ORD-COUNT".getBytes(StandardCharsets.US_ASCII);
+    registry.registerCorrelation(ord, 0, ord.length, 10L, clock.nanoTime());
+
+    assertEquals(0, registry.ttlExpiredCount());
+
+    clock.advanceNanos(TTL_NS + 1);
+    registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS);
+
+    assertEquals(1, registry.ttlExpiredCount());
+
+    // Register + expire another
+    registry.registerCorrelation(ord, 0, ord.length, 10L, clock.nanoTime());
+    clock.advanceNanos(TTL_NS + 1);
+    registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS);
+
+    assertEquals(2, registry.ttlExpiredCount()); // cumulative
+  }
+
+  @Test
+  void sweepExpiredCorrelations_noExpiredEntriesReturnsZero() {
+    final byte[] ord = "ORD-NOEXPIRY".getBytes(StandardCharsets.US_ASCII);
+    registry.registerCorrelation(ord, 0, ord.length, 10L, clock.nanoTime());
+
+    // Don't advance clock — entry is fresh
+    assertEquals(0, registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS));
+    assertEquals(1, registry.correlationCount());
+  }
+
+  @Test
+  void removeCorrelation_alsoRemovesTimestamp() {
+    final byte[] ord = "ORD-RM-TS".getBytes(StandardCharsets.US_ASCII);
+    registry.registerCorrelation(ord, 0, ord.length, 10L, clock.nanoTime());
+
+    // Remove the correlation
+    registry.removeCorrelation(ord, 0, ord.length);
+
+    // Advance past TTL and sweep — should find nothing (timestamp was already removed)
+    clock.advanceNanos(TTL_NS + 1);
+    assertEquals(0, registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS));
+  }
+
+  @Test
+  void sweepStaleCorrelations_alsoRemovesTimestamps() {
+    final byte[] ord = "ORD-STALE-TS".getBytes(StandardCharsets.US_ASCII);
+    // Register correlation for a session that doesn't exist (orphan)
+    registry.registerCorrelation(ord, 0, ord.length, 999L, clock.nanoTime());
+
+    // Stale sweep removes the orphan
+    assertEquals(1, registry.sweepStaleCorrelations());
+
+    // Advance past TTL and sweep — should find nothing (timestamp was cleaned by stale sweep)
+    clock.advanceNanos(TTL_NS + 1);
+    assertEquals(0, registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS));
+  }
 }
