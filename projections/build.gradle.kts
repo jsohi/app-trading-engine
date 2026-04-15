@@ -4,4 +4,5 @@ dependencies {
     implementation(libs.agrona)
     implementation(libs.gflog.api)
     runtimeOnly(libs.gflog.core)
+    testImplementation(project(":test-support"))
 }

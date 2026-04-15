@@ -10,18 +10,16 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
-import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
-import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
-import com.trading.engine.messages.sbe.OrderFilledEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
-import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
+import com.trading.engine.messages.sbe.TimeInForceEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.util.List;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -45,7 +43,7 @@ class OrderProjectionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Encoding helpers
+  // Encoding helpers — delegate to shared SbeTestEncoder
   // ---------------------------------------------------------------------------
 
   private int encodeOrderCreated(
@@ -58,26 +56,28 @@ class OrderProjectionTest {
       final long orderQty,
       final String accountCode,
       final long timestamp) {
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
-    final OrderCreatedEventEncoder enc = new OrderCreatedEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp);
-    enc.orderId(orderId);
-    enc.clOrdId(clOrdId);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.ordType(ordType);
-    enc.price(price);
-    enc.orderQty(orderQty);
-    enc.accountCode(accountCode);
-    enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260412");
-    enc.settlType(SettlTypeEnum.Regular);
-    enc.currency("USD");
-    enc.settlCurrency("USD");
-    enc.tenor(TenorEnum.SN);
-    return HDR_LEN + enc.encodedLength();
+    return SbeTestEncoder.encodeOrderCreatedEvent(
+        buf,
+        0,
+        ++seqNo,
+        timestamp,
+        orderId,
+        "",
+        clOrdId,
+        symbol,
+        side,
+        ordType,
+        TimeInForceEnum.Day,
+        price,
+        orderQty,
+        "",
+        accountCode,
+        ProductTypeEnum.Spot,
+        "20260412",
+        SettlTypeEnum.Regular,
+        "USD",
+        "USD",
+        TenorEnum.SN);
   }
 
   private int encodeOrderRejected(
@@ -87,19 +87,19 @@ class OrderProjectionTest {
       final RejectReasonEnum reason,
       final String accountCode,
       final long timestamp) {
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
-    final OrderRejectedEventEncoder enc = new OrderRejectedEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp);
-    enc.clOrdId(clOrdId);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.rejectReason(reason);
-    enc.accountCode(accountCode);
-    enc.productType(ProductTypeEnum.Spot);
-    enc.text("rejected");
-    return HDR_LEN + enc.encodedLength();
+    return SbeTestEncoder.encodeOrderRejectedEvent(
+        buf,
+        0,
+        ++seqNo,
+        timestamp,
+        clOrdId,
+        reason,
+        "rejected",
+        symbol,
+        side,
+        accountCode,
+        ProductTypeEnum.Spot,
+        "USD");
   }
 
   private int encodeOrderFilled(
@@ -114,29 +114,27 @@ class OrderProjectionTest {
       final long cumQty,
       final String accountCode,
       final long timestamp) {
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
-    final OrderFilledEventEncoder enc = new OrderFilledEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp);
-    enc.execId(execId);
-    enc.orderId(orderId);
-    enc.clOrdId(clOrdId);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.lastPx(lastPx);
-    enc.lastQty(lastQty);
-    enc.leavesQty(leavesQty);
-    enc.cumQty(cumQty);
-    enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260412");
-    enc.settlType(SettlTypeEnum.Regular);
-    enc.currency("USD");
-    enc.settlCurrency("USD");
-    enc.tenor(TenorEnum.SN);
-    enc.accountCode(accountCode);
-    enc.noLegsCount(0);
-    return HDR_LEN + enc.encodedLength();
+    return SbeTestEncoder.encodeOrderFilledEvent(
+        buf,
+        0,
+        ++seqNo,
+        timestamp,
+        execId,
+        orderId,
+        clOrdId,
+        symbol,
+        side,
+        lastPx,
+        lastQty,
+        leavesQty,
+        cumQty,
+        accountCode,
+        ProductTypeEnum.Spot,
+        "20260412",
+        SettlTypeEnum.Regular,
+        "USD",
+        "USD",
+        TenorEnum.SN);
   }
 
   private int encodeOrderCanceled(
@@ -145,18 +143,8 @@ class OrderProjectionTest {
       final String symbol,
       final SideEnum side,
       final long timestamp) {
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
-    final OrderCanceledEventEncoder enc = new OrderCanceledEventEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.sequenceNumber(++seqNo);
-    enc.timestamp(timestamp);
-    enc.orderId(orderId);
-    enc.clOrdId(clOrdId);
-    enc.origClOrdId(clOrdId);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.productType(ProductTypeEnum.Spot);
-    return HDR_LEN + enc.encodedLength();
+    return SbeTestEncoder.encodeOrderCanceledEvent(
+        buf, 0, ++seqNo, timestamp, orderId, clOrdId, clOrdId, symbol, side, ProductTypeEnum.Spot);
   }
 
   private void dispatch(final int templateId, final int totalLen) {

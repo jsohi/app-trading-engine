@@ -104,7 +104,7 @@ class ReferenceDataRegistryTest {
         CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), currencyState("USD", 840, 2));
 
     final AccountStore srcAccount = new AccountStore();
-    srcAccount.put(AccountStoreTest.makeState(1L, "ACME", "Acme", "USD"));
+    srcAccount.put(AccountFixtures.account(1L, "ACME", "Acme", "USD"));
 
     final ReferenceDataRegistry srcReg = new ReferenceDataRegistry();
     srcReg.registerStore(srcCurrency);
@@ -142,7 +142,7 @@ class ReferenceDataRegistryTest {
     currency.put(
         CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), currencyState("USD", 840, 2));
     final AccountStore account = new AccountStore();
-    account.put(AccountStoreTest.makeState(1L, "ACME", "Acme", "USD"));
+    account.put(AccountFixtures.account(1L, "ACME", "Acme", "USD"));
 
     final ReferenceDataRegistry registry = new ReferenceDataRegistry();
     registry.registerStore(currency);

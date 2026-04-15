@@ -21,6 +21,8 @@ aeron-cluster = { module = "io.aeron:aeron-cluster", version.ref = "aeron" }
 aeron-driver = { module = "io.aeron:aeron-driver", version.ref = "aeron" }
 aeron-client = { module = "io.aeron:aeron-client", version.ref = "aeron" }
 aeron-archive = { module = "io.aeron:aeron-archive", version.ref = "aeron" }
+# Reserved for integration-tests (Phase 3) and launcher tests (Phase 2) — APP-222
+aeron-test-support = { module = "io.aeron:aeron-test-support", version.ref = "aeron" }
 sbe-all = { module = "uk.co.real-logic:sbe-all", version.ref = "sbe" }
 artio-core = { module = "uk.co.real-logic:artio-core", version.ref = "artio" }
 artio-codecs = { module = "uk.co.real-logic:artio-codecs", version.ref = "artio" }

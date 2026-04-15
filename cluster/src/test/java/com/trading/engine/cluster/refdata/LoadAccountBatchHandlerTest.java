@@ -6,15 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
-import com.trading.engine.messages.sbe.AccountStatusEnum;
-import com.trading.engine.messages.sbe.AccountTypeEnum;
-import com.trading.engine.messages.sbe.AcctIDSourceEnum;
-import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.LoadAccountBatchEncoder;
-import com.trading.engine.messages.sbe.LoadAccountBatchEncoder.NoAccountsEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.AccountRecord;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -24,27 +20,9 @@ class LoadAccountBatchHandlerTest {
   private static final long FIRST_SEQ = 200L;
   private static final long TS = 1_700_000_000_000_000_000L;
 
-  /** Encode a LoadAccountBatch with the given (id, code, baseCcy) records. */
-  private static int encodeBatch(final MutableDirectBuffer dst, final Object[][] records) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadAccountBatchEncoder enc = new LoadAccountBatchEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.transactTime(0L);
-    final NoAccountsEncoder group = enc.noAccountsCount(records.length);
-    for (final Object[] r : records) {
-      group.next();
-      group.accountId((long) r[0]);
-      group.parentAccountId(0L);
-      group.accountCode((String) r[1]);
-      group.acctIdSource(AcctIDSourceEnum.Internal);
-      group.accountName("Account " + r[1]);
-      group.accountType(AccountTypeEnum.Client);
-      group.baseCurrency((String) r[2]);
-      group.status(AccountStatusEnum.Active);
-      group.complianceStatus(ComplianceStatusEnum.OK);
-      group.capabilities(AccountState.Capabilities.CAN_TRADE);
-    }
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  /** Encode a LoadAccountBatch with the given account records. */
+  private static int encodeBatch(final MutableDirectBuffer dst, final AccountRecord... records) {
+    return SbeTestEncoder.encodeLoadAccountBatch(dst, 0, 0L, records);
   }
 
   private static int dispatch(
@@ -66,11 +44,9 @@ class LoadAccountBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new Object[][] {
-              {1L, "ACME", "USD"},
-              {2L, "BIGCO", "EUR"},
-              {3L, "JPN", "JPY"},
-            });
+            new AccountRecord(1L, "ACME", "USD"),
+            new AccountRecord(2L, "BIGCO", "EUR"),
+            new AccountRecord(3L, "JPN", "JPY"));
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertTrue(totalEventBytes > 0);
@@ -106,11 +82,9 @@ class LoadAccountBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new Object[][] {
-              {1L, "ACME", "USD"}, // valid
-              {0L, "BAD", "USD"}, // invalid accountId
-              {2L, "BIGCO", "EUR"}, // valid
-            });
+            new AccountRecord(1L, "ACME", "USD"), // valid
+            new AccountRecord(0L, "BAD", "USD"), // invalid accountId
+            new AccountRecord(2L, "BIGCO", "EUR")); // valid
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertEquals(2, accountStore.size()); // ACME, BIGCO
@@ -153,7 +127,7 @@ class LoadAccountBatchHandlerTest {
     final LoadAccountBatchHandler handler = new LoadAccountBatchHandler(accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(64);
-    final int srcLength = encodeBatch(src, new Object[0][]);
+    final int srcLength = encodeBatch(src);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(64);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
 
@@ -170,11 +144,9 @@ class LoadAccountBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new Object[][] {
-              {1L, "ACME", "USD"}, // first one wins
-              {2L, "ACME", "USD"}, // duplicate code, different id — rejected
-              {3L, "BIGCO", "EUR"}, // valid
-            });
+            new AccountRecord(1L, "ACME", "USD"), // first one wins
+            new AccountRecord(2L, "ACME", "USD"), // duplicate code, different id — rejected
+            new AccountRecord(3L, "BIGCO", "EUR")); // valid
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     dispatch(handler, src, srcLength, eventDst);
 

@@ -58,6 +58,7 @@ event-logger          — Structured event logging + metrics
 sbe-typescript-generator — SBE → TypeScript code generator
 query-service         — Unified read API over projections
 launcher              — Top-level process launchers (cluster + gateway + services)
+test-support          — Shared test fixtures (SBE encode/decode, fake Aeron, clock, buffers)
 integration-tests     — End-to-end tests (FIX → cluster → response)
 web-ui                — React + AG Grid browser UI (Node project)
 ```

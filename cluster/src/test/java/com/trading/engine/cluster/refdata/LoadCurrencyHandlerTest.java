@@ -10,8 +10,8 @@ import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.LoadCurrencyEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -30,17 +30,7 @@ class LoadCurrencyHandlerTest {
       final int decimals,
       final CurrencyClassEnum cls,
       final AccountStatusEnum status) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadCurrencyEncoder encoder = new LoadCurrencyEncoder();
-    encoder.wrapAndApplyHeader(dst, 0, header);
-    encoder.ccyCode(code);
-    encoder.isoNumeric(isoNumeric);
-    encoder.name(name);
-    encoder.decimals((short) decimals);
-    encoder.currencyClass(cls);
-    encoder.status(status);
-    encoder.transactTime(0L);
-    return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    return SbeTestEncoder.encodeLoadCurrency(dst, 0, code, isoNumeric, name, decimals, cls, status);
   }
 
   private static int dispatch(

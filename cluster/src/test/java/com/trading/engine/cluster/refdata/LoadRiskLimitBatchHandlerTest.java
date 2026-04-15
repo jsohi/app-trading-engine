@@ -4,13 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.LoadRiskLimitBatchEncoder;
-import com.trading.engine.messages.sbe.LoadRiskLimitBatchEncoder.NoRiskLimitsEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
-import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
+import com.trading.engine.testsupport.sbe.RiskLimitRecord;
+import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -20,26 +19,9 @@ class LoadRiskLimitBatchHandlerTest {
   private static final long FIRST_SEQ = 300L;
   private static final long TS = 1_700_000_000_000_000_000L;
 
-  /**
-   * Encode a LoadRiskLimitBatch with the given (accountId, maxOrderSize, maxOrderNotional,
-   * maxDailyVolume, maxDailyLossBps) records.
-   */
-  private static int encodeBatch(final MutableDirectBuffer dst, final long[][] records) {
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadRiskLimitBatchEncoder enc = new LoadRiskLimitBatchEncoder();
-    enc.wrapAndApplyHeader(dst, 0, header);
-    enc.transactTime(0L);
-    final NoRiskLimitsEncoder group = enc.noRiskLimitsCount(records.length);
-    for (final long[] r : records) {
-      group.next();
-      group.accountId(r[0]);
-      group.maxOrderSize(r[1]);
-      group.maxOrderNotional(r[2]);
-      group.maxDailyVolume(r[3]);
-      group.maxDailyLossBps(r[4]);
-      group.status(AccountStatusEnum.Active);
-    }
-    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  /** Encode a LoadRiskLimitBatch with the given risk limit records. */
+  private static int encodeBatch(final MutableDirectBuffer dst, final RiskLimitRecord... records) {
+    return SbeTestEncoder.encodeLoadRiskLimitBatch(dst, 0, 0L, records);
   }
 
   private static int dispatch(
@@ -55,7 +37,7 @@ class LoadRiskLimitBatchHandlerTest {
   private static AccountStore accountStoreWith(final long... ids) {
     final AccountStore store = new AccountStore();
     for (final long id : ids) {
-      store.put(AccountStoreTest.makeState(id, "ACC" + id, "Account", "USD"));
+      store.put(AccountFixtures.account(id, "ACC" + id, "Account", "USD"));
     }
     return store;
   }
@@ -71,11 +53,9 @@ class LoadRiskLimitBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new long[][] {
-              {1L, 100_00000000L, 0L, 1000_00000000L, 50L},
-              {2L, 200_00000000L, 0L, 2000_00000000L, 100L},
-              {3L, 0L, 0L, 0L, 0L}, // unlimited
-            });
+            new RiskLimitRecord(1L, 100_00000000L, 0L, 1000_00000000L, 50L),
+            new RiskLimitRecord(2L, 200_00000000L, 0L, 2000_00000000L, 100L),
+            new RiskLimitRecord(3L, 0L, 0L, 0L, 0L)); // unlimited
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertTrue(totalEventBytes > 0);
@@ -113,11 +93,9 @@ class LoadRiskLimitBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new long[][] {
-              {1L, 100L, 0L, 1000L, 0L}, // valid
-              {2L, 200L, 0L, 2000L, 0L}, // accountId not in AccountStore
-              {3L, -1L, 0L, 1000L, 0L}, // negative limit
-            });
+            new RiskLimitRecord(1L, 100L, 0L, 1000L, 0L), // valid
+            new RiskLimitRecord(2L, 200L, 0L, 2000L, 0L), // accountId not in AccountStore
+            new RiskLimitRecord(3L, -1L, 0L, 1000L, 0L)); // negative limit
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertEquals(1, riskStore.size()); // only id 1
@@ -165,7 +143,7 @@ class LoadRiskLimitBatchHandlerTest {
         new LoadRiskLimitBatchHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(64);
-    final int srcLength = encodeBatch(src, new long[0][]);
+    final int srcLength = encodeBatch(src);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(64);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
 
