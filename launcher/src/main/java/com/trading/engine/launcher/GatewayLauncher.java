@@ -4,10 +4,14 @@ import com.trading.engine.gateway.ClusterClient;
 import com.trading.engine.gateway.ClusterEgressListener;
 import com.trading.engine.gateway.FixGateway;
 import com.trading.engine.gateway.FixToSbeTranslator;
+import com.trading.engine.gateway.GatewayIpcStreamIds;
 import com.trading.engine.gateway.InFlightTracker;
 import com.trading.engine.gateway.RejectEmitter;
 import com.trading.engine.gateway.SbeToFixTranslator;
 import com.trading.engine.gateway.SessionRegistry;
+import io.aeron.Aeron;
+import io.aeron.ExclusivePublication;
+import io.aeron.Subscription;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
@@ -123,6 +127,32 @@ public final class GatewayLauncher {
 
     fixGateway.init(clusterClient, egressListener);
 
+    // --- Orchestrator IPC wiring ---
+    // Separate Aeron client for IPC — decoupled from ClusterClient's ownsAeronClient lifecycle.
+    // ClusterClient reconnect calls closeAeronCluster() which closes its internal Aeron client;
+    // a separate IPC client ensures orchestrator streams survive cluster reconnection.
+    final Aeron ipcAeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+    try {
+      final ExclusivePublication orchRequestPub =
+          ipcAeron.addExclusivePublication(
+              "aeron:ipc", GatewayIpcStreamIds.ORCHESTRATOR_REQUEST_STREAM_ID);
+
+      final Subscription orchResponseSub =
+          ipcAeron.addSubscription(
+              "aeron:ipc",
+              GatewayIpcStreamIds.ORCHESTRATOR_RESPONSE_STREAM_ID,
+              image ->
+                  LOG.info("Orchestrator connected: streamId={}", image.subscription().streamId()),
+              image ->
+                  LOG.warn(
+                      "Orchestrator disconnected: streamId={}", image.subscription().streamId()));
+
+      fixGateway.initOrchestrator(orchRequestPub, orchResponseSub);
+    } catch (final RuntimeException e) {
+      CloseHelper.closeAll(ipcAeron, clusterClient);
+      throw e;
+    }
+
     // AgentRunner.startOnThread() calls fixGateway.onStart(), which:
     //   1. Launches the Artio FIX engine + library
     //   2. Delegates to clusterClient.onStart() (via guard flag) → connects to cluster
@@ -130,7 +160,7 @@ public final class GatewayLauncher {
     try {
       AgentRunner.startOnThread(agentRunner);
     } catch (final RuntimeException e) {
-      CloseHelper.closeAll(agentRunner, clusterClient);
+      CloseHelper.closeAll(agentRunner, clusterClient, ipcAeron);
       throw e;
     }
 
@@ -141,7 +171,7 @@ public final class GatewayLauncher {
         aeronDir,
         ingressEndpoints);
 
-    return new GatewayComponents(agentRunner, clusterClient);
+    return new GatewayComponents(agentRunner, clusterClient, ipcAeron);
   }
 
   private static void requireNonBlank(final String value, final String name) {

@@ -7,11 +7,17 @@ import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.fix.builder.ExecutionReportEncoder;
 import com.trading.engine.fix.builder.OrderCancelRejectEncoder;
 import com.trading.engine.fix.builder.QuoteEncoder;
+import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
+import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
+import io.aeron.ControlledFragmentAssembler;
+import io.aeron.ExclusivePublication;
+import io.aeron.Subscription;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
+import org.agrona.CloseHelper;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.Agent;
@@ -62,6 +68,13 @@ public final class FixGateway implements Agent {
   private static final long LOGOUT_POLL_NS = TimeUnit.SECONDS.toNanos(1);
   private static final int LIBRARY_POLL_LIMIT = 10;
 
+  /**
+   * Default correlation TTL: sum of orchestrator state timeouts (5s + 30s + 5s) + 5s margin.
+   * Correlations older than this are expired regardless of session state, protecting against
+   * orchestrator crash/stall scenarios.
+   */
+  private static final long DEFAULT_CORRELATION_TTL_NS = TimeUnit.SECONDS.toNanos(45);
+
   // --- Configuration ---
   private final String bindAddress;
   private final int port;
@@ -73,6 +86,7 @@ public final class FixGateway implements Agent {
   // --- Collaborators ---
   private ClusterClient clusterClient;
   private ClusterEgressListener egressListener;
+  private ExclusivePublication orchestratorRequestPub;
   private final SessionRegistry registry;
   private final FixToSbeTranslator fixToSbeTranslator;
   private final RejectEmitter rejectEmitter;
@@ -83,10 +97,17 @@ public final class FixGateway implements Agent {
   private final MutableAsciiBuffer sharedAsciiBuffer = new MutableAsciiBuffer(new byte[4096]);
   private final MutableDirectBuffer sharedSbeBuffer = new ExpandableDirectByteBuffer(1024);
 
-  // --- Pre-allocated FIX response encoders (for egress path) ---
+  // --- Pre-allocated FIX response encoders (for egress + orchestrator response path) ---
   private final ExecutionReportEncoder erEncoder = new ExecutionReportEncoder();
   private final OrderCancelRejectEncoder cxlRejEncoder = new OrderCancelRejectEncoder();
   private final QuoteEncoder quoteEncoder = new QuoteEncoder();
+  private final QuoteRequestRejectEncoder qrrEncoder = new QuoteRequestRejectEncoder();
+
+  // --- Orchestrator IPC (stream 101, optional — set via initOrchestrator) ---
+  private Subscription orchestratorResponseSub;
+  private OrchestratorResponseListener orchestratorResponseListener;
+  private ControlledFragmentAssembler orchestratorAssembler;
+  private SbeToFixTranslator orchestratorTranslator;
 
   // --- Artio components (created in onStart) ---
   private FixEngine engine;
@@ -105,6 +126,7 @@ public final class FixGateway implements Agent {
   private boolean clusterClientStarted;
 
   private long lastSweepNs;
+  private long correlationTtlNs = DEFAULT_CORRELATION_TTL_NS;
 
   /**
    * @param bindAddress TCP bind address for FIX connections
@@ -157,6 +179,42 @@ public final class FixGateway implements Agent {
     }
     this.clusterClient = clusterClient;
     this.egressListener = egressListener;
+  }
+
+  /**
+   * Deferred init for orchestrator IPC. Must be called before {@link #onStart()} if orchestrator
+   * routing is enabled. When not called, orchestrator features are disabled and all messages route
+   * directly to the cluster.
+   *
+   * @param orchRequestPub Aeron IPC publication for stream 100 (gateway → orchestrator)
+   * @param orchResponseSub Aeron IPC subscription for stream 101 (orchestrator → gateway)
+   */
+  public void initOrchestrator(
+      final ExclusivePublication orchRequestPub, final Subscription orchResponseSub) {
+    if (orchRequestPub == null) {
+      throw new NullPointerException("orchRequestPub");
+    }
+    if (orchResponseSub == null) {
+      throw new NullPointerException("orchResponseSub");
+    }
+    if (clusterClient == null) {
+      throw new IllegalStateException("init() must be called before initOrchestrator()");
+    }
+    this.orchestratorRequestPub = orchRequestPub;
+
+    // Separate translator for orchestrator responses (same single-threaded duty cycle)
+    this.orchestratorTranslator = new SbeToFixTranslator();
+
+    this.orchestratorResponseListener =
+        new OrchestratorResponseListener(
+            registry,
+            registry,
+            clusterClient,
+            inFlightTracker,
+            nanoClock,
+            this::onOrchestratorResponse);
+    this.orchestratorResponseSub = orchResponseSub;
+    this.orchestratorAssembler = new ControlledFragmentAssembler(orchestratorResponseListener);
   }
 
   // ===========================================================================
@@ -226,20 +284,34 @@ public final class FixGateway implements Agent {
   public int doWork() {
     int workCount = 0;
 
+    // 1. Poll orchestrator responses FIRST — Quote-to-client is the latency-sensitive last-mile.
+    // Poll limit 32 matches the orchestrator's GATEWAY_POLL_LIMIT (source rate matching).
+    if (orchestratorResponseSub != null) {
+      workCount += orchestratorResponseSub.controlledPoll(orchestratorAssembler, 32);
+    }
+
+    // 2. Poll Artio library (inbound FIX messages)
     if (library != null) {
       workCount += library.poll(LIBRARY_POLL_LIMIT);
     }
 
+    // 3. Cluster client duty cycle (egress responses, reconnection, keep-alive)
     if (clusterClient != null) {
       workCount += clusterClient.doWork();
     }
 
-    // Periodic stale correlation sweep
+    // 4. Periodic sweeps: stale correlations (disconnected sessions) + TTL expiry (orchestrator)
     final long nowNs = nanoClock.nanoTime();
     if (nowNs - lastSweepNs >= SWEEP_INTERVAL_NS) {
       final int swept = registry.sweepStaleCorrelations();
-      if (swept > 0) {
-        LOG.info().append("Swept ").append(swept).append(" stale correlations").commit();
+      final int ttlExpired = registry.sweepExpiredCorrelations(nowNs, correlationTtlNs);
+      if (swept > 0 || ttlExpired > 0) {
+        LOG.info()
+            .append("Correlation sweep: stale=")
+            .append(swept)
+            .append(" ttlExpired=")
+            .append(ttlExpired)
+            .commit();
       }
       lastSweepNs = nowNs;
     }
@@ -254,10 +326,13 @@ public final class FixGateway implements Agent {
     // Phase 1: Stop accepting new orders
     draining = true;
 
-    // Phase 2: Wait for in-flight commands to drain
+    // Phase 2: Wait for in-flight commands to drain (includes orchestrator responses)
     final long drainDeadline = nanoClock.nanoTime() + DRAIN_TIMEOUT_NS;
     while (inFlightTracker.size() > 0 && nanoClock.nanoTime() < drainDeadline) {
       int workDone = 0;
+      if (orchestratorResponseSub != null) {
+        workDone += orchestratorResponseSub.controlledPoll(orchestratorAssembler, 32);
+      }
       if (library != null) {
         workDone += library.poll(LIBRARY_POLL_LIMIT);
       }
@@ -318,6 +393,10 @@ public final class FixGateway implements Agent {
     if (engine != null) {
       engine.close();
     }
+
+    // Phase 6: Close orchestrator IPC resources
+    CloseHelper.closeAll(orchestratorResponseSub, orchestratorRequestPub);
+
     LOG.info().append("FixGateway shutdown complete").commit();
   }
 
@@ -354,6 +433,8 @@ public final class FixGateway implements Agent {
         rejectEmitter,
         sharedAsciiBuffer,
         sharedSbeBuffer,
+        nanoClock,
+        orchestratorRequestPub,
         drainingSupplier);
   }
 
@@ -417,6 +498,64 @@ public final class FixGateway implements Agent {
       // ClusterEgressListener.handleXxx — no other message can be processed until we return.
       registry.removeCorrelation(
           egressListener.lastCorrelationScratch(), 0, egressListener.lastCorrelationLen());
+      return true;
+    }
+    return false;
+  }
+
+  // ===========================================================================
+  // Orchestrator response callback (orchestrator → FIX client)
+  // ===========================================================================
+
+  /**
+   * Called by {@link OrchestratorResponseListener} when an orchestrator response arrives on stream
+   * 101. Translates SBE → FIX and sends to the correct Artio session. Handles Quote (35=S),
+   * QuoteRequestReject (35=AG), and reject ExecutionReport (35=8) from the orchestrator.
+   *
+   * @param sessionKey Artio session key identifying the target FIX session
+   * @param templateId SBE template ID of the orchestrator response message
+   * @param timestamp unused (orchestrator responses do not carry a cluster timestamp)
+   * @return {@code true} if the message was delivered or the session is gone; {@code false} if the
+   *     Artio session's send buffer is full (backpressure → ABORT)
+   */
+  boolean onOrchestratorResponse(
+      final long sessionKey, final int templateId, final long timestamp) {
+    final GatewaySession session = registry.findSession(sessionKey);
+    if (session == null || !session.isConnected()) {
+      if (session != null) {
+        registry.removeSession(sessionKey);
+      }
+      return true; // ACK — session is gone
+    }
+
+    final long position;
+    switch (templateId) {
+      case QuoteDecoder.TEMPLATE_ID -> {
+        quoteEncoder.reset();
+        orchestratorTranslator.translateQuote(
+            orchestratorResponseListener.quoteDecoder(), quoteEncoder);
+        position = session.trySend(quoteEncoder);
+      }
+      case QuoteRequestRejectDecoder.TEMPLATE_ID -> {
+        qrrEncoder.reset();
+        orchestratorTranslator.translateQuoteRequestReject(
+            orchestratorResponseListener.quoteRequestRejectDecoder(), qrrEncoder);
+        position = session.trySend(qrrEncoder);
+      }
+      case ExecutionReportDecoder.TEMPLATE_ID -> {
+        erEncoder.reset();
+        orchestratorTranslator.translateExecutionReport(
+            orchestratorResponseListener.executionReportDecoder(), erEncoder);
+        position = session.trySend(erEncoder);
+      }
+      default -> {
+        LOG.warn().append("Unknown orchestrator response templateId=").append(templateId).commit();
+        return true;
+      }
+    }
+
+    if (position >= 0) {
+      // Correlation cleanup is handled by OrchestratorResponseListener after this callback returns.
       return true;
     }
     return false;

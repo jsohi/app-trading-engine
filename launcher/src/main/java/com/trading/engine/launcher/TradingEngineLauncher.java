@@ -1,5 +1,10 @@
 package com.trading.engine.launcher;
 
+import com.trading.engine.orchestrator.OrchestratorComponents;
+import com.trading.engine.orchestrator.OrchestratorLauncher;
+import com.trading.engine.pricing.PricingComponents;
+import com.trading.engine.pricing.PricingServiceConfig;
+import com.trading.engine.pricing.PricingServiceLauncher;
 import com.trading.refdata.ClusterCommandSender;
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.ReferenceDataOrchestrator;
@@ -28,25 +33,31 @@ import org.apache.logging.log4j.Logger;
  * Top-level entry point that boots the full trading engine: media drivers, 3-node Aeron Cluster,
  * reference data loading, and the FIX gateway.
  *
- * <p><b>Startup invariant.</b> MediaDriver → Cluster → ReferenceData (await ALL acks) → Gateway.
- * The FIX acceptor must NOT bind until all reference data is confirmed loaded.
+ * <p><b>Startup invariant.</b> MediaDriver → Cluster → ReferenceData → Pricing → Orchestrator →
+ * Gateway. The FIX acceptor must NOT bind until all reference data is confirmed loaded and all IPC
+ * services are running.
  *
- * <p><b>Startup sequence (12 steps):</b>
+ * <p><b>Startup sequence (14 steps):</b>
  *
  * <ol>
  *   <li>Parse + validate config via {@link LauncherConfig#fromSystemProperties()}
  *   <li>Create log directory for per-process media driver output
  *   <li>Register shutdown hook EARLY (before any resource creation)
- *   <li>Spawn media driver processes (one per cluster node + one for gateway)
+ *   <li>Spawn media driver processes (one per cluster node + one for gateway/orchestrator/pricing)
  *   <li>Validate driver liveness via {@link Aeron#connect} with timeout
  *   <li>Build cluster member + ingress endpoint strings
  *   <li>Launch cluster nodes via {@link ClusterNodeLauncher#launch}
  *   <li>Load reference data (subsumes leader election via {@link AeronCluster#connect})
- *   <li>Launch gateway via {@link GatewayLauncher#launch}
+ *   <li>Launch pricing service via {@link PricingServiceLauncher#launch} (shares gateway media
+ *       driver)
+ *   <li>Launch orchestrator via {@link OrchestratorLauncher#launch} (shares gateway media driver)
+ *   <li>Launch gateway via {@link GatewayLauncher#launch} (with orchestrator IPC wiring)
  *   <li>Wait for gateway cluster client to reach CONNECTED state (30 s timeout)
  *   <li>Log SYSTEM_READY event with total startup time
  *   <li>Block on {@link ShutdownSignalBarrier#await()}
  * </ol>
+ *
+ * <p><b>Shutdown order.</b> Gateway → Orchestrator → Pricing → Cluster → Media Drivers.
  *
  * <p><b>Partial failure.</b> The shutdown hook is registered before any resources are created (Step
  * 3). On any failure, the exception propagates out of {@code main()}, the JVM exits, and the
@@ -105,6 +116,8 @@ public final class TradingEngineLauncher {
     final var mediaDriverProcesses = new AtomicReferenceArray<Process>(config.nodeCount() + 1);
     final var clusterNodes = new AtomicReferenceArray<ClusterComponents>(config.nodeCount());
     final var gatewayRef = new AtomicReference<GatewayComponents>();
+    final var orchestratorRef = new AtomicReference<OrchestratorComponents>();
+    final var pricingRef = new AtomicReference<PricingComponents>();
 
     final var barrier = new ShutdownSignalBarrier();
 
@@ -113,7 +126,10 @@ public final class TradingEngineLauncher {
             new Thread(
                 () -> {
                   LOG.info("Shutdown hook triggered — cleaning up in reverse order");
+                  // Shutdown order: gateway → orchestrator → pricing → cluster → media drivers
                   CloseHelper.quietClose(gatewayRef.get());
+                  CloseHelper.quietClose(orchestratorRef.get());
+                  CloseHelper.quietClose(pricingRef.get());
                   for (int i = clusterNodes.length() - 1; i >= 0; i--) {
                     CloseHelper.quietClose(clusterNodes.get(i));
                   }
@@ -180,7 +196,24 @@ public final class TradingEngineLauncher {
       loadReferenceData(aeronDirs[gwIndex], ingressEndpoints, config.accountsFile());
       LOG.info("Step 8 complete: reference data loaded in {}ms", elapsedMs(stepStart));
 
-      // ===== Step 9: Launch gateway =====
+      // ===== Step 9a: Launch pricing service =====
+      // Must use the gateway media driver aeronDir so IPC streams are shared.
+      stepStart = System.nanoTime();
+      pricingRef.set(
+          PricingServiceLauncher.launch(
+              aeronDirs[gwIndex],
+              new PricingServiceConfig("deterministic", "convex"),
+              new BackoffIdleStrategy()));
+      LOG.info("Step 9a complete: pricing service launched in {}ms", elapsedMs(stepStart));
+
+      // ===== Step 9b: Launch orchestrator =====
+      // Must use the same gateway media driver aeronDir for IPC with both pricing and gateway.
+      stepStart = System.nanoTime();
+      orchestratorRef.set(
+          OrchestratorLauncher.launch(aeronDirs[gwIndex], new BackoffIdleStrategy()));
+      LOG.info("Step 9b complete: orchestrator launched in {}ms", elapsedMs(stepStart));
+
+      // ===== Step 10: Launch gateway (with orchestrator IPC) =====
       stepStart = System.nanoTime();
       // TODO(APP-203): make idle strategy configurable via LauncherConfig
       gatewayRef.set(
@@ -190,9 +223,9 @@ public final class TradingEngineLauncher {
               aeronDirs[gwIndex],
               ingressEndpoints,
               new BackoffIdleStrategy()));
-      LOG.info("Step 9 complete: gateway thread started in {}ms", elapsedMs(stepStart));
+      LOG.info("Step 10 complete: gateway thread started in {}ms", elapsedMs(stepStart));
 
-      // ===== Step 10: Wait for gateway readiness =====
+      // ===== Step 11: Wait for gateway readiness =====
       // AgentRunner.startOnThread() only spawns the thread — FixGateway.onStart() runs
       // asynchronously (launches Artio engine, connects ClusterClient). Poll until the
       // cluster client is connected before declaring SYSTEM_READY.
@@ -204,19 +237,19 @@ public final class TradingEngineLauncher {
         }
         Thread.sleep(100);
       }
-      LOG.info("Step 10 complete: gateway connected to cluster in {}ms", elapsedMs(stepStart));
+      LOG.info("Step 11 complete: gateway connected to cluster in {}ms", elapsedMs(stepStart));
 
     } catch (final Exception e) {
       LOG.error("Startup failed", e);
       throw e; // JVM exits main() → shutdown hook fires → orderly cleanup
     }
 
-    // ===== Step 11: SYSTEM_READY (P1-7) =====
+    // ===== Step 12: SYSTEM_READY =====
     LOG.info(
         "SYSTEM_READY: trading engine fully operational, total startup={}ms",
         elapsedMs(launchStartNs));
 
-    // ===== Step 12: Block until shutdown signal =====
+    // ===== Step 13: Block until shutdown signal =====
     barrier.await();
     LOG.info("Shutdown signal received — exiting main()");
   }

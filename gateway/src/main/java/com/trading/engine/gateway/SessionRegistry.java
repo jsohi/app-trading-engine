@@ -22,9 +22,16 @@ import org.agrona.collections.Long2ObjectHashMap;
  * <p><b>Session capacity.</b> Enforces a global maximum session count and a per-CompID maximum to
  * prevent resource exhaustion from rogue or misconfigured clients.
  *
- * <p><b>Correlation lifecycle.</b> Entries are registered on each inbound command and removed when
- * the corresponding cluster response is received (via {@link #removeCorrelation}). A periodic
- * {@link #sweepStaleCorrelations()} removes orphan entries whose session has disconnected.
+ * <p><b>Correlation lifecycle.</b> Entries are registered on each inbound command (with a monotonic
+ * timestamp) and removed when the corresponding response is received (via {@link
+ * #removeCorrelation}). Two periodic sweeps run from the gateway duty cycle:
+ *
+ * <ul>
+ *   <li>{@link #sweepStaleCorrelations()} — removes orphan entries whose session has disconnected.
+ *   <li>{@link #sweepExpiredCorrelations(long, long)} — removes entries older than a configurable
+ *       TTL, regardless of session state. This covers orchestrator crash/stall scenarios where the
+ *       session is still connected but no response will ever arrive.
+ * </ul>
  *
  * <p><b>Allocation.</b> Zero allocation after construction. Uses Agrona primitive maps throughout.
  *
@@ -49,9 +56,13 @@ public final class SessionRegistry implements SessionLookup {
   }
 
   private final Long2LongHashMap correlationMap;
+  private final Long2LongHashMap correlationTimestamps;
   private final Long2ObjectHashMap<GatewaySession> sessionsByKey;
   private final Long2LongHashMap sessionCompIdMap;
   private final Long2LongHashMap compIdSessionCount;
+
+  /** Number of correlations expired by TTL sweep since startup. */
+  private long ttlExpired;
 
   private final int maxSessions;
   private final int maxSessionsPerCompId;
@@ -73,6 +84,7 @@ public final class SessionRegistry implements SessionLookup {
     this.maxSessions = maxSessions;
     this.maxSessionsPerCompId = maxSessionsPerCompId;
     this.correlationMap = new Long2LongHashMap(correlationCapacity, 0.65f, MISSING_VALUE);
+    this.correlationTimestamps = new Long2LongHashMap(correlationCapacity, 0.65f, MISSING_VALUE);
     this.sessionsByKey = new Long2ObjectHashMap<GatewaySession>(maxSessions, 0.65f);
     this.sessionCompIdMap = new Long2LongHashMap(maxSessions, 0.65f, MISSING_VALUE);
     this.compIdSessionCount = new Long2LongHashMap(maxSessions, 0.65f, MISSING_VALUE);
@@ -94,13 +106,24 @@ public final class SessionRegistry implements SessionLookup {
   // ===========================================================================
 
   /**
-   * Register a mapping from a correlation identifier to a session key. Called by {@link
-   * FixSessionHandler} on each inbound command.
+   * Register a mapping from a correlation identifier to a session key, with a monotonic timestamp
+   * for TTL-based expiry. Called by {@link FixSessionHandler} on each inbound command.
+   *
+   * @param correlationId the ClOrdID or QuoteReqID bytes
+   * @param offset start offset within the correlation byte array
+   * @param length number of significant bytes
+   * @param sessionKey Artio session ID for response routing
+   * @param nowNs monotonic nanosecond timestamp (from {@code NanoClock.nanoTime()}) for TTL expiry
    */
   public void registerCorrelation(
-      final byte[] correlationId, final int offset, final int length, final long sessionKey) {
+      final byte[] correlationId,
+      final int offset,
+      final int length,
+      final long sessionKey,
+      final long nowNs) {
     final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
     final long existing = correlationMap.put(hash, sessionKey);
+    correlationTimestamps.put(hash, nowNs);
     if (existing != MISSING_VALUE && existing != sessionKey) {
       // Hash collision or ClOrdID reuse across sessions — log for observability.
       LOG.warn()
@@ -115,12 +138,17 @@ public final class SessionRegistry implements SessionLookup {
   }
 
   /**
-   * Remove a correlation entry. Called when a cluster response is received or the in-flight entry
-   * times out.
+   * Remove a correlation entry and its associated timestamp. Called when a response is received
+   * (from cluster or orchestrator) or when the in-flight entry times out.
+   *
+   * @param correlationId the ClOrdID or QuoteReqID bytes
+   * @param offset start offset within the correlation byte array
+   * @param length number of significant bytes
    */
   public void removeCorrelation(final byte[] correlationId, final int offset, final int length) {
     final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
     correlationMap.remove(hash);
+    correlationTimestamps.remove(hash);
   }
 
   /**
@@ -140,11 +168,45 @@ public final class SessionRegistry implements SessionLookup {
       it.next();
       final long sessionKey = it.getLongValue();
       if (!sessionsByKey.containsKey(sessionKey)) {
+        correlationTimestamps.remove(it.getLongKey());
         it.remove();
         removed++;
       }
     }
     return removed;
+  }
+
+  /**
+   * Remove correlation entries whose registration timestamp is older than the given TTL. This
+   * catches orphaned correlations from orchestrator crashes, stalls, or message loss on Aeron IPC —
+   * scenarios where the session is still connected but no response will ever arrive.
+   *
+   * <p><b>Iterator compaction.</b> Same Agrona caveat as {@link #sweepStaleCorrelations()} — missed
+   * entries are caught on the next sweep.
+   *
+   * @param nowNs current monotonic nanosecond timestamp
+   * @param ttlNs maximum age in nanoseconds; entries older than this are expired
+   * @return number of expired entries removed
+   */
+  public int sweepExpiredCorrelations(final long nowNs, final long ttlNs) {
+    int expired = 0;
+    final Long2LongHashMap.EntryIterator it = correlationTimestamps.entrySet().iterator();
+    while (it.hasNext()) {
+      it.next();
+      if (nowNs - it.getLongValue() >= ttlNs) {
+        final long hash = it.getLongKey();
+        correlationMap.remove(hash);
+        it.remove();
+        expired++;
+      }
+    }
+    ttlExpired += expired;
+    return expired;
+  }
+
+  /** Cumulative number of correlations expired by TTL sweep since startup. */
+  public long ttlExpiredCount() {
+    return ttlExpired;
   }
 
   // ===========================================================================

@@ -177,6 +177,7 @@ public final class OrchestratorService
   private long reapExpiredCount;
   private long publicationFailures;
   private long backPressureAborts;
+  private long nosForwardFailures;
 
   /**
    * Constructs the orchestrator service with all dependencies.
@@ -276,6 +277,8 @@ public final class OrchestratorService
           .append(publicationFailures)
           .append(" bpAbort=")
           .append(backPressureAborts)
+          .append(" nosFwdFail=")
+          .append(nosForwardFailures)
           .commit();
     }
 
@@ -440,9 +443,10 @@ public final class OrchestratorService
     // 1. Extract quoteId; check if empty (all 0x00 = direct order bypass)
     decoder.getQuoteId(quoteIdScratch, 0);
     if (isAllZero(quoteIdScratch, RfqState.QUOTE_ID_LENGTH)) {
-      // TODO(APP-31): forward NOS directly to cluster
-      LOG.info().append("NOS bypass (no quoteId): forwarding to cluster stub").commit();
-      return Action.CONTINUE;
+      // NOS bypass: the gateway routes NOS-without-quoteId directly to the cluster,
+      // so this path should never be reached. Defensive guard — fail loud if it is.
+      throw new IllegalStateException(
+          "NOS bypass reached orchestrator — gateway should route directly to cluster");
     }
 
     // 2. Lookup by quoteId for re-delivery or new transition
@@ -666,12 +670,19 @@ public final class OrchestratorService
       // Read the stashed NOS bytes BEFORE releasing the pool slot, which zeros the flat buffer.
       nosScratchLength = rfq.putNosInto(nosScratch, 0);
 
-      // Now release the pool slot — flat buffer is zeroed after this call
-      stateMachine.onValidationValid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      // Forward NOS to gateway (stream 101) — the gateway forwards to cluster via ClusterClient.
+      // Publish-before-mutate: offer FIRST, release pool slot only on success.
+      stashedNosView.wrap(nosScratch, 0, nosScratchLength);
+      final var nosResult = offerRawToGateway(stashedNosView, 0, nosScratchLength);
+      if (nosResult != Action.CONTINUE) {
+        // ABORT: state NOT mutated, RFQ still in PENDING_VALIDATION. On re-delivery,
+        // the validation response will be re-processed and the NOS re-forwarded.
+        return nosResult;
+      }
 
-      // TODO(APP-31): forward NOS from nosScratch[0..nosScratchLength) to cluster ingress.
-      // The NOS bytes have been pre-read into the scratch buffer above.
-      LOG.info().append("Validation passed: forwarding NOS to cluster stub").commit();
+      // Publication succeeded — now release the pool slot (state mutation)
+      stateMachine.onValidationValid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      LOG.info().append("Validation passed: NOS forwarded to gateway for cluster").commit();
       return Action.CONTINUE;
 
     } else {
@@ -922,6 +933,35 @@ public final class OrchestratorService
     LOG.warn()
         .append("Pricing publication terminal: dropping message, client will time out")
         .commit();
+    return Action.CONTINUE;
+  }
+
+  /**
+   * Offers raw fragment bytes to the gateway publication (stream 101) with bounded retries. Used
+   * for forwarding validated NOS bytes back to the gateway for cluster submission.
+   *
+   * <p>On terminal publication failure (NOT_CONNECTED, CLOSED), the NOS is dropped and the counter
+   * incremented. The FIX client's application-level timeout or the gateway's correlation TTL sweep
+   * will handle cleanup.
+   *
+   * @param buffer the fragment buffer containing the NOS SBE bytes
+   * @param offset start offset within the buffer
+   * @param length number of bytes to offer
+   * @return {@link Action#CONTINUE} on success or terminal drop, {@link Action#ABORT} on transient
+   *     back-pressure
+   */
+  private Action offerRawToGateway(final DirectBuffer buffer, final int offset, final int length) {
+    final int result = offerWithRetry(gatewayPublication, buffer, offset, length);
+    if (result > 0) {
+      return Action.CONTINUE;
+    }
+    if (result == 0) {
+      backPressureAborts++;
+      return Action.ABORT;
+    }
+    // Terminal: gateway NOT_CONNECTED, CLOSED, MAX_POSITION_EXCEEDED — drop the NOS.
+    nosForwardFailures++;
+    LOG.error().append("Gateway publication terminal: NOS forward failed").commit();
     return Action.CONTINUE;
   }
 

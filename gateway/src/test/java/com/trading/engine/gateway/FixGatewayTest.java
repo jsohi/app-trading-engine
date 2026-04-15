@@ -11,11 +11,11 @@ import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.SideEnum;
+import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +32,7 @@ class FixGatewayTest {
   private static final long SESSION_KEY = 100L;
   private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
 
+  private final ControllableNanoClock clock = new ControllableNanoClock(1_000_000_000L);
   private SessionRegistry registry;
   private SbeToFixTranslator sbeToFixTranslator;
   private InFlightTracker inFlightTracker;
@@ -64,7 +65,7 @@ class FixGatewayTest {
             new FixToSbeTranslator(),
             new RejectEmitter(),
             inFlightTracker,
-            SystemNanoClock.INSTANCE);
+            clock);
 
     // Build the egress listener with gateway's callback
     egressListener =
@@ -84,7 +85,7 @@ class FixGatewayTest {
             .reconnectMaxDelayNs(TimeUnit.SECONDS.toNanos(10))
             .maxReconnectAttempts(3)
             .errorHandler(e -> {})
-            .nanoClock(SystemNanoClock.INSTANCE)
+            .nanoClock(clock)
             .inFlightTracker(inFlightTracker)
             .build();
     gateway.init(clusterClient, egressListener);
@@ -133,8 +134,9 @@ class FixGatewayTest {
 
     // Register correlation so the egress listener can find the session
     final byte[] clOrdIdBytes = clOrdId.getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(clOrdIdBytes, 0, clOrdIdBytes.length, SESSION_KEY);
-    inFlightTracker.onCommandSent(clOrdIdBytes, 0, clOrdIdBytes.length, System.nanoTime());
+    registry.registerCorrelation(
+        clOrdIdBytes, 0, clOrdIdBytes.length, SESSION_KEY, clock.nanoTime());
+    inFlightTracker.onCommandSent(clOrdIdBytes, 0, clOrdIdBytes.length, clock.nanoTime());
 
     // Drive through egress listener (which calls gateway.onEgressMessage)
     final io.aeron.logbuffer.ControlledFragmentHandler.Action action =
@@ -208,7 +210,8 @@ class FixGatewayTest {
 
     // Register correlation
     final byte[] clOrdIdBytes = clOrdId.getBytes(StandardCharsets.US_ASCII);
-    registry.registerCorrelation(clOrdIdBytes, 0, clOrdIdBytes.length, SESSION_KEY);
+    registry.registerCorrelation(
+        clOrdIdBytes, 0, clOrdIdBytes.length, SESSION_KEY, clock.nanoTime());
 
     // Drive through egress listener
     final io.aeron.logbuffer.ControlledFragmentHandler.Action action =

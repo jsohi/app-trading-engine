@@ -3,6 +3,7 @@ package com.trading.engine.gateway;
 import com.trading.engine.fix.builder.ExecutionReportEncoder;
 import com.trading.engine.fix.builder.OrderCancelRejectEncoder;
 import com.trading.engine.fix.builder.QuoteEncoder;
+import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.CxlRejReasonEnum;
 import com.trading.engine.messages.sbe.CxlRejResponseToEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
@@ -13,6 +14,8 @@ import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
+import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
+import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -138,6 +141,15 @@ public final class SbeToFixTranslator {
       new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.accountCodeLength()];
   private final byte[] ocrText =
       new byte[com.trading.engine.messages.sbe.OrderCancelRejectDecoder.textLength()];
+
+  // QuoteRequestReject char fields (prefix "qrr"):
+  private final byte[] qrrQuoteReqId =
+      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.quoteReqIdLength()];
+  private final byte[] qrrSymbol =
+      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.symbolLength()];
+  private final byte[] qrrText =
+      new byte[com.trading.engine.messages.sbe.QuoteRequestRejectDecoder.textLength()];
+  private final byte[] qrrTransactTime = new byte[32];
 
   // OrderCreatedEvent char fields (prefix "oc" = orderCreated):
   private final byte[] ocOrderId = new byte[OrderCreatedEventDecoder.orderIdLength()];
@@ -551,6 +563,88 @@ public final class SbeToFixTranslator {
         legIdx++;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // QuoteRequestReject (35=AG)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE QuoteRequestReject (templateId=3) into the supplied Artio FIX 4.4
+   * QuoteRequestReject (35=AG) encoder. The caller must have wrapped {@code sbe} over a complete
+   * decoded QuoteRequestReject message and must populate the FIX session header on {@code fix}
+   * before calling {@code encode}.
+   *
+   * <p><b>FIX 4.4 compliance:</b> The {@code NoRelatedSym} repeating group (tag 146) is REQUIRED on
+   * QuoteRequestReject. This method emits a single group entry containing the Symbol (tag 55) from
+   * the Instrument component, with Side (tag 54) optional inside the group.
+   *
+   * <p><b>FIX tag mapping note:</b> The SBE field {@code quoteRejectReason} has SBE {@code
+   * id="658"} matching FIX tag 658 (QuoteRequestRejectReason). The SBE enum values
+   * (1=UnknownSymbol, 2=ExchangeClosed, 3=QuoteExceedsLimit, 4=TooLateToEnter, 5=InvalidPrice,
+   * 99=Other) match the FIX tag 658 value set.
+   *
+   * @param sbe the SBE decoder positioned over a complete QuoteRequestReject message
+   * @param fix the Artio FIX encoder — caller must populate the session header before {@code
+   *     encode}
+   */
+  public void translateQuoteRequestReject(
+      QuoteRequestRejectDecoder sbe, QuoteRequestRejectEncoder fix) {
+
+    // quoteReqID (tag 131) — required
+    sbe.getQuoteReqId(qrrQuoteReqId, 0);
+    fix.quoteReqID(qrrQuoteReqId, 0, trimNulls(qrrQuoteReqId));
+
+    // quoteRequestRejectReason (tag 658) — required. SBE enum value maps directly to FIX int.
+    fix.quoteRequestRejectReason(mapQuoteRejectReason(sbe.quoteRejectReason()));
+
+    // NoRelatedSym repeating group (tag 146) — REQUIRED by FIX 4.4 QuoteRequestReject.
+    // Emit 1 entry containing Symbol (via Instrument component) and optional Side.
+    final QuoteRequestRejectEncoder.RelatedSymGroupEncoder relSym = fix.relatedSymGroup(1);
+
+    // Symbol (tag 55) — required inside NoRelatedSym.Instrument
+    sbe.getSymbol(qrrSymbol, 0);
+    relSym.instrument().symbol(qrrSymbol, 0, trimNulls(qrrSymbol));
+
+    // Side (tag 54) — optional inside NoRelatedSym
+    if (sbe.side() != SideEnum.NULL_VAL) {
+      relSym.side(mapSide(sbe.side()));
+    }
+
+    // transactTime (tag 60) — optional per FIX 4.4 but always populated for client clarity.
+    int tsLen = tsEnc.encodeFrom(sbe.transactTime(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, qrrTransactTime, 0, tsLen);
+    fix.transactTime(qrrTransactTime, 0, tsLen);
+
+    // text (tag 58) — optional
+    sbe.getText(qrrText, 0);
+    int trimmed = trimNulls(qrrText);
+    if (trimmed > 0) {
+      fix.text(qrrText, 0, trimmed);
+    }
+
+    // productType (tag 10013) — APP-45 (custom tag not in stock FIX 4.4)
+  }
+
+  /**
+   * Map SBE {@link QuoteRejectReasonEnum} to FIX tag 658 (QuoteRequestRejectReason) int value. The
+   * SBE enum values align with the FIX tag 658 value set.
+   *
+   * @param sbe the SBE enum value
+   * @return the FIX int representation for tag 658
+   * @throws IllegalStateException if the enum value is NULL_VAL or unmapped
+   */
+  private static int mapQuoteRejectReason(QuoteRejectReasonEnum sbe) {
+    return switch (sbe) {
+      case UnknownSymbol -> 1;
+      case ExchangeClosed -> 2;
+      case QuoteExceedsLimit -> 3;
+      case TooLateToEnter -> 4;
+      case InvalidPrice -> 5;
+      case Other -> 99;
+      default ->
+          throw new IllegalStateException("Unsupported SBE QuoteRejectReason for FIX wire: " + sbe);
+    };
   }
 
   // ---------------------------------------------------------------------------
