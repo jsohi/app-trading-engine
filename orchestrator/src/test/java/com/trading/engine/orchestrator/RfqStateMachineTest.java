@@ -9,6 +9,7 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.PriceResponseDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,29 +26,31 @@ import org.junit.jupiter.api.Test;
  */
 class RfqStateMachineTest {
 
+  /** Small pool size — exhaustion is reachable in 4 iterations. */
   private static final int POOL_SIZE = 4;
+
+  /** Time budget (5s in nanos) before a {@code PENDING_PRICE} RFQ is reaped as expired. */
   private static final long PENDING_PRICE_TIMEOUT = 5_000_000_000L;
+
+  /** Time budget (30s in nanos) before a {@code QUOTED} RFQ is reaped as expired. */
   private static final long QUOTED_TIMEOUT = 30_000_000_000L;
+
+  /** Time budget (5s in nanos) before a {@code PENDING_VALIDATION} RFQ is reaped as expired. */
   private static final long PENDING_VALIDATION_TIMEOUT = 5_000_000_000L;
+
+  /** Arbitrary base epoch-nanos timestamp; non-zero to surface "uninitialised long" bugs. */
   private static final long NOW = 1_000_000_000L;
 
   private static final String QUOTE_REQ_ID = "QR-000000000001";
   private static final String QUOTE_ID = "QTE-00000000001";
   private static final String SYMBOL = "EURUSD";
 
-  /** Pre-padded lookup bytes matching SBE field lengths (20 bytes, null-padded). */
+  /** QuoteReqID lookup bytes pre-padded to the SBE field length (20, null-padded). */
   private static final byte[] QRID_BYTES =
-      padToSbeLength(QUOTE_REQ_ID, RfqState.QUOTE_REQ_ID_LENGTH);
+      SbeFieldUtil.zeroPad(QUOTE_REQ_ID, RfqState.QUOTE_REQ_ID_LENGTH);
 
-  private static final byte[] QID_BYTES = padToSbeLength(QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
-
-  /** Pad an ASCII string to the exact SBE field length with null bytes, matching SBE encoding. */
-  private static byte[] padToSbeLength(final String value, final int sbeLength) {
-    final byte[] padded = new byte[sbeLength];
-    final byte[] ascii = value.getBytes(StandardCharsets.US_ASCII);
-    System.arraycopy(ascii, 0, padded, 0, Math.min(ascii.length, sbeLength));
-    return padded;
-  }
+  /** QuoteID lookup bytes pre-padded to the SBE field length (20, null-padded). */
+  private static final byte[] QID_BYTES = SbeFieldUtil.zeroPad(QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
 
   private final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -138,14 +141,14 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     assertNotNull(sm.findByQuoteId(qid, 0, qid.length));
   }
 
   @Test
   void onPriceResponseRejected_transitionsToRejected_releasesSlot() {
     acquireSlot(QUOTE_REQ_ID);
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
 
     sm.onPriceResponseRejected(qrid, 0, qrid.length);
 
@@ -158,7 +161,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     final var nosBytes = new UnsafeBuffer(new byte[64]);
     final var rfq = sm.onNewOrderSingleWithQuote(qid, 0, qid.length, nosBytes, 0, 64, NOW);
 
@@ -171,9 +174,9 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
 
-    final byte[] nosData = "NOS-PAYLOAD-DATA".getBytes(StandardCharsets.US_ASCII);
+    final var nosData = "NOS-PAYLOAD-DATA".getBytes(StandardCharsets.US_ASCII);
     final var nosBuffer = new UnsafeBuffer(nosData);
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
 
     final var rfq =
         sm.onNewOrderSingleWithQuote(qid, 0, qid.length, nosBuffer, 0, nosData.length, NOW);
@@ -188,7 +191,7 @@ class RfqStateMachineTest {
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     transitionToPendingValidation(QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     sm.onValidationValid(qid, 0, qid.length);
 
     assertEquals(0, sm.activeCount());
@@ -200,7 +203,7 @@ class RfqStateMachineTest {
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     transitionToPendingValidation(QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     sm.onValidationInvalid(qid, 0, qid.length);
 
     assertEquals(0, sm.activeCount());
@@ -211,7 +214,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     sm.rejectQuoted(qid, 0, qid.length);
 
     assertEquals(0, sm.activeCount());
@@ -223,7 +226,7 @@ class RfqStateMachineTest {
 
   @Test
   void onPriceResponseAccepted_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
     assertNull(
         sm.onPriceResponseAccepted(
             unknown, 0, unknown.length, wrapPriceResponse(), new byte[20], 0, 15, NOW));
@@ -234,7 +237,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     // RFQ is now QUOTED, not PENDING_PRICE
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
     assertNull(
         sm.onPriceResponseAccepted(
             qrid, 0, qrid.length, wrapPriceResponse(), new byte[20], 0, 15, NOW));
@@ -242,7 +245,7 @@ class RfqStateMachineTest {
 
   @Test
   void onPriceResponseRejected_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
     assertNull(sm.onPriceResponseRejected(unknown, 0, unknown.length));
   }
 
@@ -250,13 +253,13 @@ class RfqStateMachineTest {
   void onPriceResponseRejected_stateIsQuoted_returnsNull() {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
     assertNull(sm.onPriceResponseRejected(qrid, 0, qrid.length));
   }
 
   @Test
   void onNewOrderSingleWithQuote_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(
         sm.onNewOrderSingleWithQuote(
             unknown, 0, unknown.length, new UnsafeBuffer(new byte[64]), 0, 64, NOW));
@@ -267,7 +270,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     // RFQ is PENDING_PRICE, not QUOTED — use quoteReqId as lookup (there's no quoteId yet)
     // But onNewOrderSingleWithQuote looks up by quoteId, so this will be not-found
-    final byte[] qid = padToSbeLength("NONEXISTENT-QID0", RfqState.QUOTE_ID_LENGTH);
+    final var qid = SbeFieldUtil.zeroPad("NONEXISTENT-QID0", RfqState.QUOTE_ID_LENGTH);
     assertNull(
         sm.onNewOrderSingleWithQuote(
             qid, 0, qid.length, new UnsafeBuffer(new byte[64]), 0, 64, NOW));
@@ -278,7 +281,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     // NOS larger than NOS_STASH_BUFFER_SIZE (512)
     final var oversizedNos = new UnsafeBuffer(new byte[1024]);
     assertNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, oversizedNos, 0, 1024, NOW));
@@ -286,7 +289,7 @@ class RfqStateMachineTest {
 
   @Test
   void onValidationValid_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(sm.onValidationValid(unknown, 0, unknown.length));
   }
 
@@ -295,13 +298,13 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     // RFQ is QUOTED, not PENDING_VALIDATION
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     assertNull(sm.onValidationValid(qid, 0, qid.length));
   }
 
   @Test
   void onValidationInvalid_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(sm.onValidationInvalid(unknown, 0, unknown.length));
   }
 
@@ -309,13 +312,13 @@ class RfqStateMachineTest {
   void onValidationInvalid_stateIsQuoted_returnsNull() {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     assertNull(sm.onValidationInvalid(qid, 0, qid.length));
   }
 
   @Test
   void rejectQuoted_notFound_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(sm.rejectQuoted(unknown, 0, unknown.length));
   }
 
@@ -324,7 +327,7 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     // RFQ is PENDING_PRICE — rejectQuoted expects QUOTED
     // But rejectQuoted looks up by quoteId (not quoteReqId), so this is not-found
-    final byte[] qid = padToSbeLength("NO-SUCH-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var qid = SbeFieldUtil.zeroPad("NO-SUCH-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(sm.rejectQuoted(qid, 0, qid.length));
   }
 
@@ -335,13 +338,13 @@ class RfqStateMachineTest {
   @Test
   void findByQuoteReqId_existingEntry_returnsRfq() {
     acquireSlot(QUOTE_REQ_ID);
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
     assertNotNull(sm.findByQuoteReqId(qrid, 0, qrid.length));
   }
 
   @Test
   void findByQuoteReqId_missingEntry_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QR-ID000", RfqState.QUOTE_REQ_ID_LENGTH);
     assertNull(sm.findByQuoteReqId(unknown, 0, unknown.length));
   }
 
@@ -349,13 +352,13 @@ class RfqStateMachineTest {
   void findByQuoteId_existingEntry_returnsRfq() {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
-    final byte[] qid = QID_BYTES;
+    final var qid = QID_BYTES;
     assertNotNull(sm.findByQuoteId(qid, 0, qid.length));
   }
 
   @Test
   void findByQuoteId_missingEntry_returnsNull() {
-    final byte[] unknown = padToSbeLength("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
+    final var unknown = SbeFieldUtil.zeroPad("UNKNOWN-QUOTE-ID", RfqState.QUOTE_ID_LENGTH);
     assertNull(sm.findByQuoteId(unknown, 0, unknown.length));
   }
 
@@ -372,7 +375,8 @@ class RfqStateMachineTest {
     // acquireSlot advances reapCursor past the acquired slot. The incremental sweep may need
     // multiple passes to cover the full pool. Call reapExpired until the RFQ is found.
     int totalExpired = 0;
-    for (int pass = 0; pass < 3 && counter.get() == 0; pass++) {
+    // sm.capacity() is the worst-case loop bound regardless of incremental scanLimit
+    for (int pass = 0; pass < sm.capacity() && counter.get() == 0; pass++) {
       totalExpired += sm.reapExpired(expiredTime, state -> counter.incrementAndGet());
     }
     assertEquals(1, totalExpired);
@@ -397,8 +401,8 @@ class RfqStateMachineTest {
     acquireSlot(QUOTE_REQ_ID);
     final long expiredTime = NOW + PENDING_PRICE_TIMEOUT + 1;
 
-    // Multiple passes to cover the shared cursor
-    for (int pass = 0; pass < 3 && sm.activeCount() > 0; pass++) {
+    // sm.capacity() is the worst-case loop bound regardless of incremental scanLimit
+    for (int pass = 0; pass < sm.capacity() && sm.activeCount() > 0; pass++) {
       try {
         sm.reapExpired(
             expiredTime,
@@ -448,7 +452,7 @@ class RfqStateMachineTest {
     assertEquals(POOL_SIZE, sm.activeCount());
 
     // Release one slot via rejection
-    final byte[] qrid = padToSbeLength("QR-000000000000", RfqState.QUOTE_REQ_ID_LENGTH);
+    final var qrid = SbeFieldUtil.zeroPad("QR-000000000000", RfqState.QUOTE_REQ_ID_LENGTH);
     sm.onPriceResponseRejected(qrid, 0, qrid.length);
     assertEquals(POOL_SIZE - 1, sm.activeCount());
 
@@ -477,7 +481,7 @@ class RfqStateMachineTest {
   @Test
   void onPriceResponseRejected_removesFromQuoteReqIdMap() {
     acquireSlot(QUOTE_REQ_ID);
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
 
     sm.onPriceResponseRejected(qrid, 0, qrid.length);
 
@@ -490,8 +494,8 @@ class RfqStateMachineTest {
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     transitionToPendingValidation(QUOTE_ID);
 
-    final byte[] qid = QID_BYTES;
-    final byte[] qrid = QRID_BYTES;
+    final var qid = QID_BYTES;
+    final var qrid = QRID_BYTES;
     sm.onValidationValid(qid, 0, qid.length);
 
     assertNull(sm.findByQuoteId(qid, 0, qid.length));
@@ -501,11 +505,11 @@ class RfqStateMachineTest {
   @Test
   void reapExpired_removesFromMaps() {
     acquireSlot(QUOTE_REQ_ID);
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
     final long expiredTime = NOW + PENDING_PRICE_TIMEOUT + 1;
 
-    // Multiple passes to cover the shared cursor
-    for (int pass = 0; pass < 3; pass++) {
+    // sm.capacity() is the worst-case loop bound regardless of incremental scanLimit
+    for (int pass = 0; pass < sm.capacity(); pass++) {
       sm.reapExpired(expiredTime, state -> {});
     }
 
@@ -527,7 +531,7 @@ class RfqStateMachineTest {
     assertNotNull(second);
 
     // The map now points to the second slot
-    final byte[] qrid = QRID_BYTES;
+    final var qrid = QRID_BYTES;
     final var found = sm.findByQuoteReqId(qrid, 0, qrid.length);
     assertNotNull(found);
     assertEquals(second.poolIndex(), found.poolIndex());
@@ -541,10 +545,10 @@ class RfqStateMachineTest {
   // Helpers
   // ===========================================================================
 
+  /** Encodes a default QuoteRequest, wraps the decoder, and acquires a PENDING_PRICE slot. */
   private RfqState acquireSlot(final String quoteReqId) {
-    final int len =
-        SbeTestEncoder.encodeQuoteRequest(
-            buf, 0, quoteReqId, SYMBOL, SideEnum.Buy, 100_000_000L, "ACCT001");
+    SbeTestEncoder.encodeQuoteRequest(
+        buf, 0, quoteReqId, SYMBOL, SideEnum.Buy, 100_000_000L, "ACCT001");
     headerDecoder.wrap(buf, 0);
     quoteReqDecoder.wrap(
         buf,
@@ -554,23 +558,30 @@ class RfqStateMachineTest {
     return sm.onQuoteRequest(quoteReqDecoder, NOW);
   }
 
+  /** Applies a price-accepted response, advancing the RFQ from PENDING_PRICE to QUOTED. */
   private RfqState acceptPrice(final String quoteReqId, final String quoteId) {
-    final byte[] qrid = padToSbeLength(quoteReqId, RfqState.QUOTE_REQ_ID_LENGTH);
-    final byte[] qid = padToSbeLength(quoteId, RfqState.QUOTE_ID_LENGTH);
+    final var qrid = SbeFieldUtil.zeroPad(quoteReqId, RfqState.QUOTE_REQ_ID_LENGTH);
+    final var qid = SbeFieldUtil.zeroPad(quoteId, RfqState.QUOTE_ID_LENGTH);
     return sm.onPriceResponseAccepted(
         qrid, 0, RfqState.QUOTE_REQ_ID_LENGTH, wrapPriceResponse(), qid, 0, qid.length, NOW);
   }
 
+  /**
+   * Transitions the RFQ identified by {@code quoteId} from QUOTED to PENDING_VALIDATION. Asserts
+   * the transition succeeded so callers fail fast if the state machine rejects the input.
+   */
   private void transitionToPendingValidation(final String quoteId) {
-    final byte[] qid = padToSbeLength(quoteId, RfqState.QUOTE_ID_LENGTH);
+    final var qid = SbeFieldUtil.zeroPad(quoteId, RfqState.QUOTE_ID_LENGTH);
     final var nosBuffer = new UnsafeBuffer(new byte[64]);
-    sm.onNewOrderSingleWithQuote(qid, 0, RfqState.QUOTE_ID_LENGTH, nosBuffer, 0, 64, NOW);
+    final var transitioned =
+        sm.onNewOrderSingleWithQuote(qid, 0, RfqState.QUOTE_ID_LENGTH, nosBuffer, 0, 64, NOW);
+    assertNotNull(transitioned, "expected QUOTED→PENDING_VALIDATION to succeed for " + quoteId);
   }
 
+  /** Encodes a default accepted PriceResponse and returns the wrapped decoder. */
   private PriceResponseDecoder wrapPriceResponse() {
-    final int len =
-        SbeTestEncoder.encodePriceResponse(
-            buf, 0, QUOTE_REQ_ID, SYMBOL, true, 110_000_000L, 111_000_000L, NOW);
+    SbeTestEncoder.encodePriceResponse(
+        buf, 0, QUOTE_REQ_ID, SYMBOL, true, 110_000_000L, 111_000_000L, NOW);
     headerDecoder.wrap(buf, 0);
     priceRespDecoder.wrap(
         buf,

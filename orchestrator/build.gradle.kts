@@ -12,7 +12,9 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-// Ensure no logging frameworks leak in via transitive dependencies
+// Per CLAUDE.md "Logging" section: zero-alloc hot path uses GFLog only. Exclude infra logging
+// frameworks (Log4j2, SLF4J, Disruptor) so transitive dependencies cannot smuggle them onto the
+// orchestrator runtime classpath.
 configurations.runtimeClasspath {
     exclude(group = "org.apache.logging.log4j")
     exclude(group = "org.slf4j")
