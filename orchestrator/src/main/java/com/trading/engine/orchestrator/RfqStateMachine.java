@@ -101,6 +101,13 @@ public final class RfqStateMachine {
   private int reapCursor;
 
   /**
+   * Pre-allocated scratch for reading the inbound quoteReqId from the QuoteRequest decoder during
+   * the in-band duplicate-detection check in {@link #onQuoteRequest}. Sized to the SBE field width.
+   * Zero-allocation per call.
+   */
+  private final byte[] quoteReqIdProbeScratch = new byte[RfqState.QUOTE_REQ_ID_LENGTH];
+
+  /**
    * Constructs the state machine with a pre-allocated pool of the given capacity.
    *
    * @param maxActiveRfqs maximum number of concurrently active RFQs (pool size)
@@ -161,11 +168,28 @@ public final class RfqStateMachine {
    * Populates the slot from the QuoteRequest decoder and inserts the quoteReqId into the lookup
    * map.
    *
+   * <p><b>In-band duplicate detection.</b> If a non-terminal RFQ already exists with the same
+   * quoteReqId (any of {@code PENDING_PRICE}, {@code QUOTED}, {@code PENDING_VALIDATION}), this
+   * method returns {@code null} without acquiring a slot. The {@code OrchestratorService} also
+   * performs this check before invoking the state machine (for the re-delivery fast-path), but
+   * defending here closes the gap if a future caller bypasses the orchestrator (e.g., a different
+   * agent implementation, an integration test). Returning {@code null} matches the established
+   * "transition rejected" contract.
+   *
    * @param decoder the pre-wrapped QuoteRequest decoder — must not be retained past this call
    * @param nowNanos current monotonic time from NanoClock
-   * @return the acquired RfqState, or {@code null} if the pool is exhausted
+   * @return the acquired RfqState, or {@code null} if the pool is exhausted OR a non-terminal RFQ
+   *     with the same quoteReqId already exists
    */
   public RfqState onQuoteRequest(final QuoteRequestDecoder decoder, final long nowNanos) {
+    // In-band duplicate detection: read quoteReqId, probe the map, reject if a non-terminal RFQ
+    // already holds it. Zero-alloc: probe key + scratch byte[] are pre-allocated.
+    decoder.getQuoteReqId(quoteReqIdProbeScratch, 0);
+    final var existing = probeByQuoteReqId(quoteReqIdProbeScratch, 0, RfqState.QUOTE_REQ_ID_LENGTH);
+    if (existing != null && existing.isActive()) {
+      return null;
+    }
+
     final var slot = acquireSlot();
     if (slot == null) {
       return null;
@@ -267,7 +291,8 @@ public final class RfqStateMachine {
    * @param nosLength byte length of the NOS fragment
    * @param nowNanos current monotonic time
    * @return the RfqState if transition succeeded, or {@code null} if not found, wrong state, or NOS
-   *     too large
+   *     too large. <b>NOS-too-large path:</b> the RFQ slot is released in-band (transitioned to
+   *     {@code REJECTED} and removed from the lookup maps) — no caller intervention needed.
    */
   public RfqState onNewOrderSingleWithQuote(
       final byte[] quoteIdBytes,
@@ -300,6 +325,12 @@ public final class RfqStateMachine {
           .append(" poolIndex=")
           .append(rfq.poolIndex())
           .commit();
+      // C.0b: in-band slot release. The RFQ can never complete (the same NOS will fail again on
+      // any retry), so transition to REJECTED and release the slot here rather than leaking it
+      // until the QUOTED timeout reaper runs. Mirrors the explicit rejectQuoted contract.
+      rfq.setState(RfqState.State.REJECTED);
+      removeFromMaps(rfq);
+      releaseSlot(rfq);
       return null;
     }
 

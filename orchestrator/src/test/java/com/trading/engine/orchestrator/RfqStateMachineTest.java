@@ -277,14 +277,22 @@ class RfqStateMachineTest {
   }
 
   @Test
-  void onNewOrderSingleWithQuote_nosTooLarge_returnsNull() {
+  void onNewOrderSingleWithQuote_nosTooLarge_returnsNullAndReleasesSlotInBand() {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
+    assertEquals(1, sm.activeCount());
 
     final var qid = QID_BYTES;
+    final var qrid = QRID_BYTES;
     // NOS larger than NOS_STASH_BUFFER_SIZE (512)
     final var oversizedNos = new UnsafeBuffer(new byte[1024]);
     assertNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, oversizedNos, 0, 1024, NOW));
+
+    // C.0b: slot is released in-band; lookup maps are cleaned; activeCount drops to 0. Caller
+    // (OrchestratorService) must NOT also call rejectQuoted — that would double-release.
+    assertEquals(0, sm.activeCount());
+    assertNull(sm.findByQuoteId(qid, 0, qid.length));
+    assertNull(sm.findByQuoteReqId(qrid, 0, qrid.length));
   }
 
   @Test
@@ -517,28 +525,42 @@ class RfqStateMachineTest {
   }
 
   // ===========================================================================
-  // Duplicate quoteReqId behavior
+  // Duplicate quoteReqId — in-band rejection (C.0a hardening)
   // ===========================================================================
 
   @Test
-  void onQuoteRequest_duplicateQuoteReqId_overwritesMapEntry_orphansFirstSlot() {
+  void onQuoteRequest_duplicateActiveQuoteReqId_returnsNull() {
+    // First acquire succeeds and registers the quoteReqId in the lookup map.
     final var first = acquireSlot(QUOTE_REQ_ID);
     assertNotNull(first);
-    final int firstIndex = first.poolIndex();
+    assertEquals(1, sm.activeCount());
 
-    // Acquire second slot with same quoteReqId — silent map overwrite
+    // Second acquire with the SAME quoteReqId is rejected in-band:
+    // RfqStateMachine.onQuoteRequest now probes byQuoteReqId before acquiring a slot and returns
+    // null if a non-terminal RFQ already holds that key. No second slot is consumed; activeCount
+    // stays at 1; the map entry continues to point at the first slot.
     final var second = acquireSlot(QUOTE_REQ_ID);
-    assertNotNull(second);
+    assertNull(second);
+    assertEquals(1, sm.activeCount());
 
-    // The map now points to the second slot
     final var qrid = QRID_BYTES;
     final var found = sm.findByQuoteReqId(qrid, 0, qrid.length);
     assertNotNull(found);
-    assertEquals(second.poolIndex(), found.poolIndex());
+    assertEquals(first.poolIndex(), found.poolIndex());
+  }
 
-    // First slot is orphaned (still active, but not findable by quoteReqId)
-    // It will only be reclaimed by the timeout reaper
-    assertEquals(2, sm.activeCount());
+  @Test
+  void onQuoteRequest_duplicateAfterTerminal_succeeds() {
+    // After an RFQ reaches a terminal state (REJECTED here) and its slot is released, the same
+    // quoteReqId can be re-acquired — the duplicate check only blocks active (non-terminal) RFQs.
+    final var first = acquireSlot(QUOTE_REQ_ID);
+    assertNotNull(first);
+    sm.onPriceResponseRejected(QRID_BYTES, 0, QRID_BYTES.length);
+    assertEquals(0, sm.activeCount());
+
+    final var second = acquireSlot(QUOTE_REQ_ID);
+    assertNotNull(second);
+    assertEquals(1, sm.activeCount());
   }
 
   // ===========================================================================

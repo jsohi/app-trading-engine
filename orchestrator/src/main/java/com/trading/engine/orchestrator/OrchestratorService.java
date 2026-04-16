@@ -18,7 +18,6 @@ import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.orchestrator.codec.GatewayMessageDispatcher;
 import com.trading.engine.orchestrator.codec.OrchestratorMessageEncoder;
 import com.trading.engine.orchestrator.codec.PricingResponseDispatcher;
-import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
@@ -104,9 +103,9 @@ public final class OrchestratorService
 
   // --- Injected dependencies (all final, all non-null) ---
   private final Subscription gatewaySubscription;
-  private final ExclusivePublication gatewayPublication;
+  private final Publisher gatewayPublisher;
   private final Subscription pricingSubscription;
-  private final ExclusivePublication pricingPublication;
+  private final Publisher pricingPublisher;
   private final RfqStateMachine stateMachine;
   private final OrchestratorIdGenerator quoteIdGenerator;
   private final OrchestratorMessageEncoder encoder;
@@ -190,9 +189,11 @@ public final class OrchestratorService
    * Constructs the orchestrator service with all dependencies.
    *
    * @param gatewaySubscription inbound from gateway (stream 100)
-   * @param gatewayPublication outbound to gateway (stream 101)
+   * @param gatewayPublisher outbound to gateway (stream 101); see {@link Publisher} for the binding
+   *     idiom (e.g. {@code gatewayPublication::offer})
    * @param pricingSubscription inbound from pricing (stream 201)
-   * @param pricingPublication outbound to pricing (stream 200)
+   * @param pricingPublisher outbound to pricing (stream 200); see {@link Publisher} for the binding
+   *     idiom (e.g. {@code pricingPublication::offer})
    * @param stateMachine the RFQ state machine and pool
    * @param quoteIdGenerator the quote ID generator (prefix "QTE")
    * @param encoder the SBE message encoder
@@ -202,9 +203,9 @@ public final class OrchestratorService
    */
   public OrchestratorService(
       final Subscription gatewaySubscription,
-      final ExclusivePublication gatewayPublication,
+      final Publisher gatewayPublisher,
       final Subscription pricingSubscription,
-      final ExclusivePublication pricingPublication,
+      final Publisher pricingPublisher,
       final RfqStateMachine stateMachine,
       final OrchestratorIdGenerator quoteIdGenerator,
       final OrchestratorMessageEncoder encoder,
@@ -213,9 +214,9 @@ public final class OrchestratorService
       final long sweepIntervalNanos) {
 
     this.gatewaySubscription = Objects.requireNonNull(gatewaySubscription, "gatewaySubscription");
-    this.gatewayPublication = Objects.requireNonNull(gatewayPublication, "gatewayPublication");
+    this.gatewayPublisher = Objects.requireNonNull(gatewayPublisher, "gatewayPublisher");
     this.pricingSubscription = Objects.requireNonNull(pricingSubscription, "pricingSubscription");
-    this.pricingPublication = Objects.requireNonNull(pricingPublication, "pricingPublication");
+    this.pricingPublisher = Objects.requireNonNull(pricingPublisher, "pricingPublisher");
     this.stateMachine = Objects.requireNonNull(stateMachine, "stateMachine");
     this.quoteIdGenerator = Objects.requireNonNull(quoteIdGenerator, "quoteIdGenerator");
     this.encoder = Objects.requireNonNull(encoder, "encoder");
@@ -308,9 +309,10 @@ public final class OrchestratorService
     // Full reap: transition ALL active RFQs to EXPIRED, publish notifications
     stateMachine.reapAll(nanoClock.nanoTime(), reapCallback);
 
-    // Close subscriptions first (stop ingest), then publications (stop outbound)
-    CloseHelper.closeAll(
-        gatewaySubscription, pricingSubscription, gatewayPublication, pricingPublication);
+    // Publisher SAMs are not Closeable; the underlying ExclusivePublication lifecycle is owned by
+    // OrchestratorComponents (see OrchestratorComponents.close()). Here we only close the
+    // subscriptions (stop ingest); outbound publications close after the agent has fully drained.
+    CloseHelper.closeAll(gatewaySubscription, pricingSubscription);
 
     LOG.info().append("Orchestrator shutdown complete").commit();
   }
@@ -547,8 +549,8 @@ public final class OrchestratorService
       if (gwResult != Action.CONTINUE) {
         return gwResult;
       }
-      // Release pool slot immediately — the RFQ can never complete (NOS always too large)
-      stateMachine.rejectQuoted(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      // Pool slot was released in-band by RfqStateMachine.onNewOrderSingleWithQuote on the
+      // NOS-too-large path (C.0b). No additional rejectQuoted() call needed here.
       return Action.CONTINUE;
     }
 
@@ -861,10 +863,13 @@ public final class OrchestratorService
    * <p>Checks: symbol not empty, orderQty > 0, side valid, accountCode not empty. Deeper validation
    * (credit, whitelist, permissions, market hours) is tracked in APP-215.
    *
+   * <p><b>Visible for testing</b> (package-private). Not part of the public API; use only via
+   * {@link #onQuoteRequest}.
+   *
    * @param decoder the pre-wrapped QuoteRequest decoder
    * @return pre-allocated reject text byte array, or {@code null} if validation passes
    */
-  private byte[] validateQuoteRequest(final QuoteRequestDecoder decoder) {
+  byte[] validateQuoteRequest(final QuoteRequestDecoder decoder) {
     // Check symbol not all-zero
     decoder.getSymbol(validationScratch, 0);
     if (isAllZero(validationScratch, RfqState.SYMBOL_LENGTH)) {
@@ -890,6 +895,23 @@ public final class OrchestratorService
     return null;
   }
 
+  /**
+   * Returns the validation failure reason from the most recent {@link #validateQuoteRequest}
+   * invocation. <b>Visible for testing</b> (package-private). Not part of the public API.
+   */
+  QuoteRejectReasonEnum lastValidationFailureReason() {
+    return validationFailureReason;
+  }
+
+  /**
+   * Returns the cached reap callback captured at construction. <b>Visible for testing</b>
+   * (package-private). Not part of the public API; tests use this to verify the callback is
+   * captured once and never reassigned (per the zero-allocation duty-cycle contract).
+   */
+  RfqStateMachine.ReapCallback reapCallbackForTesting() {
+    return reapCallback;
+  }
+
   // ===========================================================================
   // Publication helpers
   // ===========================================================================
@@ -908,7 +930,7 @@ public final class OrchestratorService
    *     back-pressure
    */
   private Action offerToGateway(final int encodedLength) {
-    final int result = offerWithRetry(gatewayPublication, encodingBuffer, 0, encodedLength);
+    final int result = offerWithRetry(gatewayPublisher, encodingBuffer, 0, encodedLength);
     if (result > 0) {
       return Action.CONTINUE;
     }
@@ -932,7 +954,7 @@ public final class OrchestratorService
    * (drop the message — the client will time out).
    */
   private Action offerToPricingOrAbort(final int encodedLength) {
-    final int result = offerWithRetry(pricingPublication, encodingBuffer, 0, encodedLength);
+    final int result = offerWithRetry(pricingPublisher, encodingBuffer, 0, encodedLength);
     if (result > 0) {
       return Action.CONTINUE;
     }
@@ -965,7 +987,7 @@ public final class OrchestratorService
    *     terminal failure
    */
   private Action offerRawToGateway(final DirectBuffer buffer, final int offset, final int length) {
-    final int result = offerWithRetry(gatewayPublication, buffer, offset, length);
+    final int result = offerWithRetry(gatewayPublisher, buffer, offset, length);
     if (result > 0) {
       return Action.CONTINUE;
     }
@@ -992,13 +1014,10 @@ public final class OrchestratorService
    * </ul>
    */
   private int offerWithRetry(
-      final ExclusivePublication publication,
-      final DirectBuffer buffer,
-      final int offset,
-      final int length) {
+      final Publisher publisher, final DirectBuffer buffer, final int offset, final int length) {
 
     for (int attempt = 0; attempt < MAX_PUBLICATION_RETRIES; attempt++) {
-      final long result = publication.offer(buffer, offset, length);
+      final long result = publisher.publish(buffer, offset, length);
       if (result >= 0) {
         return 1;
       }
