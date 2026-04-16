@@ -17,6 +17,7 @@ import com.trading.engine.messages.sbe.QuoteRequestDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.orchestrator.codec.OrchestratorMessageEncoder;
+import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.aeron.Subscription;
 import org.agrona.ExpandableArrayBuffer;
@@ -156,14 +157,7 @@ class OrchestratorServicePartialTest {
         encodeQuoteRequest(QUOTE_REQ_ID, SYMBOL, SideEnum.Buy, ORDER_QTY, ACCOUNT);
     assertNotNull(sm.onQuoteRequest(quoteReqDec, NOW));
 
-    // Act: advance time past the PENDING_PRICE timeout and trigger the captured reap callback
-    final long expiredAt = NOW + PENDING_PRICE_TIMEOUT + 1;
-    final var callback = service.reapCallbackForTesting();
-    int totalReaped = 0;
-    for (int pass = 0; pass < sm.capacity() && totalReaped == 0; pass++) {
-      totalReaped += sm.reapExpired(expiredAt, callback);
-    }
-    assertEquals(1, totalReaped);
+    expireOneRfq(NOW + PENDING_PRICE_TIMEOUT + 1);
 
     // Assert: gateway received exactly one QuoteRequestReject (templateId 3) with reason
     // TooLateToEnter and "RFQ expired" text. Pricing publisher untouched.
@@ -188,23 +182,10 @@ class OrchestratorServicePartialTest {
     // Arrange: drive the RFQ from PENDING_PRICE → QUOTED → PENDING_VALIDATION with a stashed NOS
     final var quoteReqDec =
         encodeQuoteRequest(QUOTE_REQ_ID, SYMBOL, SideEnum.Buy, ORDER_QTY, ACCOUNT);
-    final var rfq = sm.onQuoteRequest(quoteReqDec, NOW);
-    assertNotNull(rfq);
+    assertNotNull(sm.onQuoteRequest(quoteReqDec, NOW));
 
-    final byte[] qrid = new byte[RfqState.QUOTE_REQ_ID_LENGTH];
-    System.arraycopy(
-        QUOTE_REQ_ID.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-        0,
-        qrid,
-        0,
-        QUOTE_REQ_ID.length());
-    final byte[] qid = new byte[RfqState.QUOTE_ID_LENGTH];
-    System.arraycopy(
-        QUOTE_ID.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-        0,
-        qid,
-        0,
-        QUOTE_ID.length());
+    final var qrid = SbeFieldUtil.zeroPad(QUOTE_REQ_ID, RfqState.QUOTE_REQ_ID_LENGTH);
+    final var qid = SbeFieldUtil.zeroPad(QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
 
     SbeTestEncoder.encodePriceResponse(
         scratch, 0, QUOTE_REQ_ID, SYMBOL, true, BID_PX, OFFER_PX, NOW);
@@ -223,14 +204,7 @@ class OrchestratorServicePartialTest {
     final int nosLen = encodeNos(nosBuf);
     assertNotNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, nosBuf, 0, nosLen, NOW));
 
-    // Act: expire the PENDING_VALIDATION RFQ via the captured reap callback
-    final long expiredAt = NOW + PENDING_VALIDATION_TIMEOUT + 1;
-    final var callback = service.reapCallbackForTesting();
-    int totalReaped = 0;
-    for (int pass = 0; pass < sm.capacity() && totalReaped == 0; pass++) {
-      totalReaped += sm.reapExpired(expiredAt, callback);
-    }
-    assertEquals(1, totalReaped);
+    expireOneRfq(NOW + PENDING_VALIDATION_TIMEOUT + 1);
 
     // Assert: gateway received exactly one ExecutionReport (template 5) with execType=Rejected
     // and ClOrdID extracted from the stashed NOS
@@ -284,6 +258,21 @@ class OrchestratorServicePartialTest {
    */
   private static Subscription unusedSubscription() {
     return (Subscription) UnsafeApi.allocateInstance(Subscription.class);
+  }
+
+  /**
+   * Drives the captured reap callback past the supplied expiry timestamp until exactly one RFQ is
+   * reaped. Asserts the count so callers can focus on the published-message assertions. Multiple
+   * passes are required because {@code reapExpired} uses an incremental cursor that may need to
+   * wrap to find the slot.
+   */
+  private void expireOneRfq(final long expiredAt) {
+    final var callback = service.reapCallbackForTesting();
+    int totalReaped = 0;
+    for (int pass = 0; pass < sm.capacity() && totalReaped == 0; pass++) {
+      totalReaped += sm.reapExpired(expiredAt, callback);
+    }
+    assertEquals(1, totalReaped);
   }
 
   /** Encodes a QuoteRequest into the scratch buffer and returns the wrapped decoder. */

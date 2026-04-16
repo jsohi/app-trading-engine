@@ -2,6 +2,7 @@ package com.trading.engine.gateway;
 
 import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeExecutionReport;
 import static com.trading.engine.testsupport.sbe.SbeTestEncoder.encodeExecutionReport;
+import static com.trading.engine.testsupport.sbe.SbeTestEncoder.encodeQuoteRequestReject;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -9,13 +10,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.fix.builder.ExecutionReportEncoder;
 import com.trading.engine.fix.builder.HeaderEncoder;
+import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.fix.decoder_flyweight.ExecutionReportDecoder;
+import com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -668,20 +672,17 @@ class SbeToFixTranslatorTest {
   void translateQuoteRequestReject_minimalFields_omitsOptionals() {
     // Required-only QRR: quoteReqId + reason + symbol + transactTime; side=NULL_VAL, text="".
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    encodeQrr(
+    encodeQuoteRequestReject(
         sbeBuf,
+        0,
         "QR-MIN",
-        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol,
+        QuoteRejectReasonEnum.UnknownSymbol,
         "EURUSD",
         SideEnum.NULL_VAL,
         "",
         QRR_TS_NANOS);
 
-    final var sbeDec = wrapQrrDecoder(sbeBuf);
-    final var fix = newQrrEncoder();
-    new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
-
-    final var fixDec = encodeAndDecodeQrr(fix);
+    final var fixDec = translateAndDecode(sbeBuf);
     assertEquals("QR-MIN", fixDec.quoteReqIDAsString());
     assertEquals(1, fixDec.quoteRequestRejectReason()); // UnknownSymbol → 1
 
@@ -702,20 +703,17 @@ class SbeToFixTranslatorTest {
   @Test
   void translateQuoteRequestReject_allFields_populatesEverything() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    encodeQrr(
+    encodeQuoteRequestReject(
         sbeBuf,
+        0,
         "QR-ALL",
-        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.InvalidPrice,
+        QuoteRejectReasonEnum.InvalidPrice,
         "USDJPY",
         SideEnum.Sell,
         "Outside band",
         QRR_TS_NANOS);
 
-    final var sbeDec = wrapQrrDecoder(sbeBuf);
-    final var fix = newQrrEncoder();
-    new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
-
-    final var fixDec = encodeAndDecodeQrr(fix);
+    final var fixDec = translateAndDecode(sbeBuf);
     assertEquals("QR-ALL", fixDec.quoteReqIDAsString());
     assertEquals(5, fixDec.quoteRequestRejectReason()); // InvalidPrice → 5
 
@@ -734,23 +732,21 @@ class SbeToFixTranslatorTest {
 
   @Test
   void translateQuoteRequestReject_allReasons_mapToFixTag658Correctly() {
-    record Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum sbe, int fix) {}
+    record Mapping(QuoteRejectReasonEnum sbe, int fix) {}
     final var mappings =
         new Mapping[] {
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol, 1),
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.ExchangeClosed, 2),
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.QuoteExceedsLimit, 3),
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.TooLateToEnter, 4),
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.InvalidPrice, 5),
-          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.Other, 99),
+          new Mapping(QuoteRejectReasonEnum.UnknownSymbol, 1),
+          new Mapping(QuoteRejectReasonEnum.ExchangeClosed, 2),
+          new Mapping(QuoteRejectReasonEnum.QuoteExceedsLimit, 3),
+          new Mapping(QuoteRejectReasonEnum.TooLateToEnter, 4),
+          new Mapping(QuoteRejectReasonEnum.InvalidPrice, 5),
+          new Mapping(QuoteRejectReasonEnum.Other, 99),
         };
     for (final var m : mappings) {
       final var sbeBuf = new ExpandableArrayBuffer(512);
-      encodeQrr(sbeBuf, "QR-EN", m.sbe(), "EURUSD", SideEnum.Buy, "", QRR_TS_NANOS);
-      final var sbeDec = wrapQrrDecoder(sbeBuf);
-      final var fix = newQrrEncoder();
-      new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
-      final var fixDec = encodeAndDecodeQrr(fix);
+      encodeQuoteRequestReject(
+          sbeBuf, 0, "QR-EN", m.sbe(), "EURUSD", SideEnum.Buy, "", QRR_TS_NANOS);
+      final var fixDec = translateAndDecode(sbeBuf);
       assertEquals(
           m.fix(),
           fixDec.quoteRequestRejectReason(),
@@ -764,10 +760,11 @@ class SbeToFixTranslatorTest {
     // NULL_VAL) directly. The translator's mapQuoteRejectReason() switch has no case for
     // NULL_VAL, so the default branch throws.
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    encodeQrr(
+    encodeQuoteRequestReject(
         sbeBuf,
+        0,
         "QR-NULL",
-        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.NULL_VAL,
+        QuoteRejectReasonEnum.NULL_VAL,
         "EURUSD",
         SideEnum.Buy,
         "",
@@ -791,10 +788,11 @@ class SbeToFixTranslatorTest {
 
     // Call A: long quoteReqId, populated text
     final var sbeBufA = new ExpandableArrayBuffer(512);
-    encodeQrr(
+    encodeQuoteRequestReject(
         sbeBufA,
+        0,
         "QR-LONG-1234567890AB",
-        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol,
+        QuoteRejectReasonEnum.UnknownSymbol,
         "EURUSD",
         SideEnum.Buy,
         "long reason text",
@@ -807,10 +805,11 @@ class SbeToFixTranslatorTest {
 
     // Call B: short quoteReqId, empty text — second call must not carry over stale tail bytes
     final var sbeBufB = new ExpandableArrayBuffer(512);
-    encodeQrr(
+    encodeQuoteRequestReject(
         sbeBufB,
+        0,
         "QR-X",
-        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.Other,
+        QuoteRejectReasonEnum.Other,
         "USDJPY",
         SideEnum.Sell,
         "",
@@ -830,26 +829,10 @@ class SbeToFixTranslatorTest {
   // QRR test helpers
   // ---------------------------------------------------------------------------
 
-  private static void encodeQrr(
-      final MutableDirectBuffer buf,
-      final String quoteReqId,
-      final com.trading.engine.messages.sbe.QuoteRejectReasonEnum reason,
-      final String symbol,
-      final SideEnum side,
-      final String text,
-      final long transactTimeNanos) {
-    final var hdr = new MessageHeaderEncoder();
-    final var enc = new com.trading.engine.messages.sbe.QuoteRequestRejectEncoder();
-    enc.wrapAndApplyHeader(buf, 0, hdr);
-    enc.quoteReqId(quoteReqId);
-    enc.quoteRejectReason(reason);
-    enc.symbol(symbol);
-    enc.side(side);
-    enc.transactTime(transactTimeNanos);
-    enc.text(text);
-    enc.productType(ProductTypeEnum.Spot);
-  }
-
+  /**
+   * Wraps the SBE buffer with the SBE QuoteRequestRejectDecoder. FQCN'd because the simple name
+   * collides with the FIX-side {@link QuoteRequestRejectDecoder} imported above.
+   */
   private static com.trading.engine.messages.sbe.QuoteRequestRejectDecoder wrapQrrDecoder(
       final MutableDirectBuffer buf) {
     final var hdr = new MessageHeaderDecoder();
@@ -859,22 +842,33 @@ class SbeToFixTranslatorTest {
     return dec;
   }
 
-  private static com.trading.engine.fix.builder.QuoteRequestRejectEncoder newQrrEncoder() {
-    final var fix = new com.trading.engine.fix.builder.QuoteRequestRejectEncoder();
+  private static QuoteRequestRejectEncoder newQrrEncoder() {
+    final var fix = new QuoteRequestRejectEncoder();
     final var hdr = fix.header();
     hdr.senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
     hdr.sendingTime("20260407-12:00:00".getBytes());
     return fix;
   }
 
-  private static com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder
-      encodeAndDecodeQrr(final com.trading.engine.fix.builder.QuoteRequestRejectEncoder fix) {
+  private static QuoteRequestRejectDecoder encodeAndDecodeQrr(final QuoteRequestRejectEncoder fix) {
     final var wire = new MutableAsciiBuffer(new byte[2048]);
     final long encoded = fix.encode(wire, 0);
     final int wireOffset = (int) (encoded >>> 32);
     final int wireLen = (int) encoded;
-    final var dec = new com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder();
+    final var dec = new QuoteRequestRejectDecoder();
     dec.decode(wire, wireOffset, wireLen);
     return dec;
+  }
+
+  /**
+   * Convenience pipeline used by the simple QRR tests: wraps the SBE buffer, runs the translator
+   * into a fresh FIX encoder, encodes to wire and decodes via Artio. The four-step verbosity is
+   * still exposed in the scratch-buffer-reuse and NULL_VAL tests where the steps must be visible.
+   */
+  private static QuoteRequestRejectDecoder translateAndDecode(final MutableDirectBuffer sbeBuf) {
+    final var sbeDec = wrapQrrDecoder(sbeBuf);
+    final var fix = newQrrEncoder();
+    new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
+    return encodeAndDecodeQrr(fix);
   }
 }

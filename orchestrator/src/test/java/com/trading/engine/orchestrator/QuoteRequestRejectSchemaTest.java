@@ -3,7 +3,10 @@ package com.trading.engine.orchestrator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
-import org.junit.jupiter.api.Test;
+import java.util.function.IntSupplier;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Compile-time guards that the SBE-generated {@link QuoteRequestRejectDecoder} preserves the
@@ -17,33 +20,21 @@ import org.junit.jupiter.api.Test;
  */
 class QuoteRequestRejectSchemaTest {
 
-  @Test
-  void quoteReqId_fieldId_is131() {
-    assertEquals(131, QuoteRequestRejectDecoder.quoteReqIdId());
+  @ParameterizedTest(name = "{0} fieldId == {1}")
+  @MethodSource("fixStandardTags")
+  void fieldId_matchesFixTag(
+      final String fieldName, final int expectedId, final IntSupplier idAccessor) {
+    assertEquals(expectedId, idAccessor.getAsInt());
   }
 
-  @Test
-  void quoteRejectReason_fieldId_is658() {
-    assertEquals(658, QuoteRequestRejectDecoder.quoteRejectReasonId());
-  }
-
-  @Test
-  void symbol_fieldId_is55() {
-    assertEquals(55, QuoteRequestRejectDecoder.symbolId());
-  }
-
-  @Test
-  void side_fieldId_is54() {
-    assertEquals(54, QuoteRequestRejectDecoder.sideId());
-  }
-
-  @Test
-  void transactTime_fieldId_is60() {
-    assertEquals(60, QuoteRequestRejectDecoder.transactTimeId());
-  }
-
-  @Test
-  void text_fieldId_is58() {
-    assertEquals(58, QuoteRequestRejectDecoder.textId());
+  static java.util.stream.Stream<Arguments> fixStandardTags() {
+    return java.util.stream.Stream.of(
+        Arguments.of("quoteReqId", 131, (IntSupplier) QuoteRequestRejectDecoder::quoteReqIdId),
+        Arguments.of(
+            "quoteRejectReason", 658, (IntSupplier) QuoteRequestRejectDecoder::quoteRejectReasonId),
+        Arguments.of("symbol", 55, (IntSupplier) QuoteRequestRejectDecoder::symbolId),
+        Arguments.of("side", 54, (IntSupplier) QuoteRequestRejectDecoder::sideId),
+        Arguments.of("transactTime", 60, (IntSupplier) QuoteRequestRejectDecoder::transactTimeId),
+        Arguments.of("text", 58, (IntSupplier) QuoteRequestRejectDecoder::textId));
   }
 }
