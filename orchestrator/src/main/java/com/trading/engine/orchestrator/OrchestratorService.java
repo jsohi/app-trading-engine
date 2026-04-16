@@ -872,6 +872,7 @@ public final class OrchestratorService
    * @param decoder the pre-wrapped QuoteRequest decoder
    * @return pre-allocated reject text byte array, or {@code null} if validation passes
    */
+  @VisibleForTesting
   byte[] validateQuoteRequest(final QuoteRequestDecoder decoder) {
     // Check symbol not all-zero
     decoder.getSymbol(validationScratch, 0);
@@ -902,6 +903,7 @@ public final class OrchestratorService
    * Returns the validation failure reason from the most recent {@link #validateQuoteRequest}
    * invocation. <b>Visible for testing</b> (package-private). Not part of the public API.
    */
+  @VisibleForTesting
   QuoteRejectReasonEnum lastValidationFailureReason() {
     return validationFailureReason;
   }
@@ -911,6 +913,7 @@ public final class OrchestratorService
    * (package-private). Not part of the public API; tests use this to verify the callback is
    * captured once and never reassigned (per the zero-allocation duty-cycle contract).
    */
+  @VisibleForTesting
   RfqStateMachine.ReapCallback reapCallbackForTesting() {
     return reapCallback;
   }

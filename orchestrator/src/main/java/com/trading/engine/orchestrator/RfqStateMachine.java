@@ -101,13 +101,6 @@ public final class RfqStateMachine {
   private int reapCursor;
 
   /**
-   * Pre-allocated scratch for reading the inbound quoteReqId from the QuoteRequest decoder during
-   * the in-band duplicate-detection check in {@link #onQuoteRequest}. Sized to the SBE field width.
-   * Zero-allocation per call.
-   */
-  private final byte[] quoteReqIdProbeScratch = new byte[RfqState.QUOTE_REQ_ID_LENGTH];
-
-  /**
    * Constructs the state machine with a pre-allocated pool of the given capacity.
    *
    * @param maxActiveRfqs maximum number of concurrently active RFQs (pool size)
@@ -168,28 +161,22 @@ public final class RfqStateMachine {
    * Populates the slot from the QuoteRequest decoder and inserts the quoteReqId into the lookup
    * map.
    *
-   * <p><b>In-band duplicate detection (C.0a).</b> If a non-terminal RFQ already exists with the
-   * same quoteReqId (any of {@code PENDING_PRICE}, {@code QUOTED}, {@code PENDING_VALIDATION}),
-   * this method returns {@code null} without acquiring a slot. The {@code OrchestratorService} also
-   * performs this check before invoking the state machine (for the re-delivery fast-path), but
-   * defending here closes the gap if a future caller bypasses the orchestrator (e.g., a different
-   * agent implementation, an integration test). Returning {@code null} matches the established
-   * "transition rejected" contract.
+   * <p><b>Caller contract.</b> The caller is responsible for filtering duplicate {@code
+   * quoteReqId}s before invoking this method. {@code RfqStateMachine} assumes no non-terminal RFQ
+   * already holds the same quoteReqId; if one does, the new slot's map entry will silently
+   * overwrite the existing entry (since {@link ByteArrayKey} equality is content-based) and the
+   * orphaned slot will only be reclaimed by the timeout reaper. The canonical caller {@link
+   * OrchestratorService#onQuoteRequest} performs this filter with richer FIX semantics: re-delivery
+   * RETRY on {@link RfqState.State#PENDING_PRICE} (re-publish PriceRequest) and collision REJECT
+   * (with {@code TEXT_DUPLICATE_QUOTE_REQ_ID}) on the other active states. A defensive in-band
+   * probe was considered and rejected (PR #45 review D5) because the caller's two-way semantics
+   * cannot be expressed at this layer; duplicating only the reject branch would mask re-deliveries.
    *
    * @param decoder the pre-wrapped QuoteRequest decoder — must not be retained past this call
    * @param nowNanos current monotonic time from NanoClock
-   * @return the acquired RfqState, or {@code null} if the pool is exhausted OR a non-terminal RFQ
-   *     with the same quoteReqId already exists
+   * @return the acquired RfqState, or {@code null} if the pool is exhausted
    */
   public RfqState onQuoteRequest(final QuoteRequestDecoder decoder, final long nowNanos) {
-    // In-band duplicate detection: read quoteReqId, probe the map, reject if a non-terminal RFQ
-    // already holds it. Zero-alloc: probe key + scratch byte[] are pre-allocated.
-    decoder.getQuoteReqId(quoteReqIdProbeScratch, 0);
-    final var existing = probeByQuoteReqId(quoteReqIdProbeScratch, 0, RfqState.QUOTE_REQ_ID_LENGTH);
-    if (existing != null && existing.isActive()) {
-      return null;
-    }
-
     final var slot = acquireSlot();
     if (slot == null) {
       return null;

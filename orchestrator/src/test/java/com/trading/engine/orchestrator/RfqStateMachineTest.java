@@ -536,68 +536,28 @@ class RfqStateMachineTest {
   }
 
   // ===========================================================================
-  // Duplicate quoteReqId — in-band rejection (C.0a hardening)
+  // Duplicate quoteReqId — caller-responsibility contract
   // ===========================================================================
 
   @Test
-  void onQuoteRequest_duplicateActiveQuoteReqId_returnsNull() {
-    // First acquire succeeds and registers the quoteReqId in the lookup map.
+  void onQuoteRequest_duplicateQuoteReqId_overwritesMapEntry_orphansFirstSlot() {
+    // RfqStateMachine deliberately does NOT enforce duplicate detection — that is the caller's
+    // responsibility (OrchestratorService.onQuoteRequest:371-403 implements it with richer FIX
+    // semantics: PENDING_PRICE → re-delivery RETRY; other active states → collision REJECT).
+    // This test documents the unfiltered-caller behaviour: the second acquire silently overwrites
+    // the byQuoteReqId map entry (ByteArrayKey equality is content-based), orphaning the first
+    // slot until the timeout reaper runs.
     final var first = acquireSlot(QUOTE_REQ_ID);
     assertNotNull(first);
-    assertEquals(1, sm.activeCount());
-
-    // Second acquire with the SAME quoteReqId is rejected in-band:
-    // RfqStateMachine.onQuoteRequest now probes byQuoteReqId before acquiring a slot and returns
-    // null if a non-terminal RFQ already holds that key. No second slot is consumed; activeCount
-    // stays at 1; the map entry continues to point at the first slot.
     final var second = acquireSlot(QUOTE_REQ_ID);
-    assertNull(second);
-    assertEquals(1, sm.activeCount());
+    assertNotNull(second);
 
+    // Map points at the second slot; the first is orphaned but still active.
     final var qrid = QRID_BYTES;
     final var found = sm.findByQuoteReqId(qrid, 0, qrid.length);
     assertNotNull(found);
-    assertEquals(first.poolIndex(), found.poolIndex());
-  }
-
-  @Test
-  void onQuoteRequest_duplicateAfterTerminal_succeeds() {
-    // After an RFQ reaches a terminal state (REJECTED here) and its slot is released, the same
-    // quoteReqId can be re-acquired — the duplicate check only blocks active (non-terminal) RFQs.
-    final var first = acquireSlot(QUOTE_REQ_ID);
-    assertNotNull(first);
-    sm.onPriceResponseRejected(QRID_BYTES, 0, QRID_BYTES.length);
-    assertEquals(0, sm.activeCount());
-
-    final var second = acquireSlot(QUOTE_REQ_ID);
-    assertNotNull(second);
-    assertEquals(1, sm.activeCount());
-  }
-
-  @Test
-  void onQuoteRequest_duplicateWhileQuoted_returnsNull() {
-    // Verify C.0a duplicate detection rejects a re-acquire while the existing RFQ is in QUOTED
-    // (not just PENDING_PRICE). Covers the branch where probeByQuoteReqId finds a non-terminal
-    // RFQ in any active state.
-    acquireSlot(QUOTE_REQ_ID);
-    acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
-    assertEquals(1, sm.activeCount());
-
-    assertNull(acquireSlot(QUOTE_REQ_ID));
-    assertEquals(1, sm.activeCount());
-  }
-
-  @Test
-  void onQuoteRequest_duplicateWhilePendingValidation_returnsNull() {
-    // Verify C.0a duplicate detection rejects a re-acquire while the existing RFQ is in
-    // PENDING_VALIDATION (the third active state, not just PENDING_PRICE / QUOTED).
-    acquireSlot(QUOTE_REQ_ID);
-    acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
-    transitionToPendingValidation(QUOTE_ID);
-    assertEquals(1, sm.activeCount());
-
-    assertNull(acquireSlot(QUOTE_REQ_ID));
-    assertEquals(1, sm.activeCount());
+    assertEquals(second.poolIndex(), found.poolIndex());
+    assertEquals(2, sm.activeCount());
   }
 
   // ===========================================================================
