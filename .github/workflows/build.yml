@@ -35,6 +35,21 @@ jobs:
           name: coverage-reports
           path: '**/build/reports/jacoco/'
 
+      # Allocation regression tripwires (gateway + orchestrator). Opt-in via
+      # `-DrunAllocTests=true` because GC counts are inherently noisy on shared CI runners
+      # (a stop-the-world from another tenant can advance the count and trip the assertion).
+      # `continue-on-error: true` surfaces failures in the PR UI as warnings without blocking
+      # the merge; sustained reds (3+ consecutive merges) should be investigated for a real
+      # allocation regression. See:
+      #   gateway/src/test/.../NoAllocationTest.java
+      #   orchestrator/src/test/.../OrchestratorNoAllocationTest.java
+      - name: No-allocation regression tests (opt-in)
+        continue-on-error: true
+        run: |
+          ./gradlew :gateway:test :orchestrator:test \
+            --tests "*NoAllocationTest" \
+            -DrunAllocTests=true
+
   security:
     runs-on: ubuntu-latest
 
