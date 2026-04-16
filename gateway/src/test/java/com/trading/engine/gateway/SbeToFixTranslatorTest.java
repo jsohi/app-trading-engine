@@ -656,4 +656,225 @@ class SbeToFixTranslatorTest {
     assertEquals("EUR", fixDec.currencyAsString());
     assertEquals("ACCT-1", fixDec.accountAsString());
   }
+
+  // ===========================================================================
+  // QuoteRequestReject (35=AG) translation — Phase 3 (APP-216)
+  // ===========================================================================
+
+  /** Arbitrary epoch-nanos timestamp for QRR tests. Chosen non-zero to surface defaults. */
+  private static final long QRR_TS_NANOS = 1_712_491_200_000_000_000L;
+
+  @Test
+  void translateQuoteRequestReject_minimalFields_omitsOptionals() {
+    // Required-only QRR: quoteReqId + reason + symbol + transactTime; side=NULL_VAL, text="".
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    encodeQrr(
+        sbeBuf,
+        "QR-MIN",
+        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol,
+        "EURUSD",
+        SideEnum.NULL_VAL,
+        "",
+        QRR_TS_NANOS);
+
+    final var sbeDec = wrapQrrDecoder(sbeBuf);
+    final var fix = newQrrEncoder();
+    new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
+
+    final var fixDec = encodeAndDecodeQrr(fix);
+    assertEquals("QR-MIN", fixDec.quoteReqIDAsString());
+    assertEquals(1, fixDec.quoteRequestRejectReason()); // UnknownSymbol → 1
+
+    // NoRelatedSym group present with exactly 1 entry containing the symbol.
+    final var iter = fixDec.relatedSymGroupIterator();
+    assertTrue(iter.hasNext());
+    final var rel = iter.next();
+    assertEquals("EURUSD", rel.symbolAsString());
+    assertFalse(rel.hasSide()); // optional Side absent when SBE side == NULL_VAL
+    assertFalse(iter.hasNext());
+
+    // text omitted because the SBE field was empty (trimNulls returned 0).
+    assertFalse(fixDec.hasText());
+    // transactTime always populated for client clarity.
+    assertTrue(fixDec.transactTimeAsString().length() > 0);
+  }
+
+  @Test
+  void translateQuoteRequestReject_allFields_populatesEverything() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    encodeQrr(
+        sbeBuf,
+        "QR-ALL",
+        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.InvalidPrice,
+        "USDJPY",
+        SideEnum.Sell,
+        "Outside band",
+        QRR_TS_NANOS);
+
+    final var sbeDec = wrapQrrDecoder(sbeBuf);
+    final var fix = newQrrEncoder();
+    new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
+
+    final var fixDec = encodeAndDecodeQrr(fix);
+    assertEquals("QR-ALL", fixDec.quoteReqIDAsString());
+    assertEquals(5, fixDec.quoteRequestRejectReason()); // InvalidPrice → 5
+
+    final var iter = fixDec.relatedSymGroupIterator();
+    assertTrue(iter.hasNext());
+    final var rel = iter.next();
+    assertEquals("USDJPY", rel.symbolAsString());
+    assertTrue(rel.hasSide());
+    assertEquals('2', rel.side()); // Sell
+    assertFalse(iter.hasNext());
+
+    assertTrue(fixDec.hasText());
+    assertEquals("Outside band", fixDec.textAsString());
+    assertTrue(fixDec.transactTimeAsString().length() > 0);
+  }
+
+  @Test
+  void translateQuoteRequestReject_allReasons_mapToFixTag658Correctly() {
+    record Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum sbe, int fix) {}
+    final var mappings =
+        new Mapping[] {
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol, 1),
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.ExchangeClosed, 2),
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.QuoteExceedsLimit, 3),
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.TooLateToEnter, 4),
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.InvalidPrice, 5),
+          new Mapping(com.trading.engine.messages.sbe.QuoteRejectReasonEnum.Other, 99),
+        };
+    for (final var m : mappings) {
+      final var sbeBuf = new ExpandableArrayBuffer(512);
+      encodeQrr(sbeBuf, "QR-EN", m.sbe(), "EURUSD", SideEnum.Buy, "", QRR_TS_NANOS);
+      final var sbeDec = wrapQrrDecoder(sbeBuf);
+      final var fix = newQrrEncoder();
+      new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
+      final var fixDec = encodeAndDecodeQrr(fix);
+      assertEquals(
+          m.fix(),
+          fixDec.quoteRequestRejectReason(),
+          "SBE " + m.sbe() + " must map to FIX tag 658 = " + m.fix());
+    }
+  }
+
+  @Test
+  void translateQuoteRequestReject_nullValReason_throwsIllegalState() {
+    // SBE encoder setter does NOT validate enum values — it writes the raw byte (255 for
+    // NULL_VAL) directly. The translator's mapQuoteRejectReason() switch has no case for
+    // NULL_VAL, so the default branch throws.
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    encodeQrr(
+        sbeBuf,
+        "QR-NULL",
+        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.NULL_VAL,
+        "EURUSD",
+        SideEnum.Buy,
+        "",
+        QRR_TS_NANOS);
+
+    final var sbeDec = wrapQrrDecoder(sbeBuf);
+    final var fix = newQrrEncoder();
+    final var ex =
+        assertThrows(
+            IllegalStateException.class,
+            () -> new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix));
+    assertTrue(ex.getMessage().contains("Unsupported SBE QuoteRejectReason"));
+  }
+
+  @Test
+  void translateQuoteRequestReject_scratchBufferReuseAcrossCalls_noStaleBytes() {
+    // Drive the same translator twice with intentionally different field lengths to verify the
+    // per-field scratch buffers (qrrQuoteReqId, qrrSymbol, qrrText, qrrTransactTime) don't leak
+    // stale bytes from the first call into the second.
+    final var translator = new SbeToFixTranslator();
+
+    // Call A: long quoteReqId, populated text
+    final var sbeBufA = new ExpandableArrayBuffer(512);
+    encodeQrr(
+        sbeBufA,
+        "QR-LONG-1234567890AB",
+        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.UnknownSymbol,
+        "EURUSD",
+        SideEnum.Buy,
+        "long reason text",
+        QRR_TS_NANOS);
+    final var fixA = newQrrEncoder();
+    translator.translateQuoteRequestReject(wrapQrrDecoder(sbeBufA), fixA);
+    final var decA = encodeAndDecodeQrr(fixA);
+    assertEquals("QR-LONG-1234567890AB", decA.quoteReqIDAsString());
+    assertEquals("long reason text", decA.textAsString());
+
+    // Call B: short quoteReqId, empty text — second call must not carry over stale tail bytes
+    final var sbeBufB = new ExpandableArrayBuffer(512);
+    encodeQrr(
+        sbeBufB,
+        "QR-X",
+        com.trading.engine.messages.sbe.QuoteRejectReasonEnum.Other,
+        "USDJPY",
+        SideEnum.Sell,
+        "",
+        QRR_TS_NANOS + 1_000_000L);
+    final var fixB = newQrrEncoder();
+    translator.translateQuoteRequestReject(wrapQrrDecoder(sbeBufB), fixB);
+    final var decB = encodeAndDecodeQrr(fixB);
+    assertEquals("QR-X", decB.quoteReqIDAsString());
+    assertEquals(99, decB.quoteRequestRejectReason());
+    assertFalse(decB.hasText()); // empty text omitted; no leak from call A
+    final var iterB = decB.relatedSymGroupIterator();
+    assertTrue(iterB.hasNext());
+    assertEquals("USDJPY", iterB.next().symbolAsString());
+  }
+
+  // ---------------------------------------------------------------------------
+  // QRR test helpers
+  // ---------------------------------------------------------------------------
+
+  private static void encodeQrr(
+      final MutableDirectBuffer buf,
+      final String quoteReqId,
+      final com.trading.engine.messages.sbe.QuoteRejectReasonEnum reason,
+      final String symbol,
+      final SideEnum side,
+      final String text,
+      final long transactTimeNanos) {
+    final var hdr = new MessageHeaderEncoder();
+    final var enc = new com.trading.engine.messages.sbe.QuoteRequestRejectEncoder();
+    enc.wrapAndApplyHeader(buf, 0, hdr);
+    enc.quoteReqId(quoteReqId);
+    enc.quoteRejectReason(reason);
+    enc.symbol(symbol);
+    enc.side(side);
+    enc.transactTime(transactTimeNanos);
+    enc.text(text);
+    enc.productType(ProductTypeEnum.Spot);
+  }
+
+  private static com.trading.engine.messages.sbe.QuoteRequestRejectDecoder wrapQrrDecoder(
+      final MutableDirectBuffer buf) {
+    final var hdr = new MessageHeaderDecoder();
+    hdr.wrap(buf, 0);
+    final var dec = new com.trading.engine.messages.sbe.QuoteRequestRejectDecoder();
+    dec.wrap(buf, MessageHeaderDecoder.ENCODED_LENGTH, hdr.blockLength(), hdr.version());
+    return dec;
+  }
+
+  private static com.trading.engine.fix.builder.QuoteRequestRejectEncoder newQrrEncoder() {
+    final var fix = new com.trading.engine.fix.builder.QuoteRequestRejectEncoder();
+    final var hdr = fix.header();
+    hdr.senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    hdr.sendingTime("20260407-12:00:00".getBytes());
+    return fix;
+  }
+
+  private static com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder
+      encodeAndDecodeQrr(final com.trading.engine.fix.builder.QuoteRequestRejectEncoder fix) {
+    final var wire = new MutableAsciiBuffer(new byte[2048]);
+    final long encoded = fix.encode(wire, 0);
+    final int wireOffset = (int) (encoded >>> 32);
+    final int wireLen = (int) encoded;
+    final var dec = new com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder();
+    dec.decode(wire, wireOffset, wireLen);
+    return dec;
+  }
 }
