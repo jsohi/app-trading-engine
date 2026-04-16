@@ -150,7 +150,7 @@ public final class OrchestratorLauncher {
 
     // --- Step 11: Construct OrchestratorService ---
     // Bind the publications as Publisher SAMs via method references — captured ONCE at
-    // construction (JLS §15.27.4); JIT inlines through them after warmup. See Publisher Javadoc.
+    // construction (JLS §15.27.4); JIT inlines through them after warmup. See {@link Publisher}.
     final var orchestratorService =
         new OrchestratorService(
             gatewaySubscription,
