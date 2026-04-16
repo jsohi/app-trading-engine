@@ -277,7 +277,7 @@ class RfqStateMachineTest {
   }
 
   @Test
-  void onNewOrderSingleWithQuote_nosTooLarge_returnsNullAndReleasesSlotInBand() {
+  void onNewOrderSingleWithQuote_nosTooLarge_returnsNullSlotStaysQuoted() {
     acquireSlot(QUOTE_REQ_ID);
     acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
     assertEquals(1, sm.activeCount());
@@ -288,8 +288,19 @@ class RfqStateMachineTest {
     final var oversizedNos = new UnsafeBuffer(new byte[1024]);
     assertNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, oversizedNos, 0, 1024, NOW));
 
-    // C.0b: slot is released in-band; lookup maps are cleaned; activeCount drops to 0. Caller
-    // (OrchestratorService) must NOT also call rejectQuoted — that would double-release.
+    // Slot intentionally stays in QUOTED — the caller (OrchestratorService.onNewOrderSingle)
+    // must read identity fields (symbol, currency, etc.) from the RfqState BEFORE the slot is
+    // released to populate the rejection ExecutionReport. The caller invokes rejectQuoted()
+    // after publishing the rejection. Releasing in-band here would zero the identity fields
+    // and corrupt the rejection (Gemini PR #45 review G1).
+    assertEquals(1, sm.activeCount());
+    final var stillThere = sm.findByQuoteId(qid, 0, qid.length);
+    assertNotNull(stillThere);
+    assertEquals(RfqState.State.QUOTED, stillThere.state());
+    assertNotNull(sm.findByQuoteReqId(qrid, 0, qrid.length));
+
+    // Caller's responsibility: explicitly release after rejection encoded.
+    sm.rejectQuoted(qid, 0, qid.length);
     assertEquals(0, sm.activeCount());
     assertNull(sm.findByQuoteId(qid, 0, qid.length));
     assertNull(sm.findByQuoteReqId(qrid, 0, qrid.length));
@@ -560,6 +571,32 @@ class RfqStateMachineTest {
 
     final var second = acquireSlot(QUOTE_REQ_ID);
     assertNotNull(second);
+    assertEquals(1, sm.activeCount());
+  }
+
+  @Test
+  void onQuoteRequest_duplicateWhileQuoted_returnsNull() {
+    // Verify C.0a duplicate detection rejects a re-acquire while the existing RFQ is in QUOTED
+    // (not just PENDING_PRICE). Covers the branch where probeByQuoteReqId finds a non-terminal
+    // RFQ in any active state.
+    acquireSlot(QUOTE_REQ_ID);
+    acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
+    assertEquals(1, sm.activeCount());
+
+    assertNull(acquireSlot(QUOTE_REQ_ID));
+    assertEquals(1, sm.activeCount());
+  }
+
+  @Test
+  void onQuoteRequest_duplicateWhilePendingValidation_returnsNull() {
+    // Verify C.0a duplicate detection rejects a re-acquire while the existing RFQ is in
+    // PENDING_VALIDATION (the third active state, not just PENDING_PRICE / QUOTED).
+    acquireSlot(QUOTE_REQ_ID);
+    acceptPrice(QUOTE_REQ_ID, QUOTE_ID);
+    transitionToPendingValidation(QUOTE_ID);
+    assertEquals(1, sm.activeCount());
+
+    assertNull(acquireSlot(QUOTE_REQ_ID));
     assertEquals(1, sm.activeCount());
   }
 

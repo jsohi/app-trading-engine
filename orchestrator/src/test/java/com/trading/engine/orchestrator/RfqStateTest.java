@@ -67,22 +67,42 @@ class RfqStateTest {
   // ===========================================================================
 
   @Test
-  void reset_afterPopulate_zerosAllFields() {
+  void reset_afterPopulateAndApplyPricing_zerosEveryField() {
+    // Populate identity + pricing + stash a NOS so EVERY field is non-default before reset.
     populate();
-    assertEquals(RfqState.State.PENDING_PRICE, state.state());
-    assertEquals(NOW + PENDING_PRICE_TIMEOUT, state.expiryNanos());
+    applyPricing();
+    final var nosBytes = "NOS-FOR-RESET".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    assertTrue(state.stashNos(new UnsafeBuffer(nosBytes), 0, nosBytes.length));
+
+    // Pre-condition: most fields non-default after the populate+pricing+stash sequence.
+    assertEquals(RfqState.State.QUOTED, state.state());
     assertTrue(state.quoteReqIdLen() > 0);
     assertEquals(ORDER_QTY, state.orderQty());
+    assertEquals(BID_PX, state.bidPx());
+    assertEquals(nosBytes.length, state.nosLength());
 
     state.reset();
 
+    // Lifecycle fields
     assertEquals(RfqState.State.FREE, state.state());
     assertEquals(0L, state.expiryNanos());
+    // Identity / length fields
     assertEquals(0, state.quoteReqIdLen());
     assertEquals(0, state.quoteIdLen());
+    // Quantity + raw enum bytes
     assertEquals(0L, state.orderQty());
+    assertEquals((byte) 0, state.sideRaw());
+    assertEquals((byte) 0, state.productTypeRaw());
+    assertEquals((byte) 0, state.settlTypeRaw());
+    assertEquals((byte) 0, state.tenorRaw());
+    // Pricing fields
     assertEquals(0L, state.bidPx());
     assertEquals(0L, state.offerPx());
+    assertEquals(0L, state.bidSize());
+    assertEquals(0L, state.offerSize());
+    assertEquals(0L, state.validUntil());
+    assertEquals(0L, state.swapPoints());
+    // Time + NOS
     assertEquals(0L, state.transactTime());
     assertEquals(0, state.nosLength());
   }
@@ -151,6 +171,27 @@ class RfqStateTest {
     final var qid = SbeFieldUtil.zeroPad(QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
     state.setQuoteId(qid, 0, qid.length);
     assertEquals(qid.length, state.quoteIdLen());
+  }
+
+  @Test
+  void setQuoteId_partialLength_nullPadsRemainder() {
+    // setQuoteId with length < QUOTE_ID_LENGTH triggers the null-padding branch in
+    // RfqState.setQuoteId. Verify both the recorded length and that the remainder of the
+    // QuoteID slot is zeroed (so subsequent putQuoteIdInto reads a clean buffer).
+    populate();
+    final var partial = "QTE-PART".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    state.setQuoteId(partial, 0, partial.length);
+    assertEquals(partial.length, state.quoteIdLen());
+
+    final var dst = new byte[RfqState.QUOTE_ID_LENGTH];
+    state.putQuoteIdInto(dst, 0);
+    // First N bytes match the input; the rest must be zero (null-padded).
+    for (int i = 0; i < partial.length; i++) {
+      assertEquals(partial[i], dst[i], "byte " + i);
+    }
+    for (int i = partial.length; i < RfqState.QUOTE_ID_LENGTH; i++) {
+      assertEquals((byte) 0, dst[i], "padding byte " + i);
+    }
   }
 
   @Test

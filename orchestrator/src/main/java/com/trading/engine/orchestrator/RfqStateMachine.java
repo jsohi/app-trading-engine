@@ -168,9 +168,9 @@ public final class RfqStateMachine {
    * Populates the slot from the QuoteRequest decoder and inserts the quoteReqId into the lookup
    * map.
    *
-   * <p><b>In-band duplicate detection.</b> If a non-terminal RFQ already exists with the same
-   * quoteReqId (any of {@code PENDING_PRICE}, {@code QUOTED}, {@code PENDING_VALIDATION}), this
-   * method returns {@code null} without acquiring a slot. The {@code OrchestratorService} also
+   * <p><b>In-band duplicate detection (C.0a).</b> If a non-terminal RFQ already exists with the
+   * same quoteReqId (any of {@code PENDING_PRICE}, {@code QUOTED}, {@code PENDING_VALIDATION}),
+   * this method returns {@code null} without acquiring a slot. The {@code OrchestratorService} also
    * performs this check before invoking the state machine (for the re-delivery fast-path), but
    * defending here closes the gap if a future caller bypasses the orchestrator (e.g., a different
    * agent implementation, an integration test). Returning {@code null} matches the established
@@ -291,8 +291,10 @@ public final class RfqStateMachine {
    * @param nosLength byte length of the NOS fragment
    * @param nowNanos current monotonic time
    * @return the RfqState if transition succeeded, or {@code null} if not found, wrong state, or NOS
-   *     too large. <b>NOS-too-large path:</b> the RFQ slot is released in-band (transitioned to
-   *     {@code REJECTED} and removed from the lookup maps) — no caller intervention needed.
+   *     too large. <b>NOS-too-large path:</b> the RFQ slot stays in {@code QUOTED} so the caller
+   *     can read identity fields (symbol, currency, etc.) for the rejection ExecutionReport. The
+   *     caller MUST invoke {@link #rejectQuoted} after publishing the rejection to release the slot
+   *     — otherwise the slot leaks until the QUOTED-timeout reaper runs.
    */
   public RfqState onNewOrderSingleWithQuote(
       final byte[] quoteIdBytes,
@@ -325,12 +327,11 @@ public final class RfqStateMachine {
           .append(" poolIndex=")
           .append(rfq.poolIndex())
           .commit();
-      // C.0b: in-band slot release. The RFQ can never complete (the same NOS will fail again on
-      // any retry), so transition to REJECTED and release the slot here rather than leaking it
-      // until the QUOTED timeout reaper runs. Mirrors the explicit rejectQuoted contract.
-      rfq.setState(RfqState.State.REJECTED);
-      removeFromMaps(rfq);
-      releaseSlot(rfq);
+      // Slot stays in QUOTED state; the caller (OrchestratorService.onNewOrderSingle) needs to
+      // read the RFQ identity fields (symbol, currency, etc.) to populate the rejection
+      // ExecutionReport BEFORE the slot is released. The caller MUST invoke rejectQuoted()
+      // after the rejection has been encoded and published — releasing the slot in-band here
+      // would zero the identity fields and corrupt the rejection.
       return null;
     }
 
