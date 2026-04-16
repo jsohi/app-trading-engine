@@ -7,7 +7,9 @@ import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
+import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.PriceRequestDecoder;
 import com.trading.engine.messages.sbe.PriceResponseDecoder;
 import com.trading.engine.messages.sbe.PriceValidationRequestDecoder;
@@ -46,7 +48,6 @@ class OrchestratorMessageEncoderTest {
   private final MutableDirectBuffer srcBuf = new ExpandableArrayBuffer(512);
   private final MutableDirectBuffer dstBuf = new ExpandableArrayBuffer(512);
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
-  private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final QuoteRequestDecoder quoteReqDecoder = new QuoteRequestDecoder();
   private final PriceResponseDecoder priceRespDecoder = new PriceResponseDecoder();
 
@@ -190,8 +191,7 @@ class OrchestratorMessageEncoderTest {
   @Test
   void encodePriceValidationRequest_roundTrip() {
     final var rfq = acquireSlot();
-    applyPricing(rfq);
-    setQuoteId(rfq);
+    applyPricing(rfq); // also sets quoteId via onPriceResponseAccepted
 
     final var nosDecoder = wrapNosDecoder();
     final int len = encoder.encodePriceValidationRequest(dstBuf, 0, rfq, nosDecoder, NOW);
@@ -300,10 +300,6 @@ class OrchestratorMessageEncoderTest {
         NOW);
   }
 
-  private void setQuoteId(final RfqState rfq) {
-    // quoteId was set during applyPricing via onPriceResponseAccepted
-  }
-
   private QuoteRequestDecoder wrapQuoteRequest() {
     SbeTestEncoder.encodeQuoteRequest(
         srcBuf, 0, QUOTE_REQ_ID, SYMBOL, SideEnum.Buy, 100_000_000L, "ACCT001");
@@ -316,20 +312,20 @@ class OrchestratorMessageEncoderTest {
     return quoteReqDecoder;
   }
 
-  private com.trading.engine.messages.sbe.NewOrderSingleDecoder wrapNosDecoder() {
+  private NewOrderSingleDecoder wrapNosDecoder() {
     SbeTestEncoder.encodeNewOrderSingle(
         srcBuf,
         0,
         "ORD-00000000001",
         SYMBOL,
         SideEnum.Buy,
-        com.trading.engine.messages.sbe.OrdTypeEnum.PreviouslyQuoted,
+        OrdTypeEnum.PreviouslyQuoted,
         BID_PX,
         100_000_000L,
         "ACCT001",
         "USD");
     headerDecoder.wrap(srcBuf, 0);
-    final var dec = new com.trading.engine.messages.sbe.NewOrderSingleDecoder();
+    final var dec = new NewOrderSingleDecoder();
     dec.wrap(
         srcBuf,
         MessageHeaderDecoder.ENCODED_LENGTH,
