@@ -67,6 +67,11 @@ public final class SbeTestEncoder {
   /** Default capabilities for convenience overloads: CAN_TRADE | CAN_RFQ. */
   private static final long DEFAULT_CAPABILITIES = AccountRecord.CAN_TRADE | AccountRecord.CAN_RFQ;
 
+  /**
+   * Default settle date (LocalMktDate, FIX tag 64) used by RFQ/order helper convenience overloads.
+   */
+  private static final String DEFAULT_SETTL_DATE = "20260101";
+
   private SbeTestEncoder() {}
 
   // -----------------------------------------------------------------------
@@ -1290,6 +1295,11 @@ public final class SbeTestEncoder {
   /**
    * Encodes a {@link QuoteRequestEncoder} (template 1, FIX MsgType=R) with sensible defaults.
    *
+   * <p><b>Defaults baked in:</b> {@code productType=Spot}, {@code settlDate="20260101"}, {@code
+   * settlType=Regular}, {@code tenor=SN}, {@code currency="USD"}, {@code settlCurrency="EUR"},
+   * {@code transactTime=0}, {@code noLegsCount=0}. Tests that need different values should encode
+   * via the SBE encoder directly rather than this helper.
+   *
    * @param dst destination buffer
    * @param offset byte offset within {@code dst}
    * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
@@ -1307,6 +1317,38 @@ public final class SbeTestEncoder {
       final SideEnum side,
       final long orderQty,
       final String accountCode) {
+    return encodeQuoteRequest(dst, offset, quoteReqId, symbol, side, orderQty, accountCode, 0L);
+  }
+
+  /**
+   * Encodes a {@link QuoteRequestEncoder} (template 1, FIX MsgType=R) with sensible defaults and an
+   * explicit transactTime. Use this overload for tests that exercise time-sensitive logic or audit
+   * trail assertions.
+   *
+   * <p><b>Defaults baked in:</b> {@code productType=Spot}, {@code settlDate=DEFAULT_SETTL_DATE},
+   * {@code settlType=Regular}, {@code tenor=SN}, {@code currency="USD"}, {@code
+   * settlCurrency="EUR"}, {@code noLegsCount=0}. Tests that need different values should encode via
+   * the SBE encoder directly rather than this helper.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param orderQty quantity in fixed-point 10^8 (tag 38)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param transactTime epoch nanos (tag 60); pass {@code 0L} if not asserted
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRequest(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty,
+      final String accountCode,
+      final long transactTime) {
 
     final var header = new MessageHeaderEncoder();
     final var enc = new QuoteRequestEncoder();
@@ -1318,12 +1360,12 @@ public final class SbeTestEncoder {
     enc.orderQty(orderQty);
     enc.accountCode(accountCode);
     enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260101");
+    enc.settlDate(DEFAULT_SETTL_DATE);
     enc.settlType(SettlTypeEnum.Regular);
     enc.tenor(TenorEnum.SN);
     enc.currency("USD");
     enc.settlCurrency("EUR");
-    enc.transactTime(0L);
+    enc.transactTime(transactTime);
     enc.noLegsCount(0);
 
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
@@ -1371,7 +1413,7 @@ public final class SbeTestEncoder {
     enc.transactTime(transactTime);
     enc.validUntil(transactTime + 30_000_000_000L);
     enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260101");
+    enc.settlDate(DEFAULT_SETTL_DATE);
     enc.settlType(SettlTypeEnum.Regular);
     enc.tenor(TenorEnum.SN);
     enc.currency("USD");
@@ -1423,6 +1465,11 @@ public final class SbeTestEncoder {
   /**
    * Encodes a {@link PriceRequestEncoder} (template 50) — orchestrator → pricing service.
    *
+   * <p><b>Defaults baked in:</b> {@code accountCode="ACCT001"}, {@code transactTime=0}, {@code
+   * productType=Spot}, {@code settlDate=DEFAULT_SETTL_DATE}, {@code settlType=Regular}, {@code
+   * tenor=SN}, {@code currency="USD"}, {@code settlCurrency="EUR"}, {@code noLegsCount=0}. Use the
+   * 7-arg overload to specify a non-zero transactTime.
+   *
    * @param dst destination buffer
    * @param offset byte offset within {@code dst}
    * @param quoteReqId QuoteReqID (tag 131)
@@ -1438,6 +1485,30 @@ public final class SbeTestEncoder {
       final String symbol,
       final SideEnum side,
       final long orderQty) {
+    return encodePriceRequest(dst, offset, quoteReqId, symbol, side, orderQty, 0L);
+  }
+
+  /**
+   * Encodes a {@link PriceRequestEncoder} (template 50) with an explicit transactTime. Use this
+   * overload for tests asserting time-sensitive logic.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param quoteReqId QuoteReqID (tag 131)
+   * @param symbol instrument symbol (tag 55)
+   * @param side order side (tag 54)
+   * @param orderQty quantity in fixed-point 10^8 (tag 38)
+   * @param transactTime epoch nanos (tag 60); pass {@code 0L} if not asserted
+   * @return total encoded length including SBE header
+   */
+  public static int encodePriceRequest(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty,
+      final long transactTime) {
 
     final var header = new MessageHeaderEncoder();
     final var enc = new PriceRequestEncoder();
@@ -1448,13 +1519,13 @@ public final class SbeTestEncoder {
     enc.side(side);
     enc.orderQty(orderQty);
     enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260101");
+    enc.settlDate(DEFAULT_SETTL_DATE);
     enc.settlType(SettlTypeEnum.Regular);
     enc.tenor(TenorEnum.SN);
     enc.currency("USD");
     enc.settlCurrency("EUR");
     enc.accountCode("ACCT001");
-    enc.transactTime(0L);
+    enc.transactTime(transactTime);
     enc.noLegsCount(0);
 
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
@@ -1462,6 +1533,11 @@ public final class SbeTestEncoder {
 
   /**
    * Encodes a {@link PriceResponseEncoder} (template 51) — pricing service → orchestrator.
+   *
+   * <p><b>Defaults baked in:</b> {@code productType=Spot}, {@code bidSize/offerSize=10^8} when
+   * accepted (null otherwise), {@code validUntil = transactTime + 30s} when accepted, {@code
+   * swapPoints = NULL_VAL}, {@code quoteRejectReason = Other} when declined. Tests that need
+   * different values should encode via the SBE encoder directly rather than this helper.
    *
    * @param dst destination buffer
    * @param offset byte offset within {@code dst}
@@ -1540,7 +1616,7 @@ public final class SbeTestEncoder {
     enc.accountCode("ACCT001");
     enc.transactTime(transactTime);
     enc.productType(ProductTypeEnum.Spot);
-    enc.settlDate("20260101");
+    enc.settlDate(DEFAULT_SETTL_DATE);
     enc.settlType(SettlTypeEnum.Regular);
     enc.currency("USD");
     enc.settlCurrency("EUR");

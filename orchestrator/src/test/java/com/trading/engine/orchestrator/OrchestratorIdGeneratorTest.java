@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.agrona.ExpandableArrayBuffer;
-import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -21,24 +20,24 @@ class OrchestratorIdGeneratorTest {
   @Test
   void nextInto_firstCall_generatesIdStartingAt1() {
     final var gen = new OrchestratorIdGenerator("QTE");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(32);
+    final var buf = new ExpandableArrayBuffer(32);
 
     final int len = gen.nextInto(buf, 0);
 
-    final String id = buf.getStringWithoutLengthAscii(0, len);
+    final var id = buf.getStringWithoutLengthAscii(0, len);
     assertEquals("QTE-00000000001", id);
   }
 
   @Test
   void nextInto_sequential_incrementsCounter() {
     final var gen = new OrchestratorIdGenerator("QTE");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(32);
+    final var buf = new ExpandableArrayBuffer(32);
 
     gen.nextInto(buf, 0);
     gen.nextInto(buf, 0);
     final int len = gen.nextInto(buf, 0);
 
-    final String id = buf.getStringWithoutLengthAscii(0, len);
+    final var id = buf.getStringWithoutLengthAscii(0, len);
     assertEquals("QTE-00000000003", id);
     assertEquals(3, gen.currentCounter());
   }
@@ -46,11 +45,11 @@ class OrchestratorIdGeneratorTest {
   @Test
   void nextInto_rendersCorrectFormat() {
     final var gen = new OrchestratorIdGenerator("AB");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(32);
+    final var buf = new ExpandableArrayBuffer(32);
 
     final int len = gen.nextInto(buf, 0);
 
-    final String id = buf.getStringWithoutLengthAscii(0, len);
+    final var id = buf.getStringWithoutLengthAscii(0, len);
     // Format: PREFIX-NNNNNNNNNNN (prefix + dash + 11 digits)
     assertEquals("AB-00000000001", id);
     assertEquals(14, len); // 2 + 1 + 11
@@ -59,12 +58,12 @@ class OrchestratorIdGeneratorTest {
   @Test
   void nextInto_writesToBufferAtOffset() {
     final var gen = new OrchestratorIdGenerator("QTE");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
+    final var buf = new ExpandableArrayBuffer(64);
 
     final int offset = 10;
     final int len = gen.nextInto(buf, offset);
 
-    final String id = buf.getStringWithoutLengthAscii(offset, len);
+    final var id = buf.getStringWithoutLengthAscii(offset, len);
     assertEquals("QTE-00000000001", id);
     // Bytes before offset should be untouched (default zero)
     assertEquals(0, buf.getByte(0));
@@ -117,7 +116,7 @@ class OrchestratorIdGeneratorTest {
   @Test
   void nextInto_counterAtMaxMinusOne_lastIdSucceeds() throws Exception {
     final var gen = new OrchestratorIdGenerator("QTE");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(32);
+    final var buf = new ExpandableArrayBuffer(32);
 
     // Use reflection to set counter to MAX_COUNTER - 1 (avoids 100B iterations)
     final var field = OrchestratorIdGenerator.class.getDeclaredField("counter");
@@ -128,14 +127,14 @@ class OrchestratorIdGeneratorTest {
     final int len = gen.nextInto(buf, 0);
     assertEquals(OrchestratorIdGenerator.MAX_COUNTER, gen.currentCounter());
 
-    final String lastId = buf.getStringWithoutLengthAscii(0, len);
+    final var lastId = buf.getStringWithoutLengthAscii(0, len);
     assertEquals("QTE-99999999999", lastId);
   }
 
   @Test
   void nextInto_counterExhaustion_throwsIse() throws Exception {
     final var gen = new OrchestratorIdGenerator("QTE");
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(32);
+    final var buf = new ExpandableArrayBuffer(32);
 
     // Set counter to MAX_COUNTER so the next call triggers the exhaustion guard
     final var field = OrchestratorIdGenerator.class.getDeclaredField("counter");

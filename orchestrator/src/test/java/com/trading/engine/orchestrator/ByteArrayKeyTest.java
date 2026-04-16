@@ -29,7 +29,7 @@ class ByteArrayKeyTest {
 
   @Test
   void owned_fromByteArray_createsDefensiveCopy() {
-    final byte[] src = "XYZ".getBytes(StandardCharsets.US_ASCII);
+    final var src = "XYZ".getBytes(StandardCharsets.US_ASCII);
     final var key = ByteArrayKey.owned(src, 0, src.length);
 
     // Mutate source — key should be unaffected
@@ -45,7 +45,7 @@ class ByteArrayKeyTest {
 
   @Test
   void probe_fromByteArray_sharesBackingArray() {
-    final byte[] src = "HELLO".getBytes(StandardCharsets.US_ASCII);
+    final var src = "HELLO".getBytes(StandardCharsets.US_ASCII);
     final var key = ByteArrayKey.probe(src, 0, src.length);
     assertEquals("HELLO", key.toString());
 
@@ -56,7 +56,7 @@ class ByteArrayKeyTest {
 
   @Test
   void copyOf_byteArray_createsIndependentCopy() {
-    final byte[] src = "FOO".getBytes(StandardCharsets.US_ASCII);
+    final var src = "FOO".getBytes(StandardCharsets.US_ASCII);
     final var key = ByteArrayKey.copyOf(src, 0, src.length);
 
     src[0] = (byte) 'B';
@@ -117,8 +117,8 @@ class ByteArrayKeyTest {
 
   @Test
   void equals_nullPaddedContent_matchesIdenticalPadding() {
-    final byte[] padded1 = new byte[] {'A', 'B', 0, 0, 0};
-    final byte[] padded2 = new byte[] {'A', 'B', 0, 0, 0};
+    final var padded1 = new byte[] {'A', 'B', 0, 0, 0};
+    final var padded2 = new byte[] {'A', 'B', 0, 0, 0};
     final var key1 = ByteArrayKey.owned(padded1, 0, 5);
     final var key2 = ByteArrayKey.owned(padded2, 0, 5);
     assertEquals(key1, key2);
@@ -139,7 +139,8 @@ class ByteArrayKeyTest {
   void hashCode_differentContent_returnsDifferentHash() {
     final var key1 = ByteArrayKey.owned(ABC, 0, ABC.length);
     final var key2 = ByteArrayKey.owned(DEF, 0, DEF.length);
-    // Hash collision is theoretically possible but astronomically unlikely for 3-byte ASCII keys
+    // Verified: FNV-1a("ABC") != FNV-1a("DEF") for these specific inputs (deterministic hash, no
+    // flake risk).
     assertNotEquals(key1.hashCode(), key2.hashCode());
   }
 
@@ -149,7 +150,6 @@ class ByteArrayKeyTest {
 
   @Test
   void overwrite_updatesContentAndHash() {
-    final var buf = new UnsafeBuffer(ABC);
     final var key = ByteArrayKey.owned(ABC, 0, ABC.length);
     final int oldHash = key.hashCode();
 
