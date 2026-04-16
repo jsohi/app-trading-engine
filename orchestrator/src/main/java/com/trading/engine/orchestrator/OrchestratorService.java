@@ -549,8 +549,11 @@ public final class OrchestratorService
       if (gwResult != Action.CONTINUE) {
         return gwResult;
       }
-      // Pool slot was released in-band by RfqStateMachine.onNewOrderSingleWithQuote on the
-      // NOS-too-large path (C.0b). No additional rejectQuoted() call needed here.
+      // Release the slot AFTER the rejection has been encoded and published — the rfq's
+      // identity fields (symbol, currency, etc.) were just read into the encoder's outbound
+      // bytes, so the slot can now safely return to FREE. Releasing in-band inside the state
+      // machine would zero those fields before this code reads them.
+      stateMachine.rejectQuoted(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
       return Action.CONTINUE;
     }
 

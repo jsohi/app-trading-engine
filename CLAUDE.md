@@ -40,6 +40,7 @@ All Java code must follow **industry-standard documentation practices** for a pr
 - **SBE (Simple Binary Encoding)** — zero-allocation message codec
 - **CQRS + Event Sourcing** — commands → events → projections
 - **External Media Driver** — shared memory transport between processes
+- **SAM publisher pattern** — single-method functional interfaces (e.g. `Publisher`, `ClusterCommandSender`) abstract Aeron's `final` `ExclusivePublication` for testability without sacrificing zero-alloc dispatch. See [`docs/publishers.md`](docs/publishers.md) for the contract, binding idiom (method-reference to `final` field at construction), and existing usages.
 
 ## Module Layout
 
