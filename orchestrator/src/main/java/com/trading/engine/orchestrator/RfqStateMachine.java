@@ -232,6 +232,46 @@ public final class RfqStateMachine {
   }
 
   /**
+   * Zero-probe overload of {@link #onPriceResponseAccepted(byte[], int, int, PriceResponseDecoder,
+   * byte[], int, int, long)}. Skips the internal {@code probeByQuoteReqId} lookup — the caller
+   * passes the {@link RfqState} reference directly (typically obtained from an earlier {@link
+   * #findByQuoteReqId} call within the same duty-cycle iteration). Avoids a redundant hash-map walk
+   * on the hot path (PR #45 review — Gemini R3).
+   *
+   * @param rfq the RFQ slot (must be in {@link RfqState.State#PENDING_PRICE}; caller
+   *     responsibility)
+   * @param decoder the pre-wrapped PriceResponse decoder
+   * @param generatedQuoteId the generated quoteId bytes from OrchestratorIdGenerator
+   * @param quoteIdOffset offset into generatedQuoteId
+   * @param quoteIdLen length of quoteId bytes
+   * @param nowNanos current monotonic time from NanoClock
+   * @return the RfqState if transition succeeded, or {@code null} if wrong state
+   */
+  public RfqState onPriceResponseAccepted(
+      final RfqState rfq,
+      final PriceResponseDecoder decoder,
+      final byte[] generatedQuoteId,
+      final int quoteIdOffset,
+      final int quoteIdLen,
+      final long nowNanos) {
+
+    if (rfq.state() != RfqState.State.PENDING_PRICE) {
+      LOG.warn()
+          .append("onPriceResponseAccepted(rfq): unexpected state=")
+          .append(rfq.state().name())
+          .append(" poolIndex=")
+          .append(rfq.poolIndex())
+          .commit();
+      return null;
+    }
+
+    rfq.applyPriceResponse(decoder, nowNanos, quotedTimeoutNanos);
+    rfq.setQuoteId(generatedQuoteId, quoteIdOffset, quoteIdLen);
+    byQuoteId.put(rfq.quoteIdKey(), rfq);
+    return rfq;
+  }
+
+  /**
    * Transitions an RFQ from {@link RfqState.State#PENDING_PRICE} to {@link
    * RfqState.State#REJECTED}. Removes from maps and releases the pool slot.
    *
@@ -260,6 +300,30 @@ public final class RfqStateMachine {
       return null;
     }
 
+    rfq.setState(RfqState.State.REJECTED);
+    byQuoteReqId.remove(rfq.quoteReqIdKey());
+    releaseSlot(rfq);
+    return rfq;
+  }
+
+  /**
+   * Zero-probe overload of {@link #onPriceResponseRejected(byte[], int, int)}. Skips the lookup —
+   * caller passes the {@link RfqState} reference directly (typically obtained from an earlier
+   * {@link #findByQuoteReqId}). Avoids a redundant hash-map walk (PR #45 review — Gemini R3).
+   *
+   * @param rfq the RFQ slot (must be in {@link RfqState.State#PENDING_PRICE})
+   * @return the RfqState if transition succeeded, or {@code null} if wrong state
+   */
+  public RfqState onPriceResponseRejected(final RfqState rfq) {
+    if (rfq.state() != RfqState.State.PENDING_PRICE) {
+      LOG.warn()
+          .append("onPriceResponseRejected(rfq): unexpected state=")
+          .append(rfq.state().name())
+          .append(" poolIndex=")
+          .append(rfq.poolIndex())
+          .commit();
+      return null;
+    }
     rfq.setState(RfqState.State.REJECTED);
     byQuoteReqId.remove(rfq.quoteReqIdKey());
     releaseSlot(rfq);
@@ -360,6 +424,30 @@ public final class RfqStateMachine {
   }
 
   /**
+   * Zero-probe overload of {@link #rejectQuoted(byte[], int, int)}. Skips the lookup — caller
+   * passes the {@link RfqState} reference directly (typically obtained from an earlier {@link
+   * #findByQuoteId}). Avoids a redundant hash-map walk (PR #45 review — Gemini R3).
+   *
+   * @param rfq the RFQ slot (must be in {@link RfqState.State#QUOTED})
+   * @return the RfqState if transition succeeded, or {@code null} if wrong state
+   */
+  public RfqState rejectQuoted(final RfqState rfq) {
+    if (rfq.state() != RfqState.State.QUOTED) {
+      LOG.warn()
+          .append("rejectQuoted(rfq): unexpected state=")
+          .append(rfq.state().name())
+          .append(" poolIndex=")
+          .append(rfq.poolIndex())
+          .commit();
+      return null;
+    }
+    rfq.setState(RfqState.State.REJECTED);
+    removeFromMaps(rfq);
+    releaseSlot(rfq);
+    return rfq;
+  }
+
+  /**
    * Transitions an RFQ from {@link RfqState.State#PENDING_VALIDATION} to {@link
    * RfqState.State#COMPLETED}. Removes from maps and releases the pool slot.
    *
@@ -390,6 +478,30 @@ public final class RfqStateMachine {
   }
 
   /**
+   * Zero-probe overload of {@link #onValidationValid(byte[], int, int)}. Skips the lookup — caller
+   * passes the {@link RfqState} reference directly (typically obtained from an earlier {@link
+   * #findByQuoteId}). Avoids a redundant hash-map walk (PR #45 review — Gemini R3).
+   *
+   * @param rfq the RFQ slot (must be in {@link RfqState.State#PENDING_VALIDATION})
+   * @return the RfqState if transition succeeded, or {@code null} if wrong state
+   */
+  public RfqState onValidationValid(final RfqState rfq) {
+    if (rfq.state() != RfqState.State.PENDING_VALIDATION) {
+      LOG.warn()
+          .append("onValidationValid(rfq): unexpected state=")
+          .append(rfq.state().name())
+          .append(" poolIndex=")
+          .append(rfq.poolIndex())
+          .commit();
+      return null;
+    }
+    rfq.setState(RfqState.State.COMPLETED);
+    removeFromMaps(rfq);
+    releaseSlot(rfq);
+    return rfq;
+  }
+
+  /**
    * Transitions an RFQ from {@link RfqState.State#PENDING_VALIDATION} to {@link
    * RfqState.State#REJECTED}. Removes from maps and releases the pool slot.
    *
@@ -413,6 +525,30 @@ public final class RfqStateMachine {
       return null;
     }
 
+    rfq.setState(RfqState.State.REJECTED);
+    removeFromMaps(rfq);
+    releaseSlot(rfq);
+    return rfq;
+  }
+
+  /**
+   * Zero-probe overload of {@link #onValidationInvalid(byte[], int, int)}. Skips the lookup —
+   * caller passes the {@link RfqState} reference directly (typically obtained from an earlier
+   * {@link #findByQuoteId}). Avoids a redundant hash-map walk (PR #45 review — Gemini R3).
+   *
+   * @param rfq the RFQ slot (must be in {@link RfqState.State#PENDING_VALIDATION})
+   * @return the RfqState if transition succeeded, or {@code null} if wrong state
+   */
+  public RfqState onValidationInvalid(final RfqState rfq) {
+    if (rfq.state() != RfqState.State.PENDING_VALIDATION) {
+      LOG.warn()
+          .append("onValidationInvalid(rfq): unexpected state=")
+          .append(rfq.state().name())
+          .append(" poolIndex=")
+          .append(rfq.poolIndex())
+          .commit();
+      return null;
+    }
     rfq.setState(RfqState.State.REJECTED);
     removeFromMaps(rfq);
     releaseSlot(rfq);

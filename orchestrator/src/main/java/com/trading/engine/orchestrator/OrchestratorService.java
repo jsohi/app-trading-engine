@@ -552,8 +552,10 @@ public final class OrchestratorService
       // Release the slot AFTER the rejection has been encoded and published — the rfq's
       // identity fields (symbol, currency, etc.) were just read into the encoder's outbound
       // bytes, so the slot can now safely return to FREE. Releasing in-band inside the state
-      // machine would zero those fields before this code reads them.
-      stateMachine.rejectQuoted(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      // machine would zero those fields before this code reads them. Use the rfq-accepting
+      // overload to skip a redundant probe (rfq is already in scope from the findByQuoteId
+      // lookup above).
+      stateMachine.rejectQuoted(rfq);
       return Action.CONTINUE;
     }
 
@@ -633,16 +635,11 @@ public final class OrchestratorService
         return gwResult;
       }
 
-      // Publication succeeded: now mutate state
+      // Publication succeeded: now mutate state. Use the rfq-accepting overload to skip a
+      // redundant byQuoteReqId probe (rfq is already in scope from the findByQuoteReqId
+      // lookup earlier in this handler).
       stateMachine.onPriceResponseAccepted(
-          quoteReqIdScratch,
-          0,
-          RfqState.QUOTE_REQ_ID_LENGTH,
-          decoder,
-          quoteIdScratch,
-          0,
-          quoteIdLen,
-          nanoClock.nanoTime());
+          rfq, decoder, quoteIdScratch, 0, quoteIdLen, nanoClock.nanoTime());
       return Action.CONTINUE;
 
     } else {
@@ -698,8 +695,10 @@ public final class OrchestratorService
         return nosResult;
       }
 
-      // Publication succeeded — now release the pool slot (state mutation)
-      stateMachine.onValidationValid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      // Publication succeeded — now release the pool slot (state mutation). Use the
+      // rfq-accepting overload to skip a redundant byQuoteId probe (rfq is in scope from
+      // the findByQuoteId lookup at the top of this branch).
+      stateMachine.onValidationValid(rfq);
       LOG.info().append("Validation passed: NOS forwarded to gateway for cluster").commit();
       return Action.CONTINUE;
 
@@ -768,7 +767,9 @@ public final class OrchestratorService
         return gwResult;
       }
 
-      stateMachine.onValidationInvalid(quoteIdScratch, 0, RfqState.QUOTE_ID_LENGTH);
+      // rfq-accepting overload: skip a redundant byQuoteId probe (rfq in scope from the
+      // findByQuoteId lookup at the top of this else-branch).
+      stateMachine.onValidationInvalid(rfq);
       return Action.CONTINUE;
     }
   }
@@ -1063,7 +1064,9 @@ public final class OrchestratorService
       return gwResult;
     }
 
-    stateMachine.onPriceResponseRejected(quoteReqIdScratch, 0, RfqState.QUOTE_REQ_ID_LENGTH);
+    // rfq-accepting overload: skip a redundant byQuoteReqId probe (rfq in scope from the
+    // findByQuoteReqId lookup at the top of this helper).
+    stateMachine.onPriceResponseRejected(rfq);
     return Action.CONTINUE;
   }
 
