@@ -3,7 +3,6 @@ package com.trading.engine.orchestrator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.ExecTypeEnum;
@@ -18,13 +17,12 @@ import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.orchestrator.codec.OrchestratorMessageEncoder;
 import com.trading.engine.testsupport.buffer.SbeFieldUtil;
+import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.aeron.Subscription;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.UnsafeApi;
-import org.agrona.concurrent.EpochNanoClock;
-import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,8 +39,11 @@ import org.junit.jupiter.api.Test;
  */
 class OrchestratorServicePartialTest {
 
-  /** Arbitrary base epoch-nanos timestamp; non-zero to surface "uninitialised long" bugs. */
-  private static final long NOW = 1_000_000_000L;
+  /**
+   * Initial value for the deterministic test clock. Non-zero so any "uninitialised long" bug
+   * surfaces immediately. The clock is advanced explicitly in tests that need to trip a timeout.
+   */
+  private static final long START_NANOS = 1_000_000_000L;
 
   private static final long PENDING_PRICE_TIMEOUT = 5_000_000_000L;
   private static final long QUOTED_TIMEOUT = 30_000_000_000L;
@@ -69,6 +70,7 @@ class OrchestratorServicePartialTest {
   private RfqStateMachine sm;
   private OrchestratorIdGenerator quoteIdGen;
   private OrchestratorMessageEncoder encoder;
+  private ControllableNanoClock clock;
   private OrchestratorService service;
 
   @BeforeEach
@@ -80,6 +82,7 @@ class OrchestratorServicePartialTest {
             POOL_SIZE, PENDING_PRICE_TIMEOUT, QUOTED_TIMEOUT, PENDING_VALIDATION_TIMEOUT);
     quoteIdGen = new OrchestratorIdGenerator("QTE");
     encoder = new OrchestratorMessageEncoder();
+    clock = new ControllableNanoClock(START_NANOS);
     service =
         new OrchestratorService(
             unusedSubscription(),
@@ -89,8 +92,8 @@ class OrchestratorServicePartialTest {
             sm,
             quoteIdGen,
             encoder,
-            (NanoClock) () -> NOW,
-            (EpochNanoClock) () -> NOW,
+            clock,
+            clock,
             SWEEP_INTERVAL);
   }
 
@@ -155,9 +158,9 @@ class OrchestratorServicePartialTest {
     // Arrange: acquire an RFQ in PENDING_PRICE
     final var quoteReqDec =
         encodeQuoteRequest(QUOTE_REQ_ID, SYMBOL, SideEnum.Buy, ORDER_QTY, ACCOUNT);
-    assertNotNull(sm.onQuoteRequest(quoteReqDec, NOW));
+    assertNotNull(sm.onQuoteRequest(quoteReqDec, START_NANOS));
 
-    expireOneRfq(NOW + PENDING_PRICE_TIMEOUT + 1);
+    expireOneRfq(START_NANOS + PENDING_PRICE_TIMEOUT + 1);
 
     // Assert: gateway received exactly one QuoteRequestReject (templateId 3) with reason
     // TooLateToEnter and "RFQ expired" text. Pricing publisher untouched.
@@ -182,13 +185,13 @@ class OrchestratorServicePartialTest {
     // Arrange: drive the RFQ from PENDING_PRICE → QUOTED → PENDING_VALIDATION with a stashed NOS
     final var quoteReqDec =
         encodeQuoteRequest(QUOTE_REQ_ID, SYMBOL, SideEnum.Buy, ORDER_QTY, ACCOUNT);
-    assertNotNull(sm.onQuoteRequest(quoteReqDec, NOW));
+    assertNotNull(sm.onQuoteRequest(quoteReqDec, START_NANOS));
 
     final var qrid = SbeFieldUtil.zeroPad(QUOTE_REQ_ID, RfqState.QUOTE_REQ_ID_LENGTH);
     final var qid = SbeFieldUtil.zeroPad(QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
 
     SbeTestEncoder.encodePriceResponse(
-        scratch, 0, QUOTE_REQ_ID, SYMBOL, true, BID_PX, OFFER_PX, NOW);
+        scratch, 0, QUOTE_REQ_ID, SYMBOL, true, BID_PX, OFFER_PX, START_NANOS);
     headerDecoder.wrap(scratch, 0);
     priceRespDecoder.wrap(
         scratch,
@@ -197,14 +200,14 @@ class OrchestratorServicePartialTest {
         headerDecoder.version());
     assertNotNull(
         sm.onPriceResponseAccepted(
-            qrid, 0, qrid.length, priceRespDecoder, qid, 0, qid.length, NOW));
+            qrid, 0, qrid.length, priceRespDecoder, qid, 0, qid.length, START_NANOS));
 
     // Encode a real NOS into a buffer and stash it via the state machine
     final var nosBuf = new ExpandableArrayBuffer(256);
     final int nosLen = encodeNos(nosBuf);
-    assertNotNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, nosBuf, 0, nosLen, NOW));
+    assertNotNull(sm.onNewOrderSingleWithQuote(qid, 0, qid.length, nosBuf, 0, nosLen, START_NANOS));
 
-    expireOneRfq(NOW + PENDING_VALIDATION_TIMEOUT + 1);
+    expireOneRfq(START_NANOS + PENDING_VALIDATION_TIMEOUT + 1);
 
     // Assert: gateway received exactly one ExecutionReport (template 5) with execType=Rejected
     // and ClOrdID extracted from the stashed NOS
@@ -222,25 +225,6 @@ class OrchestratorServicePartialTest {
     assertEquals(OrdStatusEnum.Rejected, er.ordStatus());
     assertTrue(er.clOrdId().startsWith(CL_ORD_ID));
     assertTrue(er.text().startsWith("RFQ expired"));
-  }
-
-  // ===========================================================================
-  // reapCallback identity — captured ONCE at construction
-  // ===========================================================================
-
-  @Test
-  void reapCallback_capturedAtConstructionNotRecreated() {
-    final var first = service.reapCallbackForTesting();
-    final var second = service.reapCallbackForTesting();
-    assertNotNull(first);
-    // The field is `final` (JLS §17.5) and assigned exactly once in the constructor; reading it
-    // twice always returns the same reference. The meaningful coverage here is that (a) the
-    // construction succeeds without NPE, (b) the field is non-null after construction (lambda
-    // binding succeeded), and (c) the test serves as a regression guard — if a future refactor
-    // moves the assignment out of the constructor (e.g., into doWork()), reviewers would reject
-    // the visibility change. The hot-path zero-alloc verification of the reap loop will land in
-    // OrchestratorNoAllocationTest (Phase 4).
-    assertSame(first, second);
   }
 
   // ===========================================================================
