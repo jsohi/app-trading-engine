@@ -107,6 +107,35 @@ class OrchestratorNoAllocationTest {
   }
 
   @Test
+  void rfqStateMachine_acquireReleaseLifecycle_rfqOverloads_zeroAllocation() {
+    // Same as rfqStateMachine_acquireReleaseLifecycle_zeroAllocation but exercises the
+    // rfq-accepting zero-probe overloads of onPriceResponseAccepted / onValidationValid that
+    // OrchestratorService actually calls on the hot path after PR #45. Adds regression coverage
+    // for the new transition overloads.
+    final var sm = new RfqStateMachine(4, 5_000_000_000L, 30_000_000_000L, 5_000_000_000L);
+    final var qid = SbeFieldUtil.zeroPad(FIXED_QUOTE_ID, RfqState.QUOTE_ID_LENGTH);
+    final var qrDecoder = preBuildQuoteRequestDecoder();
+    final var prDecoder = preBuildPriceResponseDecoder();
+
+    for (int i = 0; i < WARMUP_ITERATIONS; i++) {
+      runOneLifecycleRfqOverloads(sm, qrDecoder, prDecoder, qid);
+    }
+
+    final long beforeGc = totalGcCount();
+    for (int i = 0; i < MEASURED_ITERATIONS; i++) {
+      runOneLifecycleRfqOverloads(sm, qrDecoder, prDecoder, qid);
+    }
+    final long afterGc = totalGcCount();
+    assertEquals(
+        beforeGc,
+        afterGc,
+        "RfqStateMachine rfq-overload lifecycle allocated enough to trigger GC. before="
+            + beforeGc
+            + " after="
+            + afterGc);
+  }
+
+  @Test
   void orchestratorMessageEncoder_encodePriceRequest_zeroAllocation() {
     final var sm = new RfqStateMachine(4, 5_000_000_000L, 30_000_000_000L, 5_000_000_000L);
     final var qrDecoder = preBuildQuoteRequestDecoder();
@@ -177,6 +206,22 @@ class OrchestratorNoAllocationTest {
     assertNotNull(rfq);
     sm.onPriceResponseAccepted(qrid, 0, qrid.length, prDecoder, qid, 0, qid.length, NOW);
     sm.onValidationValid(qid, 0, qid.length);
+  }
+
+  /**
+   * Same lifecycle as {@link #runOneLifecycle} but uses the rfq-accepting zero-probe overloads —
+   * the paths that OrchestratorService actually calls on the hot path after PR #45. Validates that
+   * the new overloads are also allocation-free.
+   */
+  private static void runOneLifecycleRfqOverloads(
+      final RfqStateMachine sm,
+      final QuoteRequestDecoder qrDecoder,
+      final PriceResponseDecoder prDecoder,
+      final byte[] qid) {
+    final var rfq = sm.onQuoteRequest(qrDecoder, NOW);
+    assertNotNull(rfq);
+    sm.onPriceResponseAccepted(rfq, prDecoder, qid, 0, qid.length, NOW);
+    sm.onValidationValid(rfq);
   }
 
   /** Builds a wrapped QuoteRequestDecoder for the fixed quoteReqId. Non-allocating after init. */
