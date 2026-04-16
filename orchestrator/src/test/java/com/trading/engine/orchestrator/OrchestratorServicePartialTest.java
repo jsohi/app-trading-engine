@@ -70,7 +70,10 @@ class OrchestratorServicePartialTest {
   private RfqStateMachine sm;
   private OrchestratorIdGenerator quoteIdGen;
   private OrchestratorMessageEncoder encoder;
+
+  /** Fresh instance per test via {@link #setUp()} — clock state is NEVER shared across tests. */
   private ControllableNanoClock clock;
+
   private OrchestratorService service;
 
   @BeforeEach
