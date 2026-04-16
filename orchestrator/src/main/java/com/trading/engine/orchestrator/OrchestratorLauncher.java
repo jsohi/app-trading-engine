@@ -149,12 +149,14 @@ public final class OrchestratorLauncher {
     final var nanoClock = TradingClocks.nanoClock();
 
     // --- Step 11: Construct OrchestratorService ---
+    // Bind the publications as Publisher SAMs via method references — captured ONCE at
+    // construction (JLS §15.27.4); JIT inlines through them after warmup. See Publisher Javadoc.
     final var orchestratorService =
         new OrchestratorService(
             gatewaySubscription,
-            gatewayPublication,
+            gatewayPublication::offer,
             pricingSubscription,
-            pricingPublication,
+            pricingPublication::offer,
             stateMachine,
             quoteIdGenerator,
             encoder,
@@ -187,8 +189,9 @@ public final class OrchestratorLauncher {
         .append(" quoteIdPrefix=QTE")
         .commit();
 
-    // --- Step 14: Return components ---
-    return new OrchestratorComponents(agentRunner, aeron, ownsAeron);
+    // --- Step 14: Return components (publications now owned by OrchestratorComponents.close()) ---
+    return new OrchestratorComponents(
+        agentRunner, gatewayPublication, pricingPublication, aeron, ownsAeron);
   }
 
   private static void requireNonBlank(final String value, final String name) {
