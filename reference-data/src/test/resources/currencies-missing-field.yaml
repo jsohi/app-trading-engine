@@ -1,0 +1,5 @@
+currencies:
+  - ccyCode: "USD"
+    isoNumeric: 840
+    decimals: 2
+    currencyClass: "Fiat"

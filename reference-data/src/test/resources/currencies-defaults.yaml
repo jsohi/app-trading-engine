@@ -1,0 +1,6 @@
+currencies:
+  - ccyCode: "GBP"
+    isoNumeric: 826
+    name: "British Pound"
+    decimals: 2
+    currencyClass: "Fiat"

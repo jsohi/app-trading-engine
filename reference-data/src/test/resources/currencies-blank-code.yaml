@@ -1,0 +1,6 @@
+currencies:
+  - ccyCode: "   "
+    isoNumeric: 840
+    name: "Blank Code"
+    decimals: 2
+    currencyClass: "Fiat"

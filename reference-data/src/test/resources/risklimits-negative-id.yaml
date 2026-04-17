@@ -1,0 +1,4 @@
+riskLimits:
+  - accountId: -1
+    maxOrderSize: 100
+    maxDailyLossBps: 50

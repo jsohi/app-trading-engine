@@ -1,0 +1,3 @@
+currencies:
+  - ccyCode: [this is not: valid yaml
+    invalid_key:

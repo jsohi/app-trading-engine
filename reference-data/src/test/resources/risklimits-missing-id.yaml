@@ -1,0 +1,3 @@
+riskLimits:
+  - maxOrderSize: 100
+    maxDailyLossBps: 50

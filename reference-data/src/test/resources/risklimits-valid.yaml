@@ -1,0 +1,14 @@
+riskLimits:
+  - accountId: 1
+    maxOrderSize: 1000000000
+    maxOrderNotional: 500000000
+    maxDailyVolume: 10000000000
+    maxDailyLossBps: 50
+    status: "Active"
+
+  - accountId: 2
+    maxOrderSize: 0
+    maxOrderNotional: 0
+    maxDailyVolume: 0
+    maxDailyLossBps: 100
+    status: "Suspended"
