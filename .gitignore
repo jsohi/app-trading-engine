@@ -25,3 +25,7 @@ dist/
 
 # Log output (Log4j2)
 logs/
+
+# E2E test runtime artifacts (not the checked-in test data or source code)
+/e2e/
+fix-logs/

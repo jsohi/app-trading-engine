@@ -88,3 +88,28 @@ subprojects {
         }
     }
 }
+
+// =============================================================================
+// E2E integration test — boots real 3-node cluster, sends FIX NOS, validates ER
+// =============================================================================
+
+tasks.register<Exec>("e2e") {
+    group = "verification"
+    description = "Run full e2e test — real 3-node cluster, FIX NOS, ExecutionReport validation"
+    dependsOn("build", ":integration-tests:installDist")
+    commandLine("bash", "scripts/e2e.sh")
+    timeout.set(java.time.Duration.ofMinutes(3))
+}
+
+tasks.register<Delete>("e2eClean") {
+    group = "verification"
+    description = "Remove e2e test artifacts (logs, cluster data, aeron dirs)"
+    delete("e2e/logs", "e2e/cluster-data")
+    doLast {
+        Runtime.getRuntime().exec(arrayOf("bash", "-c", "rm -rf /tmp/aeron-e2e-*")).waitFor()
+        Runtime
+            .getRuntime()
+            .exec(arrayOf("bash", "-c", "pkill -9 -f -- '-Daeron.dir.prefix=e2e' 2>/dev/null || true"))
+            .waitFor()
+    }
+}

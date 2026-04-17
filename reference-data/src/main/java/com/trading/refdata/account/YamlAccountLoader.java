@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import org.agrona.collections.LongHashSet;
 import org.slf4j.Logger;
@@ -56,7 +57,7 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
    * @param filePath path to the YAML file; must be non-null and readable
    */
   public YamlAccountLoader(final Path filePath) {
-    this.filePath = filePath;
+    this.filePath = Objects.requireNonNull(filePath, "filePath");
   }
 
   /** {@inheritDoc} */
@@ -161,7 +162,7 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     } catch (final IllegalArgumentException e) {
       // Re-wrap compact constructor validation failures
       throw new ReferenceDataLoadException(
-          ENTITY_TYPE, "invalid entry " + index + " in " + filePath + ": " + e.getMessage());
+          ENTITY_TYPE, "invalid entry " + index + " in " + filePath + ": " + e.getMessage(), e);
     } catch (final Exception e) {
       throw new ReferenceDataLoadException(
           ENTITY_TYPE, "invalid entry " + index + " in " + filePath, e);

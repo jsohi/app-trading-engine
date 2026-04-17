@@ -11,7 +11,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import org.agrona.collections.IntHashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
@@ -32,7 +34,7 @@ import org.yaml.snakeyaml.Yaml;
  * </pre>
  *
  * <p>Validates: ccyCode is exactly 3 uppercase ASCII, isoNumeric in [1,&nbsp;999], decimals in
- * [0,&nbsp;18]. Rejects duplicates by {@code ccyCode}.
+ * [0,&nbsp;18]. Rejects duplicates by {@code ccyCode} and {@code isoNumeric}.
  *
  * <p>Not thread-safe — single-threaded startup use only.
  */
@@ -41,7 +43,8 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
   private static final Logger LOG = LoggerFactory.getLogger(YamlCurrencyLoader.class);
   private static final String ENTITY_TYPE = "Currency";
 
-  private static final Yaml YAML = new Yaml();
+  // Instance field — SnakeYAML Yaml is NOT thread-safe (holds internal parsing state).
+  private final Yaml yaml = new Yaml();
 
   private final Path filePath;
 
@@ -51,7 +54,7 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
    * @param filePath path to the YAML file; must be non-null and readable
    */
   public YamlCurrencyLoader(final Path filePath) {
-    this.filePath = filePath;
+    this.filePath = Objects.requireNonNull(filePath, "filePath");
   }
 
   /** {@inheritDoc} */
@@ -61,7 +64,7 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
 
     final Object parsed;
     try (final Reader reader = Files.newBufferedReader(filePath, StandardCharsets.UTF_8)) {
-      parsed = YAML.load(reader);
+      parsed = yaml.load(reader);
     } catch (final IOException e) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "cannot read " + filePath, e);
     } catch (final Exception e) {
@@ -81,7 +84,8 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
     final var root = (Map<String, Object>) rootMap;
 
     if (!root.containsKey("currencies")) {
-      return List.of();
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE, "missing required root key 'currencies' in " + filePath);
     }
 
     final var rawList = root.get("currencies");
@@ -92,6 +96,8 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
 
     final List<CurrencyRecord> records = new ArrayList<>(entries.size());
     final Set<String> seenCodes = new HashSet<>();
+    // Agrona IntHashSet avoids autoboxing int → Integer on every add()
+    final IntHashSet seenIsoNumerics = new IntHashSet();
 
     for (int i = 0; i < entries.size(); i++) {
       if (!(entries.get(i) instanceof Map<?, ?> map)) {
@@ -108,6 +114,12 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
         throw new ReferenceDataLoadException(
             ENTITY_TYPE,
             "duplicate ccyCode '" + record.ccyCode() + "' at entry " + i + " in " + filePath);
+      }
+
+      if (!seenIsoNumerics.add(record.isoNumeric())) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE,
+            "duplicate isoNumeric " + record.isoNumeric() + " at entry " + i + " in " + filePath);
       }
 
       records.add(record);
@@ -127,50 +139,23 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
       throws ReferenceDataLoadException {
     try {
       final String ccyCode = requireString(entry, "ccyCode");
-      validateCcyCode(ccyCode);
-
       final int isoNumeric = requireInt(entry, "isoNumeric");
-      if (isoNumeric < 1 || isoNumeric > 999) {
-        throw new ReferenceDataLoadException(
-            ENTITY_TYPE, "isoNumeric must be in [1, 999], got " + isoNumeric);
-      }
-
       final String name = requireString(entry, "name");
-
       final int decimals = requireInt(entry, "decimals");
-      if (decimals < 0 || decimals > 18) {
-        throw new ReferenceDataLoadException(
-            ENTITY_TYPE, "decimals must be in [0, 18], got " + decimals);
-      }
-
       final String currencyClass = requireString(entry, "currencyClass");
-      final String status = stringOrDefault(entry, "status", "Active");
+      final String status = requireStringOrDefault(entry, "status", "Active");
 
+      // CurrencyRecord compact constructor validates all field constraints
       return new CurrencyRecord(ccyCode, isoNumeric, name, decimals, currencyClass, status);
     } catch (final ReferenceDataLoadException e) {
       throw e;
     } catch (final IllegalArgumentException e) {
-      // Re-wrap compact constructor validation failures
+      // Re-wrap compact constructor validation failures — preserve cause for diagnostics
       throw new ReferenceDataLoadException(
-          ENTITY_TYPE, "invalid entry " + index + " in " + filePath + ": " + e.getMessage());
+          ENTITY_TYPE, "invalid entry " + index + " in " + filePath + ": " + e.getMessage(), e);
     } catch (final Exception e) {
       throw new ReferenceDataLoadException(
           ENTITY_TYPE, "invalid entry " + index + " in " + filePath, e);
-    }
-  }
-
-  /** Validates that {@code ccyCode} is exactly 3 uppercase ASCII characters (A–Z). */
-  private static void validateCcyCode(final String ccyCode) throws ReferenceDataLoadException {
-    if (ccyCode.length() != 3) {
-      throw new ReferenceDataLoadException(
-          ENTITY_TYPE, "ccyCode must be exactly 3 characters, got '" + ccyCode + "'");
-    }
-    for (int i = 0; i < 3; i++) {
-      final char c = ccyCode.charAt(i);
-      if (c < 'A' || c > 'Z') {
-        throw new ReferenceDataLoadException(
-            ENTITY_TYPE, "ccyCode must be uppercase ASCII, got '" + ccyCode + "'");
-      }
     }
   }
 
@@ -204,13 +189,21 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
     return str;
   }
 
-  private static String stringOrDefault(
-      final Map<String, Object> map, final String key, final String defaultValue) {
+  /**
+   * Returns a non-blank string value, or the default if the key is absent. An explicitly blank
+   * value is treated as invalid (not omitted) and throws.
+   */
+  private static String requireStringOrDefault(
+      final Map<String, Object> map, final String key, final String defaultValue)
+      throws ReferenceDataLoadException {
     final var value = map.get(key);
     if (value == null) {
       return defaultValue;
     }
     final var str = value.toString();
-    return str.isBlank() ? defaultValue : str;
+    if (str.isBlank()) {
+      throw new ReferenceDataLoadException(ENTITY_TYPE, "field '" + key + "' must not be blank");
+    }
+    return str;
   }
 }

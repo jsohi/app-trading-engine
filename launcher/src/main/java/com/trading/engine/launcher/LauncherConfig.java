@@ -74,6 +74,14 @@ public record LauncherConfig(
     if (aeronDirPrefix == null) {
       throw new IllegalArgumentException("aeron.dir.prefix must not be null");
     }
+    // Validate prefix contains only safe characters — it is interpolated into /tmp/aeron-<prefix>-
+    // paths. Reject path separators, traversal sequences, and control characters.
+    if (!aeronDirPrefix.isEmpty() && !aeronDirPrefix.matches("[A-Za-z0-9][A-Za-z0-9\\-]*")) {
+      throw new IllegalArgumentException(
+          "aeron.dir.prefix must be alphanumeric/hyphen (no path separators), got: '"
+              + aeronDirPrefix
+              + "'");
+    }
   }
 
   /**
