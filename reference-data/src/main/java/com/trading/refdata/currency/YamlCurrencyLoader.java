@@ -1,4 +1,4 @@
-package com.trading.refdata.account;
+package com.trading.refdata.currency;
 
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataLoader;
@@ -12,61 +12,55 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.agrona.collections.LongHashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
 /**
- * Loads account records from a YAML file.
+ * Loads currency records from a YAML file.
  *
  * <p>Expected format:
  *
  * <pre>
- * accounts:
- *   - accountId: 1
- *     parentAccountId: 0
- *     accountCode: "ACME-001"
- *     acctIdSource: "Internal"
- *     accountName: "Acme Capital"
- *     accountType: "Client"
- *     baseCurrency: "USD"
+ * currencies:
+ *   - ccyCode: "USD"
+ *     isoNumeric: 840
+ *     name: "US Dollar"
+ *     decimals: 2
+ *     currencyClass: "Fiat"
  *     status: "Active"
- *     complianceStatus: "OK"
- *     capabilities: 3
  * </pre>
  *
- * <p>Validates: accountId &gt; 0, accountCode unique, accountId unique. Optional fields default to:
- * acctIdSource=Internal, status=Active, complianceStatus=OK, parentAccountId=0, capabilities=0.
+ * <p>Validates: ccyCode is exactly 3 uppercase ASCII, isoNumeric in [1,&nbsp;999], decimals in
+ * [0,&nbsp;18]. Rejects duplicates by {@code ccyCode}.
  *
  * <p>Not thread-safe — single-threaded startup use only.
  */
-public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecord> {
+public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRecord> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(YamlAccountLoader.class);
-  private static final String ENTITY_TYPE = "Account";
+  private static final Logger LOG = LoggerFactory.getLogger(YamlCurrencyLoader.class);
+  private static final String ENTITY_TYPE = "Currency";
 
   private static final Yaml YAML = new Yaml();
 
   private final Path filePath;
 
   /**
-   * Creates a loader that reads accounts from the given YAML file.
+   * Creates a loader that reads currencies from the given YAML file.
    *
    * @param filePath path to the YAML file; must be non-null and readable
    */
-  public YamlAccountLoader(final Path filePath) {
+  public YamlCurrencyLoader(final Path filePath) {
     this.filePath = filePath;
   }
 
   /** {@inheritDoc} */
   @Override
-  public List<AccountRecord> load() throws ReferenceDataLoadException {
-    LOG.info("Loading accounts from {}", filePath);
+  public List<CurrencyRecord> load() throws ReferenceDataLoadException {
+    LOG.info("Loading currencies from {}", filePath);
 
     final Object parsed;
     try (final Reader reader = Files.newBufferedReader(filePath, StandardCharsets.UTF_8)) {
-      // SnakeYAML 2.x uses SafeConstructor by default — no arbitrary class instantiation
       parsed = YAML.load(reader);
     } catch (final IOException e) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "cannot read " + filePath, e);
@@ -86,19 +80,18 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     @SuppressWarnings("unchecked")
     final var root = (Map<String, Object>) rootMap;
 
-    if (!root.containsKey("accounts")) {
+    if (!root.containsKey("currencies")) {
       return List.of();
     }
 
-    final var rawList = root.get("accounts");
+    final var rawList = root.get("currencies");
     if (!(rawList instanceof List<?> entries)) {
-      throw new ReferenceDataLoadException(ENTITY_TYPE, "'accounts' must be a list in " + filePath);
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE, "'currencies' must be a list in " + filePath);
     }
 
-    final List<AccountRecord> records = new ArrayList<>(entries.size());
+    final List<CurrencyRecord> records = new ArrayList<>(entries.size());
     final Set<String> seenCodes = new HashSet<>();
-    // Agrona LongHashSet avoids autoboxing long → Long on every add()
-    final LongHashSet seenIds = new LongHashSet();
 
     for (int i = 0; i < entries.size(); i++) {
       if (!(entries.get(i) instanceof Map<?, ?> map)) {
@@ -111,27 +104,16 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
 
       final var record = toRecord(entry, i);
 
-      if (!seenIds.add(record.accountId())) {
+      if (!seenCodes.add(record.ccyCode())) {
         throw new ReferenceDataLoadException(
             ENTITY_TYPE,
-            "duplicate accountId " + record.accountId() + " at entry " + i + " in " + filePath);
-      }
-
-      if (!seenCodes.add(record.accountCode())) {
-        throw new ReferenceDataLoadException(
-            ENTITY_TYPE,
-            "duplicate accountCode '"
-                + record.accountCode()
-                + "' at entry "
-                + i
-                + " in "
-                + filePath);
+            "duplicate ccyCode '" + record.ccyCode() + "' at entry " + i + " in " + filePath);
       }
 
       records.add(record);
     }
 
-    LOG.info("Loaded {} accounts from {}", records.size(), filePath);
+    LOG.info("Loaded {} currencies from {}", records.size(), filePath);
     return List.copyOf(records);
   }
 
@@ -141,21 +123,30 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     return filePath.getFileName().toString();
   }
 
-  private AccountRecord toRecord(final Map<String, Object> entry, final int index)
+  private CurrencyRecord toRecord(final Map<String, Object> entry, final int index)
       throws ReferenceDataLoadException {
     try {
-      final long accountId = requireLong(entry, "accountId");
-      return new AccountRecord(
-          accountId,
-          toLong(entry, "parentAccountId"),
-          requireString(entry, "accountCode"),
-          stringOrDefault(entry, "acctIdSource", "Internal"),
-          requireString(entry, "accountName"),
-          requireString(entry, "accountType"),
-          requireString(entry, "baseCurrency"),
-          stringOrDefault(entry, "status", "Active"),
-          stringOrDefault(entry, "complianceStatus", "OK"),
-          toLong(entry, "capabilities"));
+      final String ccyCode = requireString(entry, "ccyCode");
+      validateCcyCode(ccyCode);
+
+      final int isoNumeric = requireInt(entry, "isoNumeric");
+      if (isoNumeric < 1 || isoNumeric > 999) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "isoNumeric must be in [1, 999], got " + isoNumeric);
+      }
+
+      final String name = requireString(entry, "name");
+
+      final int decimals = requireInt(entry, "decimals");
+      if (decimals < 0 || decimals > 18) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "decimals must be in [0, 18], got " + decimals);
+      }
+
+      final String currencyClass = requireString(entry, "currencyClass");
+      final String status = stringOrDefault(entry, "status", "Active");
+
+      return new CurrencyRecord(ccyCode, isoNumeric, name, decimals, currencyClass, status);
     } catch (final ReferenceDataLoadException e) {
       throw e;
     } catch (final IllegalArgumentException e) {
@@ -168,34 +159,32 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
     }
   }
 
-  private static long toLong(final Map<String, Object> map, final String key)
-      throws ReferenceDataLoadException {
-    final var value = map.get(key);
-    if (value == null) {
-      return 0L;
-    }
-    if (value instanceof Number n) {
-      return n.longValue();
-    }
-    try {
-      return Long.parseLong(value.toString());
-    } catch (final NumberFormatException e) {
+  /** Validates that {@code ccyCode} is exactly 3 uppercase ASCII characters (A–Z). */
+  private static void validateCcyCode(final String ccyCode) throws ReferenceDataLoadException {
+    if (ccyCode.length() != 3) {
       throw new ReferenceDataLoadException(
-          ENTITY_TYPE, "field '" + key + "' is not a valid number: '" + value + "'", e);
+          ENTITY_TYPE, "ccyCode must be exactly 3 characters, got '" + ccyCode + "'");
+    }
+    for (int i = 0; i < 3; i++) {
+      final char c = ccyCode.charAt(i);
+      if (c < 'A' || c > 'Z') {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "ccyCode must be uppercase ASCII, got '" + ccyCode + "'");
+      }
     }
   }
 
-  private static long requireLong(final Map<String, Object> map, final String key)
+  private static int requireInt(final Map<String, Object> map, final String key)
       throws ReferenceDataLoadException {
     final var value = map.get(key);
     if (value == null) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "missing required field '" + key + "'");
     }
     if (value instanceof Number n) {
-      return n.longValue();
+      return n.intValue();
     }
     try {
-      return Long.parseLong(value.toString());
+      return Integer.parseInt(value.toString());
     } catch (final NumberFormatException e) {
       throw new ReferenceDataLoadException(
           ENTITY_TYPE, "field '" + key + "' is not a valid number: '" + value + "'", e);

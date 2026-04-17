@@ -13,7 +13,8 @@ import java.util.List;
 import org.agrona.MutableDirectBuffer;
 
 /**
- * Encodes {@link AccountRecord} instances into a {@code LoadAccountBatch} SBE message.
+ * Encodes {@link AccountRecord} instances into a {@code LoadAccountBatch} SBE message
+ * (templateId&nbsp;12).
  *
  * <p>Not thread-safe — reuses mutable SBE flyweight fields. Single-threaded use only.
  */
@@ -25,6 +26,7 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final LoadAccountBatchEncoder batchEncoder = new LoadAccountBatchEncoder();
 
+  /** {@inheritDoc} */
   @Override
   public int encodeBatch(
       final List<AccountRecord> records,
@@ -52,7 +54,7 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
           .accountName(record.accountName())
           .accountType(toAccountType(record.accountType()))
           .baseCurrency(record.baseCurrency())
-          .status(toAccountStatus(record.status()))
+          .status(toStatus(record.status()))
           .complianceStatus(toComplianceStatus(record.complianceStatus()))
           .capabilities(record.capabilities());
     }
@@ -60,16 +62,19 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
     return MessageHeaderEncoder.ENCODED_LENGTH + batchEncoder.encodedLength();
   }
 
+  /** {@inheritDoc} */
   @Override
   public int templateId() {
     return LoadAccountBatchEncoder.TEMPLATE_ID;
   }
 
+  /** {@inheritDoc} */
   @Override
   public int maxBatchSize() {
     return MAX_BATCH_SIZE;
   }
 
+  /** {@inheritDoc} */
   @Override
   public String entityType() {
     return ENTITY_TYPE;
@@ -100,8 +105,7 @@ public final class AccountCommandEncoder implements ReferenceDataEncoder<Account
     };
   }
 
-  private static AccountStatusEnum toAccountStatus(final String value)
-      throws ReferenceDataLoadException {
+  private static AccountStatusEnum toStatus(final String value) throws ReferenceDataLoadException {
     return switch (value) {
       case "Active" -> AccountStatusEnum.Active;
       case "Suspended" -> AccountStatusEnum.Suspended;

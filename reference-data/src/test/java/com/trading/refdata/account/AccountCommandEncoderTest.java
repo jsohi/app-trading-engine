@@ -17,6 +17,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
 
+/** Tests SBE encode/decode round-trip and error handling for {@link AccountCommandEncoder}. */
 final class AccountCommandEncoderTest {
 
   private final AccountCommandEncoder encoder = new AccountCommandEncoder();

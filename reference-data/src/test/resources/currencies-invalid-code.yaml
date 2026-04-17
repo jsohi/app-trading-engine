@@ -1,0 +1,6 @@
+currencies:
+  - ccyCode: "usd"
+    isoNumeric: 840
+    name: "Lowercase Code"
+    decimals: 2
+    currencyClass: "Fiat"

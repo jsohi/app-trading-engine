@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 import org.junit.jupiter.api.Test;
 
+/** Tests YAML loading, validation, and edge-case handling for {@link YamlAccountLoader}. */
 final class YamlAccountLoaderTest {
 
   private Path testResource(final String name) {

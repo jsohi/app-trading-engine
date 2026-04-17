@@ -33,3 +33,20 @@ application {
             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
         )
 }
+
+// Forward known system properties to the forked launcher JVM. The Gradle application plugin's
+// run task (JavaExec) does NOT automatically propagate Gradle JVM system properties to the
+// child process. Without this, -Dfix.port=19880 or -Daeron.dir.prefix=e2e from `./gradlew
+// :launcher:run -Dfix.port=19880` would be silently ignored. We filter to known prefixes to
+// avoid leaking unrelated Gradle internals.
+val knownPrefixes = listOf("fix.", "cluster.", "log.", "aeron.", "accounts.", "currencies.", "risk-limits.", "driver.")
+tasks.named<JavaExec>("run") {
+    systemProperties(
+        System
+            .getProperties()
+            .mapNotNull { (k, v) ->
+                val key = k.toString()
+                if (knownPrefixes.any { prefix -> key.startsWith(prefix) }) key to v.toString() else null
+            }.toMap(),
+    )
+}

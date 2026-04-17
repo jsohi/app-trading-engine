@@ -1,0 +1,6 @@
+currencies:
+  - ccyCode: "BAD"
+    isoNumeric: 100
+    name: "Bad Decimals"
+    decimals: 19
+    currencyClass: "Fiat"

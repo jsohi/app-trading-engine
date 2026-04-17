@@ -1,0 +1,12 @@
+currencies:
+  - ccyCode: "USD"
+    isoNumeric: 840
+    name: "US Dollar"
+    decimals: 2
+    currencyClass: "Fiat"
+
+  - ccyCode: "USD"
+    isoNumeric: 841
+    name: "Duplicate Dollar"
+    decimals: 2
+    currencyClass: "Fiat"

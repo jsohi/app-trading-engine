@@ -11,6 +11,10 @@ import com.trading.refdata.ReferenceDataOrchestrator;
 import com.trading.refdata.ResponseCollector;
 import com.trading.refdata.account.AccountCommandEncoder;
 import com.trading.refdata.account.YamlAccountLoader;
+import com.trading.refdata.currency.CurrencyCommandEncoder;
+import com.trading.refdata.currency.YamlCurrencyLoader;
+import com.trading.refdata.risklimit.RiskLimitCommandEncoder;
+import com.trading.refdata.risklimit.YamlRiskLimitLoader;
 import io.aeron.Aeron;
 import io.aeron.cluster.client.AeronCluster;
 import java.io.File;
@@ -96,12 +100,19 @@ public final class TradingEngineLauncher {
     // ===== Step 1: Parse + validate config =====
     final var config = LauncherConfig.fromSystemProperties();
     LOG.info(
-        "Configuration: fixHost={} fixPort={} nodeCount={} baseDir={} logDir={}",
+        "Configuration: fixHost={} fixPort={} nodeCount={} baseDir={} logDir={}"
+            + " driverShutdownTimeoutSeconds={} accountsFile={} currenciesFile={}"
+            + " riskLimitsFile={} aeronDirPrefix='{}'",
         config.fixHost(),
         config.fixPort(),
         config.nodeCount(),
         config.baseDir(),
-        config.logDir());
+        config.logDir(),
+        config.driverShutdownTimeoutSeconds(),
+        config.accountsFile(),
+        config.currenciesFile(),
+        config.riskLimitsFile(),
+        config.aeronDirPrefix());
 
     // ===== Step 2: Create log directory =====
     final var logDir = Path.of(config.logDir());
@@ -136,22 +147,29 @@ public final class TradingEngineLauncher {
                   destroyAllMediaDrivers(
                       mediaDriverProcesses, config.driverShutdownTimeoutSeconds());
                   cleanupPidFiles(pidDir, mediaDriverProcesses.length());
+                  // Flush async Log4j2 ring buffer LAST — all resource-close logs above are
+                  // still queued in the async appender until this call flushes them to disk.
+                  LogManager.shutdown();
                 },
                 "trading-engine-shutdown"));
 
     try {
       // ===== Step 4: Spawn media driver processes =====
       long stepStart = System.nanoTime();
+      // If aeronDirPrefix is "e2e": /tmp/aeron-e2e-node-0, /tmp/aeron-e2e-gateway
+      // If aeronDirPrefix is "":    /tmp/aeron-node-0, /tmp/aeron-gateway (production default)
+      final String dirInfix =
+          config.aeronDirPrefix().isEmpty() ? "" : config.aeronDirPrefix() + "-";
       final var aeronDirs = new String[config.nodeCount() + 1];
       for (int i = 0; i < config.nodeCount(); i++) {
-        aeronDirs[i] = "/tmp/aeron-node-" + i;
+        aeronDirs[i] = "/tmp/aeron-" + dirInfix + "node-" + i;
         final var driverProc = spawnMediaDriver(aeronDirs[i], logDir, pidDir, i);
         mediaDriverProcesses.set(i, driverProc);
         registerCrashHandler(driverProc, i, barrier);
       }
       // Gateway media driver
       final int gwIndex = config.nodeCount();
-      aeronDirs[gwIndex] = "/tmp/aeron-gateway";
+      aeronDirs[gwIndex] = "/tmp/aeron-" + dirInfix + "gateway";
       final var gwDriverProc = spawnMediaDriver(aeronDirs[gwIndex], logDir, pidDir, gwIndex);
       mediaDriverProcesses.set(gwIndex, gwDriverProc);
       registerCrashHandler(gwDriverProc, gwIndex, barrier);
@@ -193,7 +211,12 @@ public final class TradingEngineLauncher {
 
       // ===== Step 8: Load reference data =====
       stepStart = System.nanoTime();
-      loadReferenceData(aeronDirs[gwIndex], ingressEndpoints, config.accountsFile());
+      loadReferenceData(
+          aeronDirs[gwIndex],
+          ingressEndpoints,
+          config.accountsFile(),
+          config.currenciesFile(),
+          config.riskLimitsFile());
       LOG.info("Step 8 complete: reference data loaded in {}ms", elapsedMs(stepStart));
 
       // ===== Step 9a: Launch pricing service =====
@@ -263,7 +286,11 @@ public final class TradingEngineLauncher {
    * The AeronCluster.connect() call inherently waits for leader election.
    */
   private static void loadReferenceData(
-      final String gatewayAeronDir, final String ingressEndpoints, final String accountsFile)
+      final String gatewayAeronDir,
+      final String ingressEndpoints,
+      final String accountsFile,
+      final String currenciesFile,
+      final String riskLimitsFile)
       throws ReferenceDataLoadException {
 
     final var collector = new ResponseCollector();
@@ -291,7 +318,16 @@ public final class TradingEngineLauncher {
       final Runnable pollEgress = () -> cluster.controlledPollEgress();
       final var orchestrator = new ReferenceDataOrchestrator(SystemNanoClock.INSTANCE);
 
-      // Load accounts
+      // 1. Currencies FIRST (no FK dependencies)
+      orchestrator.load(
+          new YamlCurrencyLoader(Path.of(currenciesFile)),
+          new CurrencyCommandEncoder(),
+          sender,
+          pollEgress,
+          collector);
+      LOG.info("Currency reference data loaded successfully");
+
+      // 2. Accounts SECOND (FK: baseCurrency must exist in currency store)
       orchestrator.load(
           new YamlAccountLoader(Path.of(accountsFile)),
           new AccountCommandEncoder(),
@@ -300,7 +336,14 @@ public final class TradingEngineLauncher {
           collector);
       LOG.info("Account reference data loaded successfully");
 
-      // TODO(APP-204): load currencies and risk limits when loaders are implemented
+      // 3. Risk limits THIRD (FK: accountId must exist in account store)
+      orchestrator.load(
+          new YamlRiskLimitLoader(Path.of(riskLimitsFile)),
+          new RiskLimitCommandEncoder(),
+          sender,
+          pollEgress,
+          collector);
+      LOG.info("Risk limit reference data loaded successfully");
     }
   }
 
