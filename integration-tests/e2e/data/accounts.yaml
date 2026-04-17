@@ -1,0 +1,22 @@
+accounts:
+  - accountId: 1
+    parentAccountId: 0
+    accountCode: "ACME"
+    acctIdSource: "Internal"
+    accountName: "Acme Trading"
+    accountType: "Client"
+    baseCurrency: "USD"
+    status: "Active"
+    complianceStatus: "OK"
+    capabilities: 3
+
+  - accountId: 2
+    parentAccountId: 0
+    accountCode: "LOCKED"
+    acctIdSource: "Internal"
+    accountName: "Locked Account"
+    accountType: "Client"
+    baseCurrency: "USD"
+    status: "Suspended"
+    complianceStatus: "OK"
+    capabilities: 1

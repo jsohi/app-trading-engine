@@ -3,6 +3,7 @@ package com.trading.refdata.account;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.trading.refdata.ReferenceDataLoadException;
+import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.Objects;
 import org.junit.jupiter.api.Test;
@@ -12,7 +13,11 @@ final class YamlAccountLoaderTest {
 
   private Path testResource(final String name) {
     final var url = Objects.requireNonNull(getClass().getClassLoader().getResource(name), name);
-    return Path.of(url.getPath());
+    try {
+      return Path.of(url.toURI());
+    } catch (final URISyntaxException e) {
+      throw new AssertionError("invalid test resource URI: " + url, e);
+    }
   }
 
   @Test
