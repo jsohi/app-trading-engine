@@ -1,5 +1,6 @@
 package com.trading.engine.launcher;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.orchestrator.OrchestratorComponents;
 import com.trading.engine.orchestrator.OrchestratorLauncher;
 import com.trading.engine.pricing.PricingComponents;
@@ -28,8 +29,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.agrona.concurrent.SystemNanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -78,6 +79,9 @@ public final class TradingEngineLauncher {
 
   private static final Logger LOG = LogManager.getLogger(TradingEngineLauncher.class);
 
+  /** Monotonic clock for startup elapsed-time measurement. */
+  private static final NanoClock NANO_CLOCK = TradingClocks.nanoClock();
+
   /** JVM args required for Aeron's unsafe memory access (Agrona, Archive, Cluster). */
   private static final List<String> AERON_JVM_ARGS =
       List.of(
@@ -95,7 +99,7 @@ public final class TradingEngineLauncher {
    * @param args ignored — all configuration via system properties
    */
   public static void main(final String[] args) throws Exception {
-    final long launchStartNs = System.nanoTime();
+    final long launchStartNs = NANO_CLOCK.nanoTime();
 
     // ===== Step 1: Parse + validate config =====
     final var config = LauncherConfig.fromSystemProperties();
@@ -155,7 +159,7 @@ public final class TradingEngineLauncher {
 
     try {
       // ===== Step 4: Spawn media driver processes =====
-      long stepStart = System.nanoTime();
+      long stepStart = NANO_CLOCK.nanoTime();
       // If aeronDirPrefix is "e2e": /tmp/aeron-e2e-node-0, /tmp/aeron-e2e-gateway
       // If aeronDirPrefix is "":    /tmp/aeron-node-0, /tmp/aeron-gateway (production default)
       final String dirInfix =
@@ -179,9 +183,9 @@ public final class TradingEngineLauncher {
           elapsedMs(stepStart));
 
       // ===== Step 5: Validate driver liveness (P1-6) =====
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       for (int i = 0; i < aeronDirs.length; i++) {
-        final long driverStart = System.nanoTime();
+        final long driverStart = NANO_CLOCK.nanoTime();
         try (var ignored =
             Aeron.connect(
                 new Aeron.Context()
@@ -198,7 +202,7 @@ public final class TradingEngineLauncher {
       LOG.info("Cluster members: {}", clusterMembers);
 
       // ===== Step 7: Launch cluster nodes =====
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       for (int i = 0; i < config.nodeCount(); i++) {
         clusterNodes.set(
             i, ClusterNodeLauncher.launch(i, config.baseDir(), aeronDirs[i], clusterMembers));
@@ -210,7 +214,7 @@ public final class TradingEngineLauncher {
           elapsedMs(stepStart));
 
       // ===== Step 8: Load reference data =====
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       loadReferenceData(
           aeronDirs[gwIndex],
           ingressEndpoints,
@@ -221,7 +225,7 @@ public final class TradingEngineLauncher {
 
       // ===== Step 9a: Launch pricing service =====
       // Must use the gateway media driver aeronDir so IPC streams are shared.
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       pricingRef.set(
           PricingServiceLauncher.launch(
               aeronDirs[gwIndex],
@@ -231,19 +235,20 @@ public final class TradingEngineLauncher {
 
       // ===== Step 9b: Launch orchestrator =====
       // Must use the same gateway media driver aeronDir for IPC with both pricing and gateway.
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       orchestratorRef.set(
           OrchestratorLauncher.launch(aeronDirs[gwIndex], new BackoffIdleStrategy()));
       LOG.info("Step 9b complete: orchestrator launched in {}ms", elapsedMs(stepStart));
 
       // ===== Step 10: Launch gateway (with orchestrator IPC) =====
-      stepStart = System.nanoTime();
+      stepStart = NANO_CLOCK.nanoTime();
       // TODO(APP-203): make idle strategy configurable via LauncherConfig
       gatewayRef.set(
           GatewayLauncher.launch(
               config.fixHost(),
               config.fixPort(),
               aeronDirs[gwIndex],
+              config.baseDir() + "/archive-gateway",
               ingressEndpoints,
               new BackoffIdleStrategy()));
       LOG.info("Step 10 complete: gateway thread started in {}ms", elapsedMs(stepStart));
@@ -252,10 +257,10 @@ public final class TradingEngineLauncher {
       // AgentRunner.startOnThread() only spawns the thread — FixGateway.onStart() runs
       // asynchronously (launches Artio engine, connects ClusterClient). Poll until the
       // cluster client is connected before declaring SYSTEM_READY.
-      stepStart = System.nanoTime();
-      final long readinessDeadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      stepStart = NANO_CLOCK.nanoTime();
+      final long readinessDeadlineNs = NANO_CLOCK.nanoTime() + TimeUnit.SECONDS.toNanos(30);
       while (!gatewayRef.get().clusterClient().isConnected()) {
-        if (System.nanoTime() > readinessDeadlineNs) {
+        if (NANO_CLOCK.nanoTime() > readinessDeadlineNs) {
           throw new IllegalStateException("Gateway failed to connect to cluster within 30 seconds");
         }
         Thread.sleep(100);
@@ -317,7 +322,7 @@ public final class TradingEngineLauncher {
 
       final ClusterCommandSender sender = cluster::offer;
       final Runnable pollEgress = () -> cluster.controlledPollEgress();
-      final var orchestrator = new ReferenceDataOrchestrator(SystemNanoClock.INSTANCE);
+      final var orchestrator = new ReferenceDataOrchestrator(NANO_CLOCK);
 
       // 1. Currencies FIRST (no FK dependencies)
       orchestrator.load(
@@ -445,6 +450,6 @@ public final class TradingEngineLauncher {
   }
 
   private static long elapsedMs(final long startNs) {
-    return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
+    return TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - startNs);
   }
 }

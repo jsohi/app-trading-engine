@@ -26,6 +26,9 @@ dist/
 # Log output (Log4j2)
 logs/
 
+# JVM crash logs
+hs_err_pid*.log
+
 # E2E test runtime artifacts (not the checked-in test data or source code)
 /e2e/
 **/e2e/cluster-data/

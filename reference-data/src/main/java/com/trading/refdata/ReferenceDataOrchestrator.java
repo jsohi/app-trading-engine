@@ -10,8 +10,8 @@ import java.util.concurrent.locks.LockSupport;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NanoClock;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * Orchestrates reference data loading at startup: load records from source, encode into SBE batch
@@ -21,7 +21,7 @@ import org.slf4j.LoggerFactory;
  */
 public final class ReferenceDataOrchestrator {
 
-  private static final Logger LOG = LoggerFactory.getLogger(ReferenceDataOrchestrator.class);
+  private static final Logger LOG = LogManager.getLogger(ReferenceDataOrchestrator.class);
   private static final long ACK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
   private static final long POLL_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(1);
   private static final long SEND_RETRY_INITIAL_NS = TimeUnit.MICROSECONDS.toNanos(100);

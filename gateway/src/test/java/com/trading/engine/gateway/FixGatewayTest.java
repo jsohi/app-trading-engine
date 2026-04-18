@@ -59,6 +59,8 @@ class FixGatewayTest {
             "localhost",
             9880,
             "aeron:ipc",
+            "/tmp/aeron-test",
+            "/tmp/archive-test",
             "/tmp/fix-logs-test",
             "GATEWAY",
             java.util.List.of("CLIENT"),

@@ -106,15 +106,13 @@ tasks.register<Delete>("e2eClean") {
     description = "Remove e2e test artifacts (logs, cluster data, aeron dirs)"
     delete("e2e/logs", "e2e/cluster-data")
     doLast {
-        Runtime.getRuntime().exec(arrayOf("bash", "-c", "rm -rf /tmp/aeron-e2e-*")).waitFor()
-        Runtime
-            .getRuntime()
-            .exec(arrayOf("bash", "-c", "pkill -9 -f -- '-Daeron.dir.prefix=e2e' 2>/dev/null || true"))
+        ProcessBuilder("bash", "-c", "rm -rf /tmp/aeron-e2e-*").start().waitFor()
+        ProcessBuilder("bash", "-c", "pkill -9 -f -- '-Daeron.dir.prefix=e2e' 2>/dev/null || true")
+            .start()
             .waitFor()
         // Also kill stale media drivers matched by aeron dir path (mirrors scripts/e2e.sh cleanup)
-        Runtime
-            .getRuntime()
-            .exec(arrayOf("bash", "-c", "pkill -9 -f 'aeron-e2e-' 2>/dev/null || true"))
+        ProcessBuilder("bash", "-c", "pkill -9 -f 'aeron-e2e-' 2>/dev/null || true")
+            .start()
             .waitFor()
     }
 }

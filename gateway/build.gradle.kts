@@ -6,6 +6,7 @@ dependencies {
     implementation(project(":messages"))
     implementation(project(":fix-codecs"))
     implementation(libs.aeron.cluster)
+    implementation(libs.aeron.archive)
     implementation(libs.artio.core)
     implementation(libs.agrona)
     // Zero-alloc logging for hot path — no SLF4J, no Log4j2
