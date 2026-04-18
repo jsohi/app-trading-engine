@@ -76,14 +76,24 @@ subprojects {
         "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
     }
 
-    // Infra logging: SLF4J API + Log4j2 Async + Disruptor
-    // Hot-path modules (cluster, gateway) use GFLog instead — no SLF4J
-    val hotPathModules = setOf("cluster", "gateway", "test-support")
+    // Infra logging: Log4j2 API + Log4j2 Async + Disruptor
+    // Hot-path modules use GFLog instead — no Log4j2
+    val hotPathModules =
+        setOf(
+            "cluster",
+            "gateway",
+            "test-support",
+            "pricing-service",
+            "orchestrator",
+            "projections",
+            "messages",
+            "fix-codecs",
+            "event-logger",
+        )
     if (name !in hotPathModules) {
         dependencies {
-            "implementation"(rootProject.libs.slf4j.api)
+            "implementation"(rootProject.libs.log4j.api)
             "runtimeOnly"(rootProject.libs.log4j.core)
-            "runtimeOnly"(rootProject.libs.log4j.slf4j2)
             "runtimeOnly"(rootProject.libs.disruptor)
         }
     }

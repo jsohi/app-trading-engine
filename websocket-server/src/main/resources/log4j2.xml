@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Configuration status="warn">
+<Configuration status="error" monitorInterval="30">
   <Appenders>
     <Console name="Console" target="SYSTEM_OUT">
-      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS}{GMT+0} [%t] %-5level %logger{36} - %msg%n"/>
+      <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
     </Console>
     <RollingRandomAccessFile name="File"
                              fileName="logs/websocket-server.log"
-                             filePattern="logs/websocket-server-%d{yyyy-MM-dd}-%i.log">
-      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS}{GMT+0} [%t] %-5level %logger{36} - %msg%n"/>
+                             filePattern="logs/websocket-server-%d{yyyy-MM-dd}-%i.log"
+                             immediateFlush="false">
+      <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
       <Policies>
         <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
         <SizeBasedTriggeringPolicy size="100MB"/>
@@ -16,7 +17,6 @@
     </RollingRandomAccessFile>
   </Appenders>
   <Loggers>
-    <AsyncLogger name="com.trading" level="info" includeLocation="false"/>
     <AsyncLogger name="io.aeron" level="warn" includeLocation="false"/>
     <AsyncRoot level="info" includeLocation="false">
       <AppenderRef ref="Console"/>

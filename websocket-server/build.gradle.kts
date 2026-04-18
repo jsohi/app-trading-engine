@@ -12,6 +12,6 @@ application {
     mainClass.set("com.trading.engine.websocket.WebSocketServerMain")
     applicationDefaultJvmArgs =
         listOf(
-            "-DLog4jContextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
+            "-Dlog4j2.contextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
         )
 }
