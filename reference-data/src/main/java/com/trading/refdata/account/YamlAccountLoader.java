@@ -14,8 +14,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.collections.LongHashSet;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -44,7 +44,7 @@ import org.yaml.snakeyaml.Yaml;
  */
 public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecord> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(YamlAccountLoader.class);
+  private static final Logger LOG = LogManager.getLogger(YamlAccountLoader.class);
   private static final String ENTITY_TYPE = "Account";
 
   private static final Yaml YAML = new Yaml();

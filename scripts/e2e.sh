@@ -115,9 +115,11 @@ while ! grep -q "SYSTEM_READY" "$LOG_DIR/launcher.log" 2>/dev/null; do
         echo "FAIL: Trading engine process died during startup"
         exit 1
     fi
-    # Fail fast on startup errors
-    if grep -qi "fatal\|startup failed" "$LOG_DIR/launcher.log" 2>/dev/null; then
-        echo "FAIL: Fatal error detected during startup"
+    # Fail fast on startup errors — match "Startup failed" (Log4j2 ERROR level) specifically,
+    # not "fatal" generically (which false-matches GFLog config warnings containing the word
+    # FATAL in enumeration lists like '[TRACE, DEBUG, INFO, WARN, ERROR, FATAL]').
+    if grep -q "Startup failed" "$LOG_DIR/launcher.log" 2>/dev/null; then
+        echo "FAIL: Startup error detected"
         exit 1
     fi
     sleep 1
@@ -126,10 +128,14 @@ echo "Trading engine ready."
 
 # --- 5. Run E2E test client via installDist (no second Gradle process) ---
 echo "Running E2E FIX test client..."
+# Temporarily disable set -e so a non-zero client exit does not skip the
+# launcher liveness check and final report below.
+set +e
 "$E2E_DIR/integration-tests/build/install/integration-tests/bin/integration-tests" \
     --host localhost --port 19880 \
     > "$LOG_DIR/e2e-client.log" 2>&1
 E2E_RESULT=$?
+set -e
 
 # --- 6. Verify launcher didn't crash during the test ---
 if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then

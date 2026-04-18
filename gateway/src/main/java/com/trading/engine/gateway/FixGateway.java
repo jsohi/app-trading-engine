@@ -246,6 +246,7 @@ public final class FixGateway implements Agent {
             .bindTo(bindAddress, port)
             .libraryAeronChannel(aeronChannel)
             .authenticationStrategy(auth)
+            .acceptorfixDictionary(com.trading.engine.fix.FixDictionaryImpl.class)
             .logInboundMessages(true)
             .logOutboundMessages(true)
             .logFileDir(logFileDir)

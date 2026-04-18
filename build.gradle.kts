@@ -111,5 +111,10 @@ tasks.register<Delete>("e2eClean") {
             .getRuntime()
             .exec(arrayOf("bash", "-c", "pkill -9 -f -- '-Daeron.dir.prefix=e2e' 2>/dev/null || true"))
             .waitFor()
+        // Also kill stale media drivers matched by aeron dir path (mirrors scripts/e2e.sh cleanup)
+        Runtime
+            .getRuntime()
+            .exec(arrayOf("bash", "-c", "pkill -9 -f 'aeron-e2e-' 2>/dev/null || true"))
+            .waitFor()
     }
 }
