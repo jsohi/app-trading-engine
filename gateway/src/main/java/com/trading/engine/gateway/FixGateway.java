@@ -20,6 +20,7 @@ import io.aeron.Subscription;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.logbuffer.ControlledFragmentHandler;
+import java.io.File;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
@@ -262,7 +263,7 @@ public final class FixGateway implements Agent {
     final var archiveCtx =
         new Archive.Context()
             .aeronDirectoryName(aeronDirectoryName)
-            .archiveDir(new java.io.File(archiveDir))
+            .archiveDir(new File(archiveDir))
             .controlChannel("aeron:udp?endpoint=localhost:0")
             .localControlChannel("aeron:ipc?term-length=64k")
             .recordingEventsEnabled(true)
