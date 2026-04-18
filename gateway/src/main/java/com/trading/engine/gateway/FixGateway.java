@@ -17,6 +17,8 @@ import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
 import io.aeron.ControlledFragmentAssembler;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
+import io.aeron.archive.Archive;
+import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.logbuffer.ControlledFragmentHandler;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
@@ -85,6 +87,8 @@ public final class FixGateway implements Agent {
   private final String bindAddress;
   private final int port;
   private final String aeronChannel;
+  private final String aeronDirectoryName;
+  private final String archiveDir;
   private final String logFileDir;
   private final String targetCompId;
   private final Collection<String> allowedSenderCompIds;
@@ -115,6 +119,9 @@ public final class FixGateway implements Agent {
   private ControlledFragmentAssembler orchestratorAssembler;
   private SbeToFixTranslator orchestratorTranslator;
 
+  // --- Embedded archive for Artio FIX message log persistence (created in onStart) ---
+  private Archive archive;
+
   // --- Artio components (created in onStart) ---
   private FixEngine engine;
   private FixLibrary library;
@@ -138,6 +145,8 @@ public final class FixGateway implements Agent {
    * @param bindAddress TCP bind address for FIX connections
    * @param port TCP port for FIX connections
    * @param aeronChannel Aeron IPC channel for engine↔library communication
+   * @param aeronDirectoryName Aeron media driver directory (e.g. {@code /tmp/aeron-e2e-gateway})
+   * @param archiveDir directory for the gateway's embedded Aeron Archive recordings
    * @param logFileDir directory for Artio FIX message logs (persistence)
    * @param targetCompId this gateway's CompID (TargetCompID from client perspective)
    * @param allowedSenderCompIds allowed SenderCompIDs for authentication
@@ -151,6 +160,8 @@ public final class FixGateway implements Agent {
       final String bindAddress,
       final int port,
       final String aeronChannel,
+      final String aeronDirectoryName,
+      final String archiveDir,
       final String logFileDir,
       final String targetCompId,
       final Collection<String> allowedSenderCompIds,
@@ -162,6 +173,8 @@ public final class FixGateway implements Agent {
     this.bindAddress = bindAddress;
     this.port = port;
     this.aeronChannel = aeronChannel;
+    this.aeronDirectoryName = aeronDirectoryName;
+    this.archiveDir = archiveDir;
     this.logFileDir = logFileDir;
     this.targetCompId = targetCompId;
     this.allowedSenderCompIds = allowedSenderCompIds;
@@ -240,17 +253,45 @@ public final class FixGateway implements Agent {
             .and(MessageValidationStrategy.senderCompId(allowedSenderCompIds));
     final AuthenticationStrategy auth = AuthenticationStrategy.of(validation);
 
+    // Launch embedded archive on the gateway media driver — Artio requires AeronArchive
+    // for FIX message log persistence. SHARED threading is sufficient for the gateway's
+    // archive usage (recording FIX messages only, no cluster replication).
+    // Archive controlChannel MUST be UDP (Aeron 1.50+ rejects IPC for archive control).
+    // Use ephemeral port 0 — the gateway archive is only accessed in-process via IPC local
+    // control; the UDP control channel is for external tooling (ClusterTool, backup).
+    final var archiveCtx =
+        new Archive.Context()
+            .aeronDirectoryName(aeronDirectoryName)
+            .archiveDir(new java.io.File(archiveDir))
+            .controlChannel("aeron:udp?endpoint=localhost:0")
+            .localControlChannel("aeron:ipc?term-length=64k")
+            .recordingEventsEnabled(true)
+            .recordingEventsChannel("aeron:ipc")
+            .replicationChannel("aeron:udp?endpoint=localhost:0")
+            .threadingMode(ArchiveThreadingMode.SHARED);
+    archive = Archive.launch(archiveCtx);
+    LOG.info().append("Gateway archive launched: ").append(archiveDir).commit();
+
     // Configure and launch FIX engine
     final EngineConfiguration engineConfig =
         new EngineConfiguration()
             .bindTo(bindAddress, port)
             .libraryAeronChannel(aeronChannel)
             .authenticationStrategy(auth)
-            .acceptorfixDictionary(com.trading.engine.fix.FixDictionaryImpl.class)
             .logInboundMessages(true)
             .logOutboundMessages(true)
             .logFileDir(logFileDir)
             .slowConsumerTimeoutInMs(5000);
+    // Point Artio's internal Aeron client at the gateway's media driver directory
+    engineConfig.aeronContext().aeronDirectoryName(aeronDirectoryName);
+    // Artio requires an AeronArchive for FIX message log persistence. Configure the archive
+    // client context to point at the embedded archive launched in onStart() below.
+    engineConfig
+        .aeronArchiveContext()
+        .controlRequestChannel("aeron:ipc")
+        .controlResponseChannel("aeron:ipc")
+        .recordingEventsChannel("aeron:ipc")
+        .aeronDirectoryName(aeronDirectoryName);
 
     engine = FixEngine.launch(engineConfig);
     LOG.info()
@@ -267,6 +308,7 @@ public final class FixGateway implements Agent {
                 (SessionAcquireHandler) (session, acquiredInfo) -> onSessionAcquired(session))
             .sessionExistsHandler(new AcquiringSessionExistsHandler())
             .libraryAeronChannels(singletonList(aeronChannel));
+    libConfig.aeronContext().aeronDirectoryName(aeronDirectoryName);
 
     library = FixLibrary.connect(libConfig);
     LOG.info().append("FIX Library connected").commit();
@@ -397,7 +439,10 @@ public final class FixGateway implements Agent {
       engine.close();
     }
 
-    // Phase 6: Close orchestrator IPC resources
+    // Phase 6: Close embedded archive (after Artio — Artio may still be writing recordings)
+    CloseHelper.quietClose(archive);
+
+    // Phase 7: Close orchestrator IPC resources
     CloseHelper.closeAll(orchestratorResponseSub, orchestratorRequestPub);
 
     LOG.info().append("FixGateway shutdown complete").commit();

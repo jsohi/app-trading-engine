@@ -73,6 +73,8 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
     return ENTITY_TYPE;
   }
 
+  // SBE schema reuses AccountStatusEnum for currency/risk-limit status lifecycle
+  // (Active/Suspended/Closed)
   private static AccountStatusEnum toStatus(final String value) throws ReferenceDataLoadException {
     return switch (value) {
       case "Active" -> AccountStatusEnum.Active;

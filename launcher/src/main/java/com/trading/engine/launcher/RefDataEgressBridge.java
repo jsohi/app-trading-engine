@@ -31,9 +31,9 @@ import org.apache.logging.log4j.Logger;
  * the static initializer verifies BLOCK_LENGTH matches expectations; if a future schema change adds
  * vardata, the check will fail at class load time with an {@link IllegalStateException}.
  *
- * <p><b>Forward compatibility.</b> Template IDs 113-116 (currency, risk-limit) are handled even
- * though client-side loaders do not yet exist (APP-196). This avoids a code change when those
- * loaders are implemented.
+ * <p><b>Coverage.</b> Template IDs 113-116 (currency, risk-limit) are fully operational alongside
+ * account events. All six response types are handled by their respective batch loaders wired in
+ * {@link TradingClusteredServiceFactory}.
  *
  * <p><b>Threading.</b> Not thread-safe — called from the single-threaded orchestrator poll loop.
  *

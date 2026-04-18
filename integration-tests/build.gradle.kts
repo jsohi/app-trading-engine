@@ -6,6 +6,7 @@ application {
     mainClass.set("com.trading.engine.e2e.E2EFixTestClient")
     applicationDefaultJvmArgs =
         listOf(
+            "-DLog4jContextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector",
             "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
         )
@@ -17,7 +18,9 @@ dependencies {
     implementation(project(":messages"))
     implementation(libs.artio.core)
     implementation(libs.aeron.driver)
+    implementation(libs.aeron.archive)
     implementation(libs.agrona)
+    implementation(libs.log4j.api)
 
     // Existing test dependencies
     testImplementation(project(":launcher"))

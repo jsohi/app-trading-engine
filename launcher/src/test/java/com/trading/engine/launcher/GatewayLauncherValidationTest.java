@@ -23,7 +23,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             NullPointerException.class,
-            () -> GatewayLauncher.launch(null, 9880, "/tmp/aeron", "0=localhost:20110", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    null, 9880, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("fixHost must not be null", ex.getMessage());
   }
 
@@ -32,7 +34,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
-            () -> GatewayLauncher.launch("  ", 9880, "/tmp/aeron", "0=localhost:20110", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "  ", 9880, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("fixHost must not be blank", ex.getMessage());
   }
 
@@ -43,7 +47,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
-            () -> GatewayLauncher.launch("localhost", 0, "/tmp/aeron", "0=localhost:20110", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 0, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("fixPort must be in [1, 65535], got: 0", ex.getMessage());
   }
 
@@ -51,7 +57,9 @@ class GatewayLauncherValidationTest {
   void launch_portNegative_throwsIae() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> GatewayLauncher.launch("localhost", -1, "/tmp/aeron", "0=localhost:20110", IDLE));
+        () ->
+            GatewayLauncher.launch(
+                "localhost", -1, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", IDLE));
   }
 
   @Test
@@ -61,7 +69,7 @@ class GatewayLauncherValidationTest {
             IllegalArgumentException.class,
             () ->
                 GatewayLauncher.launch(
-                    "localhost", 65536, "/tmp/aeron", "0=localhost:20110", IDLE));
+                    "localhost", 65536, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("fixPort must be in [1, 65535], got: 65536", ex.getMessage());
   }
 
@@ -72,7 +80,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             NullPointerException.class,
-            () -> GatewayLauncher.launch("localhost", 9880, null, "0=localhost:20110", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, null, "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("aeronDir must not be null", ex.getMessage());
   }
 
@@ -81,8 +91,34 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
-            () -> GatewayLauncher.launch("localhost", 9880, "", "0=localhost:20110", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, "", "/tmp/archive", "0=localhost:20110", IDLE));
     assertEquals("aeronDir must not be blank", ex.getMessage());
+  }
+
+  // ===== archiveDir =====
+
+  @Test
+  void launch_nullArchiveDir_throwsNpe() {
+    final var ex =
+        assertThrows(
+            NullPointerException.class,
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, "/tmp/aeron", null, "0=localhost:20110", IDLE));
+    assertEquals("archiveDir must not be null", ex.getMessage());
+  }
+
+  @Test
+  void launch_blankArchiveDir_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, "/tmp/aeron", "  ", "0=localhost:20110", IDLE));
+    assertEquals("archiveDir must not be blank", ex.getMessage());
   }
 
   // ===== ingressEndpoints =====
@@ -92,7 +128,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             NullPointerException.class,
-            () -> GatewayLauncher.launch("localhost", 9880, "/tmp/aeron", null, IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, "/tmp/aeron", "/tmp/archive", null, IDLE));
     assertEquals("ingressEndpoints must not be null", ex.getMessage());
   }
 
@@ -101,7 +139,9 @@ class GatewayLauncherValidationTest {
     final var ex =
         assertThrows(
             IllegalArgumentException.class,
-            () -> GatewayLauncher.launch("localhost", 9880, "/tmp/aeron", "   ", IDLE));
+            () ->
+                GatewayLauncher.launch(
+                    "localhost", 9880, "/tmp/aeron", "/tmp/archive", "   ", IDLE));
     assertEquals("ingressEndpoints must not be blank", ex.getMessage());
   }
 
@@ -113,7 +153,8 @@ class GatewayLauncherValidationTest {
         assertThrows(
             NullPointerException.class,
             () ->
-                GatewayLauncher.launch("localhost", 9880, "/tmp/aeron", "0=localhost:20110", null));
+                GatewayLauncher.launch(
+                    "localhost", 9880, "/tmp/aeron", "/tmp/archive", "0=localhost:20110", null));
     assertEquals("idleStrategy must not be null", ex.getMessage());
   }
 }

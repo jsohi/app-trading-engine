@@ -87,6 +87,8 @@ public final class CurrencyCommandEncoder implements ReferenceDataEncoder<Curren
     };
   }
 
+  // SBE schema reuses AccountStatusEnum for currency/risk-limit status lifecycle
+  // (Active/Suspended/Closed)
   private static AccountStatusEnum toStatus(final String value) throws ReferenceDataLoadException {
     return switch (value) {
       case "Active" -> AccountStatusEnum.Active;

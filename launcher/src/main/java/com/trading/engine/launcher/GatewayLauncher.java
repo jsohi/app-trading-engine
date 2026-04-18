@@ -9,6 +9,7 @@ import com.trading.engine.gateway.InFlightTracker;
 import com.trading.engine.gateway.RejectEmitter;
 import com.trading.engine.gateway.SbeToFixTranslator;
 import com.trading.engine.gateway.SessionRegistry;
+import com.trading.engine.messages.clock.TradingClocks;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
@@ -18,7 +19,6 @@ import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.IdleStrategy;
-import org.agrona.concurrent.SystemNanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -59,6 +59,7 @@ public final class GatewayLauncher {
    * @param fixHost TCP bind address for FIX connections (e.g., "localhost")
    * @param fixPort TCP port for FIX connections; must be in [1, 65535]
    * @param aeronDir Aeron CnC directory for the gateway's external Media Driver
+   * @param archiveDir directory for the gateway's embedded Aeron Archive recordings
    * @param ingressEndpoints comma-separated cluster ingress endpoints
    * @param idleStrategy idle strategy for the gateway agent runner duty cycle
    * @return a {@link GatewayComponents} handle that owns the runner thread and cluster client
@@ -70,11 +71,13 @@ public final class GatewayLauncher {
       final String fixHost,
       final int fixPort,
       final String aeronDir,
+      final String archiveDir,
       final String ingressEndpoints,
       final IdleStrategy idleStrategy) {
     // --- Validate inputs ---
     requireNonBlank(fixHost, "fixHost");
     requireNonBlank(aeronDir, "aeronDir");
+    requireNonBlank(archiveDir, "archiveDir");
     requireNonBlank(ingressEndpoints, "ingressEndpoints");
     if (fixPort < 1 || fixPort > 65_535) {
       throw new IllegalArgumentException("fixPort must be in [1, 65535], got: " + fixPort);
@@ -101,6 +104,8 @@ public final class GatewayLauncher {
             fixHost,
             fixPort,
             "aeron:ipc",
+            aeronDir,
+            archiveDir,
             "fix-logs", // TODO(APP-205): resolve against configurable logDir
             "TRADING",
             Set.of("CLIENT1", "CLIENT2", "FIX_BRIDGE"),
@@ -108,7 +113,7 @@ public final class GatewayLauncher {
             fixToSbeTranslator,
             rejectEmitter,
             inFlightTracker,
-            SystemNanoClock.INSTANCE);
+            TradingClocks.nanoClock());
 
     final var egressListener =
         new ClusterEgressListener(
