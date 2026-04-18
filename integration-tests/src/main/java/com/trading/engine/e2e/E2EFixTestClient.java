@@ -16,6 +16,7 @@ import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -246,8 +247,8 @@ public final class E2EFixTestClient {
   @SuppressWarnings("ResultOfMethodCallIgnored")
   private static void deleteRecursively(final Path dir) {
     try {
-      try (var stream = java.nio.file.Files.walk(dir)) {
-        stream.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+      try (var stream = Files.walk(dir)) {
+        stream.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
       }
     } catch (final Exception e) {
       LOG.warn("Failed to clean up temp dir {}: {}", dir, e.getMessage());
