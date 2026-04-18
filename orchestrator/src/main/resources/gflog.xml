@@ -14,7 +14,7 @@
   </appender>
 
   <appender name="file" class="com.epam.deltix.gflog.appender.file.DailyRollingFileAppender">
-    <file>logs/cluster.log</file>
+    <file>logs/orchestrator.log</file>
     <append>true</append>
     <bufferCapacity>8388608</bufferCapacity>
     <maxFileSize>104857600</maxFileSize>
