@@ -2,6 +2,7 @@ package com.trading.refdata.risklimit;
 
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import com.trading.refdata.spi.StatusValidator;
 import java.io.IOException;
 import java.io.Reader;
 import java.math.BigDecimal;
@@ -137,8 +138,9 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
       final long maxDailyVolume = toLong(entry, "maxDailyVolume");
       final long maxDailyLossBps = toLong(entry, "maxDailyLossBps");
       final String status = requireStringOrDefault(entry, "status", "Active");
+      StatusValidator.validateStatus(status, ENTITY_TYPE);
 
-      // RiskLimitRecord compact constructor validates all constraints
+      // RiskLimitRecord compact constructor validates remaining constraints
       return new RiskLimitRecord(
           accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, maxDailyLossBps, status);
     } catch (final ReferenceDataLoadException e) {

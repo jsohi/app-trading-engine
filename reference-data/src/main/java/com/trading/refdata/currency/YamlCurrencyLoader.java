@@ -2,6 +2,7 @@ package com.trading.refdata.currency;
 
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import com.trading.refdata.spi.StatusValidator;
 import java.io.IOException;
 import java.io.Reader;
 import java.math.BigDecimal;
@@ -145,9 +146,11 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
       final String name = requireString(entry, "name");
       final int decimals = requireInt(entry, "decimals");
       final String currencyClass = requireString(entry, "currencyClass");
+      StatusValidator.validateCurrencyClass(currencyClass, ENTITY_TYPE);
       final String status = requireStringOrDefault(entry, "status", "Active");
+      StatusValidator.validateStatus(status, ENTITY_TYPE);
 
-      // CurrencyRecord compact constructor validates all field constraints
+      // CurrencyRecord compact constructor validates remaining field constraints
       return new CurrencyRecord(ccyCode, isoNumeric, name, decimals, currencyClass, status);
     } catch (final ReferenceDataLoadException e) {
       throw e;

@@ -2,6 +2,7 @@ package com.trading.refdata.account;
 
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataLoader;
+import com.trading.refdata.spi.StatusValidator;
 import java.io.IOException;
 import java.io.Reader;
 import java.math.BigDecimal;
@@ -149,6 +150,8 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
       throws ReferenceDataLoadException {
     try {
       long accountId = requireLong(entry, "accountId");
+      final String status = requireStringOrDefault(entry, "status", "Active");
+      StatusValidator.validateStatus(status, ENTITY_TYPE);
       return new AccountRecord(
           accountId,
           toLong(entry, "parentAccountId"),
@@ -157,7 +160,7 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
           requireString(entry, "accountName"),
           requireString(entry, "accountType"),
           requireString(entry, "baseCurrency"),
-          requireStringOrDefault(entry, "status", "Active"),
+          status,
           requireStringOrDefault(entry, "complianceStatus", "OK"),
           toLong(entry, "capabilities"));
     } catch (final ReferenceDataLoadException e) {
