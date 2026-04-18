@@ -285,6 +285,7 @@ public final class ClusterClient implements Agent, AutoCloseable {
     final var ctx =
         new AeronCluster.Context()
             .aeronDirectoryName(aeronDirectoryName)
+            .ingressChannel("aeron:udp")
             .ingressEndpoints(ingressEndpoints)
             .egressChannel(egressChannel)
             .controlledEgressListener(egressListener)

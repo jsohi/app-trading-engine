@@ -7,6 +7,7 @@ import com.trading.engine.fix.Side;
 import com.trading.engine.fix.TimeInForce;
 import com.trading.engine.fix.builder.NewOrderSingleEncoder;
 import com.trading.engine.fix.decoder.ExecutionReportDecoder;
+import com.trading.engine.messages.clock.TradingClocks;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.NanoClock;
 import uk.co.real_logic.artio.Reply;
 import uk.co.real_logic.artio.engine.EngineConfiguration;
 import uk.co.real_logic.artio.engine.FixEngine;
@@ -68,6 +70,9 @@ public final class E2EFixTestClient {
   private static final long SESSION_TIMEOUT_MS = 30_000;
   private static final long RESPONSE_TIMEOUT_MS = 30_000;
   private static final int LIBRARY_POLL_LIMIT = 10;
+
+  /** Monotonic clock for elapsed-time measurement and deadlines. */
+  private static final NanoClock NANO_CLOCK = TradingClocks.nanoClock();
 
   private E2EFixTestClient() {}
 
@@ -161,7 +166,7 @@ public final class E2EFixTestClient {
           System.out.println("FixLibrary connected");
 
           // 5. Initiate FIX session to gateway
-          final long logonStartNs = System.nanoTime();
+          final long logonStartNs = NANO_CLOCK.nanoTime();
           final SessionConfiguration sessionConfig =
               SessionConfiguration.builder()
                   .address(host, port)
@@ -174,10 +179,10 @@ public final class E2EFixTestClient {
 
           // Poll library until session reply completes (ACTIVE or error)
           final long sessionDeadlineNs =
-              System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SESSION_TIMEOUT_MS);
+              NANO_CLOCK.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SESSION_TIMEOUT_MS);
           while (reply.isExecuting()) {
             library.poll(LIBRARY_POLL_LIMIT);
-            if (System.nanoTime() > sessionDeadlineNs) {
+            if (NANO_CLOCK.nanoTime() > sessionDeadlineNs) {
               System.err.println(
                   "E2E FAIL: session initiation timed out after " + SESSION_TIMEOUT_MS + "ms");
               return EXIT_CONNECTION;
@@ -202,7 +207,7 @@ public final class E2EFixTestClient {
             return EXIT_CONNECTION;
           }
 
-          final long logonMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - logonStartNs);
+          final long logonMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - logonStartNs);
           System.out.println("FIX session ACTIVE (logon: " + logonMs + "ms)");
 
           // 6. Run test scenario: NewOrderSingle happy path
@@ -211,9 +216,9 @@ public final class E2EFixTestClient {
 
           // 7. Clean shutdown: logout then close
           session.logoutAndDisconnect();
-          final long logoutDeadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+          final long logoutDeadlineNs = NANO_CLOCK.nanoTime() + TimeUnit.SECONDS.toNanos(5);
           while (session.state() != SessionState.DISCONNECTED
-              && System.nanoTime() < logoutDeadlineNs) {
+              && NANO_CLOCK.nanoTime() < logoutDeadlineNs) {
             library.poll(LIBRARY_POLL_LIMIT);
             Thread.onSpinWait();
           }
@@ -235,7 +240,7 @@ public final class E2EFixTestClient {
       final LinkedBlockingQueue<CapturedMessage> messageQueue,
       final String senderCompId) {
 
-    final String clOrdId = "E2E-" + System.nanoTime();
+    final String clOrdId = "E2E-" + NANO_CLOCK.nanoTime();
 
     // Encode NewOrderSingle
     final NewOrderSingleEncoder nos = new NewOrderSingleEncoder();
@@ -254,25 +259,40 @@ public final class E2EFixTestClient {
     final int tsLen = tsEncoder.encode(System.currentTimeMillis());
     nos.transactTime(tsEncoder.buffer(), tsLen);
 
-    // Send NOS
-    final long nosStartNs = System.nanoTime();
-    final long sendResult = session.trySend(nos);
+    // Send NOS — retry on transient backpressure under a bounded deadline
+    final long nosStartNs = NANO_CLOCK.nanoTime();
+    final long sendDeadlineNs = nosStartNs + TimeUnit.SECONDS.toNanos(5);
+    long sendResult;
+    do {
+      sendResult = session.trySend(nos);
+      if (sendResult >= 0) {
+        break;
+      }
+      library.poll(LIBRARY_POLL_LIMIT);
+      Thread.onSpinWait();
+    } while (NANO_CLOCK.nanoTime() < sendDeadlineNs);
+
     if (sendResult < 0) {
-      System.err.println("E2E FAIL: trySend returned " + sendResult);
+      System.err.println("E2E FAIL: trySend returned " + sendResult + " after retries");
       return EXIT_ASSERTION;
     }
     System.out.println("Sent NewOrderSingle: ClOrdID=" + clOrdId);
 
-    // Poll for ExecutionReport response
+    // Poll for ExecutionReport (35=8) response — filter by message type
     final long responseDeadlineNs =
-        System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RESPONSE_TIMEOUT_MS);
+        NANO_CLOCK.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RESPONSE_TIMEOUT_MS);
 
-    while (System.nanoTime() < responseDeadlineNs) {
+    while (NANO_CLOCK.nanoTime() < responseDeadlineNs) {
       library.poll(LIBRARY_POLL_LIMIT);
 
       final CapturedMessage msg = messageQueue.poll();
       if (msg != null) {
-        final long rttMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - nosStartNs);
+        // Filter: only process ExecutionReport (35=8, MESSAGE_TYPE=56)
+        if (msg.messageType() != ExecutionReportDecoder.MESSAGE_TYPE) {
+          System.out.println("Ignoring non-ER message: msgType=" + msg.messageType());
+          continue;
+        }
+        final long rttMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - nosStartNs);
         return validateExecutionReport(msg, clOrdId, rttMs);
       }
       Thread.onSpinWait();

@@ -5,6 +5,8 @@ plugins {
 dependencies {
     implementation(project(":cluster"))
     implementation(project(":gateway"))
+    // Required at runtime — gateway's FixDictionaryImpl is loaded by Artio reflectively
+    runtimeOnly(project(":fix-codecs"))
     implementation(project(":projections"))
     implementation(project(":media-driver"))
     implementation(project(":orchestrator"))

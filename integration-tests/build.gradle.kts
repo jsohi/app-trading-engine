@@ -14,6 +14,7 @@ application {
 dependencies {
     // E2EFixTestClient (standalone main — Artio initiator)
     implementation(project(":fix-codecs"))
+    implementation(project(":messages"))
     implementation(libs.artio.core)
     implementation(libs.aeron.driver)
     implementation(libs.agrona)

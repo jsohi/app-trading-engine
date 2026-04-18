@@ -4,6 +4,8 @@ import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataLoader;
 import java.io.IOException;
 import java.io.Reader;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,8 +16,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.collections.IntHashSet;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -40,7 +42,7 @@ import org.yaml.snakeyaml.Yaml;
  */
 public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRecord> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(YamlCurrencyLoader.class);
+  private static final Logger LOG = LogManager.getLogger(YamlCurrencyLoader.class);
   private static final String ENTITY_TYPE = "Currency";
 
   // Instance field — SnakeYAML Yaml is NOT thread-safe (holds internal parsing state).
@@ -159,14 +161,52 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
     }
   }
 
+  /**
+   * Extracts a required integral int value, rejecting fractional numbers to prevent silent
+   * truncation. Same rationale as {@code YamlRiskLimitLoader.requireIntegralLong}.
+   */
   private static int requireInt(final Map<String, Object> map, final String key)
       throws ReferenceDataLoadException {
     final var value = map.get(key);
     if (value == null) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "missing required field '" + key + "'");
     }
-    if (value instanceof Number n) {
-      return n.intValue();
+    if (value instanceof Integer i) {
+      return i;
+    }
+    if (value instanceof Short s) {
+      return s.intValue();
+    }
+    if (value instanceof Byte b) {
+      return b.intValue();
+    }
+    if (value instanceof Long l) {
+      if (l < Integer.MIN_VALUE || l > Integer.MAX_VALUE) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "field '" + key + "' overflows int range: '" + value + "'");
+      }
+      return l.intValue();
+    }
+    if (value instanceof BigInteger bi) {
+      try {
+        return bi.intValueExact();
+      } catch (final ArithmeticException e) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "field '" + key + "' overflows int range: '" + value + "'", e);
+      }
+    }
+    if (value instanceof BigDecimal bd) {
+      try {
+        return bd.intValueExact();
+      } catch (final ArithmeticException e) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "field '" + key + "' is not an integral number: '" + value + "'", e);
+      }
+    }
+    if (value instanceof Double || value instanceof Float) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' is a fractional number (use an integer): '" + value + "'");
     }
     try {
       return Integer.parseInt(value.toString());
@@ -182,7 +222,11 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
     if (value == null) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "missing required field '" + key + "'");
     }
-    final var str = value.toString();
+    if (!(value instanceof String str)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' must be a string, got " + value.getClass().getSimpleName());
+    }
     if (str.isBlank()) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "field '" + key + "' must not be blank");
     }
@@ -190,17 +234,26 @@ public final class YamlCurrencyLoader implements ReferenceDataLoader<CurrencyRec
   }
 
   /**
-   * Returns a non-blank string value, or the default if the key is absent. An explicitly blank
-   * value is treated as invalid (not omitted) and throws.
+   * Returns a non-blank string value, or the default if the key is absent. An explicitly blank or
+   * non-string value is treated as invalid and throws. Explicit YAML {@code null} is distinguished
+   * from a missing key via {@link Map#containsKey}.
    */
   private static String requireStringOrDefault(
       final Map<String, Object> map, final String key, final String defaultValue)
       throws ReferenceDataLoadException {
-    final var value = map.get(key);
-    if (value == null) {
+    if (!map.containsKey(key)) {
       return defaultValue;
     }
-    final var str = value.toString();
+    final var value = map.get(key);
+    if (value == null) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE, "field '" + key + "' must not be null (omit the key for the default)");
+    }
+    if (!(value instanceof String str)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' must be a string, got " + value.getClass().getSimpleName());
+    }
     if (str.isBlank()) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "field '" + key + "' must not be blank");
     }

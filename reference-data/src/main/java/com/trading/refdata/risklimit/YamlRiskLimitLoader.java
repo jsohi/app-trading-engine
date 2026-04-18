@@ -14,8 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.agrona.collections.LongHashSet;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -40,7 +40,7 @@ import org.yaml.snakeyaml.Yaml;
  */
 public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitRecord> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(YamlRiskLimitLoader.class);
+  private static final Logger LOG = LogManager.getLogger(YamlRiskLimitLoader.class);
   private static final String ENTITY_TYPE = "RiskLimit";
 
   // Instance field — SnakeYAML Yaml is NOT thread-safe (holds internal parsing state).
@@ -160,9 +160,13 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
    */
   private static long toLong(final Map<String, Object> map, final String key)
       throws ReferenceDataLoadException {
+    if (!map.containsKey(key)) {
+      return 0L;
+    }
     final var value = map.get(key);
     if (value == null) {
-      return 0L;
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE, "field '" + key + "' must not be null (omit the key for the default of 0)");
     }
     return requireIntegralLong(value, key);
   }
@@ -233,17 +237,26 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
   }
 
   /**
-   * Returns a non-blank string value, or the default if the key is absent. An explicitly blank
-   * value is treated as invalid (not omitted) and throws.
+   * Returns a non-blank string value, or the default if the key is absent. An explicitly blank,
+   * null, or non-string value is treated as invalid and throws. Explicit YAML {@code null} is
+   * distinguished from a missing key via {@link Map#containsKey}.
    */
   private static String requireStringOrDefault(
       final Map<String, Object> map, final String key, final String defaultValue)
       throws ReferenceDataLoadException {
-    final var value = map.get(key);
-    if (value == null) {
+    if (!map.containsKey(key)) {
       return defaultValue;
     }
-    final var str = value.toString();
+    final var value = map.get(key);
+    if (value == null) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE, "field '" + key + "' must not be null (omit the key for the default)");
+    }
+    if (!(value instanceof String str)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' must be a string, got " + value.getClass().getSimpleName());
+    }
     if (str.isBlank()) {
       throw new ReferenceDataLoadException(ENTITY_TYPE, "field '" + key + "' must not be blank");
     }

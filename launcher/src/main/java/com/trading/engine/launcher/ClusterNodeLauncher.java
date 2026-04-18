@@ -148,12 +148,16 @@ public final class ClusterNodeLauncher {
               .localControlStreamId(ARCHIVE_LOCAL_CONTROL_STREAM_ID + nodeId)
               // Recording events surface recording position / progress on a dedicated stream —
               // required for ConsensusModule and external monitoring tools to observe archive
-              // health. Default is true; we leave it true explicitly to document the choice.
+              // health. Aeron 1.50+ requires explicit channel when enabled.
               .recordingEventsEnabled(true)
+              .recordingEventsChannel("aeron:ipc?term-length=64k")
               // DEDICATED gives the archive its own recorder + replayer threads, which is the
               // recommended mode for real clusters. SHARED is fine for tests but causes the
               // conductor and replayer to contend on a single thread under load.
-              .threadingMode(ArchiveThreadingMode.DEDICATED);
+              .threadingMode(ArchiveThreadingMode.DEDICATED)
+              // replicationChannel — required by Aeron Archive 1.50+ for log replication
+              // between archive instances during cluster catchup and snapshot transfer.
+              .replicationChannel(replicationChannel);
       archive = Archive.launch(archiveCtx);
 
       // 2. AeronArchive client context reused (cloned) by the ConsensusModule and the

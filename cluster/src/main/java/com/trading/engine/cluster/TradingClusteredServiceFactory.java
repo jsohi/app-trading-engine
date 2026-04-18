@@ -4,8 +4,11 @@ import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
+import com.trading.engine.cluster.refdata.LoadAccountBatchHandler;
 import com.trading.engine.cluster.refdata.LoadAccountHandler;
+import com.trading.engine.cluster.refdata.LoadCurrencyBatchHandler;
 import com.trading.engine.cluster.refdata.LoadCurrencyHandler;
+import com.trading.engine.cluster.refdata.LoadRiskLimitBatchHandler;
 import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
@@ -57,9 +60,14 @@ public final class TradingClusteredServiceFactory {
     registry.registerStore(accountStore);
     registry.registerStore(currencyStore);
     registry.registerStore(riskLimitStore);
+    // Legacy single-record loaders (templateIds 11, 13, 15)
     registry.registerLoader(new LoadAccountHandler(accountStore, currencyStore));
     registry.registerLoader(new LoadCurrencyHandler(currencyStore));
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
+    // Batch loaders (templateIds 12, 14, 16) — used by ReferenceDataOrchestrator via YAML files
+    registry.registerBatchLoader(new LoadAccountBatchHandler(accountStore, currencyStore));
+    registry.registerBatchLoader(new LoadCurrencyBatchHandler(currencyStore));
+    registry.registerBatchLoader(new LoadRiskLimitBatchHandler(riskLimitStore, accountStore));
 
     return new TradingClusteredService(
         tradingState,

@@ -301,6 +301,7 @@ public final class TradingEngineLauncher {
     final var ctx =
         new AeronCluster.Context()
             .aeronDirectoryName(gatewayAeronDir)
+            .ingressChannel("aeron:udp")
             .ingressEndpoints(ingressEndpoints)
             .egressChannel("aeron:udp?endpoint=localhost:0")
             .controlledEgressListener(egressBridge)
