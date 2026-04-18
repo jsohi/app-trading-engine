@@ -5,8 +5,8 @@
       <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
     </Console>
     <RollingRandomAccessFile name="File"
-                             fileName="logs/trading-engine.log"
-                             filePattern="logs/trading-engine-%d{yyyy-MM-dd}-%i.log"
+                             fileName="logs/integration-tests.log"
+                             filePattern="logs/integration-tests-%d{yyyy-MM-dd}-%i.log"
                              immediateFlush="false">
       <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
       <Policies>

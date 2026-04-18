@@ -17,6 +17,7 @@
     </RollingRandomAccessFile>
   </Appenders>
   <Loggers>
+    <AsyncLogger name="com.trading" level="info" includeLocation="false"/>
     <AsyncLogger name="io.aeron" level="warn" includeLocation="false"/>
     <AsyncRoot level="info" includeLocation="false">
       <AppenderRef ref="Console"/>
