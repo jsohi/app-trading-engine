@@ -64,7 +64,7 @@ public final class GatewayLauncher {
    * @param idleStrategy idle strategy for the gateway agent runner duty cycle
    * @return a {@link GatewayComponents} handle that owns the runner thread and cluster client
    * @throws NullPointerException if any string argument is null
-   * @throws IllegalArgumentException if fixHost is blank, aeronDir is blank, ingressEndpoints is
+   * @throws IllegalArgumentException if fixHost, aeronDir, archiveDir, or ingressEndpoints is
    *     blank, or fixPort is out of range
    */
   public static GatewayComponents launch(
@@ -171,10 +171,11 @@ public final class GatewayLauncher {
     }
 
     LOG.info(
-        "Gateway launched: {}:{} aeronDir={} ingressEndpoints={}",
+        "Gateway launched: {}:{} aeronDir={} archiveDir={} ingressEndpoints={}",
         fixHost,
         fixPort,
         aeronDir,
+        archiveDir,
         ingressEndpoints);
 
     return new GatewayComponents(agentRunner, clusterClient, ipcAeron);

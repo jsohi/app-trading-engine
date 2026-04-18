@@ -267,9 +267,10 @@ public final class FixGateway implements Agent {
             .controlChannel("aeron:udp?endpoint=localhost:0")
             .localControlChannel("aeron:ipc?term-length=64k")
             .recordingEventsEnabled(true)
-            .recordingEventsChannel("aeron:ipc")
+            .recordingEventsChannel("aeron:ipc?term-length=64k")
             .replicationChannel("aeron:udp?endpoint=localhost:0")
-            .threadingMode(ArchiveThreadingMode.SHARED);
+            .threadingMode(ArchiveThreadingMode.SHARED)
+            .errorHandler(t -> LOG.error().append("Gateway archive error: ").append(t).commit());
     archive = Archive.launch(archiveCtx);
     LOG.info().append("Gateway archive launched: ").append(archiveDir).commit();
 

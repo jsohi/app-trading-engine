@@ -14,6 +14,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -110,9 +111,7 @@ public final class E2EFixTestClient {
         case "--port" -> port = Integer.parseInt(args[i + 1]);
         case "--sender-comp-id" -> senderCompId = args[i + 1];
         case "--target-comp-id" -> targetCompId = args[i + 1];
-        default -> {
-          /* ignore unknown args */
-        }
+        default -> LOG.warn("Unknown CLI arg: {}", args[i]);
       }
     }
 
@@ -391,8 +390,9 @@ public final class E2EFixTestClient {
   }
 
   /**
-   * Validates the received FIX message is an ExecutionReport with ExecType=New, OrdStatus=New, and
-   * the ClOrdID matches.
+   * Validates the received FIX ExecutionReport against expected values for a NewOrderSingle
+   * acknowledgement. Checks every field that proves the full pipeline (FIX→SBE→Raft→Event→FIX)
+   * preserved data correctly.
    */
   private static int validateExecutionReport(
       final CapturedMessage msg, final String expectedClOrdId, final long rttMs) {
@@ -401,44 +401,123 @@ public final class E2EFixTestClient {
     final var decoder = new ExecutionReportDecoder();
     decoder.decode(buffer, 0, msg.data().length);
 
+    int failures = 0;
+
+    // --- Identity fields ---
+
     // ExecType (tag 150) — '0' = New
     char execType = decoder.execType();
     if (execType != '0') {
       LOG.error(
-          "E2E FAIL: ExecType='{}' (expected '0' New). Full message: {}",
+          "ExecType='{}' (expected '0' New). Full message: {}",
           execType,
-          new String(msg.data()));
-      return EXIT_ASSERTION;
+          new String(msg.data(), StandardCharsets.US_ASCII));
+      failures++;
     }
 
     // OrdStatus (tag 39) — '0' = New
     char ordStatus = decoder.ordStatus();
     if (ordStatus != '0') {
-      LOG.error("E2E FAIL: OrdStatus='{}' (expected '0' New)", ordStatus);
-      return EXIT_ASSERTION;
+      LOG.error("OrdStatus='{}' (expected '0' New)", ordStatus);
+      failures++;
     }
 
     // ClOrdID (tag 11) — must echo back what we sent
-    final var clOrdId = new String(decoder.clOrdID(), 0, decoder.clOrdIDLength()).trim();
+    final var clOrdId = trimChars(decoder.clOrdID(), decoder.clOrdIDLength());
     if (!expectedClOrdId.equals(clOrdId)) {
-      LOG.error("E2E FAIL: ClOrdID='{}' (expected '{}')", clOrdId, expectedClOrdId);
-      return EXIT_ASSERTION;
+      LOG.error("ClOrdID='{}' (expected '{}')", clOrdId, expectedClOrdId);
+      failures++;
     }
 
-    // OrderID (tag 37) — must be present and non-empty
-    int orderIdLen = decoder.orderIDLength();
-    if (orderIdLen <= 0) {
-      LOG.error("E2E FAIL: OrderID is empty");
+    // OrderID (tag 37) — must be present and non-empty (cluster IdGenerator assigned)
+    final var orderId = trimChars(decoder.orderID(), decoder.orderIDLength());
+    if (orderId.isEmpty()) {
+      LOG.error("OrderID is empty");
+      failures++;
+    }
+
+    // ExecID (tag 17) — must be present and non-empty (cluster ExecIdGenerator assigned)
+    final var execId = trimChars(decoder.execID(), decoder.execIDLength());
+    if (execId.isEmpty()) {
+      LOG.error("ExecID is empty");
+      failures++;
+    }
+
+    // --- Instrument fields (prove SBE→FIX translation preserved data) ---
+
+    // Symbol (tag 55) — must echo "EURUSD"
+    final var symbol = trimChars(decoder.symbol(), decoder.symbolLength());
+    if (!"EURUSD".equals(symbol)) {
+      LOG.error("Symbol='{}' (expected 'EURUSD')", symbol);
+      failures++;
+    }
+
+    // Side (tag 54) — '1' = Buy
+    char side = decoder.side();
+    if (side != '1') {
+      LOG.error("Side='{}' (expected '1' Buy)", side);
+      failures++;
+    }
+
+    // --- Account / Currency ---
+
+    // Account (tag 1) — must echo "ACME"
+    final var account = trimChars(decoder.account(), decoder.accountLength());
+    if (!"ACME".equals(account)) {
+      LOG.error("Account='{}' (expected 'ACME')", account);
+      failures++;
+    }
+
+    // Currency (tag 15) — must echo "USD"
+    final var currency = trimChars(decoder.currency(), decoder.currencyLength());
+    if (!"USD".equals(currency)) {
+      LOG.error("Currency='{}' (expected 'USD')", currency);
+      failures++;
+    }
+
+    // --- Quantity fields (prove fixed-point conversion round-tripped) ---
+
+    // LeavesQty (tag 151) — should equal OrderQty (1.0) since no fills
+    final var leavesQty = decoder.leavesQty();
+    if (leavesQty.value() != 1 || leavesQty.scale() != 0) {
+      LOG.error("LeavesQty={} scale={} (expected 1.0)", leavesQty.value(), leavesQty.scale());
+      failures++;
+    }
+
+    // CumQty (tag 14) — should be 0 (no fills yet)
+    final var cumQty = decoder.cumQty();
+    if (cumQty.value() != 0) {
+      LOG.error("CumQty={} (expected 0)", cumQty.value());
+      failures++;
+    }
+
+    // --- Result ---
+
+    if (failures > 0) {
+      LOG.error("E2E FAIL: {} assertion failure(s)", failures);
       return EXIT_ASSERTION;
     }
-    final var orderId = new String(decoder.orderID(), 0, orderIdLen).trim();
 
     LOG.info(
-        "E2E PASS: ExecType=New OrdStatus=New ClOrdID={} OrderID={} (round-trip: {}ms)",
+        "E2E PASS: ExecType=New OrdStatus=New ClOrdID={} OrderID={} ExecID={}"
+            + " Symbol={} Side=Buy Account={} Currency={} LeavesQty=1.0 CumQty=0"
+            + " (round-trip: {}ms)",
         clOrdId,
         orderId,
+        execId,
+        symbol,
+        account,
+        currency,
         rttMs);
     return EXIT_PASS;
+  }
+
+  /** Extracts a trimmed String from a FIX char[] field. */
+  private static String trimChars(final char[] chars, final int length) {
+    if (chars == null || length <= 0) {
+      return "";
+    }
+    return new String(chars, 0, length).trim();
   }
 
   // ===========================================================================
