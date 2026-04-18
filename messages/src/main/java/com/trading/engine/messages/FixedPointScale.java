@@ -12,7 +12,7 @@ package com.trading.engine.messages;
  * <p><b>Thread-safety.</b> All fields are compile-time constants — safe for unrestricted concurrent
  * access.
  *
- * <p><b>Allocation.</b> Zero allocation — no methods, no instances.
+ * <p><b>Allocation.</b> Zero allocation — static utility methods only, no instances.
  *
  * @see com.trading.engine.messages.clock.TradingClocks
  */
@@ -65,6 +65,32 @@ public final class FixedPointScale {
    * (which is always non-negative or a small negative for short-selling rebates).
    */
   public static final long PRICE_NOT_AVAILABLE = Long.MIN_VALUE;
+
+  /**
+   * Converts a human-readable (value, scale) pair to the engine's int64 fixed-point form.
+   *
+   * <p>Example: {@code toFixedPoint(105, 2)} returns {@code 105_000_000L} (= 1.05 × 10^8).
+   *
+   * <p>Supports scale in range {@code [0, SCALE_DIGITS]}. Scale values greater than {@code
+   * SCALE_DIGITS} are rejected — the engine's fixed-point precision is 10^-8; finer-grained input
+   * would require lossy truncation.
+   *
+   * <p><b>Overflow:</b> Uses {@link Math#multiplyExact(long, long)} — throws {@link
+   * ArithmeticException} if the result overflows {@code long}.
+   *
+   * @param value the unscaled value (e.g., 105 for price "1.05")
+   * @param scale number of decimal digits in {@code value} (e.g., 2 for "1.05")
+   * @return int64 fixed-point representation
+   * @throws IllegalArgumentException if {@code scale} is outside {@code [0, SCALE_DIGITS]}
+   * @throws ArithmeticException if the result overflows {@code long}
+   */
+  public static long toFixedPoint(final long value, final int scale) {
+    if (scale < 0 || scale > SCALE_DIGITS) {
+      throw new IllegalArgumentException(
+          "scale " + scale + " out of supported range [0, " + SCALE_DIGITS + "]");
+    }
+    return Math.multiplyExact(value, POW10[SCALE_DIGITS - scale]);
+  }
 
   private FixedPointScale() {}
 }

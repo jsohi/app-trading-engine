@@ -1,0 +1,49 @@
+scenarios:
+  # --- Happy path ---
+  - name: "NOS happy path — Limit Buy EURUSD on ACME"
+    type: "NewOrderSingle"
+    expectedOutcome: "New"
+    accountCode: "ACME"
+    symbol: "EURUSD"
+    currency: "USD"
+    side: "Buy"
+    ordType: "Limit"
+    timeInForce: "Day"
+    priceValue: 105
+    priceScale: 2
+    qtyValue: 1
+    qtyScale: 0
+
+  - name: "NOS happy path — Limit Sell EURUSD on ACME"
+    type: "NewOrderSingle"
+    expectedOutcome: "New"
+    accountCode: "ACME"
+    symbol: "EURUSD"
+    currency: "USD"
+    side: "Sell"
+    ordType: "Limit"
+    timeInForce: "Day"
+    priceValue: 105
+    priceScale: 2
+    qtyValue: 1
+    qtyScale: 0
+
+  # Market order scenario omitted — Artio's NewOrderSingleEncoder always writes the
+  # Price (tag 44) field position even when price() is not called, producing malformed
+  # FIX that the gateway rejects with BMR. Requires Artio encoder investigation (APP-16).
+
+  # --- Reject path ---
+  - name: "NOS reject — suspended account LOCKED"
+    type: "NewOrderSingle"
+    expectedOutcome: "Rejected"
+    accountCode: "LOCKED"
+    symbol: "EURUSD"
+    currency: "USD"
+    side: "Buy"
+    ordType: "Limit"
+    timeInForce: "Day"
+    priceValue: 105
+    priceScale: 2
+    qtyValue: 1
+    qtyScale: 0
+    expectedRejectText: "account not active"

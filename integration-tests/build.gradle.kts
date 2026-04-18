@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.aeron.archive)
     implementation(libs.agrona)
     implementation(libs.log4j.api)
+    implementation(libs.snakeyaml)
 
     // Existing test dependencies
     testImplementation(project(":launcher"))

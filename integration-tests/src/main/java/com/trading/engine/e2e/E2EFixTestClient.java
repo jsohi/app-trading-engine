@@ -2,11 +2,10 @@ package com.trading.engine.e2e;
 
 import static java.util.Collections.singletonList;
 
-import com.trading.engine.fix.OrdType;
-import com.trading.engine.fix.Side;
-import com.trading.engine.fix.TimeInForce;
 import com.trading.engine.fix.builder.NewOrderSingleEncoder;
+import com.trading.engine.fix.decoder.BusinessMessageRejectDecoder;
 import com.trading.engine.fix.decoder.ExecutionReportDecoder;
+import com.trading.engine.fix.decoder.RejectDecoder;
 import com.trading.engine.messages.clock.TradingClocks;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
@@ -18,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -41,20 +41,26 @@ import uk.co.real_logic.artio.session.Session;
 import uk.co.real_logic.artio.util.MutableAsciiBuffer;
 
 /**
- * Standalone E2E FIX test client — Artio initiator that connects to the trading engine's FIX
- * gateway, sends a NewOrderSingle, and validates the ExecutionReport response.
+ * Standalone data-driven E2E FIX test client — Artio initiator that connects to the trading
+ * engine's FIX gateway, loads test scenarios from YAML, sends NewOrderSingle messages, and
+ * validates ExecutionReport responses.
  *
- * <p><b>Usage:</b> {@code java ... E2EFixTestClient --host localhost --port 19880}
+ * <p><b>Usage:</b> {@code java ... E2EFixTestClient --host localhost --port 19880 --data-dir
+ * path/to/data}
  *
  * <p><b>Exit codes:</b>
  *
  * <ul>
  *   <li>0 — PASS (all scenarios passed)
  *   <li>1 — assertion failure (response didn't match expectations)
- *   <li>2 — connection failure (couldn't reach gateway or session didn't reach ACTIVE)
+ *   <li>2 — connection failure (couldn't reach gateway or session disconnected)
  *   <li>3 — timeout (no response within deadline)
  *   <li>4 — unexpected exception
  * </ul>
+ *
+ * <p>When multiple scenarios fail with different exit codes, the highest-severity (numerically
+ * largest) code is returned. The per-scenario summary table logged to stdout provides full
+ * individual PASS/FAIL detail for CI triage.
  *
  * <p><b>Threading.</b> Single-threaded — runs on the main thread. Not designed for concurrent use.
  *
@@ -94,16 +100,17 @@ public final class E2EFixTestClient {
   private E2EFixTestClient() {}
 
   /**
-   * Main entry point. Parses CLI args, connects to gateway, runs test scenarios.
+   * Main entry point. Parses CLI args, connects to gateway, runs data-driven test scenarios.
    *
-   * @param args CLI arguments: {@code --host <host> --port <port> --sender-comp-id <id>
-   *     --target-comp-id <id>}
+   * @param args CLI arguments: {@code --host <host> --port <port> --data-dir <path>
+   *     --sender-comp-id <id> --target-comp-id <id>}
    */
   public static void main(final String[] args) {
     String host = "localhost";
     int port = 19880;
     String senderCompId = "CLIENT1";
     String targetCompId = "TRADING";
+    String dataDir = null;
 
     for (int i = 0; i < args.length - 1; i += 2) {
       switch (args[i]) {
@@ -111,20 +118,28 @@ public final class E2EFixTestClient {
         case "--port" -> port = Integer.parseInt(args[i + 1]);
         case "--sender-comp-id" -> senderCompId = args[i + 1];
         case "--target-comp-id" -> targetCompId = args[i + 1];
+        case "--data-dir" -> dataDir = args[i + 1];
         default -> LOG.warn("Unknown CLI arg: {}", args[i]);
       }
     }
 
+    if (dataDir == null) {
+      LOG.error("--data-dir is required");
+      LogManager.shutdown();
+      System.exit(EXIT_EXCEPTION);
+    }
+
     LOG.info(
-        "E2E FIX Test Client: host={} port={} senderCompId={} targetCompId={}",
+        "E2E FIX Test Client: host={} port={} senderCompId={} targetCompId={} dataDir={}",
         host,
         port,
         senderCompId,
-        targetCompId);
+        targetCompId,
+        dataDir);
 
     int exitCode = EXIT_EXCEPTION;
     try {
-      exitCode = run(host, port, senderCompId, targetCompId);
+      exitCode = run(host, port, senderCompId, targetCompId, Path.of(dataDir).toAbsolutePath());
     } catch (final Exception e) {
       LOG.error("E2E FAIL: unexpected exception", e);
     }
@@ -134,7 +149,11 @@ public final class E2EFixTestClient {
   }
 
   private static int run(
-      final String host, final int port, final String senderCompId, final String targetCompId)
+      final String host,
+      final int port,
+      final String senderCompId,
+      final String targetCompId,
+      final Path dataDir)
       throws Exception {
 
     final var driverDir = Files.createTempDirectory("e2e-fix-client");
@@ -220,8 +239,8 @@ public final class E2EFixTestClient {
       long logonMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - logonStartNs);
       LOG.info("FIX session ACTIVE (logon: {}ms)", logonMs);
 
-      // 7. Run test scenario: NewOrderSingle happy path
-      int result = runNewOrderSingleScenario(session, library, messageQueue);
+      // 7. Load and run all data-driven scenarios
+      int result = runAllScenarios(session, library, messageQueue, dataDir);
 
       // 8. Clean shutdown: logout then close
       session.logoutAndDisconnect();
@@ -240,6 +259,534 @@ public final class E2EFixTestClient {
       deleteRecursively(fixLogDir);
       deleteRecursively(archiveDir);
     }
+  }
+
+  // ===========================================================================
+  // Data-driven scenario runner
+  // ===========================================================================
+
+  /**
+   * Loads scenarios from YAML and runs them sequentially over the same FIX session.
+   *
+   * <p>Exit code semantics: {@code Math.max(worstExitCode, result)} propagates the highest-severity
+   * exit code. If mixed failure types occur (e.g., one timeout + one assertion), only the most
+   * severe code reaches the caller. The per-scenario summary table logged to stdout compensates —
+   * it shows every scenario's individual PASS/FAIL for full triage context.
+   *
+   * @param session the active FIX session
+   * @param library the Artio library (polled for message delivery)
+   * @param messageQueue queue of captured inbound FIX messages
+   * @param dataDir path to the E2E data directory containing e2e-scenarios.yaml
+   * @return worst (highest) exit code across all scenarios
+   */
+  private static int runAllScenarios(
+      final Session session,
+      final FixLibrary library,
+      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue,
+      final Path dataDir) {
+
+    final List<NosScenario> scenarios =
+        E2EScenarioLoader.load(dataDir.resolve("e2e-scenarios.yaml"));
+
+    int passed = 0;
+    int failed = 0;
+    int worstExitCode = EXIT_PASS;
+    final var results = new String[scenarios.size()];
+
+    for (int i = 0; i < scenarios.size(); i++) {
+      final var scenario = scenarios.get(i);
+      final int total = scenarios.size();
+      LOG.info("[{}/{}] Running scenario: {}", i + 1, total, scenario.name());
+
+      // Best-effort drain of stale messages from previous scenario.
+      // This is an optimization to reduce log noise — ClOrdID matching in the poll loop
+      // is the actual correctness mechanism for scenario isolation.
+      while (messageQueue.poll() != null) {
+        // discard
+      }
+
+      final int result = runNosScenario(session, library, messageQueue, scenario, i, total);
+
+      if (result == EXIT_PASS) {
+        passed++;
+        results[i] = "[PASS] " + scenario.name();
+      } else {
+        failed++;
+        results[i] = "[FAIL] " + scenario.name();
+        worstExitCode = Math.max(worstExitCode, result);
+      }
+
+      // Connection failure (session disconnect) — remaining scenarios cannot run.
+      // Session-level Reject (35=3) does NOT trigger this — per FIX 4.4, the session
+      // remains active after a Reject and subsequent scenarios can still execute.
+      if (result == EXIT_CONNECTION) {
+        LOG.error("FIX session disconnected — aborting remaining scenarios");
+        for (int j = i + 1; j < scenarios.size(); j++) {
+          results[j] = "[SKIP] " + scenarios.get(j).name();
+        }
+        break;
+      }
+    }
+
+    // Summary table for CI triage
+    LOG.info("E2E RESULTS: {}/{} passed", passed, passed + failed);
+    for (final var line : results) {
+      if (line != null) {
+        LOG.info("  {}", line);
+      }
+    }
+    return worstExitCode;
+  }
+
+  // ===========================================================================
+  // NOS scenario execution
+  // ===========================================================================
+
+  /**
+   * Executes a single NewOrderSingle scenario: encodes and sends the NOS, polls for the
+   * ExecutionReport, and validates the response against the scenario's expected outcome.
+   *
+   * @param session the active FIX session
+   * @param library the Artio library (polled for message delivery)
+   * @param messageQueue queue of captured inbound FIX messages
+   * @param scenario the NOS scenario to execute
+   * @param index zero-based scenario index (for logging)
+   * @param total total number of scenarios (for logging)
+   * @return exit code (0=pass, 1=assertion, 2=connection, 3=timeout)
+   */
+  private static int runNosScenario(
+      final Session session,
+      final FixLibrary library,
+      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue,
+      final NosScenario scenario,
+      final int index,
+      final int total) {
+
+    // ClOrdID: truncate nanoTime to 9 digits — stays within FIX 4.4's 20-char limit.
+    // Math.abs() handles negative nanoTime() values (allowed by contract).
+    final var clOrdId = "E2E-" + index + "-" + Math.abs(NANO_CLOCK.nanoTime() % 1_000_000_000L);
+
+    // Encode NewOrderSingle
+    final var nos = new NewOrderSingleEncoder();
+    nos.clOrdID(clOrdId);
+    nos.instrument().symbol(scenario.symbol());
+    nos.side(scenario.side());
+    nos.ordType(scenario.ordType());
+    if (scenario.hasPrice()) {
+      nos.price(scenario.priceValue(), scenario.priceScale());
+    }
+    nos.orderQtyData().orderQty(scenario.qtyValue(), scenario.qtyScale());
+    nos.account(scenario.accountCode());
+    nos.currency(scenario.currency());
+    nos.timeInForce(scenario.timeInForce());
+
+    // TransactTime — required FIX field. Use project clock infrastructure.
+    final var tsEncoder = new UtcTimestampEncoder();
+    long epochNanos = EPOCH_CLOCK.nanoTime();
+    long epochMillis = TimeUnit.NANOSECONDS.toMillis(epochNanos);
+    int tsLen = tsEncoder.encode(epochMillis);
+    nos.transactTime(tsEncoder.buffer(), tsLen);
+
+    // Send NOS — retry on transient backpressure under a bounded deadline
+    long nosStartNs = NANO_CLOCK.nanoTime();
+    long sendDeadlineNs = nosStartNs + TimeUnit.SECONDS.toNanos(5);
+    long sendResult;
+    do {
+      sendResult = session.trySend(nos);
+      if (sendResult >= 0) {
+        break;
+      }
+      library.poll(LIBRARY_POLL_LIMIT);
+      Thread.onSpinWait();
+    } while (NANO_CLOCK.nanoTime() < sendDeadlineNs);
+
+    if (sendResult < 0) {
+      LOG.error(
+          "[{}/{}] {} — FAIL: trySend returned {} after retries",
+          index + 1,
+          total,
+          scenario.name(),
+          sendResult);
+      return EXIT_ASSERTION;
+    }
+    LOG.info("[{}/{}] Sent NOS: ClOrdID={}", index + 1, total, clOrdId);
+
+    // Poll for ExecutionReport (35=8) response — filter by message type, match ClOrdID
+    long responseDeadlineNs =
+        NANO_CLOCK.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RESPONSE_TIMEOUT_MS);
+
+    while (NANO_CLOCK.nanoTime() < responseDeadlineNs) {
+      library.poll(LIBRARY_POLL_LIMIT);
+
+      final var msg = messageQueue.poll();
+      if (msg != null) {
+        // Fail-fast on session-level Reject (35=3).
+        // Per FIX 4.4, a session Reject means the NOS was malformed but the session
+        // remains active — this is an assertion failure, not a connection failure.
+        if (msg.messageType() == RejectDecoder.MESSAGE_TYPE) {
+          LOG.error(
+              "[{}/{}] {} — FAIL: Received session Reject (35=3): {}",
+              index + 1,
+              total,
+              scenario.name(),
+              new String(msg.data(), StandardCharsets.US_ASCII));
+          return EXIT_ASSERTION;
+        }
+
+        // Fail-fast on BusinessMessageReject (35=j)
+        if (msg.messageType() == BusinessMessageRejectDecoder.MESSAGE_TYPE) {
+          LOG.error(
+              "[{}/{}] {} — FAIL: Received BusinessMessageReject (35=j): {}",
+              index + 1,
+              total,
+              scenario.name(),
+              new String(msg.data(), StandardCharsets.US_ASCII));
+          return EXIT_ASSERTION;
+        }
+
+        // Filter: only process ExecutionReport (35=8)
+        if (msg.messageType() != ExecutionReportDecoder.MESSAGE_TYPE) {
+          LOG.info(
+              "[{}/{}] Ignoring non-ER message: msgType={}", index + 1, total, msg.messageType());
+          continue;
+        }
+
+        // Decode ER and match ClOrdID — discard stale responses from previous scenarios
+        final var buffer = new MutableAsciiBuffer(msg.data());
+        final var decoder = new ExecutionReportDecoder();
+        decoder.decode(buffer, 0, msg.data().length);
+
+        final var rxClOrdId = trimChars(decoder.clOrdID(), decoder.clOrdIDLength());
+        if (!clOrdId.equals(rxClOrdId)) {
+          LOG.warn(
+              "[{}/{}] Discarding stale ER with ClOrdID={} (expected {})",
+              index + 1,
+              total,
+              rxClOrdId,
+              clOrdId);
+          continue;
+        }
+
+        // Validate based on expected outcome
+        long rttMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - nosStartNs);
+        return switch (scenario.expectedOutcome()) {
+          case NEW -> validateNewAck(decoder, scenario, index, total, rttMs);
+          case REJECTED -> validateRejected(decoder, scenario, index, total, rttMs);
+        };
+      }
+
+      // Session disconnect detection — fail fast instead of spinning to timeout
+      if (session.state() != SessionState.ACTIVE) {
+        LOG.error(
+            "[{}/{}] {} — FAIL: FIX session disconnected (state={})",
+            index + 1,
+            total,
+            scenario.name(),
+            session.state());
+        return EXIT_CONNECTION;
+      }
+
+      Thread.onSpinWait();
+    }
+
+    LOG.error(
+        "[{}/{}] {} — FAIL: no response within {}ms",
+        index + 1,
+        total,
+        scenario.name(),
+        RESPONSE_TIMEOUT_MS);
+    return EXIT_TIMEOUT;
+  }
+
+  // ===========================================================================
+  // ER validation — Happy Path (ExpectedOutcome.NEW)
+  // ===========================================================================
+
+  /**
+   * Validates an ExecutionReport for a successful New acknowledgement. Checks every field that
+   * proves the full pipeline (FIX→SBE→Raft→Event→FIX) preserved data correctly.
+   */
+  private static int validateNewAck(
+      final ExecutionReportDecoder decoder,
+      final NosScenario scenario,
+      final int index,
+      final int total,
+      final long rttMs) {
+
+    int failures = 0;
+    final String prefix = "[" + (index + 1) + "/" + total + "] " + scenario.name();
+
+    // ExecType (tag 150) — '0' = New
+    char execType = decoder.execType();
+    if (execType != '0') {
+      LOG.error("{} — FAIL: ExecType (tag 150): expected='0' (New), actual='{}'", prefix, execType);
+      failures++;
+    }
+
+    // OrdStatus (tag 39) — '0' = New
+    char ordStatus = decoder.ordStatus();
+    if (ordStatus != '0') {
+      LOG.error(
+          "{} — FAIL: OrdStatus (tag 39): expected='0' (New), actual='{}'", prefix, ordStatus);
+      failures++;
+    }
+
+    // OrderID (tag 37) — must be present and non-empty
+    final var orderId = trimChars(decoder.orderID(), decoder.orderIDLength());
+    if (orderId.isEmpty()) {
+      LOG.error("{} — FAIL: OrderID (tag 37) is empty", prefix);
+      failures++;
+    }
+
+    // ExecID (tag 17) — must be present and non-empty
+    final var execId = trimChars(decoder.execID(), decoder.execIDLength());
+    if (execId.isEmpty()) {
+      LOG.error("{} — FAIL: ExecID (tag 17) is empty", prefix);
+      failures++;
+    }
+
+    // Symbol (tag 55)
+    final var symbol = trimChars(decoder.symbol(), decoder.symbolLength());
+    if (!scenario.symbol().equals(symbol)) {
+      LOG.error(
+          "{} — FAIL: Symbol (tag 55): expected='{}', actual='{}'",
+          prefix,
+          scenario.symbol(),
+          symbol);
+      failures++;
+    }
+
+    // Side (tag 54)
+    char side = decoder.side();
+    if (side != scenario.side().representation()) {
+      LOG.error(
+          "{} — FAIL: Side (tag 54): expected='{}', actual='{}'",
+          prefix,
+          scenario.side().representation(),
+          side);
+      failures++;
+    }
+
+    // Account (tag 1)
+    final var account = trimChars(decoder.account(), decoder.accountLength());
+    if (!scenario.accountCode().equals(account)) {
+      LOG.error(
+          "{} — FAIL: Account (tag 1): expected='{}', actual='{}'",
+          prefix,
+          scenario.accountCode(),
+          account);
+      failures++;
+    }
+
+    // Currency (tag 15)
+    final var currency = trimChars(decoder.currency(), decoder.currencyLength());
+    if (!scenario.currency().equals(currency)) {
+      LOG.error(
+          "{} — FAIL: Currency (tag 15): expected='{}', actual='{}'",
+          prefix,
+          scenario.currency(),
+          currency);
+      failures++;
+    }
+
+    // OrdType (tag 40)
+    if (decoder.hasOrdType()) {
+      char ordType = decoder.ordType();
+      if (ordType != scenario.ordType().representation()) {
+        LOG.error(
+            "{} — FAIL: OrdType (tag 40): expected='{}', actual='{}'",
+            prefix,
+            scenario.ordType().representation(),
+            ordType);
+        failures++;
+      }
+    }
+
+    // TimeInForce (tag 59)
+    if (decoder.hasTimeInForce()) {
+      char tif = decoder.timeInForce();
+      if (tif != scenario.timeInForce().representation()) {
+        LOG.error(
+            "{} — FAIL: TimeInForce (tag 59): expected='{}', actual='{}'",
+            prefix,
+            scenario.timeInForce().representation(),
+            tif);
+        failures++;
+      }
+    }
+
+    // OrderQty (tag 38) — echo-back validation
+    if (decoder.hasOrderQty()) {
+      long rxQtyFp = E2EScenarioLoader.toFixedPoint(decoder.orderQty());
+      if (rxQtyFp != scenario.qtyFixedPoint()) {
+        LOG.error(
+            "{} — FAIL: OrderQty (tag 38): expected={}, actual={}",
+            prefix,
+            scenario.qtyFixedPoint(),
+            rxQtyFp);
+        failures++;
+      }
+    }
+
+    // Price (tag 44) — only for orders that have a price (Limit)
+    if (scenario.hasPrice()) {
+      if (!decoder.hasPrice()) {
+        LOG.error("{} — FAIL: Price (tag 44) expected but absent", prefix);
+        failures++;
+      } else {
+        long rxPriceFp = E2EScenarioLoader.toFixedPoint(decoder.price());
+        if (rxPriceFp != scenario.priceFixedPoint()) {
+          LOG.error(
+              "{} — FAIL: Price (tag 44): expected={}, actual={}",
+              prefix,
+              scenario.priceFixedPoint(),
+              rxPriceFp);
+          failures++;
+        }
+      }
+    }
+
+    // LeavesQty (tag 151) — should equal OrderQty since no fills
+    long rxLeavesQtyFp = E2EScenarioLoader.toFixedPoint(decoder.leavesQty());
+    if (rxLeavesQtyFp != scenario.qtyFixedPoint()) {
+      LOG.error(
+          "{} — FAIL: LeavesQty (tag 151): expected={}, actual={}",
+          prefix,
+          scenario.qtyFixedPoint(),
+          rxLeavesQtyFp);
+      failures++;
+    }
+
+    // CumQty (tag 14) — should be 0 (no fills yet)
+    if (decoder.cumQty().value() != 0) {
+      LOG.error(
+          "{} — FAIL: CumQty (tag 14): expected=0, actual={}", prefix, decoder.cumQty().value());
+      failures++;
+    }
+
+    // AvgPx (tag 6) — should be 0 (no fills)
+    if (decoder.avgPx().value() != 0) {
+      LOG.error("{} — FAIL: AvgPx (tag 6): expected=0, actual={}", prefix, decoder.avgPx().value());
+      failures++;
+    }
+
+    // TransactTime (tag 60) — presence check
+    if (!decoder.hasTransactTime()) {
+      LOG.error("{} — FAIL: TransactTime (tag 60) is absent", prefix);
+      failures++;
+    }
+
+    if (failures > 0) {
+      LOG.error("{} — FAIL: {} assertion failure(s)", prefix, failures);
+      return EXIT_ASSERTION;
+    }
+
+    LOG.info("{} — PASS (round-trip: {}ms)", prefix, rttMs);
+    return EXIT_PASS;
+  }
+
+  // ===========================================================================
+  // ER validation — Reject Path (ExpectedOutcome.REJECTED)
+  // ===========================================================================
+
+  /**
+   * Validates an ExecutionReport for an expected order rejection. Checks ExecType/OrdStatus for
+   * Rejected, verifies zero qty fields, and matches the Text (tag 58) against the expected reject
+   * text substring.
+   */
+  private static int validateRejected(
+      final ExecutionReportDecoder decoder,
+      final NosScenario scenario,
+      final int index,
+      final int total,
+      final long rttMs) {
+
+    int failures = 0;
+    final String prefix = "[" + (index + 1) + "/" + total + "] " + scenario.name();
+
+    // ExecType (tag 150) — '8' = Rejected
+    char execType = decoder.execType();
+    if (execType != '8') {
+      LOG.error(
+          "{} — FAIL: ExecType (tag 150): expected='8' (Rejected), actual='{}'", prefix, execType);
+      failures++;
+    }
+
+    // OrdStatus (tag 39) — '8' = Rejected
+    char ordStatus = decoder.ordStatus();
+    if (ordStatus != '8') {
+      LOG.error(
+          "{} — FAIL: OrdStatus (tag 39): expected='8' (Rejected), actual='{}'", prefix, ordStatus);
+      failures++;
+    }
+
+    // LeavesQty (tag 151) — should be 0
+    if (decoder.leavesQty().value() != 0) {
+      LOG.error(
+          "{} — FAIL: LeavesQty (tag 151): expected=0, actual={}",
+          prefix,
+          decoder.leavesQty().value());
+      failures++;
+    }
+
+    // CumQty (tag 14) — should be 0
+    if (decoder.cumQty().value() != 0) {
+      LOG.error(
+          "{} — FAIL: CumQty (tag 14): expected=0, actual={}", prefix, decoder.cumQty().value());
+      failures++;
+    }
+
+    // OrdRejReason (tag 103) — log for diagnostics if present
+    if (decoder.hasOrdRejReason()) {
+      LOG.info("{} — OrdRejReason (tag 103): {}", prefix, decoder.ordRejReason());
+    }
+
+    // Text (tag 58) — contains expectedRejectText
+    if (scenario.expectedRejectText() != null) {
+      if (!decoder.hasText()) {
+        LOG.error(
+            "{} — FAIL: Text (tag 58) is absent but expected to contain '{}'",
+            prefix,
+            scenario.expectedRejectText());
+        failures++;
+      } else {
+        final var text = decoder.textAsString();
+        if (!text.contains(scenario.expectedRejectText())) {
+          LOG.error(
+              "{} — FAIL: Text (tag 58): expected to contain '{}', actual='{}'",
+              prefix,
+              scenario.expectedRejectText(),
+              text);
+          failures++;
+        }
+      }
+    }
+
+    // TransactTime (tag 60) — presence check
+    if (!decoder.hasTransactTime()) {
+      LOG.error("{} — FAIL: TransactTime (tag 60) is absent", prefix);
+      failures++;
+    }
+
+    if (failures > 0) {
+      LOG.error("{} — FAIL: {} assertion failure(s)", prefix, failures);
+      return EXIT_ASSERTION;
+    }
+
+    LOG.info("{} — PASS (round-trip: {}ms)", prefix, rttMs);
+    return EXIT_PASS;
+  }
+
+  // ===========================================================================
+  // Utilities
+  // ===========================================================================
+
+  /** Extracts a trimmed String from a FIX char[] field. */
+  private static String trimChars(final char[] chars, final int length) {
+    if (chars == null || length <= 0) {
+      return "";
+    }
+    return new String(chars, 0, length).trim();
   }
 
   /** Best-effort recursive delete of a temp directory. Swallows exceptions. */
@@ -309,215 +856,6 @@ public final class E2EFixTestClient {
             .libraryAeronChannels(singletonList("aeron:ipc"));
     libConfig.aeronContext().aeronDirectoryName(driverDir.toString());
     return FixLibrary.connect(libConfig);
-  }
-
-  // ===========================================================================
-  // Test scenario
-  // ===========================================================================
-
-  /**
-   * Scenario: send a NewOrderSingle for EURUSD on account ACME, validate ExecutionReport response.
-   *
-   * @return exit code (0=pass, 1=assertion, 3=timeout)
-   */
-  private static int runNewOrderSingleScenario(
-      final Session session,
-      final FixLibrary library,
-      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue) {
-
-    final var clOrdId = "E2E-" + NANO_CLOCK.nanoTime();
-
-    // Encode NewOrderSingle
-    final var nos = new NewOrderSingleEncoder();
-    nos.clOrdID(clOrdId);
-    nos.instrument().symbol("EURUSD");
-    nos.side(Side.BUY);
-    nos.ordType(OrdType.LIMIT);
-    nos.price(105, 2); // 1.05
-    nos.orderQtyData().orderQty(1, 0); // 1.0
-    nos.account("ACME");
-    nos.currency("USD");
-    nos.timeInForce(TimeInForce.DAY);
-
-    // TransactTime — required FIX field. Use project clock infrastructure.
-    final var tsEncoder = new UtcTimestampEncoder();
-    long epochNanos = EPOCH_CLOCK.nanoTime();
-    long epochMillis = TimeUnit.NANOSECONDS.toMillis(epochNanos);
-    int tsLen = tsEncoder.encode(epochMillis);
-    nos.transactTime(tsEncoder.buffer(), tsLen);
-
-    // Send NOS — retry on transient backpressure under a bounded deadline
-    long nosStartNs = NANO_CLOCK.nanoTime();
-    long sendDeadlineNs = nosStartNs + TimeUnit.SECONDS.toNanos(5);
-    long sendResult;
-    do {
-      sendResult = session.trySend(nos);
-      if (sendResult >= 0) {
-        break;
-      }
-      library.poll(LIBRARY_POLL_LIMIT);
-      Thread.onSpinWait();
-    } while (NANO_CLOCK.nanoTime() < sendDeadlineNs);
-
-    if (sendResult < 0) {
-      LOG.error("E2E FAIL: trySend returned {} after retries", sendResult);
-      return EXIT_ASSERTION;
-    }
-    LOG.info("Sent NewOrderSingle: ClOrdID={}", clOrdId);
-
-    // Poll for ExecutionReport (35=8) response — filter by message type
-    long responseDeadlineNs =
-        NANO_CLOCK.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RESPONSE_TIMEOUT_MS);
-
-    while (NANO_CLOCK.nanoTime() < responseDeadlineNs) {
-      library.poll(LIBRARY_POLL_LIMIT);
-
-      final var msg = messageQueue.poll();
-      if (msg != null) {
-        // Filter: only process ExecutionReport (35=8, MESSAGE_TYPE=56)
-        if (msg.messageType() != ExecutionReportDecoder.MESSAGE_TYPE) {
-          LOG.info("Ignoring non-ER message: msgType={}", msg.messageType());
-          continue;
-        }
-        long rttMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - nosStartNs);
-        return validateExecutionReport(msg, clOrdId, rttMs);
-      }
-      Thread.onSpinWait();
-    }
-
-    LOG.error("E2E FAIL: no response within {}ms", RESPONSE_TIMEOUT_MS);
-    return EXIT_TIMEOUT;
-  }
-
-  /**
-   * Validates the received FIX ExecutionReport against expected values for a NewOrderSingle
-   * acknowledgement. Checks every field that proves the full pipeline (FIX→SBE→Raft→Event→FIX)
-   * preserved data correctly.
-   */
-  private static int validateExecutionReport(
-      final CapturedMessage msg, final String expectedClOrdId, final long rttMs) {
-
-    final var buffer = new MutableAsciiBuffer(msg.data());
-    final var decoder = new ExecutionReportDecoder();
-    decoder.decode(buffer, 0, msg.data().length);
-
-    int failures = 0;
-
-    // --- Identity fields ---
-
-    // ExecType (tag 150) — '0' = New
-    char execType = decoder.execType();
-    if (execType != '0') {
-      LOG.error(
-          "ExecType='{}' (expected '0' New). Full message: {}",
-          execType,
-          new String(msg.data(), StandardCharsets.US_ASCII));
-      failures++;
-    }
-
-    // OrdStatus (tag 39) — '0' = New
-    char ordStatus = decoder.ordStatus();
-    if (ordStatus != '0') {
-      LOG.error("OrdStatus='{}' (expected '0' New)", ordStatus);
-      failures++;
-    }
-
-    // ClOrdID (tag 11) — must echo back what we sent
-    final var clOrdId = trimChars(decoder.clOrdID(), decoder.clOrdIDLength());
-    if (!expectedClOrdId.equals(clOrdId)) {
-      LOG.error("ClOrdID='{}' (expected '{}')", clOrdId, expectedClOrdId);
-      failures++;
-    }
-
-    // OrderID (tag 37) — must be present and non-empty (cluster IdGenerator assigned)
-    final var orderId = trimChars(decoder.orderID(), decoder.orderIDLength());
-    if (orderId.isEmpty()) {
-      LOG.error("OrderID is empty");
-      failures++;
-    }
-
-    // ExecID (tag 17) — must be present and non-empty (cluster ExecIdGenerator assigned)
-    final var execId = trimChars(decoder.execID(), decoder.execIDLength());
-    if (execId.isEmpty()) {
-      LOG.error("ExecID is empty");
-      failures++;
-    }
-
-    // --- Instrument fields (prove SBE→FIX translation preserved data) ---
-
-    // Symbol (tag 55) — must echo "EURUSD"
-    final var symbol = trimChars(decoder.symbol(), decoder.symbolLength());
-    if (!"EURUSD".equals(symbol)) {
-      LOG.error("Symbol='{}' (expected 'EURUSD')", symbol);
-      failures++;
-    }
-
-    // Side (tag 54) — '1' = Buy
-    char side = decoder.side();
-    if (side != '1') {
-      LOG.error("Side='{}' (expected '1' Buy)", side);
-      failures++;
-    }
-
-    // --- Account / Currency ---
-
-    // Account (tag 1) — must echo "ACME"
-    final var account = trimChars(decoder.account(), decoder.accountLength());
-    if (!"ACME".equals(account)) {
-      LOG.error("Account='{}' (expected 'ACME')", account);
-      failures++;
-    }
-
-    // Currency (tag 15) — must echo "USD"
-    final var currency = trimChars(decoder.currency(), decoder.currencyLength());
-    if (!"USD".equals(currency)) {
-      LOG.error("Currency='{}' (expected 'USD')", currency);
-      failures++;
-    }
-
-    // --- Quantity fields (prove fixed-point conversion round-tripped) ---
-
-    // LeavesQty (tag 151) — should equal OrderQty (1.0) since no fills
-    final var leavesQty = decoder.leavesQty();
-    if (leavesQty.value() != 1 || leavesQty.scale() != 0) {
-      LOG.error("LeavesQty={} scale={} (expected 1.0)", leavesQty.value(), leavesQty.scale());
-      failures++;
-    }
-
-    // CumQty (tag 14) — should be 0 (no fills yet)
-    final var cumQty = decoder.cumQty();
-    if (cumQty.value() != 0) {
-      LOG.error("CumQty={} (expected 0)", cumQty.value());
-      failures++;
-    }
-
-    // --- Result ---
-
-    if (failures > 0) {
-      LOG.error("E2E FAIL: {} assertion failure(s)", failures);
-      return EXIT_ASSERTION;
-    }
-
-    LOG.info(
-        "E2E PASS: ExecType=New OrdStatus=New ClOrdID={} OrderID={} ExecID={}"
-            + " Symbol={} Side=Buy Account={} Currency={} LeavesQty=1.0 CumQty=0"
-            + " (round-trip: {}ms)",
-        clOrdId,
-        orderId,
-        execId,
-        symbol,
-        account,
-        currency,
-        rttMs);
-    return EXIT_PASS;
-  }
-
-  /** Extracts a trimmed String from a FIX char[] field. */
-  private static String trimChars(final char[] chars, final int length) {
-    if (chars == null || length <= 0) {
-      return "";
-    }
-    return new String(chars, 0, length).trim();
   }
 
   // ===========================================================================

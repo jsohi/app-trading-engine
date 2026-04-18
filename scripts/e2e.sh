@@ -133,6 +133,7 @@ echo "Running E2E FIX test client..."
 set +e
 "$E2E_DIR/integration-tests/build/install/integration-tests/bin/integration-tests" \
     --host localhost --port 19880 \
+    --data-dir "$DATA_DIR" \
     > "$LOG_DIR/e2e-client.log" 2>&1
 E2E_RESULT=$?
 set -e
