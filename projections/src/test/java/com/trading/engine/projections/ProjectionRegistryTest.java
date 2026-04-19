@@ -12,6 +12,10 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
 
+/**
+ * Tests for {@link ProjectionRegistry} — diagnostic lag tracking, health checks, and the
+ * zero-allocation {@link ProjectionRegistry#fillLag(long[], String[])} API.
+ */
 class ProjectionRegistryTest {
 
   /** Projection whose lastProcessedSequence() returns whatever the test sets. */
@@ -117,15 +121,13 @@ class ProjectionRegistryTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void getLagComputedRelativeToConsumerHead() {
-    // Register two projections with the consumer on different templateIds. Feed 7 fragments of
-    // type 100 (fast projection ticks to 7) then 3 fragments of type 200 (slow projection
-    // ticks to 10, but fast stays at 7). Consumer head = 10.
+  void getLagSnapshot_computedRelativeToConsumerHead() {
     final EventConsumer c = new EventConsumer();
     final FixedLagProjection fast = new FixedLagProjection(0L);
     final FixedLagProjection slow = new FixedLagProjection(0L);
     c.registerProjection(fast, 100);
     c.registerProjection(slow, 200);
+    c.markStartedForTest();
     feed(c, 100, 7);
     feed(c, 200, 3);
     assertEquals(10L, c.lastProcessedSequence());
@@ -136,18 +138,19 @@ class ProjectionRegistryTest {
     r.register("fast", fast);
     r.register("slow", slow);
 
-    final Map<String, Long> lag = r.getLag();
+    final Map<String, Long> lag = r.getLagSnapshot();
     assertEquals(3L, lag.get("fast")); // head 10 - fast 7
     assertEquals(0L, lag.get("slow")); // head 10 - slow 10
   }
 
   @Test
-  void isHealthyTrueWhenAllWithinThreshold() {
+  void isHealthy_allWithinThreshold_returnsTrue() {
     final EventConsumer c = new EventConsumer();
     final FixedLagProjection a = new FixedLagProjection(0L);
     final FixedLagProjection b = new FixedLagProjection(0L);
     c.registerProjection(a, 100);
     c.registerProjection(b, 200);
+    c.markStartedForTest();
     feed(c, 100, 95); // a at 95
     feed(c, 200, 5); // b at 100 (head=100), a still at 95 → lag 5
     // Both projections within threshold 10.
@@ -158,12 +161,13 @@ class ProjectionRegistryTest {
   }
 
   @Test
-  void isHealthyFalseWhenAnyExceedsThreshold() {
+  void isHealthy_anyExceedsThreshold_returnsFalse() {
     final EventConsumer c = new EventConsumer();
     final FixedLagProjection fast = new FixedLagProjection(0L);
     final FixedLagProjection stale = new FixedLagProjection(0L);
     c.registerProjection(fast, 100);
     c.registerProjection(stale, 200);
+    c.markStartedForTest();
     feed(c, 200, 1); // stale at 1 (head=1)
     feed(c, 100, 30); // fast at 31 (head=31), stale still at 1 → lag 30
     final ProjectionRegistry r = new ProjectionRegistry(c, 10L);
@@ -173,29 +177,46 @@ class ProjectionRegistryTest {
   }
 
   @Test
-  void getLagForUnregisteredProjectionIsConsumerHead() {
+  void getLagSnapshot_unregisteredProjectionIsConsumerHead() {
     // A projection that the registry knows about but that was NEVER registered with the
     // consumer should report lag = consumer head (consumer tracking returns 0 for unknowns).
     final EventConsumer c = new EventConsumer();
     final FixedLagProjection tracked = new FixedLagProjection(0L);
     c.registerProjection(tracked, 100);
+    c.markStartedForTest();
     feed(c, 100, 5);
 
     final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
     r.register("known", tracked);
     r.register("unknown-to-consumer", new FixedLagProjection(0L));
 
-    final Map<String, Long> lag = r.getLag();
+    final Map<String, Long> lag = r.getLagSnapshot();
     assertEquals(0L, lag.get("known"));
     assertEquals(5L, lag.get("unknown-to-consumer"));
   }
 
   @Test
-  void isHealthyEmptyRegistryVacuouslyTrue() {
+  void isHealthy_emptyRegistry_vacuouslyTrue() {
     final EventConsumer c = new EventConsumer();
     final ProjectionRegistry r = new ProjectionRegistry(c, 10L);
     assertTrue(r.isHealthy());
     assertEquals(0, r.size());
+  }
+
+  @Test
+  void isHealthy_afterConsumerClose_returnsFalse() {
+    final EventConsumer c = new EventConsumer();
+    final FixedLagProjection p = new FixedLagProjection(0L);
+    c.registerProjection(p, 100);
+    c.markStartedForTest();
+    feed(c, 100, 5);
+
+    final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
+    r.register("p", p);
+    assertTrue(r.isHealthy());
+
+    c.close();
+    assertFalse(r.isHealthy());
   }
 
   @Test
@@ -208,5 +229,66 @@ class ProjectionRegistryTest {
     // The earlier snapshot must not reflect the later registration.
     assertEquals(1, snapshot.size());
     assertEquals(2, r.size());
+  }
+
+  // ---------------------------------------------------------------------------
+  // fillLag (zero-allocation)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void fillLag_fillsPreAllocatedArrays_zeroAllocation() {
+    final EventConsumer c = new EventConsumer();
+    final FixedLagProjection fast = new FixedLagProjection(0L);
+    final FixedLagProjection slow = new FixedLagProjection(0L);
+    c.registerProjection(fast, 100);
+    c.registerProjection(slow, 200);
+    c.markStartedForTest();
+    feed(c, 100, 7);
+    feed(c, 200, 3); // head=10, fast=7 (lag 3), slow=10 (lag 0)
+
+    final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
+    r.register("fast", fast);
+    r.register("slow", slow);
+
+    final long[] lagOut = new long[2];
+    final String[] namesOut = new String[2];
+    final int count = r.fillLag(lagOut, namesOut);
+
+    assertEquals(2, count);
+    // Verify name-to-lag correlation (iteration order may differ from registration order)
+    for (int i = 0; i < count; i++) {
+      if ("fast".equals(namesOut[i])) {
+        assertEquals(3L, lagOut[i]);
+      } else if ("slow".equals(namesOut[i])) {
+        assertEquals(0L, lagOut[i]);
+      } else {
+        throw new AssertionError("unexpected projection name: " + namesOut[i]);
+      }
+    }
+  }
+
+  @Test
+  void fillLag_undersizedLagArray_throwsIllegalArgument() {
+    final EventConsumer c = new EventConsumer();
+    final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
+    r.register("p", new FixedLagProjection(0L));
+    assertThrows(IllegalArgumentException.class, () -> r.fillLag(new long[0], new String[2]));
+  }
+
+  @Test
+  void fillLag_undersizedNamesArray_throwsIllegalArgument() {
+    final EventConsumer c = new EventConsumer();
+    final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
+    r.register("p", new FixedLagProjection(0L));
+    assertThrows(IllegalArgumentException.class, () -> r.fillLag(new long[2], new String[0]));
+  }
+
+  @Test
+  void fillLag_nullArrays_throwsNullPointer() {
+    final EventConsumer c = new EventConsumer();
+    final ProjectionRegistry r = new ProjectionRegistry(c, 100L);
+    r.register("p", new FixedLagProjection(0L));
+    assertThrows(NullPointerException.class, () -> r.fillLag(null, new String[2]));
+    assertThrows(NullPointerException.class, () -> r.fillLag(new long[2], null));
   }
 }

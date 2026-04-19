@@ -72,9 +72,9 @@ public interface Projection {
    * been consumed (or the projection has just been {@link #reset()}). Implementations MUST update
    * this on every successful {@link #onEvent} call.
    *
-   * <p>Used by {@link ProjectionRegistry#getLag()} and {@link ProjectionRegistry#isHealthy()} for
-   * diagnostics. Not a durable checkpoint — projections recover via full replay, not resumption
-   * from this value.
+   * <p>Used by {@link ProjectionRegistry#getLagSnapshot()} and {@link
+   * ProjectionRegistry#isHealthy()} for diagnostics. Not a durable checkpoint — projections recover
+   * via full replay, not resumption from this value.
    */
   long lastProcessedSequence();
 

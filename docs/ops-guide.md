@@ -238,13 +238,13 @@ progress via `ProjectionRegistry`.
 boolean healthy = projectionRegistry.isHealthy();
 
 // Per-projection lag snapshot (name -> message count behind head)
-Map<String, Long> lag = projectionRegistry.getLag();
+Map<String, Long> lag = projectionRegistry.getLagSnapshot();
 ```
 
 **Monitoring checklist:**
 
 - `ProjectionRegistry.isHealthy()` should return `true` under normal operations
-- `ProjectionRegistry.getLag()` values should be near 0 (< lagThreshold)
+- `ProjectionRegistry.getLagSnapshot()` values should be near 0 (< lagThreshold)
 - On startup/recovery, lag will be temporarily elevated as projections replay from position 0
 - Sustained lag indicates a slow projection or a projection processing error
 

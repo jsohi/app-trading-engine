@@ -22,16 +22,19 @@ import org.agrona.collections.Object2ObjectHashMap;
  * report.
  *
  * <p><b>Health:</b> {@link #isHealthy()} returns {@code true} iff every registered projection's lag
- * is {@code <= lagThreshold}. An empty registry is vacuously healthy. The threshold is fixed at
- * construction; a richer model (per-projection thresholds, error-state tracking, replay flag) is
- * deferred to the metrics PR (APP-41 / APP-49).
+ * is {@code <= lagThreshold} AND the consumer is not closed. An empty registry is vacuously
+ * healthy. The threshold is fixed at construction; a richer model (per-projection thresholds,
+ * error-state tracking, replay flag) is deferred to the metrics PR (APP-41 / APP-49).
  *
- * <p><b>Thread-safety:</b> not thread-safe. Construction and {@link #register} must happen on the
- * setup thread before the consumer's poll loop starts. {@link #getLag} and {@link #isHealthy} are
- * intended to be called from the poll thread for consistent reads of the consumer's counters.
- * Cross-thread monitoring reads are possible but may see momentarily inconsistent values; the lag
- * value is defensively clamped to {@code >= 0} so cross-thread races can never produce a negative
- * diagnostic.
+ * <p><b>Thread-safety:</b> construction and {@link #register} must happen on the setup thread
+ * before the consumer's poll loop starts. {@link #getLagSnapshot}, {@link #fillLag}, and {@link
+ * #isHealthy} are safe to call from any thread after the consumer has been started — they read the
+ * consumer's release/acquire-backed counters for cross-thread visibility without locks. Lag values
+ * represent an approximate point-in-time snapshot; slight staleness is expected (the monitoring
+ * thread may transiently over- or under-report lag by a small number of messages) but torn reads
+ * are impossible. Lag is defensively clamped to {@code >= 0}. A closed consumer reports lag = 0 and
+ * {@link #isHealthy} returns {@code false} — callers should check {@code consumer.isClosed()} if
+ * they need to distinguish "healthy" from "shut down".
  */
 public final class ProjectionRegistry {
 
@@ -40,6 +43,8 @@ public final class ProjectionRegistry {
   private final Object2ObjectHashMap<String, Projection> byName = new Object2ObjectHashMap<>();
 
   /**
+   * Creates a projection registry backed by the given consumer.
+   *
    * @param consumer the consumer whose ingress counter and per-projection tracking define the lag
    *     math. Must not be null.
    * @param lagThreshold maximum acceptable lag (in messages) for a projection to count as healthy.
@@ -63,6 +68,8 @@ public final class ProjectionRegistry {
    * is rejected for loud failure (rather than silently replacing). The same projection instance can
    * be registered under multiple names if desired, though that is unusual.
    *
+   * @param name the projection name for diagnostic reporting; must not be null
+   * @param projection the projection to register; must not be null
    * @throws NullPointerException if {@code name} or {@code projection} is null
    * @throws IllegalArgumentException if {@code name} is already registered
    */
@@ -80,13 +87,17 @@ public final class ProjectionRegistry {
   }
 
   /**
-   * A fresh snapshot of per-projection lag: {@code name → max(0, consumer head -
+   * Allocating snapshot of per-projection lag: {@code name → max(0, consumer head -
    * consumer.lastProcessedSequence(projection))}. Allocates a new map (and boxes each {@code Long}
-   * value) on every call — diagnostic API, allocation is acceptable. The returned map is an Agrona
-   * {@link Object2ObjectHashMap} behind the {@link Map} interface; no {@code java.util.HashMap}
-   * instances leak from this method.
+   * value) on every call — convenience for HTTP diagnostic endpoints where allocation is
+   * acceptable. For zero-allocation monitoring, use {@link #fillLag(long[], String[])}.
+   *
+   * <p>The returned map is an Agrona {@link Object2ObjectHashMap} behind the {@link Map} interface;
+   * no {@code java.util.HashMap} instances leak from this method.
+   *
+   * @return fresh map of projection name → lag (always non-negative)
    */
-  public Map<String, Long> getLag() {
+  public Map<String, Long> getLagSnapshot() {
     final Object2ObjectHashMap<String, Long> snapshot = new Object2ObjectHashMap<>();
     final long head = consumer.lastProcessedSequence();
     for (final Map.Entry<String, Projection> entry : byName.entrySet()) {
@@ -97,15 +108,62 @@ public final class ProjectionRegistry {
   }
 
   /**
-   * {@code true} iff every registered projection's lag is {@code <= lagThreshold}. Empty registry
-   * is vacuously healthy.
+   * Fill the caller-provided arrays with per-projection lag values and names. Both arrays are
+   * written in the same iteration order, so {@code lagOut[i]} corresponds to {@code namesOut[i]}.
+   * Zero-allocation after the initial array creation by the caller. Use {@link #size()} to
+   * determine the required array lengths.
    *
-   * <p>Iterating {@link Object2ObjectHashMap#values()} allocates a single iterator per call — not
-   * strictly zero allocation. Health checks are diagnostic, intended to be called from a monitoring
-   * duty cycle, not from the dispatch hot path; the iterator allocation is intentionally accepted
-   * as the cost of a clean diagnostic API.
+   * <p>Note: {@link Object2ObjectHashMap} does not guarantee insertion order, so the iteration
+   * order may differ from registration order. It is however stable across calls as long as no new
+   * projections are registered (which is the case after startup).
+   *
+   * @param lagOut array to fill with lag values; must have length {@code >= size()}
+   * @param namesOut array to fill with projection names; must have length {@code >= size()}
+   * @return the number of projections written (equal to {@link #size()})
+   * @throws NullPointerException if either array is null
+   * @throws IllegalArgumentException if either array is undersized
+   */
+  public int fillLag(final long[] lagOut, final String[] namesOut) {
+    if (lagOut == null) {
+      throw new NullPointerException("lagOut must not be null");
+    }
+    if (namesOut == null) {
+      throw new NullPointerException("namesOut must not be null");
+    }
+    final int count = byName.size();
+    if (lagOut.length < count) {
+      throw new IllegalArgumentException(
+          "lagOut.length " + lagOut.length + " < projection count " + count);
+    }
+    if (namesOut.length < count) {
+      throw new IllegalArgumentException(
+          "namesOut.length " + namesOut.length + " < projection count " + count);
+    }
+    final long head = consumer.lastProcessedSequence();
+    int i = 0;
+    for (final Map.Entry<String, Projection> entry : byName.entrySet()) {
+      final long lag = head - consumer.lastProcessedSequence(entry.getValue());
+      namesOut[i] = entry.getKey();
+      lagOut[i] = lag < 0L ? 0L : lag;
+      i++;
+    }
+    return count;
+  }
+
+  /**
+   * Returns {@code true} iff every registered projection's lag is within the threshold AND the
+   * consumer is not closed. A closed consumer is unhealthy by definition — it cannot make progress.
+   * An empty registry is vacuously healthy (assuming the consumer is alive).
+   *
+   * <p>Iterating {@link Object2ObjectHashMap#values()} uses Agrona's cached flyweight iterator —
+   * zero allocation after the first call. Not on the dispatch hot path.
+   *
+   * @return {@code true} if all projections are within lag threshold and consumer is alive
    */
   public boolean isHealthy() {
+    if (consumer.isClosed()) {
+      return false;
+    }
     final long head = consumer.lastProcessedSequence();
     for (final Projection projection : byName.values()) {
       final long lag = head - consumer.lastProcessedSequence(projection);
@@ -116,10 +174,20 @@ public final class ProjectionRegistry {
     return true;
   }
 
+  /**
+   * The number of registered projections.
+   *
+   * @return the projection count
+   */
   public int size() {
     return byName.size();
   }
 
+  /**
+   * The configured lag threshold.
+   *
+   * @return the maximum acceptable lag in messages
+   */
   public long lagThreshold() {
     return lagThreshold;
   }
@@ -127,6 +195,8 @@ public final class ProjectionRegistry {
   /**
    * The set of registered projection names. Snapshot — modifying the returned set does not affect
    * the registry. For diagnostics only.
+   *
+   * @return an unmodifiable copy of the projection names
    */
   public Set<String> names() {
     return Set.copyOf(byName.keySet());

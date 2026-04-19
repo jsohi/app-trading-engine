@@ -434,4 +434,104 @@ class EventConsumerTest {
     final EventConsumer c = new EventConsumer();
     assertFalse(c.isStarted());
   }
+
+  // ---------------------------------------------------------------------------
+  // Per-projection tracking (APP-162 — VarHandle / release-acquire)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void projectionIndex_multipleProjections_assignsUniqueContiguousIndices() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection a = new RecordingProjection();
+    final RecordingProjection b = new RecordingProjection();
+    final RecordingProjection shared = new RecordingProjection();
+    // a on 100, b on 102, shared on both — 3 distinct projections
+    c.registerProjection(a, ORDER_CREATED);
+    c.registerProjection(b, ORDER_FILLED);
+    c.registerProjection(shared, ORDER_CREATED, ORDER_FILLED);
+    c.markStartedForTest();
+
+    // Dispatch one event of each type
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null); // ingress=1; a=1, shared=1
+    c.onFragment(bufferWithHeader(ORDER_FILLED), 0, 32, null); // ingress=2; b=2, shared=2
+
+    // Each projection has a unique, correct tracked value
+    assertEquals(1L, c.lastProcessedSequence(a));
+    assertEquals(2L, c.lastProcessedSequence(b));
+    assertEquals(2L, c.lastProcessedSequence(shared));
+    assertEquals(2L, c.lastProcessedSequence());
+  }
+
+  @Test
+  void lastProcessedSequence_beforeSeedLastSeqMap_returnsZero() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    // NOT started or reset — lastSeqByIndex is null
+    assertEquals(0L, c.lastProcessedSequence(p));
+  }
+
+  @Test
+  void lastProcessedSequence_afterClose_returnsZero() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    c.markStartedForTest();
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    assertEquals(1L, c.lastProcessedSequence(p));
+
+    c.close();
+    assertEquals(0L, c.lastProcessedSequence(p));
+    assertEquals(0L, c.lastProcessedSequence());
+  }
+
+  @Test
+  void reset_zerosPerProjectionSequences() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    c.markStartedForTest();
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    assertEquals(1L, c.lastProcessedSequence(p));
+
+    c.reset();
+    assertEquals(0L, c.lastProcessedSequence(p));
+    assertEquals(0L, c.lastProcessedSequence());
+  }
+
+  @Test
+  void reset_afterStartAndDispatch_newDispatchesTrackCorrectly() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    c.markStartedForTest();
+
+    // Dispatch 5 fragments
+    for (int i = 0; i < 5; i++) {
+      c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    }
+    assertEquals(5L, c.lastProcessedSequence());
+    assertEquals(5L, c.lastProcessedSequence(p));
+
+    // Reset and dispatch 3 more
+    c.reset();
+    for (int i = 0; i < 3; i++) {
+      c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    }
+    assertEquals(3L, c.lastProcessedSequence());
+    assertEquals(3L, c.lastProcessedSequence(p));
+  }
+
+  @Test
+  void lastProcessedSequence_unregisteredProjection_returnsZero() {
+    final EventConsumer c = new EventConsumer();
+    final RecordingProjection registered = new RecordingProjection();
+    final RecordingProjection unregistered = new RecordingProjection();
+    c.registerProjection(registered, ORDER_CREATED);
+    c.markStartedForTest();
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+
+    assertEquals(1L, c.lastProcessedSequence(registered));
+    assertEquals(0L, c.lastProcessedSequence(unregistered));
+  }
 }
