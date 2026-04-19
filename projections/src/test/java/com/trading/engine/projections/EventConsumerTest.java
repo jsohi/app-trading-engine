@@ -523,6 +523,25 @@ class EventConsumerTest {
   }
 
   @Test
+  void seedLastSeqMap_resetThenRegisterThenStart_arrayGrowsForNewProjection() {
+    // Regression test for Gemini review comment: reset() allocates a size-0 array when
+    // no projections are registered yet. If registerProjection() is called after reset()
+    // but before start(), seedLastSeqMap() must re-allocate the array to fit the new
+    // projection. Without this fix, onFragment() throws ArrayIndexOutOfBoundsException.
+    final EventConsumer c = new EventConsumer();
+    c.reset(); // seeds with 0 projections → lastSeqByIndex = new long[0]
+
+    final RecordingProjection p = new RecordingProjection();
+    c.registerProjection(p, ORDER_CREATED);
+    c.markStartedForTest(); // must re-allocate lastSeqByIndex to length 1
+
+    // Must not throw AIOOBE
+    c.onFragment(bufferWithHeader(ORDER_CREATED), 0, 32, null);
+    assertEquals(1L, c.lastProcessedSequence());
+    assertEquals(1L, c.lastProcessedSequence(p));
+  }
+
+  @Test
   void lastProcessedSequence_unregisteredProjection_returnsZero() {
     final EventConsumer c = new EventConsumer();
     final RecordingProjection registered = new RecordingProjection();

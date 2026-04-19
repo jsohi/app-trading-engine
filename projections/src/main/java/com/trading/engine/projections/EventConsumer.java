@@ -542,9 +542,11 @@ public final class EventConsumer implements FragmentHandler {
    * entry per distinct registered projection, allocates the {@link #lastSeqByIndex} array (once),
    * and builds the pre-computed {@link #dispatchIndices} parallel to the dispatch table.
    *
-   * <p>Idempotent and allocation-free on subsequent calls (e.g., {@link #reset()} after {@link
-   * #start()}): the projection index already contains all projections, the per-projection array is
-   * reused, and the dispatch indices are skipped (already populated).
+   * <p>Idempotent and allocation-free on the common path (e.g., {@link #reset()} after {@link
+   * #start()} with no new registrations): the projection index already contains all projections,
+   * the per-projection array is reused, and the dispatch indices are skipped. If projections were
+   * registered between a {@link #reset()} and {@link #start()} call, the array and dispatch indices
+   * are re-allocated to accommodate the new projections.
    *
    * <p>The volatile store of {@link #lastSeqByIndex} is the publication fence for cross-thread
    * reads: any monitoring thread that sees {@code lastSeqByIndex != null} is guaranteed (via JMM
@@ -564,15 +566,17 @@ public final class EventConsumer implements FragmentHandler {
         }
       }
     }
-    // Allocate per-projection array ONCE. On subsequent calls (reset() after start()),
-    // projectionIndex already contains all projections and the array is reused.
-    if (lastSeqByIndex == null) {
+    // Allocate or grow the per-projection array. On the common path (reset() after start()
+    // with no new registrations), idx == lastSeqByIndex.length and this is a no-op. The array
+    // must be re-allocated if projections were registered between a reset() and start() call,
+    // which would make idx > lastSeqByIndex.length (undersized array → AIOOBE in onFragment).
+    if (lastSeqByIndex == null || lastSeqByIndex.length < idx) {
       lastSeqByIndex = new long[idx]; // volatile store — publication fence
     }
-    // Build pre-computed index arrays parallel to dispatchTable ONCE. On subsequent calls
-    // (reset() after start()), dispatchIndices is already populated with identical values —
-    // skip the rebuild to avoid allocating new int[] arrays needlessly.
-    if (dispatchIndices.isEmpty()) {
+    // Build or rebuild pre-computed index arrays parallel to dispatchTable. On the common
+    // path (reset() after start() with no new registrations), sizes match and this is skipped.
+    // Must rebuild if new event types were registered between reset() and start().
+    if (dispatchIndices.size() < dispatchTable.size()) {
       final var it = dispatchTable.entrySet().iterator();
       while (it.hasNext()) {
         it.next();
