@@ -298,6 +298,7 @@ public final class ByteArrayKey {
    * @param b second byte range
    * @param bOff offset into {@code b}
    * @param bLen length from {@code b}
+   * @throws IndexOutOfBoundsException if {@code aLen + bLen} exceeds the backing array capacity
    */
   public void setComposite(
       final byte[] a,
@@ -306,6 +307,7 @@ public final class ByteArrayKey {
       final byte[] b,
       final int bOff,
       final int bLen) {
+    // No overflow concern: trading engine keys are short ASCII (max ~24 bytes for composite).
     final int totalLength = aLen + bLen;
     if (totalLength > data.length) {
       throw new IndexOutOfBoundsException(
@@ -423,6 +425,8 @@ public final class ByteArrayKey {
    * @param dstOffset start offset in {@code dst}
    * @param srcOffset start offset within this key's content (relative to {@link #offset()})
    * @param len number of bytes to copy
+   * @throws ArrayIndexOutOfBoundsException if the specified ranges exceed the source or destination
+   *     array bounds
    */
   public void getBytes(final byte[] dst, final int dstOffset, final int srcOffset, final int len) {
     System.arraycopy(data, this.offset + srcOffset, dst, dstOffset, len);
@@ -500,6 +504,8 @@ public final class ByteArrayKey {
   /**
    * Returns the key bytes as an ASCII string. <b>Allocates a new {@link String}</b> — cold-path /
    * debug use only. Never call on the hot path.
+   *
+   * @return ASCII string representation of the key bytes
    */
   @Override
   public String toString() {

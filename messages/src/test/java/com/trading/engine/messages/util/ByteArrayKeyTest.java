@@ -639,4 +639,38 @@ class ByteArrayKeyTest {
         IndexOutOfBoundsException.class,
         () -> probe.setComposite(ABC, 0, ABC.length, ABC, 0, ABC.length)); // 6 > 4
   }
+
+  @Test
+  void overwrite_directBuffer_longerThanBacking_allocatesAndCopies() {
+    final ByteArrayKey key = ByteArrayKey.owned(ABC, 0, ABC.length); // byte[3]
+    final byte[] longer = "LONGER_VALUE".getBytes(StandardCharsets.US_ASCII);
+    final UnsafeBuffer buf = new UnsafeBuffer(longer);
+    key.overwrite(buf, 0, longer.length);
+    assertEquals("LONGER_VALUE", key.toString());
+    assertEquals(12, key.length());
+  }
+
+  @Test
+  void set_byteArray_zeroLength_producesEmptyKey() {
+    final ByteArrayKey probe = ByteArrayKey.emptyForLookup(10);
+    probe.set(ABC, 0, 0);
+    assertEquals(0, probe.length());
+    assertEquals(0x811C9DC5, probe.hashCode()); // FNV offset basis for empty input
+  }
+
+  @Test
+  void overwrite_byteArray_zeroLength_producesEmptyKey() {
+    final ByteArrayKey key = ByteArrayKey.owned(ABC, 0, ABC.length);
+    key.overwrite(new byte[0], 0, 0);
+    assertEquals(0, key.length());
+    assertEquals(0x811C9DC5, key.hashCode());
+  }
+
+  @Test
+  void setComposite_zeroLengthBothRanges_producesEmptyKey() {
+    final ByteArrayKey probe = ByteArrayKey.emptyForLookup(10);
+    probe.setComposite(ABC, 0, 0, ABC, 0, 0);
+    assertEquals(0, probe.length());
+    assertEquals(0x811C9DC5, probe.hashCode());
+  }
 }
