@@ -586,6 +586,11 @@ class ByteArrayKeyTest {
   // ===========================================================================
 
   @Test
+  void emptyForLookup_negativeMaxLength_throwsIae() {
+    assertThrows(IllegalArgumentException.class, () -> ByteArrayKey.emptyForLookup(-1));
+  }
+
+  @Test
   void set_byteArray_exceedsCapacity_throwsIoobe() {
     final ByteArrayKey probe = ByteArrayKey.emptyForLookup(4);
     assertThrows(

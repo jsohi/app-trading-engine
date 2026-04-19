@@ -171,10 +171,14 @@ public final class ByteArrayKey {
    *
    * <p><b>Allocation:</b> allocates the backing {@code byte[maxLength]} and the wrapper once.
    *
-   * @param maxLength maximum byte length this probe will hold
+   * @param maxLength maximum byte length this probe will hold; must be {@code >= 0}
    * @return a new mutable ByteArrayKey for zero-allocation lookups
+   * @throws IllegalArgumentException if {@code maxLength} is negative
    */
   public static ByteArrayKey emptyForLookup(final int maxLength) {
+    if (maxLength < 0) {
+      throw new IllegalArgumentException("maxLength must be >= 0, was " + maxLength);
+    }
     return new ByteArrayKey(new byte[maxLength], 0, 0);
   }
 
