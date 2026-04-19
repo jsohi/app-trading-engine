@@ -389,10 +389,16 @@ public final class EventConsumer implements FragmentHandler {
     final int payloadLength = length - MessageHeaderDecoder.ENCODED_LENGTH;
     final long[] seqArr = lastSeqByIndex; // hoist volatile read before loop
     final int[] indices = dispatchIndices.get(eventType); // pre-computed ordinals (null pre-seed)
-    for (int i = 0; i < handlers.length; i++) {
-      handlers[i].onEvent(ingressSequence, eventType, buffer, payloadOffset, payloadLength);
-      if (seqArr != null && indices != null) {
+    // Null check hoisted outside the loop — seqArr and indices are invariant across iterations.
+    // The length guard ensures safety if dispatchIndices and dispatchTable are ever out of sync.
+    if (seqArr != null && indices != null && indices.length == handlers.length) {
+      for (int i = 0; i < handlers.length; i++) {
+        handlers[i].onEvent(ingressSequence, eventType, buffer, payloadOffset, payloadLength);
         SEQ_ARRAY.setRelease(seqArr, indices[i], ingressSequence);
+      }
+    } else {
+      for (final Projection handler : handlers) {
+        handler.onEvent(ingressSequence, eventType, buffer, payloadOffset, payloadLength);
       }
     }
     INGRESS_SEQ.setRelease(this, ingressSequence);
