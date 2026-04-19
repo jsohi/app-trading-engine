@@ -17,6 +17,12 @@
             "statusMessage": "Checking Linear issue convention..."
           },
           {
+            "type": "command",
+            "command": ".claude/hooks/enforce-review-before-push.sh",
+            "timeout": 5,
+            "statusMessage": "Checking review + E2E gate..."
+          },
+          {
             "type": "prompt",
             "prompt": "Check if this Bash command is: (1) a git push to main — if it pushes directly to main (e.g. 'git push origin main', or 'git push' while on main branch), BLOCK it with 'No direct pushes to main — all changes must go via PRs'. (2) a git commit — verify the FULL command text contains 'APP-{N}: ' where N is a number (Linear issue reference) — note the commit message may span multiple lines in a heredoc. (3) creates a new branch (git checkout -b, git branch <name>, git switch -c) — verify the branch name matches 'feat/app-{N}-*' pattern. If the command is not related to git push/commit/branch creation, ALLOW it. If it violates a convention, BLOCK it with an explanation. Command: $ARGUMENTS",
             "timeout": 10,
