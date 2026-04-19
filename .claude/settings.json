@@ -45,7 +45,7 @@
           },
           {
             "type": "command",
-            "command": "jq -nc '{decision:\"block\", reason:\"A git commit just completed. You MUST now run ALL three test suites before pushing or doing anything else:\\n\\n  1. ./gradlew test\\n  2. ./gradlew :integration-tests:test\\n  3. ./gradlew e2e\\n\\nDo NOT skip any suite. Do NOT claim they were already run. Execute each command and report results.\"}'",
+            "command": "[ \"$EXIT_CODE\" -eq 0 ] && jq -nc '{decision:\"block\", reason:\"A git commit just completed. You MUST now run ALL three test suites before pushing or doing anything else:\\n\\n  1. ./gradlew test\\n  2. ./gradlew :integration-tests:test\\n  3. ./gradlew e2e\\n\\nDo NOT skip any suite. Do NOT claim they were already run. Execute each command and report results.\"}' || exit 0",
             "if": "Bash(git commit:*)",
             "timeout": 5,
             "statusMessage": "Enforcing post-commit test gate..."
