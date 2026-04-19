@@ -419,8 +419,7 @@ public final class OrchestratorResponseListener implements ControlledFragmentHan
 
   /**
    * Returns the number of significant bytes in a null-padded fixed-length SBE char field. Matches
-   * {@link ClusterEgressListener#trimNullPadding(byte[])}. TODO(APP-207): extract to shared utility
-   * when ByteArrayKey is extracted to the messages module.
+   * {@link ClusterEgressListener#trimNullPadding(byte[])}.
    */
   static int trimNullPadding(final byte[] buf) {
     for (int i = 0; i < buf.length; i++) {

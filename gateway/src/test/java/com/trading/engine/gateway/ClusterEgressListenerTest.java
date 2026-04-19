@@ -42,7 +42,7 @@ class ClusterEgressListenerTest {
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final SbeToFixTranslator translator = new SbeToFixTranslator();
   private final InFlightTracker inFlightTracker =
-      new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5));
+      new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5), 20);
 
   private final AtomicLong lastSessionKey = new AtomicLong(-1);
   private final AtomicInteger lastTemplateId = new AtomicInteger(-1);

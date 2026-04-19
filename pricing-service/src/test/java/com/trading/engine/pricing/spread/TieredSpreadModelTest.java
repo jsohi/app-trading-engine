@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
-import com.trading.engine.pricing.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.pricing.skew.InventorySkewModel;
 import com.trading.engine.testsupport.buffer.SbeFieldUtil;
 import org.agrona.collections.Object2ObjectHashMap;

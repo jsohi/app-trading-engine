@@ -54,7 +54,8 @@ class FixSessionHandlerTest {
 
     // Build a DISCONNECTED ClusterClient — offer() returns NOT_CONNECTED.
     final SbeToFixTranslator sbeToFixTranslator = new SbeToFixTranslator();
-    final InFlightTracker inFlightTracker = new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5));
+    final InFlightTracker inFlightTracker =
+        new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5), 20);
     final ClusterEgressListener egressListener =
         new ClusterEgressListener(
             sbeToFixTranslator,

@@ -1,6 +1,6 @@
 package com.trading.engine.pricing.spread;
 
-import com.trading.engine.pricing.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.pricing.PricingMath;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2ObjectHashMap;

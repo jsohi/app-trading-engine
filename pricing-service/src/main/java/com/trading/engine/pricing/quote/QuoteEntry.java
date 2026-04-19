@@ -112,7 +112,7 @@ public final class QuoteEntry {
   /**
    * Actual length of meaningful bytes in {@link #quoteReqId}. The SBE field is fixed-width (20
    * bytes) but the identifier may be shorter, with trailing null/space padding. This length is
-   * needed for correct {@link com.trading.engine.pricing.ByteArrayKey} comparison.
+   * needed for correct {@link com.trading.engine.messages.util.ByteArrayKey} comparison.
    */
   int quoteReqIdLength;
 

@@ -2,7 +2,7 @@ package com.trading.engine.pricing.quote;
 
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
-import com.trading.engine.pricing.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import java.util.Iterator;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2ObjectHashMap;
