@@ -14,6 +14,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
+/**
+ * Tests for {@link InFlightTracker}: content-based ClOrdID keying via {@link
+ * com.trading.engine.messages.util.ByteArrayKey}, pre-allocated LIFO entry pool lifecycle (pool
+ * exhaustion, recycling, reset), timeout scanning with Agrona iterator compaction, callback
+ * exception safety, boundary validation, and FNV-1a 32-bit hash collision regression.
+ */
 class InFlightTrackerTest {
 
   private static final long TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
