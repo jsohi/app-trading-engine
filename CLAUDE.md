@@ -158,10 +158,10 @@ All production code must meet industry-level documentation standards consistent 
 |---------|---------|---------|
 | Aeron | 1.50.4 | Cluster, driver, archive |
 | SBE | 1.37.1 | Message codec generation |
-| Artio | 0.175 | FIX 4.4 engine |
+| Artio | 0.176 | FIX 4.4 engine |
 | Agrona | 2.4.0 | Off-heap collections, buffers |
 | JUnit | 6.0.3 | Testing framework |
 | GFLog | 3.0.7 | Zero-alloc logging (hot path) |
-| Log4j2 | 2.25.3 | Async logging (infra modules) |
-| Disruptor | 3.4.4 | LMAX ring buffer for Log4j2 Async |
+| Log4j2 | 2.25.4 | Async logging (infra modules) |
+| Disruptor | 4.0.0 | LMAX ring buffer for Log4j2 Async |
 | JDK | 25 | Runtime |

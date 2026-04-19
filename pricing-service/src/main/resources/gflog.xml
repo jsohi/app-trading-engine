@@ -1,33 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config>
-  <service class="com.epam.deltix.gflog.core.service.AsyncLogServiceFactory">
-    <overflowStrategy>DISCARD</overflowStrategy>
-    <bufferCapacity>4194304</bufferCapacity>
-  </service>
-
-  <appender name="console" class="com.epam.deltix.gflog.appender.console.ConsoleAppender">
-    <bufferCapacity>262144</bufferCapacity>
-    <layout class="com.epam.deltix.gflog.core.layout.TemplateLayoutFactory">
-      <template>%d{yyyy-MM-dd HH:mm:ss,SSSSSS} [%t] %-5p %c{36} - %m%n</template>
-      <zoneId>UTC</zoneId>
-    </layout>
+  <appender name="console"
+            factory="com.epam.deltix.gflog.core.appender.ConsoleAppenderFactory"
+            bufferCapacity="262144">
+    <layout template="%d{yyyy-MM-dd HH:mm:ss,SSSSSS} [%t] %-5p %c{36} - %m%n" zoneId="UTC"/>
   </appender>
 
-  <appender name="file" class="com.epam.deltix.gflog.appender.file.DailyRollingFileAppender">
-    <file>logs/pricing-service.log</file>
-    <append>true</append>
-    <bufferCapacity>8388608</bufferCapacity>
-    <maxFileSize>104857600</maxFileSize>
-    <maxBackupFiles>30</maxBackupFiles>
-    <layout class="com.epam.deltix.gflog.core.layout.TemplateLayoutFactory">
-      <template>%d{yyyy-MM-dd HH:mm:ss,SSSSSS} [%t] %-5p %c{36} - %m%n</template>
-      <zoneId>UTC</zoneId>
-    </layout>
+  <appender name="file"
+            factory="com.epam.deltix.gflog.core.appender.DailyRollingFileAppenderFactory"
+            file="logs/pricing-service.log"
+            append="true"
+            bufferCapacity="8388608"
+            maxFileSize="104857600"
+            maxFiles="30">
+    <layout template="%d{yyyy-MM-dd HH:mm:ss,SSSSSS} [%t] %-5p %c{36} - %m%n" zoneId="UTC"/>
   </appender>
 
-  <logger name="com.trading" level="info"/>
-  <root level="warn">
+  <logger name="com.trading" level="INFO"/>
+  <logger level="WARN">
     <appender-ref ref="console"/>
     <appender-ref ref="file"/>
-  </root>
+  </logger>
+
+  <service overflowStrategy="DISCARD" bufferCapacity="4194304"/>
 </config>

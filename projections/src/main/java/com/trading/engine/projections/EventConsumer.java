@@ -5,9 +5,11 @@ import io.aeron.Aeron;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
-import org.agrona.collections.Object2LongHashMap;
+import org.agrona.collections.Object2IntHashMap;
 
 /**
  * Consumes the cluster's SBE-encoded event stream and dispatches each event to the set of {@link
@@ -46,18 +48,23 @@ import org.agrona.collections.Object2LongHashMap;
  * defeats the point of CQRS; the APP-8 implementer must ensure the chosen channel preserves the
  * decoupling.
  *
- * <p><b>Threading:</b> single-threaded by contract. One thread calls {@link #poll} and consequently
- * dispatches to projections. No synchronisation, no {@code volatile}. The dispatch table is
- * populated before {@link #start} and never mutated afterwards, so the handover to the poll thread
- * is via {@code Thread.start()} happens-before (or {@link Subscription} construction, whichever the
- * caller uses to hand off). Projections invoked from this consumer MUST NOT block or allocate.
+ * <p><b>Threading:</b> single-threaded for mutation — one thread calls {@link #poll} and dispatches
+ * to projections. The ingress counter ({@code ingressSequence}) and per-projection tracking ({@link
+ * #lastSeqByIndex}) use {@link VarHandle} release/acquire semantics for cross-thread diagnostic
+ * reads (health checks, monitoring). This matches Aeron's {@code putLongOrdered} / {@code
+ * getLongVolatile} pattern: the poll thread writes with {@code setRelease}, the monitoring thread
+ * reads with {@code getAcquire}. Lifecycle flags ({@code started}, {@code closed}) and drop
+ * counters are {@code volatile} for cross-thread visibility. The dispatch table and projection
+ * index are frozen after {@link #start} and safely published via the volatile store of {@link
+ * #lastSeqByIndex}.
  *
  * <p><b>Zero allocation in {@link #onFragment}:</b> pre-allocated {@link MessageHeaderDecoder}
- * flyweight, primitive-keyed {@link Int2ObjectHashMap} lookup (no boxing), pre-populated {@link
- * Object2LongHashMap} update (in-place on existing keys, zero allocation), stack-only array
- * iteration. No lambdas, no streams, no String concat outside throw branches. Fragments shorter
- * than the SBE header length, or fragments whose templateId has no registered projection, are
- * silently dropped (a counter is bumped for diagnostics but no allocation happens).
+ * flyweight, primitive-keyed {@link Int2ObjectHashMap} lookups (no boxing), pre-computed {@code
+ * int[]} index arrays for direct {@link VarHandle#setRelease} into {@link #lastSeqByIndex} (no hash
+ * probes on the per-projection hot path), stack-only array iteration. No lambdas, no streams, no
+ * String concat outside throw branches. Fragments shorter than the SBE header length, or fragments
+ * whose templateId has no registered projection, are silently dropped (a counter is bumped for
+ * diagnostics but no allocation happens).
  *
  * <p><b>Scaffolding deferrals (APP-8, Wave 4 or later):</b>
  *
@@ -75,11 +82,35 @@ import org.agrona.collections.Object2LongHashMap;
  */
 public final class EventConsumer implements FragmentHandler {
 
+  // ---------------------------------------------------------------------------
+  // VarHandles — static, shared across all instances
+  // ---------------------------------------------------------------------------
+
+  /** VarHandle for per-element release/acquire access on {@link #lastSeqByIndex}. */
+  private static final VarHandle SEQ_ARRAY = MethodHandles.arrayElementVarHandle(long[].class);
+
+  /** VarHandle for release/acquire access on {@link #ingressSequence}. */
+  private static final VarHandle INGRESS_SEQ;
+
+  static {
+    try {
+      INGRESS_SEQ =
+          MethodHandles.lookup().findVarHandle(EventConsumer.class, "ingressSequence", long.class);
+    } catch (final ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Constants
+  // ---------------------------------------------------------------------------
+
   /** Empty array used as a "no projections for this eventType" sentinel. */
   private static final Projection[] EMPTY = new Projection[0];
 
-  /** Sentinel returned by {@link Object2LongHashMap} for missing keys. */
-  private static final long MISSING_SEQUENCE = -1L;
+  // ---------------------------------------------------------------------------
+  // Fields
+  // ---------------------------------------------------------------------------
 
   /** Pre-allocated SBE header flyweight; wrapped over each incoming fragment on dispatch. */
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -93,33 +124,65 @@ public final class EventConsumer implements FragmentHandler {
   private final Int2ObjectHashMap<Projection[]> dispatchTable = new Int2ObjectHashMap<>();
 
   /**
-   * Authoritative per-projection last-processed sequence, updated on every dispatch. This consumer
-   * owns the tracking rather than trusting {@link Projection#lastProcessedSequence()}, so {@link
-   * ProjectionRegistry} gets consistent lag math even if a projection forgets to update its own
-   * internal tracking. Pre-populated in {@link #start} with a zero entry for every distinct
-   * projection so that on-dispatch updates never rehash or grow the table — {@code put} only
-   * overwrites existing keys on the hot path.
+   * Projection → index into {@link #lastSeqByIndex}. Populated in {@link #seedLastSeqMap()}; never
+   * mutated after. Safe for cross-thread reads via the volatile publication of {@link
+   * #lastSeqByIndex}. Missing-value sentinel is {@code -1} (no valid index is negative).
    */
-  private final Object2LongHashMap<Projection> lastSeqByProjection =
-      new Object2LongHashMap<>(MISSING_SEQUENCE);
+  private final Object2IntHashMap<Projection> projectionIndex = new Object2IntHashMap<>(-1);
+
+  /**
+   * Pre-computed projection ordinal indices for each eventType, parallel to the {@link
+   * Projection}[] arrays in {@link #dispatchTable}. For eventType {@code t}, {@code
+   * dispatchIndices.get(t)[i]} is the {@link #lastSeqByIndex} index for {@code
+   * dispatchTable.get(t)[i]}. Eliminates the {@link #projectionIndex} hash probe from the dispatch
+   * hot path. Populated in {@link #seedLastSeqMap()}; never mutated after.
+   */
+  private final Int2ObjectHashMap<int[]> dispatchIndices = new Int2ObjectHashMap<>();
+
+  /**
+   * Per-projection last-processed sequence, indexed by projection ordinal from {@link
+   * #projectionIndex}. Single writer (poll thread) via {@code VarHandle.setRelease()}; monitoring
+   * threads read via {@code VarHandle.getAcquire()}. {@code null} before {@link #seedLastSeqMap()};
+   * once assigned, never nulled or replaced. The field is {@code volatile} so the reference
+   * publication serves as the happens-before fence for {@link #projectionIndex} and {@link
+   * #dispatchIndices} — any thread that reads {@code lastSeqByIndex != null} is guaranteed to see
+   * the fully populated projection index and dispatch indices.
+   */
+  private volatile long[] lastSeqByIndex;
 
   /** The open subscription, non-null between {@link #start} and {@link #close}. */
   private Subscription subscription;
 
-  /** Ingress message counter; incremented once per dispatched fragment. See class Javadoc. */
+  /**
+   * Ingress message counter; incremented once per dispatched fragment. Written as a plain {@code
+   * long} on the poll thread (single-writer), then release-published via {@link #INGRESS_SEQ} after
+   * the dispatch loop. Cross-thread reads use {@code INGRESS_SEQ.getAcquire()}.
+   */
   private long ingressSequence;
 
-  /** Count of fragments silently dropped because no projection is registered for their type. */
-  private long unknownTemplateDropCount;
+  /**
+   * Count of fragments silently dropped because no projection is registered for their type. {@code
+   * volatile} for cross-thread diagnostic reads; written only on the drop path.
+   */
+  private volatile long unknownTemplateDropCount;
 
-  /** Count of fragments silently dropped because they were shorter than the SBE header length. */
-  private long truncatedFragmentDropCount;
+  /**
+   * Count of fragments silently dropped because they were shorter than the SBE header length.
+   * {@code volatile} for cross-thread diagnostic reads; written only on the drop path.
+   */
+  private volatile long truncatedFragmentDropCount;
 
-  /** Lifecycle guard. {@code true} once {@link #start} has been called. */
-  private boolean started;
+  /**
+   * Lifecycle guard. {@code true} once {@link #start} has been called. {@code volatile} for
+   * cross-thread visibility from monitoring threads calling {@link #isStarted()}.
+   */
+  private volatile boolean started;
 
-  /** Set by {@link #close}; once closed, the consumer cannot be started again. */
-  private boolean closed;
+  /**
+   * Set by {@link #close}; once closed, the consumer cannot be started again. {@code volatile} for
+   * cross-thread visibility from monitoring threads calling {@link #isClosed()}.
+   */
+  private volatile boolean closed;
 
   // ---------------------------------------------------------------------------
   // Registration (startup-only)
@@ -190,9 +253,12 @@ public final class EventConsumer implements FragmentHandler {
 
   /**
    * Create the Aeron {@link Subscription} on {@code channel} / {@code streamId} and seed the
-   * per-projection tracking map with one zero entry per distinct registered projection. After this
-   * call the dispatch table is frozen and {@link #poll} may be driven.
+   * per-projection tracking array with zero entries. After this call the dispatch table is frozen
+   * and {@link #poll} may be driven.
    *
+   * @param aeron the Aeron client; must not be null
+   * @param channel the Aeron channel; must not be null
+   * @param streamId the Aeron stream ID
    * @throws NullPointerException if {@code aeron} or {@code channel} is null
    * @throws IllegalStateException if already started or already closed
    */
@@ -219,7 +285,9 @@ public final class EventConsumer implements FragmentHandler {
    * projections. Returns the number of fragments actually consumed (0 if the subscription had
    * nothing available).
    *
-   * @throws IllegalStateException if called before {@link #start}
+   * @param fragmentLimit maximum number of fragments to process
+   * @return the number of fragments consumed
+   * @throws IllegalStateException if called before {@link #start} or after {@link #close}
    */
   public int poll(final int fragmentLimit) {
     if (closed) {
@@ -234,25 +302,39 @@ public final class EventConsumer implements FragmentHandler {
   /**
    * Close the subscription and mark the consumer terminal. Idempotent — safe to call multiple times
    * or without {@link #start}. After {@link #close} the consumer cannot be restarted, registered
-   * to, polled, or {@link #reset} — every state-mutating method throws or returns the "missing"
-   * fallback. Construct a new instance if a fresh consumer is needed. Drops both the dispatch table
-   * and the per-projection tracking so stray post-close reads return consistent zeros.
+   * to, polled, or {@link #reset} — every state-mutating method throws.
+   *
+   * <p>Zeroes the ingress counter first (via {@code setRelease}) to minimise the transient lag
+   * spike visible to concurrent monitoring threads. Does NOT null {@link #lastSeqByIndex}, clear
+   * {@link #projectionIndex}, or clear {@link #dispatchTable} — these are frozen after seed and
+   * must remain readable by concurrent monitoring threads.
+   *
+   * <p>Volatile writes of {@code started = false} and {@code closed = true} are performed last so
+   * monitoring threads that see {@code closed == true} also see the zeroed counters (happens-before
+   * from the volatile store).
    */
   public void close() {
     if (subscription != null) {
       subscription.close();
       subscription = null;
     }
-    started = false;
-    closed = true;
-    ingressSequence = 0L;
+    // Zero ingress FIRST — minimises transient lag spike for concurrent monitoring readers.
+    // Reader sees head=0 with old per-projection values → lag negative → clamped to 0.
+    INGRESS_SEQ.setRelease(this, 0L);
+    ingressSequence = 0L; // defensive: VarHandle.setRelease above already wrote this field
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    // close() is terminal — drop both maps outright. Subsequent
-    // lastProcessedSequence(projection) reads return 0L via the MISSING_SEQUENCE fallback, and
-    // any caller that tries to register / poll / reset gets a clear IllegalStateException.
-    dispatchTable.clear();
-    lastSeqByProjection.clear();
+    // Zero per-projection tracking (do NOT null lastSeqByIndex or clear projectionIndex —
+    // frozen state must remain readable by concurrent monitoring threads).
+    final long[] seqArr = lastSeqByIndex;
+    if (seqArr != null) {
+      for (int i = 0; i < seqArr.length; i++) {
+        SEQ_ARRAY.setRelease(seqArr, i, 0L);
+      }
+    }
+    // Volatile writes LAST — monitoring threads that see closed=true also see zeroed counters.
+    started = false;
+    closed = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -275,6 +357,11 @@ public final class EventConsumer implements FragmentHandler {
    *
    * <p>Unknown templateIds (no registered projection) are silently dropped and counted in {@link
    * #unknownTemplateDropCount()}. Drops never bump the ingress counter.
+   *
+   * <p>Per-projection tracking writes use {@code VarHandle.setRelease()} on the {@link
+   * #lastSeqByIndex} array, with pre-computed indices from {@link #dispatchIndices} to avoid hash
+   * probes on the hot path. The ingress counter is release-published after the dispatch loop via
+   * {@link #INGRESS_SEQ}.
    */
   @Override
   public void onFragment(
@@ -300,12 +387,15 @@ public final class EventConsumer implements FragmentHandler {
     ingressSequence++;
     final int payloadOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
     final int payloadLength = length - MessageHeaderDecoder.ENCODED_LENGTH;
-    for (final Projection handler : handlers) {
-      handler.onEvent(ingressSequence, eventType, buffer, payloadOffset, payloadLength);
-      // Update consumer-owned tracking (pre-seeded in start() — put overwrites existing entry,
-      // no allocation or rehash on the hot path).
-      lastSeqByProjection.put(handler, ingressSequence);
+    final long[] seqArr = lastSeqByIndex; // hoist volatile read before loop
+    final int[] indices = dispatchIndices.get(eventType); // pre-computed ordinals (null pre-seed)
+    for (int i = 0; i < handlers.length; i++) {
+      handlers[i].onEvent(ingressSequence, eventType, buffer, payloadOffset, payloadLength);
+      if (seqArr != null && indices != null) {
+        SEQ_ARRAY.setRelease(seqArr, indices[i], ingressSequence);
+      }
     }
+    INGRESS_SEQ.setRelease(this, ingressSequence);
   }
 
   // ---------------------------------------------------------------------------
@@ -315,40 +405,77 @@ public final class EventConsumer implements FragmentHandler {
   /**
    * The number of fragments this consumer has dispatched since {@link #start} (or since the last
    * {@link #reset}). In the same units as {@link #lastProcessedSequence(Projection)}, so {@link
-   * ProjectionRegistry#getLag()} math is meaningful. See class Javadoc — this is a consumer-side
-   * ingress counter, not an authoritative event sequence number. Will be replaced by the payload
-   * seqNo in APP-8.
+   * ProjectionRegistry#getLagSnapshot()} math is meaningful. See class Javadoc — this is a
+   * consumer-side ingress counter, not an authoritative event sequence number. Will be replaced by
+   * the payload seqNo in APP-8.
+   *
+   * <p>Cross-thread safe — reads via {@code VarHandle.getAcquire()} for monitoring threads.
+   *
+   * @return the ingress sequence counter
    */
   public long lastProcessedSequence() {
-    return ingressSequence;
+    return (long) INGRESS_SEQ.getAcquire(this);
   }
 
   /**
-   * Consumer-authoritative last-processed sequence for the given projection, or {@code 0} if the
-   * projection has not been dispatched to yet (or was never registered with this consumer).
+   * Cross-thread-safe last-processed sequence for the given projection. Reads from the
+   * volatile-backed {@link #lastSeqByIndex} array via {@code VarHandle.getAcquire()}.
    *
-   * <p>Used by {@link ProjectionRegistry#getLag()} rather than {@link
+   * <p>Used by {@link ProjectionRegistry#getLagSnapshot()} rather than {@link
    * Projection#lastProcessedSequence()} — the consumer's view is the ground truth for lag math,
    * since a buggy projection that forgets to update its own tracking would otherwise report stale
    * lag forever.
+   *
+   * @param projection the projection to query; must not be null
+   * @return the last-processed sequence, or {@code 0L} if the projection is unknown or the consumer
+   *     has not been started/seeded
    */
   public long lastProcessedSequence(final Projection projection) {
-    final long value = lastSeqByProjection.getValue(projection);
-    return value == MISSING_SEQUENCE ? 0L : value;
+    final long[] seqArr = lastSeqByIndex;
+    if (seqArr == null) {
+      return 0L;
+    }
+    final int idx = projectionIndex.getValue(projection);
+    if (idx < 0) {
+      return 0L;
+    }
+    return (long) SEQ_ARRAY.getAcquire(seqArr, idx);
   }
 
+  /**
+   * Count of fragments dropped because no projection was registered for their templateId. {@code
+   * volatile} for cross-thread diagnostic reads.
+   *
+   * @return the drop count
+   */
   public long unknownTemplateDropCount() {
     return unknownTemplateDropCount;
   }
 
+  /**
+   * Count of fragments dropped because they were shorter than the SBE header length. {@code
+   * volatile} for cross-thread diagnostic reads.
+   *
+   * @return the drop count
+   */
   public long truncatedFragmentDropCount() {
     return truncatedFragmentDropCount;
   }
 
+  /**
+   * Whether the consumer has been started. {@code volatile} for cross-thread visibility.
+   *
+   * @return {@code true} if {@link #start} has been called
+   */
   public boolean isStarted() {
     return started;
   }
 
+  /**
+   * Whether the consumer has been closed. {@code volatile} for cross-thread visibility.
+   *
+   * @return {@code true} if {@link #close} has been called
+   */
   public boolean isClosed() {
     return closed;
   }
@@ -357,7 +484,8 @@ public final class EventConsumer implements FragmentHandler {
    * Package-private test hook — flip the {@code started} flag without constructing a real Aeron
    * {@link Subscription}. Used only by {@code EventConsumerTest} to exercise the post-start
    * registration guard without spinning up an embedded media driver. Also seeds the per-projection
-   * tracking map so tests can exercise dispatch after the fake start.
+   * tracking array and pre-computes dispatch indices so tests can exercise dispatch after the fake
+   * start.
    */
   void markStartedForTest() {
     seedLastSeqMap();
@@ -365,16 +493,21 @@ public final class EventConsumer implements FragmentHandler {
   }
 
   /**
-   * Reset the ingress counter, drop counters, and per-projection tracking to zero, then call {@link
-   * Projection#reset()} on every distinct registered projection. Used before a full Aeron Archive
-   * replay to rebuild all projections. Legal before {@link #start} (a no-op for the counters and
-   * projection set, since nothing is registered yet). Rejected after {@link #close} — once
-   * terminal, the consumer cannot resurrect projection state.
+   * Resets the ingress counter, drop counters, and per-projection tracking to zero, then calls
+   * {@link Projection#reset()} on every distinct registered projection. Used before a full Aeron
+   * Archive replay to rebuild all projections. Legal before {@link #start} (a no-op for the
+   * counters and projection set, since nothing is registered yet). Rejected after {@link #close} —
+   * once terminal, the consumer cannot resurrect projection state.
+   *
+   * <p>Zeroes the ingress counter first (via {@code setRelease}) to minimise the transient lag
+   * spike visible to concurrent monitoring threads: a reader that sees {@code head=0} with some
+   * projections still at their old values computes negative lag, which is clamped to zero — no
+   * false alarm.
    *
    * <p>Must be called on the same thread as {@link #poll} (typically the poll thread, between
    * polls) so the reset writes are visible before the next dispatch. Dedup across projections
-   * registered for multiple eventTypes is implicit: {@link #lastSeqByProjection}'s key set IS the
-   * set of distinct registered projections (populated by {@link #seedLastSeqMap}), so iterating it
+   * registered for multiple eventTypes is implicit: {@link #projectionIndex}'s key set IS the set
+   * of distinct registered projections (populated by {@link #seedLastSeqMap}), so iterating it
    * gives one reset per projection at no extra bookkeeping cost.
    *
    * @throws IllegalStateException if called after {@link #close}
@@ -383,14 +516,19 @@ public final class EventConsumer implements FragmentHandler {
     if (closed) {
       throw new IllegalStateException("EventConsumer is closed");
     }
-    ingressSequence = 0L;
+    // Zero ingress FIRST — minimises transient lag spike for concurrent monitoring readers.
+    INGRESS_SEQ.setRelease(this, 0L);
+    ingressSequence = 0L; // defensive: VarHandle.setRelease above already wrote this field
     unknownTemplateDropCount = 0L;
     truncatedFragmentDropCount = 0L;
-    // Re-seed first so reset() is valid before start() (where lastSeqByProjection is still
-    // empty). seedLastSeqMap is idempotent — only puts missing keys.
     seedLastSeqMap();
-    for (final Projection p : lastSeqByProjection.keySet()) {
-      lastSeqByProjection.put(p, 0L);
+    final long[] seqArr = lastSeqByIndex;
+    if (seqArr != null) {
+      for (int i = 0; i < seqArr.length; i++) {
+        SEQ_ARRAY.setRelease(seqArr, i, 0L);
+      }
+    }
+    for (final Projection p : projectionIndex.keySet()) {
       p.reset();
     }
   }
@@ -400,16 +538,51 @@ public final class EventConsumer implements FragmentHandler {
   // ---------------------------------------------------------------------------
 
   /**
-   * Pre-populate {@link #lastSeqByProjection} with one zero entry per distinct registered
-   * projection, so subsequent updates on the hot path only overwrite existing keys (no allocation,
-   * no rehash). Called from {@link #start} and {@link #markStartedForTest}.
+   * Seed the per-projection tracking infrastructure. Populates {@link #projectionIndex} with one
+   * entry per distinct registered projection, allocates the {@link #lastSeqByIndex} array (once),
+   * and builds the pre-computed {@link #dispatchIndices} parallel to the dispatch table.
+   *
+   * <p>Idempotent and allocation-free on subsequent calls (e.g., {@link #reset()} after {@link
+   * #start()}): the projection index already contains all projections, the per-projection array is
+   * reused, and the dispatch indices are skipped (already populated).
+   *
+   * <p>The volatile store of {@link #lastSeqByIndex} is the publication fence for cross-thread
+   * reads: any monitoring thread that sees {@code lastSeqByIndex != null} is guaranteed (via JMM
+   * happens-before) to see the fully populated {@link #projectionIndex} and {@link
+   * #dispatchIndices}.
+   *
+   * <p>Uses Agrona's flyweight {@link Int2ObjectHashMap} EntryIterator — methods are called on the
+   * iterator itself (not on the {@code Map.Entry} returned by {@code next()}). This is the standard
+   * Agrona idiom for zero-allocation iteration.
    */
   private void seedLastSeqMap() {
+    int idx = projectionIndex.size();
     for (final Projection[] handlers : dispatchTable.values()) {
       for (final Projection handler : handlers) {
-        if (lastSeqByProjection.getValue(handler) == MISSING_SEQUENCE) {
-          lastSeqByProjection.put(handler, 0L);
+        if (!projectionIndex.containsKey(handler)) {
+          projectionIndex.put(handler, idx++);
         }
+      }
+    }
+    // Allocate per-projection array ONCE. On subsequent calls (reset() after start()),
+    // projectionIndex already contains all projections and the array is reused.
+    if (lastSeqByIndex == null) {
+      lastSeqByIndex = new long[idx]; // volatile store — publication fence
+    }
+    // Build pre-computed index arrays parallel to dispatchTable ONCE. On subsequent calls
+    // (reset() after start()), dispatchIndices is already populated with identical values —
+    // skip the rebuild to avoid allocating new int[] arrays needlessly.
+    if (dispatchIndices.isEmpty()) {
+      final var it = dispatchTable.entrySet().iterator();
+      while (it.hasNext()) {
+        it.next();
+        final int eventType = it.getIntKey();
+        final Projection[] handlers = it.getValue();
+        final int[] indices = new int[handlers.length];
+        for (int j = 0; j < handlers.length; j++) {
+          indices[j] = projectionIndex.getValue(handlers[j]);
+        }
+        dispatchIndices.put(eventType, indices);
       }
     }
   }

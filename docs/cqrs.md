@@ -177,7 +177,7 @@ public interface Projection {
 
     /**
      * The latest seqNo this projection has finished processing, or 0 if no event
-     * has been consumed. Used by ProjectionRegistry.getLag() and
+     * has been consumed. Used by ProjectionRegistry.getLagSnapshot() and
      * ProjectionRegistry.isHealthy() for diagnostics.
      */
     long lastProcessedSequence();
