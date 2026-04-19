@@ -4,6 +4,7 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.PriceResponseDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestDecoder;
+import com.trading.engine.messages.util.ByteArrayKey;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2ObjectHashMap;
 

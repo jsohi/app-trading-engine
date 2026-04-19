@@ -6,8 +6,8 @@ package com.trading.engine.pricing.spread;
  *
  * <p>Instances are created at startup (from YAML or hard-coded defaults) and stored in an {@link
  * org.agrona.collections.Object2ObjectHashMap} keyed by {@link
- * com.trading.engine.pricing.ByteArrayKey}. A {@link #defaultConfig()} factory provides sensible
- * defaults for unknown symbols so that the spread model never fails a lookup.
+ * com.trading.engine.messages.util.ByteArrayKey}. A {@link #defaultConfig()} factory provides
+ * sensible defaults for unknown symbols so that the spread model never fails a lookup.
  *
  * <h3>Immutability</h3>
  *

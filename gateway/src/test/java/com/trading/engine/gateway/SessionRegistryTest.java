@@ -316,4 +316,32 @@ class SessionRegistryTest {
     clock.advanceNanos(TTL_NS + 1);
     assertEquals(0, registry.sweepExpiredCorrelations(clock.nanoTime(), TTL_NS));
   }
+
+  // ===========================================================================
+  // FNV-1a 64-bit hash (moved from InFlightTracker — APP-161)
+  // ===========================================================================
+
+  @Test
+  void fnv1aHash_deterministic() {
+    final byte[] a = "ORD-00000000001".getBytes(StandardCharsets.US_ASCII);
+    final byte[] b = "ORD-00000000001".getBytes(StandardCharsets.US_ASCII);
+    assertEquals(
+        SessionRegistry.fnv1aHash(a, 0, a.length), SessionRegistry.fnv1aHash(b, 0, b.length));
+  }
+
+  @Test
+  void fnv1aHash_differentInputs_differentHashes() {
+    final byte[] a = "ORD-001".getBytes(StandardCharsets.US_ASCII);
+    final byte[] b = "ORD-002".getBytes(StandardCharsets.US_ASCII);
+    assertTrue(
+        SessionRegistry.fnv1aHash(a, 0, a.length) != SessionRegistry.fnv1aHash(b, 0, b.length));
+  }
+
+  @Test
+  void fnv1aHash_respectsOffsetAndLength() {
+    final byte[] buf = "xxORD-001yy".getBytes(StandardCharsets.US_ASCII);
+    final byte[] exact = "ORD-001".getBytes(StandardCharsets.US_ASCII);
+    assertEquals(
+        SessionRegistry.fnv1aHash(exact, 0, exact.length), SessionRegistry.fnv1aHash(buf, 2, 7));
+  }
 }

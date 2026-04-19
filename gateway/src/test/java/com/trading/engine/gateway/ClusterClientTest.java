@@ -30,7 +30,7 @@ class ClusterClientTest {
 
   private final SbeToFixTranslator translator = new SbeToFixTranslator();
   private final InFlightTracker inFlightTracker =
-      new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5));
+      new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5), 20);
   private final SessionLookup sessionLookup =
       (clOrdId, offset, length) -> SessionLookup.NULL_SESSION;
 
@@ -230,7 +230,8 @@ class ClusterClientTest {
 
     final AtomicInteger expired = new AtomicInteger();
     final long nowNs = 1_000L + TimeUnit.SECONDS.toNanos(5);
-    inFlightTracker.checkTimeouts(nowNs, (hash, sentNs) -> expired.incrementAndGet());
+    inFlightTracker.checkTimeouts(
+        nowNs, (clOrdId, offset, length, sentNs) -> expired.incrementAndGet());
 
     assertEquals(1, expired.get());
     assertEquals(0, inFlightTracker.size());

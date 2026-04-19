@@ -10,6 +10,7 @@ import com.trading.engine.gateway.RejectEmitter;
 import com.trading.engine.gateway.SbeToFixTranslator;
 import com.trading.engine.gateway.SessionRegistry;
 import com.trading.engine.messages.clock.TradingClocks;
+import com.trading.engine.messages.sbe.NewOrderSingleEncoder;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
@@ -89,7 +90,9 @@ public final class GatewayLauncher {
     // --- Wire components ---
     final ErrorHandler errorHandler = throwable -> LOG.error("Gateway error", throwable);
 
-    final var inFlightTracker = new InFlightTracker(IN_FLIGHT_CAPACITY, IN_FLIGHT_TIMEOUT_NS);
+    final var inFlightTracker =
+        new InFlightTracker(
+            IN_FLIGHT_CAPACITY, IN_FLIGHT_TIMEOUT_NS, NewOrderSingleEncoder.clOrdIdLength());
 
     final var registry =
         new SessionRegistry(MAX_SESSIONS, MAX_SESSIONS_PER_COMP_ID, CORRELATION_CAPACITY);

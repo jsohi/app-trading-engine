@@ -8,7 +8,7 @@ import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
-import com.trading.engine.projections.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.projections.Projection;
 import com.trading.engine.projections.ProjectionUtil;
 import com.trading.engine.projections.SymbolPacker;

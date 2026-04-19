@@ -4,7 +4,7 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
-import com.trading.engine.projections.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.projections.Projection;
 import com.trading.engine.projections.ProjectionUtil;
 import java.nio.charset.StandardCharsets;

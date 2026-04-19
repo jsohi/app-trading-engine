@@ -4,7 +4,7 @@ import static com.trading.engine.pricing.PricingMath.mulDiv;
 
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
-import com.trading.engine.pricing.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.pricing.skew.InventorySkewModel;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2ObjectHashMap;

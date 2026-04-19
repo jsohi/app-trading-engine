@@ -6,11 +6,13 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import io.aeron.cluster.client.AeronCluster;
 import java.util.concurrent.TimeUnit;
+import org.agrona.AsciiSequenceView;
 import org.agrona.DirectBuffer;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.SystemNanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 
 /**
  * Agent-based Aeron Cluster client for the trading gateway. Provides a single-threaded duty cycle
@@ -73,6 +75,10 @@ public final class ClusterClient implements Agent, AutoCloseable {
 
   // --- Pre-allocated callback (zero-alloc on doWork hot path) ---
   private final InFlightTracker.TimeoutCallback timeoutCallback = this::onRequestTimeout;
+
+  // --- Pre-allocated fields for zero-alloc ASCII timeout logging ---
+  private final UnsafeBuffer logBuffer = new UnsafeBuffer(new byte[0]);
+  private final AsciiSequenceView logView = new AsciiSequenceView();
 
   // --- Mutable state ---
   private AeronCluster aeronCluster;
@@ -376,11 +382,14 @@ public final class ClusterClient implements Agent, AutoCloseable {
     }
   }
 
-  private void onRequestTimeout(final long clOrdIdHash, final long sentTimestampNs) {
+  private void onRequestTimeout(
+      final byte[] clOrdId, final int offset, final int length, final long sentTimestampNs) {
     final long ageMs = TimeUnit.NANOSECONDS.toMillis(nanoClock.nanoTime() - sentTimestampNs);
+    logBuffer.wrap(clOrdId, offset, length);
+    logView.wrap(logBuffer, 0, length);
     LOG.info()
-        .append("In-flight request timed out: hash=")
-        .append(clOrdIdHash)
+        .append("In-flight request timed out: clOrdId=")
+        .append(logView)
         .append(" ageMs=")
         .append(ageMs)
         .commit();

@@ -51,7 +51,7 @@ class FixGatewayTest {
   void setUp() {
     registry = new SessionRegistry(100, 10, 64);
     sbeToFixTranslator = new SbeToFixTranslator();
-    inFlightTracker = new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5));
+    inFlightTracker = new InFlightTracker(16, TimeUnit.SECONDS.toNanos(5), 20);
 
     // Build a FixGateway for egress testing only (no Artio engine lifecycle)
     gateway =

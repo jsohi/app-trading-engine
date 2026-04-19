@@ -1,6 +1,6 @@
 package com.trading.engine.pricing.skew;
 
-import com.trading.engine.pricing.ByteArrayKey;
+import com.trading.engine.messages.util.ByteArrayKey;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Object2LongHashMap;
 

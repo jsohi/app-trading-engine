@@ -55,6 +55,32 @@ public final class SessionRegistry implements SessionLookup {
     return hash == MISSING_VALUE ? MISSING_VALUE + 1 : hash;
   }
 
+  /** FNV-1a 64-bit offset basis. */
+  private static final long FNV_OFFSET_BASIS = 0xcbf29ce484222325L;
+
+  /** FNV-1a 64-bit prime. */
+  private static final long FNV_PRIME = 0x100000001b3L;
+
+  /**
+   * Computes the FNV-1a 64-bit hash over the byte range {@code data[offset..offset+length)}.
+   * Package-private — used by this class for correlation hashing. Previously lived on {@link
+   * InFlightTracker} but was moved here when InFlightTracker switched to content-based {@link
+   * com.trading.engine.messages.util.ByteArrayKey} keying (APP-161).
+   *
+   * @param data byte array
+   * @param offset start offset
+   * @param length number of bytes to hash
+   * @return 64-bit FNV-1a hash
+   */
+  static long fnv1aHash(final byte[] data, final int offset, final int length) {
+    long hash = FNV_OFFSET_BASIS;
+    for (int i = offset, end = offset + length; i < end; i++) {
+      hash ^= (data[i] & 0xFFL);
+      hash *= FNV_PRIME;
+    }
+    return hash;
+  }
+
   private final Long2LongHashMap correlationMap;
   private final Long2LongHashMap correlationTimestamps;
   private final Long2ObjectHashMap<GatewaySession> sessionsByKey;
@@ -96,7 +122,7 @@ public final class SessionRegistry implements SessionLookup {
 
   @Override
   public long findByCorrelationId(final byte[] correlationId, final int offset, final int length) {
-    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
+    final long hash = remapSentinel(fnv1aHash(correlationId, offset, length));
     final long sessionKey = correlationMap.get(hash);
     return sessionKey == MISSING_VALUE ? NULL_SESSION : sessionKey;
   }
@@ -121,7 +147,7 @@ public final class SessionRegistry implements SessionLookup {
       final int length,
       final long sessionKey,
       final long nowNs) {
-    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
+    final long hash = remapSentinel(fnv1aHash(correlationId, offset, length));
     final long existing = correlationMap.put(hash, sessionKey);
     correlationTimestamps.put(hash, nowNs);
     if (existing != MISSING_VALUE && existing != sessionKey) {
@@ -146,7 +172,7 @@ public final class SessionRegistry implements SessionLookup {
    * @param length number of significant bytes
    */
   public void removeCorrelation(final byte[] correlationId, final int offset, final int length) {
-    final long hash = remapSentinel(InFlightTracker.fnv1aHash(correlationId, offset, length));
+    final long hash = remapSentinel(fnv1aHash(correlationId, offset, length));
     correlationMap.remove(hash);
     correlationTimestamps.remove(hash);
   }

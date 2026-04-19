@@ -5,6 +5,7 @@ import com.trading.engine.messages.sbe.AccountSnapshotEncoder;
 import com.trading.engine.messages.sbe.AccountSnapshotEncoder.NoAccountsEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.util.ByteArrayKey;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
