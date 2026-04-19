@@ -21,7 +21,7 @@ cmd=$(jq -r '.tool_input.command // ""')
 # perfectly) but correctly handles the common case of `git commit -m "..."`
 # and `git commit -m '...'` invocations, where the message contains
 # protected-verb text as literal content.
-stripped=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g" | sed -E 's/"[^"]*"//g')
+stripped=$(printf '%s' "$cmd" | tr '\n' ' ' | sed -E "s/'[^']*'//g" | sed -E 's/"[^"]*"//g')
 
 # Match the protected verbs ANCHORED at the start of the stripped command,
 # allowing optional environment-variable prefixes:
@@ -119,7 +119,7 @@ Then re-issue the command with BOTH env var prefixes:
   LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 make push
   LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 gh pr create --title '...' --body '...'
 
-This enforces the memory rules feedback_review_before_push.md and ensures E2E tests are run before any PR is raised." '{
+This enforces the memory rules feedback_review_before_push.md and feedback_build_both.md, and ensures E2E tests are run before any PR is raised." '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
