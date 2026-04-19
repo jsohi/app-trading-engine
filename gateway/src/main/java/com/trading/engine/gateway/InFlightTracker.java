@@ -100,7 +100,10 @@ public final class InFlightTracker {
     this.allEntries = new InFlightEntry[initialCapacity];
     this.freeStack = new InFlightEntry[initialCapacity];
     for (int i = 0; i < initialCapacity; i++) {
-      final var key = ByteArrayKey.owned(new byte[maxClOrdIdLength], 0, maxClOrdIdLength);
+      // emptyForLookup allocates exactly one byte[] + one wrapper — no double allocation.
+      // Content is always set via overwrite() before pending.put(), so the initial empty state
+      // is never visible to the map.
+      final var key = ByteArrayKey.emptyForLookup(maxClOrdIdLength);
       allEntries[i] = new InFlightEntry(key);
       freeStack[i] = allEntries[i];
     }
