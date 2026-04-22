@@ -111,9 +111,9 @@ final class QuoteView {
 
   /**
    * FX swap points (optional). Set on QuoteCreatedEvent (105). {@code Long.MIN_VALUE} (SBE int64
-   * null sentinel) means not applicable (non-swap quote).
+   * null sentinel) means not applicable (non-swap quote or not yet priced).
    */
-  private long swapPoints;
+  private long swapPoints = Long.MIN_VALUE;
 
   // --- Timestamps (epoch nanos, NOT fixed-point) ---
 
