@@ -311,6 +311,10 @@ final class QuoteView {
 
   void setQuoteId(final byte[] src, final int offset, final int length) {
     System.arraycopy(src, offset, quoteId, 0, length);
+    // Zero trailing bytes in case a shorter quoteId replaces a longer one (defensive)
+    for (int i = length; i < quoteId.length; i++) {
+      quoteId[i] = 0;
+    }
     quoteIdLen = length;
   }
 

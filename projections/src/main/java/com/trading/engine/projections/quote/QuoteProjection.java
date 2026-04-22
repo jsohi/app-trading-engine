@@ -223,9 +223,13 @@ public final class QuoteProjection implements Projection {
     final var existing = byQuoteReqId.get(probeQuoteReqId);
     if (existing != null) {
       // Idempotent replay or out-of-order: a view already exists for this quoteReqId.
-      // Treat as no-op regardless of state — the first 104 set all fields including symbol,
-      // accountCode, and FX fields that are used as secondary index keys. Partial updates
-      // without re-indexing would corrupt the indexes.
+      // Strict no-op regardless of state — the first 104 set all fields including symbol,
+      // accountCode, and FX fields that are used as secondary index keys. Updating indexed
+      // fields without full re-indexing (remove from old key, add under new key) would corrupt
+      // the secondary indexes. Full re-indexing for a duplicate 104 is unnecessary complexity:
+      // the cluster emits one 104 per quoteReqId, and duplicates only arise from archive replay
+      // which delivers the identical event payload. If the projection state is corrupted, the
+      // correct recovery is reset() + full replay, not incremental patching from duplicates.
       return;
     }
 
