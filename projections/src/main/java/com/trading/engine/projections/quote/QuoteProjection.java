@@ -557,6 +557,12 @@ public final class QuoteProjection implements Projection {
    * Evicts terminal quotes (Rejected, Expired, Used) whose {@code lastUpdatedAt} is older than the
    * given cutoff timestamp. Called by an external timer, not by the projection itself.
    *
+   * <p><b>Complexity:</b> O(N) scan of {@code byQuoteReqId} under write lock. Runs on the timer
+   * thread, NOT the event dispatch thread — does not block event processing beyond normal lock
+   * contention. For extreme RFQ volumes (millions of terminal quotes), a time-ordered eviction
+   * queue could be added as a future optimization; the current linear scan is sufficient for
+   * initial production deployment with periodic timer invocations (e.g., every 60s).
+   *
    * <p><b>Safe for replay:</b> eviction only removes from the in-memory projection, NOT from the
    * durable Aeron Archive event log (which is never truncated). A full replay after restart
    * reconstructs all historical quotes, and the timer resumes eviction.
@@ -817,8 +823,10 @@ public final class QuoteProjection implements Projection {
   }
 
   /**
-   * Creates a ByteArrayKey from a String, NUL-padded to the given maxLength. Used on the query path
-   * (allocation acceptable).
+   * Creates a ByteArrayKey from a String, NUL-padded to the given maxLength. Allocates on every
+   * call ({@code getBytes}, {@code new byte[]}, {@code ByteArrayKey.copyOf}) — acceptable on query
+   * paths (off event-dispatch hot path). Thread-local pooling is a future optimization if query
+   * volume warrants it; the current approach matches {@code OrderProjection.keyFromString}.
    *
    * @throws IllegalArgumentException if the value exceeds maxLength ASCII characters
    */
