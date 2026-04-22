@@ -372,6 +372,8 @@ class QuoteProjectionTest {
     final QuoteSnapshot s = projection.getQuote("QTE-004");
     assertNotNull(s);
     assertEquals(QuoteStatus.Used, s.status()); // Terminal — not overridden by Expired
+    assertEquals(
+        2_000_000L, s.lastUpdatedAt()); // Timestamp preserved — not pushed forward by late 107
   }
 
   @Test
@@ -391,6 +393,8 @@ class QuoteProjectionTest {
     final QuoteSnapshot s = projection.getQuoteByReqId("RFQ-007");
     assertNotNull(s);
     assertEquals(QuoteStatus.Rejected, s.status()); // Terminal — not overridden
+    assertEquals(
+        2_000_000L, s.lastUpdatedAt()); // Timestamp preserved — not pushed forward by late 107
   }
 
   @Test
@@ -930,8 +934,9 @@ class QuoteProjectionTest {
   }
 
   @Test
-  void onEvent_concurrentQueryDuringDispatch_returnsConsistentSnapshot() throws Exception {
-    // Populate some quotes
+  void getActiveQuotes_crossThreadQuery_returnsConsistentSnapshot() throws Exception {
+    // Populate quotes on the test thread, then query from a different thread to verify
+    // StampedLock provides cross-thread visibility of the read model
     for (int i = 0; i < 100; i++) {
       final int len =
           encodeQuoteCreated(
@@ -947,11 +952,10 @@ class QuoteProjectionTest {
       dispatch(QuoteCreatedEventDecoder.TEMPLATE_ID, len);
     }
 
-    // Query from another thread
-    final CompletableFuture<List<QuoteSnapshot>> future =
-        CompletableFuture.supplyAsync(() -> projection.getActiveQuotes());
+    // Query from a different thread — verifies StampedLock read visibility
+    final var future = CompletableFuture.supplyAsync(() -> projection.getActiveQuotes());
 
-    final List<QuoteSnapshot> result = future.get();
+    final var result = future.get();
     assertEquals(100, result.size());
     assertTrue(result.stream().allMatch(s -> s.status() == QuoteStatus.Active));
   }

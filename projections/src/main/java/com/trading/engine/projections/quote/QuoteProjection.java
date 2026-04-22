@@ -217,14 +217,15 @@ public final class QuoteProjection implements Projection {
     // Defensive: check if a view already exists for this quoteReqId
     probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     final var existing = byQuoteReqId.get(probeQuoteReqId);
-    if (existing != null && existing.status() != QuoteStatus.Requested) {
-      // View already in a non-Requested state (e.g., Active after out-of-order 105 before 104).
-      // Do not overwrite — preserve the later-state view.
-      return;
-    }
     if (existing != null) {
-      // Duplicate 104 replay: remove old view from secondary indexes to avoid phantom entries
-      removeFromSecondaryIndexes(existing);
+      if (existing.status() == QuoteStatus.Requested) {
+        // Duplicate 104 replay: update existing view in-place to preserve object identity
+        // (byQuoteId may already reference this instance after a QuoteCreated)
+        existing.setSequenceNumber(seqNo);
+        existing.setLastUpdatedAt(requestedDecoder.timestamp());
+      }
+      // View in non-Requested state: no-op — preserve the later-state view
+      return;
     }
 
     final int symbolLen =
@@ -300,51 +301,56 @@ public final class QuoteProjection implements Projection {
       view.setQuoteReqId(scratchQuoteReqId, 0, reqIdLen);
       view.setCreatedAt(createdDecoder.timestamp());
       view.setResponseLatencyNanos(-1L); // sentinel: no prior 104
-    } else {
+
+      // Decode symbol/accountCode/FX fields for new views only (secondary index keyed on these)
+      final int symbolLen =
+          ProjectionUtil.sbeStrLen(createdDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
+      final int accountLen =
+          ProjectionUtil.sbeStrLen(
+              createdDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
+      final int settlDateLen =
+          ProjectionUtil.sbeStrLen(
+              createdDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
+      final int currLen =
+          ProjectionUtil.sbeStrLen(createdDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
+      final int settlCurrLen =
+          ProjectionUtil.sbeStrLen(
+              createdDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
+
+      view.setSymbol(scratchSymbol, 0, symbolLen);
+      view.setSide(createdDecoder.side());
+      view.setAccountCode(scratchAccountCode, 0, accountLen);
+      view.setProductType(createdDecoder.productType());
+      view.setSettlDate(scratchSettlDate, 0, settlDateLen);
+      view.setSettlType(createdDecoder.settlType());
+      view.setCurrency(scratchCurrency, 0, currLen);
+      view.setSettlCurrency(scratchSettlCurrency, 0, settlCurrLen);
+      view.setTenor(createdDecoder.tenor());
+
+      // Index new view in secondary maps (must happen inside this block where accountLen is scoped)
+      byQuoteReqId.put(probeQuoteReqId.copyOf(), view);
+      addToSymbolIndex(view, scratchSymbol);
+      addToAccountIndex(view, scratchAccountCode, accountLen);
+    } else if (view.status() == QuoteStatus.Requested) {
+      // Only compute latency on Requested→Active transition (not on duplicate 105 replay)
       view.setResponseLatencyNanos(createdDecoder.timestamp() - view.createdAt());
     }
 
-    // Populate all pricing and FX fields from QuoteCreated
-    final int symbolLen =
-        ProjectionUtil.sbeStrLen(createdDecoder.getSymbol(scratchSymbol, 0), scratchSymbol);
-    final int accountLen =
-        ProjectionUtil.sbeStrLen(
-            createdDecoder.getAccountCode(scratchAccountCode, 0), scratchAccountCode);
-    final int settlDateLen =
-        ProjectionUtil.sbeStrLen(
-            createdDecoder.getSettlDate(scratchSettlDate, 0), scratchSettlDate);
-    final int currLen =
-        ProjectionUtil.sbeStrLen(createdDecoder.getCurrency(scratchCurrency, 0), scratchCurrency);
-    final int settlCurrLen =
-        ProjectionUtil.sbeStrLen(
-            createdDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
-
+    // Pricing fields always updated (these are the core QuoteCreated payload)
     view.setQuoteId(scratchQuoteId, 0, quoteIdLen);
-    view.setSymbol(scratchSymbol, 0, symbolLen);
-    view.setSide(createdDecoder.side());
-    view.setAccountCode(scratchAccountCode, 0, accountLen);
     view.setBidPx(createdDecoder.bidPx());
     view.setOfferPx(createdDecoder.offerPx());
     view.setBidSize(createdDecoder.bidSize());
     view.setOfferSize(createdDecoder.offerSize());
     view.setValidUntil(createdDecoder.validUntil());
-    view.setProductType(createdDecoder.productType());
-    view.setSettlDate(scratchSettlDate, 0, settlDateLen);
-    view.setSettlType(createdDecoder.settlType());
-    view.setCurrency(scratchCurrency, 0, currLen);
-    view.setSettlCurrency(scratchSettlCurrency, 0, settlCurrLen);
-    view.setTenor(createdDecoder.tenor());
     view.setSwapPoints(createdDecoder.swapPoints());
     view.setStatus(QuoteStatus.Active);
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(createdDecoder.timestamp());
 
-    // Index in all maps
-    byQuoteId.put(probeQuoteId.copyOf(), view);
-    if (isNewView) {
-      byQuoteReqId.put(probeQuoteReqId.copyOf(), view);
-      addToSymbolIndex(view, scratchSymbol);
-      addToAccountIndex(view, scratchAccountCode, accountLen);
+    // Index in byQuoteId — avoid redundant put if view is already correctly mapped
+    if (existingByQuoteId != view) {
+      byQuoteId.put(probeQuoteId.copyOf(), view);
     }
   }
 
@@ -366,10 +372,9 @@ public final class QuoteProjection implements Projection {
     QuoteView view = byQuoteReqId.get(probeQuoteReqId);
 
     if (view != null) {
-      // Terminal state guard: do NOT overwrite Used or Expired (terminal states)
+      // Terminal state guard: do NOT overwrite Used or Expired — preserve timestamps for
+      // purgeTerminal eviction accuracy and MiFID II RTS 25 audit trail
       if (view.isTerminal()) {
-        view.setSequenceNumber(seqNo);
-        view.setLastUpdatedAt(rejectedDecoder.timestamp());
         return;
       }
       // Update only status, rejectReason, text — preserve existing fields
@@ -435,10 +440,12 @@ public final class QuoteProjection implements Projection {
       return; // Unknown quote — silently drop
     }
 
-    // Terminal state guard: do NOT override Used or Rejected
-    if (view.status() == QuoteStatus.Active || view.status() == QuoteStatus.Requested) {
-      view.setStatus(QuoteStatus.Expired);
+    // Terminal state guard: do NOT override Used or Rejected — preserve timestamps for
+    // purgeTerminal eviction accuracy and MiFID II RTS 25 audit trail
+    if (view.status() != QuoteStatus.Active && view.status() != QuoteStatus.Requested) {
+      return;
     }
+    view.setStatus(QuoteStatus.Expired);
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(expiredDecoder.timestamp());
   }
