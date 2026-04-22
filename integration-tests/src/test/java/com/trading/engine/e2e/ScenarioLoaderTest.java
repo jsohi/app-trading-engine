@@ -18,10 +18,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Tests for {@link E2EScenarioLoader} — validates YAML parsing, enum mapping, fixed-point
- * conversion, and error handling for E2E test scenario definitions.
+ * Unit tests for {@link E2EScenarioLoader} — validates YAML parsing, enum mapping, fixed-point
+ * conversion, and error handling for scenario definitions. Not an E2E test itself — the real E2E
+ * suite is the {@code e2e} Gradle task which spins up a 3-node cluster.
  */
-final class E2EScenarioLoaderTest {
+final class ScenarioLoaderTest {
 
   @TempDir Path tempDir;
 
