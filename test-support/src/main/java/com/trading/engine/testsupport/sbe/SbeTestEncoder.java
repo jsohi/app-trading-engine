@@ -32,10 +32,14 @@ import com.trading.engine.messages.sbe.PriceResponseEncoder;
 import com.trading.engine.messages.sbe.PriceValidationRequestEncoder;
 import com.trading.engine.messages.sbe.PriceValidationResponseEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.QuoteCreatedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteEncoder;
+import com.trading.engine.messages.sbe.QuoteExpiredEventEncoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
+import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteRequestEncoder;
 import com.trading.engine.messages.sbe.QuoteRequestRejectEncoder;
+import com.trading.engine.messages.sbe.QuoteRequestedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteStatusEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
@@ -1654,5 +1658,419 @@ public final class SbeTestEncoder {
     enc.transactTime(transactTime);
 
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  // -----------------------------------------------------------------------
+  // Quote domain events (templates 104-107)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Encodes a {@link QuoteRequestedEventEncoder} (template 104) with all fields explicitly
+   * supplied.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number (id 10020)
+   * @param timestamp cluster timestamp epoch nanos (id 10021)
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param orderQty requested quantity in fixed-point 10^8 (tag 38)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param productType product type classification
+   * @param settlDate settlement date YYYYMMDD (tag 64); max 8 ASCII chars
+   * @param settlType settlement type (tag 63)
+   * @param currency dealt currency ISO 4217 (tag 15); 3 ASCII chars
+   * @param settlCurrency settlement currency ISO 4217 (tag 120); 3 ASCII chars
+   * @param tenor tenor classification
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRequestedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty,
+      final String accountCode,
+      final ProductTypeEnum productType,
+      final String settlDate,
+      final SettlTypeEnum settlType,
+      final String currency,
+      final String settlCurrency,
+      final TenorEnum tenor) {
+
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    final QuoteRequestedEventEncoder enc = new QuoteRequestedEventEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sequenceNumber(seqNum)
+        .timestamp(timestamp)
+        .quoteReqId(quoteReqId)
+        .symbol(symbol)
+        .side(side)
+        .orderQty(orderQty)
+        .accountCode(accountCode)
+        .productType(productType)
+        .settlDate(settlDate)
+        .settlType(settlType)
+        .currency(currency)
+        .settlCurrency(settlCurrency)
+        .tenor(tenor);
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteRequestedEventEncoder} (template 104) with FX spot defaults.
+   *
+   * <p>Defaults: productType=Spot, settlDate="20260101", settlType=Regular, currency="USD",
+   * settlCurrency="EUR", tenor=SN.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number
+   * @param timestamp cluster timestamp epoch nanos
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param orderQty requested quantity in fixed-point 10^8 (tag 38)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRequestedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final long orderQty,
+      final String accountCode) {
+
+    return encodeQuoteRequestedEvent(
+        dst,
+        offset,
+        seqNum,
+        timestamp,
+        quoteReqId,
+        symbol,
+        side,
+        orderQty,
+        accountCode,
+        ProductTypeEnum.Spot,
+        DEFAULT_SETTL_DATE,
+        SettlTypeEnum.Regular,
+        "USD",
+        "EUR",
+        TenorEnum.SN);
+  }
+
+  /**
+   * Encodes a {@link QuoteCreatedEventEncoder} (template 105) with all fields explicitly supplied.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number (id 10020)
+   * @param timestamp cluster timestamp epoch nanos (id 10021)
+   * @param quoteId QuoteID (tag 117); max 20 ASCII chars
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param bidPx bid price in fixed-point 10^8 (tag 132)
+   * @param offerPx offer price in fixed-point 10^8 (tag 133)
+   * @param bidSize bid size in fixed-point 10^8 (tag 134)
+   * @param offerSize offer size in fixed-point 10^8 (tag 135)
+   * @param validUntil quote expiry timestamp epoch nanos (tag 62)
+   * @param productType product type classification
+   * @param settlDate settlement date YYYYMMDD (tag 64); max 8 ASCII chars
+   * @param settlType settlement type (tag 63)
+   * @param currency dealt currency ISO 4217 (tag 15); 3 ASCII chars
+   * @param settlCurrency settlement currency ISO 4217 (tag 120); 3 ASCII chars
+   * @param tenor tenor classification
+   * @param swapPoints swap points (optional; pass {@code
+   *     QuoteCreatedEventEncoder.swapPointsNullValue()} for non-swap)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteCreatedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteId,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final String accountCode,
+      final long bidPx,
+      final long offerPx,
+      final long bidSize,
+      final long offerSize,
+      final long validUntil,
+      final ProductTypeEnum productType,
+      final String settlDate,
+      final SettlTypeEnum settlType,
+      final String currency,
+      final String settlCurrency,
+      final TenorEnum tenor,
+      final long swapPoints) {
+
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    final QuoteCreatedEventEncoder enc = new QuoteCreatedEventEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sequenceNumber(seqNum)
+        .timestamp(timestamp)
+        .quoteId(quoteId)
+        .quoteReqId(quoteReqId)
+        .symbol(symbol)
+        .side(side)
+        .accountCode(accountCode)
+        .bidPx(bidPx)
+        .offerPx(offerPx)
+        .bidSize(bidSize)
+        .offerSize(offerSize)
+        .validUntil(validUntil)
+        .productType(productType)
+        .settlDate(settlDate)
+        .settlType(settlType)
+        .currency(currency)
+        .settlCurrency(settlCurrency)
+        .tenor(tenor)
+        .swapPoints(swapPoints);
+    enc.noLegsCount(0);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteCreatedEventEncoder} (template 105) with FX spot defaults.
+   *
+   * <p>Defaults: productType=Spot, settlDate="20260101", settlType=Regular, currency="USD",
+   * settlCurrency="EUR", tenor=SN, swapPoints=NULL_VAL, bidSize/offerSize=10^8.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number
+   * @param timestamp cluster timestamp epoch nanos
+   * @param quoteId QuoteID (tag 117); max 20 ASCII chars
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param bidPx bid price in fixed-point 10^8 (tag 132)
+   * @param offerPx offer price in fixed-point 10^8 (tag 133)
+   * @param validUntil quote expiry timestamp epoch nanos (tag 62)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteCreatedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteId,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final String accountCode,
+      final long bidPx,
+      final long offerPx,
+      final long validUntil) {
+
+    return encodeQuoteCreatedEvent(
+        dst,
+        offset,
+        seqNum,
+        timestamp,
+        quoteId,
+        quoteReqId,
+        symbol,
+        side,
+        accountCode,
+        bidPx,
+        offerPx,
+        100_000_000L,
+        100_000_000L,
+        validUntil,
+        ProductTypeEnum.Spot,
+        DEFAULT_SETTL_DATE,
+        SettlTypeEnum.Regular,
+        "USD",
+        "EUR",
+        TenorEnum.SN,
+        QuoteCreatedEventEncoder.swapPointsNullValue());
+  }
+
+  /**
+   * Encodes a {@link QuoteRejectedEventEncoder} (template 106) with all fields explicitly supplied.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number (id 10020)
+   * @param timestamp cluster timestamp epoch nanos (id 10021)
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param quoteRejectReason reject reason (tag 658)
+   * @param productType product type classification
+   * @param text free-text reason (tag 58); max 64 ASCII chars
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRejectedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final String accountCode,
+      final QuoteRejectReasonEnum quoteRejectReason,
+      final ProductTypeEnum productType,
+      final String text) {
+
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    final QuoteRejectedEventEncoder enc = new QuoteRejectedEventEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sequenceNumber(seqNum)
+        .timestamp(timestamp)
+        .quoteReqId(quoteReqId)
+        .symbol(symbol)
+        .side(side)
+        .accountCode(accountCode)
+        .quoteRejectReason(quoteRejectReason)
+        .productType(productType)
+        .text(text);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteRejectedEventEncoder} (template 106) with FX spot defaults.
+   *
+   * <p>Defaults: productType=Spot, accountCode="ACCT001".
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number
+   * @param timestamp cluster timestamp epoch nanos
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param quoteRejectReason reject reason (tag 658)
+   * @param text free-text reason (tag 58); max 64 ASCII chars
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteRejectedEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final QuoteRejectReasonEnum quoteRejectReason,
+      final String text) {
+
+    return encodeQuoteRejectedEvent(
+        dst,
+        offset,
+        seqNum,
+        timestamp,
+        quoteReqId,
+        symbol,
+        side,
+        "ACCT001",
+        quoteRejectReason,
+        ProductTypeEnum.Spot,
+        text);
+  }
+
+  /**
+   * Encodes a {@link QuoteExpiredEventEncoder} (template 107) with all fields explicitly supplied.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number (id 10020)
+   * @param timestamp cluster timestamp epoch nanos (id 10021)
+   * @param quoteId QuoteID (tag 117); max 20 ASCII chars
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @param accountCode account code (tag 1); max 16 ASCII chars
+   * @param productType product type classification
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteExpiredEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteId,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side,
+      final String accountCode,
+      final ProductTypeEnum productType) {
+
+    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    final QuoteExpiredEventEncoder enc = new QuoteExpiredEventEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sequenceNumber(seqNum)
+        .timestamp(timestamp)
+        .quoteId(quoteId)
+        .quoteReqId(quoteReqId)
+        .symbol(symbol)
+        .side(side)
+        .accountCode(accountCode)
+        .productType(productType);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link QuoteExpiredEventEncoder} (template 107) with FX spot defaults.
+   *
+   * <p>Defaults: productType=Spot, accountCode="ACCT001".
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param seqNum event sequence number
+   * @param timestamp cluster timestamp epoch nanos
+   * @param quoteId QuoteID (tag 117); max 20 ASCII chars
+   * @param quoteReqId QuoteReqID (tag 131); max 20 ASCII chars
+   * @param symbol instrument symbol (tag 55); max 8 ASCII chars
+   * @param side order side (tag 54)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeQuoteExpiredEvent(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long seqNum,
+      final long timestamp,
+      final String quoteId,
+      final String quoteReqId,
+      final String symbol,
+      final SideEnum side) {
+
+    return encodeQuoteExpiredEvent(
+        dst,
+        offset,
+        seqNum,
+        timestamp,
+        quoteId,
+        quoteReqId,
+        symbol,
+        side,
+        "ACCT001",
+        ProductTypeEnum.Spot);
   }
 }
