@@ -341,10 +341,13 @@ public final class QuoteProjection implements Projection {
       view.setResponseLatencyNanos(createdDecoder.timestamp() - view.createdAt());
     }
 
+    // Check if quoteId changed BEFORE setQuoteId overwrites the view's field
+    final boolean quoteIdChanged =
+        isNewView || view.quoteIdLen() == 0 || !quoteIdMatchesView(view, quoteIdLen);
+
     // Remove stale byQuoteId entry if the view already has a different quoteId (same quoteReqId,
-    // different quoteId on duplicate 105 — the old quoteId key would become a dangling reference).
-    // Skip if quoteId is unchanged (avoids redundant remove+re-add map churn on price updates).
-    if (!isNewView && view.quoteIdLen() > 0 && !quoteIdMatchesView(view, quoteIdLen)) {
+    // different quoteId on duplicate 105 — the old quoteId key would become a dangling reference)
+    if (!isNewView && view.quoteIdLen() > 0 && quoteIdChanged) {
       probeQuoteId.set(view.quoteId(), 0, view.quoteIdLen());
       byQuoteId.remove(probeQuoteId);
       probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
@@ -362,8 +365,10 @@ public final class QuoteProjection implements Projection {
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(createdDecoder.timestamp());
 
-    // Index in byQuoteId
-    byQuoteId.put(probeQuoteId.copyOf(), view);
+    // Index in byQuoteId — skip if quoteId is unchanged (avoids copyOf() allocation on updates)
+    if (quoteIdChanged) {
+      byQuoteId.put(probeQuoteId.copyOf(), view);
+    }
   }
 
   private void onQuoteRejected(
