@@ -82,10 +82,10 @@ public final class PositionProjection implements Projection {
   // --- Concurrency ---
   private final StampedLock lock = new StampedLock();
 
-  // --- Counters ---
-  private long lastProcessedSeqNo;
-  private long eventsProcessed;
-  private long errorCount;
+  // --- Volatile counters (safe for cross-thread reads without acquiring lock) ---
+  private volatile long lastProcessedSeqNo;
+  private volatile long eventsProcessed;
+  private volatile long errorCount;
 
   public PositionProjection() {
     positions = new Long2ObjectHashMap<>(64, LOAD_FACTOR);

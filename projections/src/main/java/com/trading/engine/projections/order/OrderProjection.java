@@ -95,11 +95,11 @@ public final class OrderProjection implements Projection {
   // --- Concurrency ---
   private final StampedLock lock = new StampedLock();
 
-  // --- Counters ---
-  private long lastProcessedSeqNo;
-  private long eventsProcessed;
-  private long errorCount;
-  private int rejectCount;
+  // --- Volatile counters (safe for cross-thread reads without acquiring lock) ---
+  private volatile long lastProcessedSeqNo;
+  private volatile long eventsProcessed;
+  private volatile long errorCount;
+  private volatile int rejectCount;
 
   public OrderProjection() {
     this(4096);
