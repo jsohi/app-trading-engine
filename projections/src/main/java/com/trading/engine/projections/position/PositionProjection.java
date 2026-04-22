@@ -82,7 +82,10 @@ public final class PositionProjection implements Projection {
   // --- Concurrency ---
   private final StampedLock lock = new StampedLock();
 
-  // --- Volatile counters (safe for cross-thread reads without acquiring lock) ---
+  // --- Volatile counters: projections are NOT single-threaded Aeron agents — they serve
+  // concurrent query threads. lastProcessedSequence() reads without lock, so volatile is required
+  // for cross-thread visibility. Diagnostic methods also acquire read lock (belt-and-suspenders).
+  // ---
   private volatile long lastProcessedSeqNo;
   private volatile long eventsProcessed;
   private volatile long errorCount;
