@@ -477,6 +477,97 @@ class QuoteProjectionTest {
   }
 
   @Test
+  void onEvent_quoteCreated_doesNotOverrideUsedStatus() {
+    // Quote goes Requested → Active → Used, then a duplicate 105 replays
+    final int len1 =
+        encodeQuoteCreated(
+            "QTE-TG3",
+            "RFQ-TG3",
+            "EURUSD",
+            SideEnum.Buy,
+            "ACCT01",
+            108_500_000L,
+            108_700_000L,
+            5_000_000L,
+            1_000_000L);
+    dispatch(QuoteCreatedEventDecoder.TEMPLATE_ID, len1);
+
+    final int len2 =
+        encodeOrderCreated(
+            "ORD-TG3",
+            "CLO-TG3",
+            "EURUSD",
+            SideEnum.Buy,
+            OrdTypeEnum.PreviouslyQuoted,
+            108_500_000L,
+            PRICE_SCALE,
+            "QTE-TG3",
+            "ACCT01",
+            2_000_000L);
+    dispatch(OrderCreatedEventDecoder.TEMPLATE_ID, len2);
+
+    // Duplicate QuoteCreated replays — must NOT revert Used back to Active
+    final int len3 =
+        encodeQuoteCreated(
+            "QTE-TG3",
+            "RFQ-TG3",
+            "EURUSD",
+            SideEnum.Buy,
+            "ACCT01",
+            109_000_000L,
+            109_200_000L,
+            6_000_000L,
+            3_000_000L);
+    dispatch(QuoteCreatedEventDecoder.TEMPLATE_ID, len3);
+
+    final QuoteSnapshot s = projection.getQuote("QTE-TG3");
+    assertNotNull(s);
+    assertEquals(QuoteStatus.Used, s.status()); // Terminal — not overridden by late 105
+    assertEquals(2_000_000L, s.lastUpdatedAt()); // Timestamp preserved
+  }
+
+  @Test
+  void onEvent_quoteCreated_differentQuoteIdForSameReqId_removesStaleEntry() {
+    // First 105 with quoteId=QTE-OLD
+    final int len1 =
+        encodeQuoteCreated(
+            "QTE-OLD",
+            "RFQ-STALE",
+            "EURUSD",
+            SideEnum.Buy,
+            "ACCT01",
+            108_500_000L,
+            108_700_000L,
+            5_000_000L,
+            1_000_000L);
+    dispatch(QuoteCreatedEventDecoder.TEMPLATE_ID, len1);
+
+    assertNotNull(projection.getQuote("QTE-OLD"));
+
+    // Second 105 with same quoteReqId but different quoteId=QTE-NEW (replay with corrected ID)
+    final int len2 =
+        encodeQuoteCreated(
+            "QTE-NEW",
+            "RFQ-STALE",
+            "EURUSD",
+            SideEnum.Buy,
+            "ACCT01",
+            109_000_000L,
+            109_200_000L,
+            6_000_000L,
+            2_000_000L);
+    dispatch(QuoteCreatedEventDecoder.TEMPLATE_ID, len2);
+
+    // Old quoteId entry must be removed — should not return the view with mismatched quoteId
+    assertNull(projection.getQuote("QTE-OLD"));
+    // New quoteId should work
+    final QuoteSnapshot s = projection.getQuote("QTE-NEW");
+    assertNotNull(s);
+    assertEquals("QTE-NEW", s.quoteId());
+    assertEquals("RFQ-STALE", s.quoteReqId());
+  }
+
+  @Test
   void onEvent_orderCreatedWithQuoteId_marksQuoteUsed() {
     final int len1 =
         encodeQuoteCreated(
