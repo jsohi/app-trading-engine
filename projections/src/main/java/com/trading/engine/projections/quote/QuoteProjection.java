@@ -222,14 +222,13 @@ public final class QuoteProjection implements Projection {
     probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     final var existing = byQuoteReqId.get(probeQuoteReqId);
     if (existing != null) {
-      // Idempotent replay or out-of-order: a view already exists for this quoteReqId.
-      // Strict no-op regardless of state — the first 104 set all fields including symbol,
-      // accountCode, and FX fields that are used as secondary index keys. Updating indexed
-      // fields without full re-indexing (remove from old key, add under new key) would corrupt
-      // the secondary indexes. Full re-indexing for a duplicate 104 is unnecessary complexity:
-      // the cluster emits one 104 per quoteReqId, and duplicates only arise from archive replay
-      // which delivers the identical event payload. If the projection state is corrupted, the
-      // correct recovery is reset() + full replay, not incremental patching from duplicates.
+      // View already exists for this quoteReqId (duplicate replay or out-of-order 105→104).
+      // Do NOT update indexed fields (symbol, accountCode) — that would corrupt secondary
+      // indexes without full re-indexing. But DO update non-indexed fields that the 104 carries
+      // exclusively (orderQty) — this is the client's requested quantity, not on QuoteCreated.
+      if (existing.orderQty() == 0) {
+        existing.setOrderQty(requestedDecoder.orderQty());
+      }
       return;
     }
 
@@ -369,8 +368,9 @@ public final class QuoteProjection implements Projection {
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(createdDecoder.timestamp());
 
-    // Index in byQuoteId — skip if quoteId is unchanged (avoids copyOf() allocation on updates)
-    if (quoteIdChanged) {
+    // Index in byQuoteId — skip if quoteId is unchanged (avoids copyOf() allocation on updates).
+    // Guard against empty quoteId (defensive — QuoteCreated should always have one).
+    if (quoteIdChanged && quoteIdLen > 0) {
       byQuoteId.put(probeQuoteId.copyOf(), view);
     }
   }
