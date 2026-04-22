@@ -14,7 +14,6 @@ import com.trading.engine.projections.ProjectionUtil;
 import com.trading.engine.projections.SymbolPacker;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.locks.StampedLock;
 import org.agrona.DirectBuffer;
@@ -217,7 +216,7 @@ public final class QuoteProjection implements Projection {
 
     // Defensive: check if a view already exists for this quoteReqId
     probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
-    final QuoteView existing = byQuoteReqId.get(probeQuoteReqId);
+    final var existing = byQuoteReqId.get(probeQuoteReqId);
     if (existing != null && existing.status() != QuoteStatus.Requested) {
       // View already in a non-Requested state (e.g., Active after out-of-order 105 before 104).
       // Do not overwrite — preserve the later-state view.
@@ -242,7 +241,7 @@ public final class QuoteProjection implements Projection {
         ProjectionUtil.sbeStrLen(
             requestedDecoder.getSettlCurrency(scratchSettlCurrency, 0), scratchSettlCurrency);
 
-    final QuoteView view = new QuoteView();
+    final var view = new QuoteView();
     view.setQuoteReqId(scratchQuoteReqId, 0, reqIdLen);
     view.setSymbol(scratchSymbol, 0, symbolLen);
     view.setSide(requestedDecoder.side());
@@ -285,12 +284,14 @@ public final class QuoteProjection implements Projection {
 
     // Handle duplicate quoteId: if byQuoteId already has an entry, remove old from secondaries
     probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
-    final QuoteView existingByQuoteId = byQuoteId.get(probeQuoteId);
+    final var existingByQuoteId = byQuoteId.get(probeQuoteId);
     if (existingByQuoteId != null && existingByQuoteId != view) {
       removeFromSecondaryIndexes(existingByQuoteId);
       // Reuse probeQuoteReqId to avoid allocation — will be reset below for the new entry
       probeQuoteReqId.set(existingByQuoteId.quoteReqId(), 0, existingByQuoteId.quoteReqIdLen());
       byQuoteReqId.remove(probeQuoteReqId);
+      // Re-set probe to the current event's quoteReqId (overwritten by duplicate cleanup above)
+      probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     }
 
     final boolean isNewView = (view == null);
@@ -460,7 +461,7 @@ public final class QuoteProjection implements Projection {
     }
 
     probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
-    final QuoteView view = byQuoteId.get(probeQuoteId);
+    final var view = byQuoteId.get(probeQuoteId);
     if (view != null && view.status() == QuoteStatus.Active) {
       view.setStatus(QuoteStatus.Used);
       view.setSequenceNumber(seqNo);
@@ -501,14 +502,14 @@ public final class QuoteProjection implements Projection {
   private void removeFromSecondaryIndexes(final QuoteView view) {
     // Remove from symbol index
     final long symbolPacked = SymbolPacker.pack(view.symbol(), 0);
-    final ObjectHashSet<QuoteView> symbolSet = bySymbol.get(symbolPacked);
+    final var symbolSet = bySymbol.get(symbolPacked);
     if (symbolSet != null) {
       symbolSet.remove(view);
     }
 
     // Remove from account index
     probeAccountCode.set(view.accountCode(), 0, view.accountCodeLen());
-    final ObjectHashSet<QuoteView> accountSet = byAccountCode.get(probeAccountCode);
+    final var accountSet = byAccountCode.get(probeAccountCode);
     if (accountSet != null) {
       accountSet.remove(view);
     }
@@ -539,9 +540,9 @@ public final class QuoteProjection implements Projection {
     int evicted = 0;
     final long stamp = lock.writeLock();
     try {
-      final Iterator<QuoteView> it = byQuoteReqId.values().iterator();
+      final var it = byQuoteReqId.values().iterator();
       while (it.hasNext()) {
-        final QuoteView view = it.next();
+        final var view = it.next();
         if (view.isTerminal() && view.lastUpdatedAt() < olderThanTimestamp) {
           it.remove(); // Remove from byQuoteReqId
 
@@ -580,10 +581,10 @@ public final class QuoteProjection implements Projection {
    * @return the quote snapshot, or {@code null} if not found
    */
   public QuoteSnapshot getQuote(final String quoteId) {
-    final ByteArrayKey key = keyFromString(quoteId, 20);
+    final var key = keyFromString(quoteId, 20);
     final long stamp = lock.readLock();
     try {
-      final QuoteView view = byQuoteId.get(key);
+      final var view = byQuoteId.get(key);
       return view != null ? QuoteSnapshot.from(view) : null;
     } finally {
       lock.unlockRead(stamp);
@@ -597,10 +598,10 @@ public final class QuoteProjection implements Projection {
    * @return the quote snapshot, or {@code null} if not found
    */
   public QuoteSnapshot getQuoteByReqId(final String quoteReqId) {
-    final ByteArrayKey key = keyFromString(quoteReqId, 20);
+    final var key = keyFromString(quoteReqId, 20);
     final long stamp = lock.readLock();
     try {
-      final QuoteView view = byQuoteReqId.get(key);
+      final var view = byQuoteReqId.get(key);
       return view != null ? QuoteSnapshot.from(view) : null;
     } finally {
       lock.unlockRead(stamp);
@@ -613,7 +614,7 @@ public final class QuoteProjection implements Projection {
    * @return list of active quote snapshots
    */
   public List<QuoteSnapshot> getActiveQuotes() {
-    final List<QuoteSnapshot> result = new ArrayList<>();
+    final var result = new ArrayList<QuoteSnapshot>();
     final long stamp = lock.readLock();
     try {
       byQuoteId
@@ -636,7 +637,7 @@ public final class QuoteProjection implements Projection {
    * @return list of in-flight quote snapshots
    */
   public List<QuoteSnapshot> getInFlightQuotes() {
-    final List<QuoteSnapshot> result = new ArrayList<>();
+    final var result = new ArrayList<QuoteSnapshot>();
     final long stamp = lock.readLock();
     try {
       byQuoteReqId
@@ -661,10 +662,10 @@ public final class QuoteProjection implements Projection {
    */
   public List<QuoteSnapshot> getQuotesBySymbol(final String symbol) {
     final long symbolPacked = SymbolPacker.pack(symbol);
-    final List<QuoteSnapshot> result = new ArrayList<>();
+    final var result = new ArrayList<QuoteSnapshot>();
     final long stamp = lock.readLock();
     try {
-      final ObjectHashSet<QuoteView> set = bySymbol.get(symbolPacked);
+      final var set = bySymbol.get(symbolPacked);
       if (set != null) {
         set.forEach(v -> result.add(QuoteSnapshot.from(v)));
       }
@@ -681,11 +682,11 @@ public final class QuoteProjection implements Projection {
    * @return list of quote snapshots (empty if no quotes for this account)
    */
   public List<QuoteSnapshot> getQuotesByAccount(final String accountCode) {
-    final ByteArrayKey key = keyFromString(accountCode, 16);
-    final List<QuoteSnapshot> result = new ArrayList<>();
+    final var key = keyFromString(accountCode, 16);
+    final var result = new ArrayList<QuoteSnapshot>();
     final long stamp = lock.readLock();
     try {
-      final ObjectHashSet<QuoteView> set = byAccountCode.get(key);
+      final var set = byAccountCode.get(key);
       if (set != null) {
         set.forEach(v -> result.add(QuoteSnapshot.from(v)));
       }
@@ -702,7 +703,7 @@ public final class QuoteProjection implements Projection {
    * @return list of matching quote snapshots
    */
   public List<QuoteSnapshot> getQuotesByStatus(final QuoteStatus status) {
-    final List<QuoteSnapshot> result = new ArrayList<>();
+    final var result = new ArrayList<QuoteSnapshot>();
     final long stamp = lock.readLock();
     try {
       byQuoteReqId
@@ -740,12 +741,7 @@ public final class QuoteProjection implements Projection {
    * @return the error count
    */
   public long errorCount() {
-    final long stamp = lock.readLock();
-    try {
-      return errorCount;
-    } finally {
-      lock.unlockRead(stamp);
-    }
+    return errorCount; // volatile — safe for cross-thread reads without lock
   }
 
   /**
@@ -754,12 +750,7 @@ public final class QuoteProjection implements Projection {
    * @return the events processed count
    */
   public long eventsProcessed() {
-    final long stamp = lock.readLock();
-    try {
-      return eventsProcessed;
-    } finally {
-      lock.unlockRead(stamp);
-    }
+    return eventsProcessed; // volatile — safe for cross-thread reads without lock
   }
 
   // ---------------------------------------------------------------------------
@@ -771,8 +762,8 @@ public final class QuoteProjection implements Projection {
    * (allocation acceptable).
    */
   private static ByteArrayKey keyFromString(final String value, final int maxLength) {
-    final byte[] padded = new byte[maxLength];
-    final byte[] ascii = value.getBytes(StandardCharsets.US_ASCII);
+    final var padded = new byte[maxLength];
+    final var ascii = value.getBytes(StandardCharsets.US_ASCII);
     final int copyLen = Math.min(ascii.length, maxLength);
     System.arraycopy(ascii, 0, padded, 0, copyLen);
     return ByteArrayKey.copyOf(padded, 0, ProjectionUtil.sbeStrLen(maxLength, padded));
