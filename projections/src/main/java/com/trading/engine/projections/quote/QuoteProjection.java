@@ -113,7 +113,10 @@ public final class QuoteProjection implements Projection {
   // --- Concurrency ---
   private final StampedLock lock = new StampedLock();
 
-  // --- Volatile counters (DD-6: safe for cross-thread reads without lock) ---
+  // --- Volatile counters: projections are NOT single-threaded Aeron agents — they serve
+  // concurrent query threads. lastProcessedSequence() reads without lock, so volatile is required
+  // for cross-thread visibility. Diagnostic methods also acquire read lock (belt-and-suspenders).
+  // ---
   private volatile long lastProcessedSeqNo;
   private volatile long eventsProcessed;
   private volatile long errorCount;
@@ -748,7 +751,12 @@ public final class QuoteProjection implements Projection {
    * @return the error count
    */
   public long errorCount() {
-    return errorCount; // volatile — safe for cross-thread reads without lock
+    final long stamp = lock.readLock();
+    try {
+      return errorCount;
+    } finally {
+      lock.unlockRead(stamp);
+    }
   }
 
   /**
@@ -757,7 +765,12 @@ public final class QuoteProjection implements Projection {
    * @return the events processed count
    */
   public long eventsProcessed() {
-    return eventsProcessed; // volatile — safe for cross-thread reads without lock
+    final long stamp = lock.readLock();
+    try {
+      return eventsProcessed;
+    } finally {
+      lock.unlockRead(stamp);
+    }
   }
 
   // ---------------------------------------------------------------------------
