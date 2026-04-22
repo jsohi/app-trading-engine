@@ -51,8 +51,9 @@ import org.agrona.collections.ObjectHashSet;
  * instances are never leaked.
  *
  * <p><b>Allocation:</b> bounded per-entity allocation on the event path (one {@link QuoteView} per
- * quote, one {@link ByteArrayKey#copyOf()} per map entry). Zero allocation on lookups via
- * pre-allocated probe keys. Query methods allocate snapshots and lists (acceptable — off hot path).
+ * quote, one {@link ByteArrayKey#copyOf()} per map entry). Event-dispatch lookups are zero
+ * allocation via pre-allocated probe keys. Public query methods allocate (key conversion via {@code
+ * keyFromString}, snapshot creation, result lists) — acceptable, off hot path.
  *
  * <p><b>Terminal state guards:</b> {@link QuoteStatus#Rejected}, {@link QuoteStatus#Expired}, and
  * {@link QuoteStatus#Used} are terminal. The QuoteExpired handler does not override Used or
@@ -223,7 +224,11 @@ public final class QuoteProjection implements Projection {
     if (existing != null) {
       if (existing.status() == QuoteStatus.Requested) {
         // Duplicate 104 replay: update existing view in-place to preserve object identity
-        // (byQuoteId may already reference this instance after a QuoteCreated)
+        // (byQuoteId may already reference this instance after a QuoteCreated).
+        // Update all mutable fields in case the re-sent request has corrections.
+        existing.setOrderQty(requestedDecoder.orderQty());
+        existing.setSide(requestedDecoder.side());
+        existing.setProductType(requestedDecoder.productType());
         existing.setSequenceNumber(seqNo);
         existing.setLastUpdatedAt(requestedDecoder.timestamp());
       }
@@ -344,8 +349,9 @@ public final class QuoteProjection implements Projection {
     }
 
     // Remove stale byQuoteId entry if the view already has a different quoteId (same quoteReqId,
-    // different quoteId on duplicate 105 — the old quoteId key would become a dangling reference)
-    if (!isNewView && view.quoteIdLen() > 0) {
+    // different quoteId on duplicate 105 — the old quoteId key would become a dangling reference).
+    // Skip if quoteId is unchanged (avoids redundant remove+re-add map churn on price updates).
+    if (!isNewView && view.quoteIdLen() > 0 && !quoteIdMatchesView(view, quoteIdLen)) {
       probeQuoteId.set(view.quoteId(), 0, view.quoteIdLen());
       byQuoteId.remove(probeQuoteId);
       probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
@@ -520,18 +526,24 @@ public final class QuoteProjection implements Projection {
    * in ObjectHashSet indexes (which use identity equality).
    */
   private void removeFromSecondaryIndexes(final QuoteView view) {
-    // Remove from symbol index
+    // Remove from symbol index — clean up empty set to prevent memory leak
     final long symbolPacked = SymbolPacker.pack(view.symbol(), 0);
     final var symbolSet = bySymbol.get(symbolPacked);
     if (symbolSet != null) {
       symbolSet.remove(view);
+      if (symbolSet.isEmpty()) {
+        bySymbol.remove(symbolPacked);
+      }
     }
 
-    // Remove from account index
+    // Remove from account index — clean up empty set to prevent memory leak
     probeAccountCode.set(view.accountCode(), 0, view.accountCodeLen());
     final var accountSet = byAccountCode.get(probeAccountCode);
     if (accountSet != null) {
       accountSet.remove(view);
+      if (accountSet.isEmpty()) {
+        byAccountCode.remove(probeAccountCode);
+      }
     }
   }
 
@@ -549,8 +561,9 @@ public final class QuoteProjection implements Projection {
    *
    * <p><b>Threading:</b> acquires write lock for the entire operation.
    *
-   * <p><b>Allocation:</b> iterates with Agrona's cached flyweight iterator (zero allocation after
-   * first call); removal is O(1) per map per view.
+   * <p><b>Allocation:</b> allocates one {@code ValueIterator} per call from Agrona's {@code
+   * Object2ObjectHashMap}; removal is O(1) per map per view. Acceptable — called by external timer,
+   * not on event dispatch path.
    *
    * @param olderThanTimestamp epoch nanos cutoff — terminal quotes with {@code lastUpdatedAt <
    *     olderThanTimestamp} are evicted
@@ -786,6 +799,20 @@ public final class QuoteProjection implements Projection {
   // ---------------------------------------------------------------------------
   // Utilities
   // ---------------------------------------------------------------------------
+
+  /** Returns true if the view's quoteId matches the bytes currently in scratchQuoteId. */
+  private boolean quoteIdMatchesView(final QuoteView view, final int newLen) {
+    if (view.quoteIdLen() != newLen) {
+      return false;
+    }
+    final var existing = view.quoteId();
+    for (int i = 0; i < newLen; i++) {
+      if (existing[i] != scratchQuoteId[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   /**
    * Creates a ByteArrayKey from a String, NUL-padded to the given maxLength. Used on the query path

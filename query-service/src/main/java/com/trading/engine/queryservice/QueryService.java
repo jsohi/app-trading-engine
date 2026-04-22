@@ -112,7 +112,8 @@ public final class QueryService {
    *
    * @param symbol the instrument symbol (FIX tag 55)
    * @return list of order snapshots (empty if no orders for this symbol)
-   * @throws IllegalArgumentException if symbol is null, empty, or exceeds 8 characters
+   * @throws NullPointerException if symbol is null
+   * @throws IllegalArgumentException if symbol is empty or exceeds 8 characters
    */
   public List<OrderSnapshot> getOrdersBySymbol(final String symbol) {
     return orderProjection.getOrdersBySymbol(symbol);
@@ -168,7 +169,8 @@ public final class QueryService {
    *
    * @param symbol the instrument symbol (FIX tag 55)
    * @return list of position snapshots (empty if no positions for this symbol)
-   * @throws IllegalArgumentException if symbol is null, empty, or exceeds 8 characters
+   * @throws NullPointerException if symbol is null
+   * @throws IllegalArgumentException if symbol is empty or exceeds 8 characters
    */
   public List<PositionSnapshot> getPositionsBySymbol(final String symbol) {
     return positionProjection.getPositionsBySymbol(symbol);
@@ -263,7 +265,8 @@ public final class QueryService {
    *
    * @param symbol the instrument symbol (FIX tag 55)
    * @return list of quote snapshots (empty if no quotes for this symbol)
-   * @throws IllegalArgumentException if symbol is null, empty, or exceeds 8 characters
+   * @throws NullPointerException if symbol is null
+   * @throws IllegalArgumentException if symbol is empty or exceeds 8 characters
    */
   public List<QuoteSnapshot> getQuotesBySymbol(final String symbol) {
     return quoteProjection.getQuotesBySymbol(symbol);
