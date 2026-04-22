@@ -334,9 +334,21 @@ public final class QuoteProjection implements Projection {
       byQuoteReqId.put(probeQuoteReqId.copyOf(), view);
       addToSymbolIndex(view, scratchSymbol);
       addToAccountIndex(view, scratchAccountCode, accountLen);
+    } else if (view.isTerminal()) {
+      // Terminal state guard: do NOT revert Used/Rejected/Expired back to Active on duplicate 105.
+      // Matches guards in onQuoteRejected, onQuoteExpired, and onOrderCreated.
+      return;
     } else if (view.status() == QuoteStatus.Requested) {
       // Only compute latency on Requested→Active transition (not on duplicate 105 replay)
       view.setResponseLatencyNanos(createdDecoder.timestamp() - view.createdAt());
+    }
+
+    // Remove stale byQuoteId entry if the view already has a different quoteId (same quoteReqId,
+    // different quoteId on duplicate 105 — the old quoteId key would become a dangling reference)
+    if (!isNewView && view.quoteIdLen() > 0) {
+      probeQuoteId.set(view.quoteId(), 0, view.quoteIdLen());
+      byQuoteId.remove(probeQuoteId);
+      probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
     }
 
     // Pricing fields always updated (these are the core QuoteCreated payload)
@@ -351,10 +363,8 @@ public final class QuoteProjection implements Projection {
     view.setSequenceNumber(seqNo);
     view.setLastUpdatedAt(createdDecoder.timestamp());
 
-    // Index in byQuoteId — avoid redundant put if view is already correctly mapped
-    if (existingByQuoteId != view) {
-      byQuoteId.put(probeQuoteId.copyOf(), view);
-    }
+    // Index in byQuoteId
+    byQuoteId.put(probeQuoteId.copyOf(), view);
   }
 
   private void onQuoteRejected(
