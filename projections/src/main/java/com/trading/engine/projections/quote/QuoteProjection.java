@@ -222,17 +222,10 @@ public final class QuoteProjection implements Projection {
     probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     final var existing = byQuoteReqId.get(probeQuoteReqId);
     if (existing != null) {
-      if (existing.status() == QuoteStatus.Requested) {
-        // Duplicate 104 replay: update existing view in-place to preserve object identity
-        // (byQuoteId may already reference this instance after a QuoteCreated).
-        // Update all mutable fields in case the re-sent request has corrections.
-        existing.setOrderQty(requestedDecoder.orderQty());
-        existing.setSide(requestedDecoder.side());
-        existing.setProductType(requestedDecoder.productType());
-        existing.setSequenceNumber(seqNo);
-        existing.setLastUpdatedAt(requestedDecoder.timestamp());
-      }
-      // View in non-Requested state: no-op — preserve the later-state view
+      // Idempotent replay or out-of-order: a view already exists for this quoteReqId.
+      // Treat as no-op regardless of state — the first 104 set all fields including symbol,
+      // accountCode, and FX fields that are used as secondary index keys. Partial updates
+      // without re-indexing would corrupt the indexes.
       return;
     }
 
@@ -291,15 +284,19 @@ public final class QuoteProjection implements Projection {
     probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     QuoteView view = byQuoteReqId.get(probeQuoteReqId);
 
+    // Terminal state guard — must come BEFORE duplicate quoteId cleanup to avoid damaging
+    // unrelated live views. A late 105 for a terminal quoteReqId is a no-op.
+    if (view != null && view.isTerminal()) {
+      return;
+    }
+
     // Handle duplicate quoteId: if byQuoteId already has an entry, remove old from secondaries
     probeQuoteId.set(scratchQuoteId, 0, quoteIdLen);
     final var existingByQuoteId = byQuoteId.get(probeQuoteId);
     if (existingByQuoteId != null && existingByQuoteId != view) {
       removeFromSecondaryIndexes(existingByQuoteId);
-      // Reuse probeQuoteReqId to avoid allocation — will be reset below for the new entry
       probeQuoteReqId.set(existingByQuoteId.quoteReqId(), 0, existingByQuoteId.quoteReqIdLen());
       byQuoteReqId.remove(probeQuoteReqId);
-      // Re-set probe to the current event's quoteReqId (overwritten by duplicate cleanup above)
       probeQuoteReqId.set(scratchQuoteReqId, 0, reqIdLen);
     }
 
@@ -339,10 +336,6 @@ public final class QuoteProjection implements Projection {
       byQuoteReqId.put(probeQuoteReqId.copyOf(), view);
       addToSymbolIndex(view, scratchSymbol);
       addToAccountIndex(view, scratchAccountCode, accountLen);
-    } else if (view.isTerminal()) {
-      // Terminal state guard: do NOT revert Used/Rejected/Expired back to Active on duplicate 105.
-      // Matches guards in onQuoteRejected, onQuoteExpired, and onOrderCreated.
-      return;
     } else if (view.status() == QuoteStatus.Requested) {
       // Only compute latency on Requested→Active transition (not on duplicate 105 replay)
       view.setResponseLatencyNanos(createdDecoder.timestamp() - view.createdAt());
@@ -817,12 +810,17 @@ public final class QuoteProjection implements Projection {
   /**
    * Creates a ByteArrayKey from a String, NUL-padded to the given maxLength. Used on the query path
    * (allocation acceptable).
+   *
+   * @throws IllegalArgumentException if the value exceeds maxLength ASCII characters
    */
   private static ByteArrayKey keyFromString(final String value, final int maxLength) {
-    final var padded = new byte[maxLength];
     final var ascii = value.getBytes(StandardCharsets.US_ASCII);
-    final int copyLen = Math.min(ascii.length, maxLength);
-    System.arraycopy(ascii, 0, padded, 0, copyLen);
+    if (ascii.length > maxLength) {
+      throw new IllegalArgumentException(
+          "key length " + ascii.length + " exceeds max " + maxLength);
+    }
+    final var padded = new byte[maxLength];
+    System.arraycopy(ascii, 0, padded, 0, ascii.length);
     return ByteArrayKey.copyOf(padded, 0, ProjectionUtil.sbeStrLen(maxLength, padded));
   }
 }
