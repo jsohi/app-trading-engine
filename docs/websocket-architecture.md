@@ -223,6 +223,7 @@ Invalid combinations must be rejected by both server and client parsers.
   <validValue name="SlowConsumer"          description="Client lag exceeded threshold">9</validValue>
   <validValue name="ServerShutdown"        description="Rolling restart in progress">10</validValue>
   <validValue name="CommandRejected"       description="Command failed entitlement or dedup check">11</validValue>
+  <validValue name="SnapshotEntityTooLarge" description="Individual entity exceeds fragment size">12</validValue>
 </enum>
 
 <enum name="CommandAckStatus" encodingType="uint8"
