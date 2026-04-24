@@ -172,6 +172,7 @@ final class WebSocketSbeRoundtripTest {
     final var decoder = new WebSocketSnapshotDecoder();
     decoder.wrapAndApplyHeader(buffer, 0, headerDecoder);
     assertEquals(0xAAAA_BBBB_CCCC_DDDDL, decoder.snapshotId().mostSignificantBits());
+    assertEquals(0x1111_2222_3333_4444L, decoder.snapshotId().leastSignificantBits());
     assertEquals(0, decoder.fragmentIndex());
     assertEquals(3, decoder.totalFragments());
     assertEquals(5, decoder.payloadLength());

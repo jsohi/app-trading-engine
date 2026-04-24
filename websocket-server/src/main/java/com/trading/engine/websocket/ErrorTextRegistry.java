@@ -22,13 +22,20 @@ import java.nio.charset.StandardCharsets;
  */
 public final class ErrorTextRegistry {
 
-  /**
-   * Highest error code value in the current schema. Sized to accommodate all known codes (1-12)
-   * plus index 0 as unused. If a new error code exceeds this value, increase accordingly.
-   */
-  private static final int MAX_CODE_VALUE = 12;
+  /** Array size derived from the highest enum value to avoid hardcoded magic numbers. */
+  private static final int MAX_CODE_VALUE = maxEnumValue();
 
   private static final byte[][] TEXTS = new byte[MAX_CODE_VALUE + 1][];
+
+  private static int maxEnumValue() {
+    int max = 0;
+    for (final WebSocketErrorCode code : WebSocketErrorCode.values()) {
+      if (code != WebSocketErrorCode.NULL_VAL && code.value() > max) {
+        max = code.value();
+      }
+    }
+    return max;
+  }
 
   static {
     register(WebSocketErrorCode.AuthenticationFailed, "Authentication failed");
@@ -65,6 +72,9 @@ public final class ErrorTextRegistry {
    *     codes.
    */
   public static byte[] textFor(final WebSocketErrorCode code) {
+    if (code == null) {
+      return UNKNOWN;
+    }
     final int idx = code.value();
     if (idx < 0 || idx >= TEXTS.length || TEXTS[idx] == null) {
       return UNKNOWN;

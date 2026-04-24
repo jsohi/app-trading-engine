@@ -41,6 +41,7 @@ cipherSuites:
   - TLS_AES_128_GCM_SHA256
 
 # --- Security ---
+# Empty list rejects all origins (CSWSH protection). Add allowed origins for production.
 originsWhitelist: []
 maxRevokedJtis: 10000
 revocationTtlMinutes: 15
@@ -49,3 +50,8 @@ revocationTtlMinutes: 15
 writeBufferLowWaterMark: 131072
 writeBufferHighWaterMark: 262144
 egressQueueCapacity: 8192
+
+# --- Issuer Registry (JWT iss -> JWKS URL mapping) ---
+# issuerRegistry:
+#   my-issuer:
+#     jwksUri: https://auth.example.com/.well-known/jwks.json
