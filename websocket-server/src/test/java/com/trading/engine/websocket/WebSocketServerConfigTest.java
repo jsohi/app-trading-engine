@@ -20,7 +20,7 @@ import org.junit.jupiter.api.io.TempDir;
 final class WebSocketServerConfigTest {
 
   @Test
-  void builderDefaults_matchArchitectureDocSection6() {
+  void build_defaultValues_matchArchitectureDocSection6() {
     final var config = WebSocketServerConfig.builder().build();
 
     assertEquals(8443, config.port());
@@ -51,7 +51,7 @@ final class WebSocketServerConfigTest {
 
   @Test
   void fromYaml_overridesDefaults(@TempDir final Path tempDir) throws IOException {
-    final Path yaml = tempDir.resolve("test-config.yaml");
+    final var yaml = tempDir.resolve("test-config.yaml");
     Files.writeString(
         yaml,
         """
@@ -87,7 +87,7 @@ final class WebSocketServerConfigTest {
 
   @Test
   void fromYaml_emptyFile_producesDefaults(@TempDir final Path tempDir) throws IOException {
-    final Path yaml = tempDir.resolve("empty.yaml");
+    final var yaml = tempDir.resolve("empty.yaml");
     Files.writeString(yaml, "");
 
     final var config = WebSocketServerConfig.fromYaml(yaml);
@@ -104,7 +104,7 @@ final class WebSocketServerConfigTest {
   @Test
   void fromYaml_wrongTypeForKey_throwsIllegalArgument(@TempDir final Path tempDir)
       throws IOException {
-    final Path yaml = tempDir.resolve("bad-type.yaml");
+    final var yaml = tempDir.resolve("bad-type.yaml");
     Files.writeString(yaml, "port: \"not-a-number\"\n");
 
     assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
@@ -112,7 +112,7 @@ final class WebSocketServerConfigTest {
 
   @Test
   void fromYaml_rootIsList_throwsIllegalArgument(@TempDir final Path tempDir) throws IOException {
-    final Path yaml = tempDir.resolve("list-root.yaml");
+    final var yaml = tempDir.resolve("list-root.yaml");
     Files.writeString(yaml, "- item1\n- item2\n");
 
     assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
@@ -176,14 +176,14 @@ final class WebSocketServerConfigTest {
   }
 
   @Test
-  void cipherSuites_areImmutable() {
+  void cipherSuites_defaultConfig_isImmutableList() {
     final var config = WebSocketServerConfig.builder().build();
 
     assertThrows(UnsupportedOperationException.class, () -> config.cipherSuites().add("TLS_FAKE"));
   }
 
   @Test
-  void originsWhitelist_areImmutable() {
+  void originsWhitelist_defaultConfig_isImmutableList() {
     final var config = WebSocketServerConfig.builder().build();
 
     assertThrows(
@@ -192,11 +192,47 @@ final class WebSocketServerConfigTest {
   }
 
   @Test
-  void issuerRegistry_isImmutable() {
+  void issuerRegistry_defaultConfig_isImmutableMap() {
     final var config = WebSocketServerConfig.builder().build();
 
     assertThrows(
         UnsupportedOperationException.class,
         () -> config.issuerRegistry().put("rogue", "https://evil.com/jwks"));
+  }
+
+  @Test
+  void validate_clientTimeoutEqualsHeartbeatInterval_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder()
+                .heartbeatIntervalMs(10_000)
+                .clientTimeoutMs(10_000)
+                .build());
+  }
+
+  @Test
+  void validate_snapshotFragmentSizeBytesZero_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().snapshotFragmentSizeBytes(0).build());
+  }
+
+  @Test
+  void validate_perIpExceedsGlobal_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder()
+                .perIpNewConnectionsPerSec(100)
+                .globalNewConnectionsPerSec(10)
+                .build());
+  }
+
+  @Test
+  void validate_tlsCertWithoutKey_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().tlsCertPath("/path/to/cert.pem").build());
   }
 }

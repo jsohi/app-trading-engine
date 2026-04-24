@@ -3,6 +3,7 @@ package com.trading.engine.websocket;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -41,9 +42,12 @@ public final class WebSocketMetrics {
   /**
    * Register all metrics with the given registry.
    *
-   * @param registry the Micrometer meter registry (e.g. {@code PrometheusMeterRegistry})
+   * @param registry the Micrometer meter registry (e.g. {@code PrometheusMeterRegistry}), must not
+   *     be null
+   * @throws NullPointerException if registry is null
    */
   public WebSocketMetrics(final MeterRegistry registry) {
+    Objects.requireNonNull(registry, "registry");
     // Architecture doc Section 6 — 6 required metrics
     this.aeronPollLatency =
         Timer.builder("websocket.aeron.poll.latency")

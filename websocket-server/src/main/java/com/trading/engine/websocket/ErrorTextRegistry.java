@@ -11,13 +11,24 @@ import java.nio.charset.StandardCharsets;
  * docs/websocket-architecture.md} Section 4 (error sanitization).
  *
  * <p>Strings are pre-encoded as {@code byte[]} for zero-allocation SBE writes via {@link
- * com.trading.engine.messages.sbe.WebSocketErrorEncoder#putErrorText(byte[], int, int)}.
+ * com.trading.engine.messages.sbe.WebSocketErrorEncoder#putErrorText(byte[], int, int)}. The
+ * returned arrays are shared instances — callers must NOT modify them. This is a deliberate
+ * performance choice: defensive copies would allocate on every error frame.
  *
  * <p><b>Thread safety.</b> All fields are final and immutable. Safe to share across all threads.
+ *
+ * <p><b>Allocation.</b> Zero allocation after class loading. All byte arrays are pre-computed in
+ * the static initializer.
  */
 public final class ErrorTextRegistry {
 
-  private static final byte[][] TEXTS = new byte[13][];
+  /**
+   * Highest error code value in the current schema. Sized to accommodate all known codes (1-12)
+   * plus index 0 as unused. If a new error code exceeds this value, increase accordingly.
+   */
+  private static final int MAX_CODE_VALUE = 12;
+
+  private static final byte[][] TEXTS = new byte[MAX_CODE_VALUE + 1][];
 
   static {
     register(WebSocketErrorCode.AuthenticationFailed, "Authentication failed");
@@ -40,15 +51,18 @@ public final class ErrorTextRegistry {
 
   private ErrorTextRegistry() {}
 
+  /** Fallback text for unknown, corrupted, or NULL_VAL error codes. */
   private static final byte[] UNKNOWN = "Unknown error".getBytes(StandardCharsets.UTF_8);
 
   /**
    * Returns the pre-encoded UTF-8 bytes for the given error code.
    *
-   * <p>The returned array is a shared instance — callers must NOT modify it.
+   * <p>The returned array is a shared instance — callers must NOT modify it. This is a deliberate
+   * zero-allocation design for the SBE write path.
    *
-   * @param code the WebSocket error code
-   * @return pre-encoded error text bytes, never null
+   * @param code the WebSocket error code (may be NULL_VAL or an unknown future value)
+   * @return pre-encoded error text bytes, never null. Returns "Unknown error" for unregistered
+   *     codes.
    */
   public static byte[] textFor(final WebSocketErrorCode code) {
     final int idx = code.value();
