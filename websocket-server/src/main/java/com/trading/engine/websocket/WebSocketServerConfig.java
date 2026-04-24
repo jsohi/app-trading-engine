@@ -94,8 +94,8 @@ public final class WebSocketServerConfig {
     this.subscriptionsPerSec = b.subscriptionsPerSec;
     this.heartbeatIntervalMs = b.heartbeatIntervalMs;
     this.snapshotFragmentSizeBytes = b.snapshotFragmentSizeBytes;
-    this.tlsCertPath = b.tlsCertPath;
-    this.tlsKeyPath = b.tlsKeyPath;
+    this.tlsCertPath = Objects.requireNonNull(b.tlsCertPath, "tlsCertPath");
+    this.tlsKeyPath = Objects.requireNonNull(b.tlsKeyPath, "tlsKeyPath");
     this.cipherSuites = List.copyOf(b.cipherSuites);
     this.originsWhitelist = List.copyOf(b.originsWhitelist);
     this.maxRevokedJtis = b.maxRevokedJtis;
@@ -228,28 +228,32 @@ public final class WebSocketServerConfig {
     ifPresent(root, "egressQueueCapacity", Integer.class, b::egressQueueCapacity);
 
     final var ciphers = root.get("cipherSuites");
-    if (ciphers instanceof List<?> list) {
-      b.cipherSuites(requireStringList(list, "cipherSuites"));
+    if (ciphers != null) {
+      if (!(ciphers instanceof List<?>)) {
+        throw new IllegalArgumentException(
+            "Config key 'cipherSuites' must be a list, got: " + ciphers.getClass().getSimpleName());
+      }
+      b.cipherSuites(requireStringList((List<?>) ciphers, "cipherSuites"));
     }
 
     final var origins = root.get("originsWhitelist");
-    if (origins instanceof List<?> list) {
-      b.originsWhitelist(requireStringList(list, "originsWhitelist"));
+    if (origins != null) {
+      if (!(origins instanceof List<?>)) {
+        throw new IllegalArgumentException(
+            "Config key 'originsWhitelist' must be a list, got: "
+                + origins.getClass().getSimpleName());
+      }
+      b.originsWhitelist(requireStringList((List<?>) origins, "originsWhitelist"));
     }
 
     final var issuers = root.get("issuerRegistry");
-    if (issuers instanceof Map<?, ?> map) {
-      final var registry = new HashMap<String, String>();
-      map.forEach(
-          (k, v) -> {
-            if (v instanceof Map<?, ?> inner) {
-              final var uri = inner.get("jwksUri");
-              if (uri != null) {
-                registry.put(String.valueOf(k), String.valueOf(uri));
-              }
-            }
-          });
-      b.issuerRegistry(registry);
+    if (issuers != null) {
+      if (!(issuers instanceof Map<?, ?>)) {
+        throw new IllegalArgumentException(
+            "Config key 'issuerRegistry' must be a mapping, got: "
+                + issuers.getClass().getSimpleName());
+      }
+      b.issuerRegistry(requireIssuerRegistry((Map<?, ?>) issuers));
     }
 
     return b.build();
@@ -263,10 +267,14 @@ public final class WebSocketServerConfig {
     final var value = map.get(key);
     if (value != null) {
       if (value instanceof Number n) {
-        // Reject floating-point values for integer/long fields (e.g., "port: 8443.9")
+        // Reject floating-point and BigInteger values — config only accepts int/long
         if (n instanceof Double || n instanceof Float) {
           throw new IllegalArgumentException(
               "Config key '" + key + "' must be an integer, got floating-point: " + value);
+        }
+        if (n instanceof java.math.BigInteger) {
+          throw new IllegalArgumentException(
+              "Config key '" + key + "' exceeds long range: " + value);
         }
         if (type == Integer.class) {
           long longVal = n.longValue();
@@ -304,19 +312,56 @@ public final class WebSocketServerConfig {
 
   private static List<String> requireStringList(final List<?> list, final String key) {
     for (int i = 0; i < list.size(); i++) {
-      if (!(list.get(i) instanceof String)) {
+      final var element = list.get(i);
+      if (element == null) {
+        throw new IllegalArgumentException(
+            "Config key '" + key + "' element [" + i + "] must not be null");
+      }
+      if (!(element instanceof String)) {
         throw new IllegalArgumentException(
             "Config key '"
                 + key
                 + "' element ["
                 + i
                 + "] must be a string, got: "
-                + list.get(i).getClass().getSimpleName());
+                + element.getClass().getSimpleName());
       }
     }
     @SuppressWarnings("unchecked")
     final var stringList = (List<String>) list;
     return List.copyOf(stringList);
+  }
+
+  private static Map<String, String> requireIssuerRegistry(final Map<?, ?> map) {
+    final var registry = new HashMap<String, String>();
+    map.forEach(
+        (k, v) -> {
+          if (!(k instanceof String)) {
+            throw new IllegalArgumentException(
+                "issuerRegistry key must be a string, got: " + k.getClass().getSimpleName());
+          }
+          if (!(v instanceof Map<?, ?> inner)) {
+            throw new IllegalArgumentException(
+                "issuerRegistry entry '"
+                    + k
+                    + "' must be a mapping with 'jwksUri', got: "
+                    + v.getClass().getSimpleName());
+          }
+          final var uri = inner.get("jwksUri");
+          if (uri == null) {
+            throw new IllegalArgumentException(
+                "issuerRegistry entry '" + k + "' is missing required 'jwksUri' field");
+          }
+          if (!(uri instanceof String)) {
+            throw new IllegalArgumentException(
+                "issuerRegistry entry '"
+                    + k
+                    + "' jwksUri must be a string, got: "
+                    + uri.getClass().getSimpleName());
+          }
+          registry.put((String) k, (String) uri);
+        });
+    return registry;
   }
 
   // --- Accessors ---
