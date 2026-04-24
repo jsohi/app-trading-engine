@@ -10,6 +10,10 @@ disruptor = "4.0.0"
 gflog = "3.0.7"
 owasp = "12.1.1"
 snakeyaml = "2.6"
+netty = "4.1.121.Final"
+netty-tcnative = "2.0.69.Final"
+micrometer = "1.14.5"
+nimbus-jose-jwt = "10.3"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -34,3 +38,12 @@ disruptor = { module = "com.lmax:disruptor", version.ref = "disruptor" }
 gflog-api = { module = "com.epam.deltix:gflog-api", version.ref = "gflog" }
 gflog-core = { module = "com.epam.deltix:gflog-core", version.ref = "gflog" }
 snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
+netty-bom = { module = "io.netty:netty-bom", version.ref = "netty" }
+netty-transport = { module = "io.netty:netty-transport", version.ref = "netty" }
+netty-handler = { module = "io.netty:netty-handler", version.ref = "netty" }
+netty-codec-http = { module = "io.netty:netty-codec-http", version.ref = "netty" }
+netty-transport-native-epoll = { module = "io.netty:netty-transport-native-epoll", version.ref = "netty" }
+netty-transport-native-kqueue = { module = "io.netty:netty-transport-native-kqueue", version.ref = "netty" }
+netty-tcnative-boringssl = { module = "io.netty:netty-tcnative-boringssl-static", version.ref = "netty-tcnative" }
+micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus", version.ref = "micrometer" }
+nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "nimbus-jose-jwt" }

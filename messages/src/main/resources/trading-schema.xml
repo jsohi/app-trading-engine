@@ -275,6 +275,41 @@
             <validValue name="InvalidAccountId"          description="Account id is non-positive">18</validValue>
             <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
         </enum>
+        <!-- Variable-length data encoding for WebSocket messages (templates 60, 66, 67) -->
+        <composite name="varDataEncoding" description="Variable-length binary data encoding. No characterEncoding — token and snapshot payload are raw binary, not strings.">
+            <type name="length"  primitiveType="uint32" maxValue="1048576"/>
+            <type name="varData" primitiveType="uint8" length="0"/>
+        </composite>
+
+        <!-- RFC 4122 UUID (128 bits) for WebSocket session identifiers -->
+        <composite name="uuid" description="RFC 4122 UUID as two int64 halves. Used for WebSocket sessionId and snapshotId.">
+            <type name="mostSignificantBits"  primitiveType="int64"/>
+            <type name="leastSignificantBits" primitiveType="int64"/>
+        </composite>
+
+        <enum name="WebSocketErrorCode" encodingType="uint16"
+              description="WebSocket-specific error codes for server-to-browser error frames (template 67)">
+            <validValue name="AuthenticationFailed"   description="JWT invalid or expired">1</validValue>
+            <validValue name="AuthorizationFailed"    description="Account not entitled">2</validValue>
+            <validValue name="RateLimitExceeded"      description="Command or subscription rate exceeded">3</validValue>
+            <validValue name="SessionExpired"         description="Grace period elapsed after disconnect">4</validValue>
+            <validValue name="InvalidSubscription"    description="Symbol not found or max subscriptions exceeded">5</validValue>
+            <validValue name="HeartbeatTimeout"       description="No client heartbeat within timeout period">6</validValue>
+            <validValue name="BufferOverflow"         description="Replay ring full, gap unrecoverable">7</validValue>
+            <validValue name="VersionMismatch"        description="Protocol version not supported by server">8</validValue>
+            <validValue name="SlowConsumer"           description="Client lag exceeded threshold">9</validValue>
+            <validValue name="ServerShutdown"         description="Server shutting down for maintenance">10</validValue>
+            <validValue name="CommandRejected"        description="Command failed entitlement or validation check">11</validValue>
+            <validValue name="SnapshotEntityTooLarge" description="Individual entity exceeds snapshot fragment size">12</validValue>
+        </enum>
+
+        <enum name="CommandAckStatus" encodingType="uint8"
+              description="Status of a browser command acknowledgement (template 70)">
+            <validValue name="Accepted"  description="Command accepted and forwarded to cluster">0</validValue>
+            <validValue name="Rejected"  description="Command failed validation or entitlement check">1</validValue>
+            <validValue name="Duplicate" description="ClOrdID already seen in dedup cache">2</validValue>
+            <validValue name="Throttled" description="Rate limit exceeded">3</validValue>
+        </enum>
     </types>
 
     <!-- ======================== Command Messages (templateId 1-10) ======================== -->
@@ -754,6 +789,109 @@
         <field name="rejectReason" id="10022" type="RejectReasonEnum" presence="optional" description="Structured rejection reason when valid=False"/>
         <field name="text"         id="58"  type="Text" description="Free-text rejection reason when valid=False; empty when valid=True"/>
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- ======================== WebSocket Control Messages (templateId 60-72) ======================== -->
+    <!--
+        Wire Format Convention:
+        - Field IDs are sequential (1, 2, 3...) except FIX-equivalent fields (symbol=55).
+        - Variable-length data uses <data> tag (not <field>) and MUST be last in each message.
+        - Group dimension type is groupSizeEncoding for Subscribe/Unsubscribe groups.
+        - Templates 60-72 have no FIX semantic type (websocket-only protocol).
+    -->
+
+    <!-- WebSocketAuth: browser sends JWT after WebSocket upgrade (first binary frame) -->
+    <sbe:message name="WebSocketAuth" id="60"
+                 description="Browser-to-server: JWT authentication after WebSocket upgrade. Must be the first binary frame sent.">
+        <field name="protocolVersion" id="1" type="uint16" description="Client protocol version for compatibility negotiation"/>
+        <data  name="token"           id="2" type="varDataEncoding" description="JWT token bytes (RS256 signed). Raw binary, not a Java String."/>
+    </sbe:message>
+
+    <!-- WebSocketAuthAck: server confirms authentication and assigns session -->
+    <sbe:message name="WebSocketAuthAck" id="61"
+                 description="Server-to-browser: authentication accepted, session assigned.">
+        <field name="sessionId"        id="1" type="uuid"   description="Assigned session UUID (UUID.randomUUID — acceptable outside cluster)"/>
+        <field name="protocolVersion"  id="2" type="uint16" description="Server protocol version"/>
+        <field name="maxSubscriptions" id="3" type="uint16" description="Maximum symbols per client subscription"/>
+    </sbe:message>
+
+    <!-- WebSocketSubscribe: browser subscribes to symbols with event type filters -->
+    <sbe:message name="WebSocketSubscribe" id="62"
+                 description="Browser-to-server: subscribe to symbols. Max 100 symbols enforced server-side.">
+        <group name="symbols" id="10050" dimensionType="groupSizeEncoding"
+               description="Subscription entries — each specifies a symbol and bitmask of desired event types">
+            <field name="symbol"     id="55" type="Symbol" description="Instrument symbol (FIX tag 55)"/>
+            <field name="eventTypes" id="2"  type="uint32" description="Bitmask of subscribed event types (bit positions map to EventTypeEnum values)"/>
+        </group>
+    </sbe:message>
+
+    <!-- WebSocketUnsubscribe: browser removes symbol subscriptions -->
+    <sbe:message name="WebSocketUnsubscribe" id="63"
+                 description="Browser-to-server: unsubscribe from symbols. Unsubscribe is not rate-limited.">
+        <group name="symbols" id="10051" dimensionType="groupSizeEncoding"
+               description="Symbols to remove from subscription set">
+            <field name="symbol" id="55" type="Symbol" description="Instrument symbol (FIX tag 55)"/>
+        </group>
+    </sbe:message>
+
+    <!-- WebSocketHeartbeat: server sends at 5s interval (best-effort, no seqNo) -->
+    <sbe:message name="WebSocketHeartbeat" id="64"
+                 description="Server-to-browser: heartbeat with wall-clock timestamp. Best-effort stream (no sequence number). Sent every 5 seconds.">
+        <field name="serverNanos" id="1" type="int64" description="EpochNanoClock wall-clock timestamp in nanoseconds. NOT a cluster timestamp."/>
+    </sbe:message>
+
+    <!-- ClientHeartbeat: browser sends at 10s interval -->
+    <sbe:message name="ClientHeartbeat" id="65"
+                 description="Browser-to-server: heartbeat. Expected every 10 seconds. Server disconnects after 20s timeout (one missed heartbeat tolerated).">
+        <field name="clientNanos" id="1" type="int64" description="Client-side timestamp (informational, not validated)"/>
+    </sbe:message>
+
+    <!-- WebSocketSnapshot: fragmented snapshot data for initial state delivery -->
+    <sbe:message name="WebSocketSnapshot" id="66"
+                 description="Server-to-browser: fragmented snapshot containing current-state SBE entities (templates 201-204). Individual entities are never split across fragments.">
+        <field name="snapshotId"     id="1" type="uuid"   description="Snapshot correlation UUID — all fragments share this ID"/>
+        <field name="fragmentIndex"  id="2" type="uint16" description="Fragment index (0-based)"/>
+        <field name="totalFragments" id="3" type="uint16" description="Total fragment count for this snapshot"/>
+        <data  name="payload"        id="4" type="varDataEncoding" description="Packed SBE entities using cluster snapshot templates (201=Account, 202=OrderBook, 204=Position). Max 16KB per fragment."/>
+    </sbe:message>
+
+    <!-- WebSocketError: server sends error notification before disconnect -->
+    <sbe:message name="WebSocketError" id="67"
+                 description="Server-to-browser: error notification. errorText restricted to predefined strings per WebSocketErrorCode enum — no free-form text.">
+        <field name="errorCode" id="1" type="WebSocketErrorCode" description="Error classification code"/>
+        <data  name="errorText" id="2" type="varDataEncoding" description="Predefined error string from ErrorTextRegistry. No stack traces or dynamic content."/>
+    </sbe:message>
+
+    <!-- WebSocketGapRequest: browser requests replay of missed reliable messages -->
+    <sbe:message name="WebSocketGapRequest" id="68"
+                 description="Browser-to-server: request replay of missed reliable messages. Server pauses live delivery, replays gap with replay flag, sends ReplayComplete, resumes live.">
+        <field name="fromSeqNo" id="1" type="int64" description="First missing sequence number (inclusive)"/>
+        <field name="toSeqNo"   id="2" type="int64" description="Last missing sequence number (inclusive)"/>
+    </sbe:message>
+
+    <!-- SessionResume: browser reconnects to an existing session after disconnect -->
+    <sbe:message name="SessionResume" id="69"
+                 description="Browser-to-server: reconnect to existing session within 30s grace period. Requires fresh JWT. jti-to-sessionId binding verified to prevent session hijacking.">
+        <field name="sessionId" id="1" type="uuid"  description="Previous session UUID from WebSocketAuthAck"/>
+        <field name="lastSeqNo" id="2" type="int64" description="Last received reliable sequence number — server replays from here"/>
+    </sbe:message>
+
+    <!-- CommandAck: server acknowledges receipt of a browser command -->
+    <sbe:message name="CommandAck" id="70"
+                 description="Server-to-browser: acknowledges a browser command (NOS, Cancel, QuoteReq). Reliable stream.">
+        <field name="clientCmdSeqNo" id="1" type="int64"           description="Client-assigned command sequence number (must be monotonically increasing per session)"/>
+        <field name="status"         id="2" type="CommandAckStatus" description="Whether the command was accepted, rejected, duplicate, or throttled"/>
+    </sbe:message>
+
+    <!-- ClientAck: browser acknowledges received reliable messages for lag tracking -->
+    <sbe:message name="ClientAck" id="71"
+                 description="Browser-to-server: acknowledge highest received reliable seqNo. Sent every 100 reliable messages OR every 1 second (whichever first). Used for slow consumer detection.">
+        <field name="lastReceivedSeqNo" id="1" type="int64" description="Highest reliable sequence number processed by client"/>
+    </sbe:message>
+
+    <!-- ReplayComplete: server signals end of gap replay -->
+    <sbe:message name="ReplayComplete" id="72"
+                 description="Server-to-browser: marker indicating gap replay is finished. Live delivery resumes after this frame. Empty body (header only).">
     </sbe:message>
 
     <!-- ======================== Domain Event Messages (templateId 100-119) ======================== -->
