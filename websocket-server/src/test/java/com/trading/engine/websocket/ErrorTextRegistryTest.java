@@ -55,4 +55,10 @@ final class ErrorTextRegistryTest {
     final byte[] text = ErrorTextRegistry.textFor(WebSocketErrorCode.NULL_VAL);
     assertEquals("Unknown error", new String(text));
   }
+
+  @Test
+  void textFor_javaNull_returnsUnknownFallback() {
+    final byte[] text = ErrorTextRegistry.textFor(null);
+    assertEquals("Unknown error", new String(text));
+  }
 }
