@@ -51,7 +51,7 @@ final class WebSocketSbeRoundtripTest {
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
 
   @Test
-  void webSocketAuth_roundtrip() {
+  void webSocketAuth_encodeDecodeRoundtrip_fieldsPreserved() {
     final byte[] token = "eyJhbGciOiJSUzI1NiJ9.test-payload".getBytes(StandardCharsets.UTF_8);
     final var encoder = new WebSocketAuthEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
@@ -72,7 +72,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketAuthAck_roundtrip() {
+  void webSocketAuthAck_encodeDecodeRoundtrip_fieldsPreserved() {
     final var encoder = new WebSocketAuthAckEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.sessionId().mostSignificantBits(0x1234_5678_9ABC_DEF0L);
@@ -92,7 +92,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketSubscribe_roundtrip_withGroup() {
+  void webSocketSubscribe_groupedSymbols_encodeDecodeRoundtrip() {
     final var encoder = new WebSocketSubscribeEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     final var group = encoder.symbolsCount(2);
@@ -115,7 +115,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketUnsubscribe_roundtrip_withGroup() {
+  void webSocketUnsubscribe_groupedSymbols_encodeDecodeRoundtrip() {
     final var encoder = new WebSocketUnsubscribeEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.symbolsCount(1).next().symbol("USDJPY  ");
@@ -130,7 +130,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketHeartbeat_roundtrip() {
+  void webSocketHeartbeat_encodeDecodeRoundtrip_fieldsPreserved() {
     final var encoder = new WebSocketHeartbeatEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.serverNanos(1_700_000_000_000_000_000L);
@@ -144,7 +144,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void clientHeartbeat_roundtrip() {
+  void clientHeartbeat_encodeDecodeRoundtrip_fieldsPreserved() {
     final var encoder = new ClientHeartbeatEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.clientNanos(42_000_000L);
@@ -156,7 +156,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketSnapshot_roundtrip_withVarData() {
+  void webSocketSnapshot_varDataPayload_encodeDecodeRoundtrip() {
     final byte[] payload = new byte[] {0x01, 0x02, 0x03, 0x04, 0x05};
     final var encoder = new WebSocketSnapshotEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
@@ -178,7 +178,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketError_roundtrip_withEnum() {
+  void webSocketError_enumErrorCode_encodeDecodeRoundtrip() {
     final byte[] text = "Authentication failed".getBytes(StandardCharsets.UTF_8);
     final var encoder = new WebSocketErrorEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
@@ -193,7 +193,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void webSocketGapRequest_roundtrip() {
+  void webSocketGapRequest_encodeDecodeRoundtrip_fieldsPreserved() {
     final var encoder = new WebSocketGapRequestEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.fromSeqNo(100);
@@ -207,7 +207,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void sessionResume_roundtrip_withUuid() {
+  void sessionResume_uuidSessionId_encodeDecodeRoundtrip() {
     final var encoder = new SessionResumeEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.sessionId().mostSignificantBits(Long.MAX_VALUE);
@@ -223,7 +223,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void commandAck_roundtrip_withEnum() {
+  void commandAck_enumStatus_encodeDecodeRoundtrip() {
     final var encoder = new CommandAckEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.clientCmdSeqNo(42);
@@ -237,7 +237,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void clientAck_roundtrip() {
+  void clientAck_encodeDecodeRoundtrip_fieldsPreserved() {
     final var encoder = new ClientAckEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.lastReceivedSeqNo(12345);
@@ -249,7 +249,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void replayComplete_roundtrip_emptyBody() {
+  void replayComplete_emptyBody_encodeDecodeRoundtrip() {
     final var encoder = new ReplayCompleteEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
 
@@ -263,7 +263,7 @@ final class WebSocketSbeRoundtripTest {
   }
 
   @Test
-  void templateIds_matchArchitectureDocReservedRange() {
+  void templateIds_allWebSocketTemplates_matchReservedRange60To72() {
     assertEquals(60, WebSocketAuthEncoder.TEMPLATE_ID);
     assertEquals(61, WebSocketAuthAckEncoder.TEMPLATE_ID);
     assertEquals(62, WebSocketSubscribeEncoder.TEMPLATE_ID);

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 import org.yaml.snakeyaml.Yaml;
 
@@ -153,6 +154,16 @@ public final class WebSocketServerConfig {
     require(
         egressQueueCapacity > 0 && Integer.bitCount(egressQueueCapacity) == 1,
         "egressQueueCapacity must be a power of 2, got: " + egressQueueCapacity);
+    require(
+        perIpNewConnectionsPerSec <= globalNewConnectionsPerSec,
+        "perIpNewConnectionsPerSec ("
+            + perIpNewConnectionsPerSec
+            + ") must be <= globalNewConnectionsPerSec ("
+            + globalNewConnectionsPerSec
+            + ")");
+    require(
+        tlsCertPath.isEmpty() == tlsKeyPath.isEmpty(),
+        "tlsCertPath and tlsKeyPath must both be set or both be empty");
   }
 
   private static void require(final boolean condition, final String message) {
@@ -214,23 +225,23 @@ public final class WebSocketServerConfig {
     ifPresent(root, "writeBufferHighWaterMark", Integer.class, b::writeBufferHighWaterMark);
     ifPresent(root, "egressQueueCapacity", Integer.class, b::egressQueueCapacity);
 
-    final Object ciphers = root.get("cipherSuites");
+    final var ciphers = root.get("cipherSuites");
     if (ciphers instanceof List<?> list) {
       b.cipherSuites(list.stream().map(String::valueOf).toList());
     }
 
-    final Object origins = root.get("originsWhitelist");
+    final var origins = root.get("originsWhitelist");
     if (origins instanceof List<?> list) {
       b.originsWhitelist(list.stream().map(String::valueOf).toList());
     }
 
-    final Object issuers = root.get("issuerRegistry");
+    final var issuers = root.get("issuerRegistry");
     if (issuers instanceof Map<?, ?> map) {
       final var registry = new HashMap<String, String>();
       map.forEach(
           (k, v) -> {
             if (v instanceof Map<?, ?> inner) {
-              final Object uri = inner.get("jwksUri");
+              final var uri = inner.get("jwksUri");
               if (uri != null) {
                 registry.put(String.valueOf(k), String.valueOf(uri));
               }
@@ -247,7 +258,7 @@ public final class WebSocketServerConfig {
       final String key,
       final Class<T> type,
       final Consumer<T> setter) {
-    final Object value = map.get(key);
+    final var value = map.get(key);
     if (value != null) {
       if (type == Integer.class && value instanceof Number n) {
         setter.accept(type.cast(n.intValue()));
@@ -269,106 +280,187 @@ public final class WebSocketServerConfig {
 
   // --- Accessors ---
 
+  /**
+   * @return the WebSocket server port (default 8443)
+   */
   public int port() {
     return port;
   }
 
+  /**
+   * @return the maximum number of concurrent WebSocket sessions (default 256)
+   */
   public int maxConcurrentSessions() {
     return maxConcurrentSessions;
   }
 
+  /**
+   * @return the maximum subscriptions allowed per client session (default 100)
+   */
   public int maxSubscriptionsPerClient() {
     return maxSubscriptionsPerClient;
   }
 
+  /**
+   * @return the maximum concurrent connections allowed from a single IP address (default 10)
+   */
   public int maxConnectionsPerIp() {
     return maxConnectionsPerIp;
   }
 
+  /**
+   * @return the maximum concurrent connections allowed per authenticated user (default 4)
+   */
   public int maxConnectionsPerUser() {
     return maxConnectionsPerUser;
   }
 
+  /**
+   * @return the per-IP new connection rate limit in connections per second (default 10)
+   */
   public int perIpNewConnectionsPerSec() {
     return perIpNewConnectionsPerSec;
   }
 
+  /**
+   * @return the global new connection rate limit in connections per second (default 256)
+   */
   public int globalNewConnectionsPerSec() {
     return globalNewConnectionsPerSec;
   }
 
+  /**
+   * @return the session grace period in milliseconds for reconnection (default 30000)
+   */
   public long sessionGracePeriodMs() {
     return sessionGracePeriodMs;
   }
 
+  /**
+   * @return the client inactivity timeout in milliseconds (default 20000)
+   */
   public long clientTimeoutMs() {
     return clientTimeoutMs;
   }
 
+  /**
+   * @return the number of frames in the per-session replay ring buffer; must be a power of 2
+   *     (default 4096)
+   */
   public int replayBufferFrames() {
     return replayBufferFrames;
   }
 
+  /**
+   * @return the maximum size in bytes of a single replay buffer frame (default 1024)
+   */
   public int replayBufferFrameSize() {
     return replayBufferFrameSize;
   }
 
+  /**
+   * @return the sustained command rate limit in commands per second (default 50)
+   */
   public int commandsPerSecSustained() {
     return commandsPerSecSustained;
   }
 
+  /**
+   * @return the burst command rate limit; must be >= {@link #commandsPerSecSustained()} (default
+   *     100)
+   */
   public int commandsBurst() {
     return commandsBurst;
   }
 
+  /**
+   * @return the subscription request rate limit in subscriptions per second (default 5)
+   */
   public int subscriptionsPerSec() {
     return subscriptionsPerSec;
   }
 
+  /**
+   * @return the server-to-client heartbeat interval in milliseconds (default 5000)
+   */
   public long heartbeatIntervalMs() {
     return heartbeatIntervalMs;
   }
 
+  /**
+   * @return the maximum fragment size in bytes for snapshot streaming (default 16384)
+   */
   public int snapshotFragmentSizeBytes() {
     return snapshotFragmentSizeBytes;
   }
 
+  /**
+   * @return the file path to the TLS certificate, or empty string if TLS is disabled
+   */
   public String tlsCertPath() {
     return tlsCertPath;
   }
 
+  /**
+   * @return the file path to the TLS private key, or empty string if TLS is disabled
+   */
   public String tlsKeyPath() {
     return tlsKeyPath;
   }
 
+  /**
+   * @return an unmodifiable list of allowed TLS 1.3 cipher suites
+   */
   public List<String> cipherSuites() {
     return cipherSuites;
   }
 
+  /**
+   * @return an unmodifiable list of allowed WebSocket origins; empty list permits all origins
+   */
   public List<String> originsWhitelist() {
     return originsWhitelist;
   }
 
+  /**
+   * @return the maximum number of revoked JTI entries tracked for replay prevention (default 10000)
+   */
   public int maxRevokedJtis() {
     return maxRevokedJtis;
   }
 
+  /**
+   * @return the TTL in minutes for revoked JTI entries (default 15)
+   */
   public int revocationTtlMinutes() {
     return revocationTtlMinutes;
   }
 
+  /**
+   * @return the Netty write buffer low water mark in bytes (default 131072)
+   */
   public int writeBufferLowWaterMark() {
     return writeBufferLowWaterMark;
   }
 
+  /**
+   * @return the Netty write buffer high water mark in bytes; must be > low water mark (default
+   *     262144)
+   */
   public int writeBufferHighWaterMark() {
     return writeBufferHighWaterMark;
   }
 
+  /**
+   * @return the egress queue capacity; must be a power of 2 (default 8192)
+   */
   public int egressQueueCapacity() {
     return egressQueueCapacity;
   }
 
+  /**
+   * @return an unmodifiable map of JWT issuer identifiers to their JWKS endpoint URIs
+   */
   public Map<String, String> issuerRegistry() {
     return issuerRegistry;
   }
@@ -420,133 +512,249 @@ public final class WebSocketServerConfig {
 
     private Builder() {}
 
+    /**
+     * @param port the WebSocket server port; must be in [1, 65535]
+     * @return this builder
+     */
     public Builder port(final int port) {
       this.port = port;
       return this;
     }
 
+    /**
+     * @param maxConcurrentSessions the maximum number of concurrent WebSocket sessions; must be >=
+     *     1
+     * @return this builder
+     */
     public Builder maxConcurrentSessions(final int maxConcurrentSessions) {
       this.maxConcurrentSessions = maxConcurrentSessions;
       return this;
     }
 
+    /**
+     * @param maxSubscriptionsPerClient the maximum subscriptions per client session; must be >= 1
+     * @return this builder
+     */
     public Builder maxSubscriptionsPerClient(final int maxSubscriptionsPerClient) {
       this.maxSubscriptionsPerClient = maxSubscriptionsPerClient;
       return this;
     }
 
+    /**
+     * @param maxConnectionsPerIp the maximum concurrent connections from a single IP; must be >= 1
+     * @return this builder
+     */
     public Builder maxConnectionsPerIp(final int maxConnectionsPerIp) {
       this.maxConnectionsPerIp = maxConnectionsPerIp;
       return this;
     }
 
+    /**
+     * @param maxConnectionsPerUser the maximum concurrent connections per authenticated user; must
+     *     be >= 1
+     * @return this builder
+     */
     public Builder maxConnectionsPerUser(final int maxConnectionsPerUser) {
       this.maxConnectionsPerUser = maxConnectionsPerUser;
       return this;
     }
 
+    /**
+     * @param perIpNewConnectionsPerSec the per-IP new connection rate limit; must be >= 1 and <=
+     *     globalNewConnectionsPerSec
+     * @return this builder
+     */
     public Builder perIpNewConnectionsPerSec(final int perIpNewConnectionsPerSec) {
       this.perIpNewConnectionsPerSec = perIpNewConnectionsPerSec;
       return this;
     }
 
+    /**
+     * @param globalNewConnectionsPerSec the global new connection rate limit; must be >= 1
+     * @return this builder
+     */
     public Builder globalNewConnectionsPerSec(final int globalNewConnectionsPerSec) {
       this.globalNewConnectionsPerSec = globalNewConnectionsPerSec;
       return this;
     }
 
+    /**
+     * @param sessionGracePeriodMs the session grace period in milliseconds for reconnection; must
+     *     be > 0
+     * @return this builder
+     */
     public Builder sessionGracePeriodMs(final long sessionGracePeriodMs) {
       this.sessionGracePeriodMs = sessionGracePeriodMs;
       return this;
     }
 
+    /**
+     * @param clientTimeoutMs the client inactivity timeout in milliseconds; must be >
+     *     heartbeatIntervalMs
+     * @return this builder
+     */
     public Builder clientTimeoutMs(final long clientTimeoutMs) {
       this.clientTimeoutMs = clientTimeoutMs;
       return this;
     }
 
+    /**
+     * @param replayBufferFrames the number of frames in the per-session replay ring buffer; must be
+     *     a power of 2
+     * @return this builder
+     */
     public Builder replayBufferFrames(final int replayBufferFrames) {
       this.replayBufferFrames = replayBufferFrames;
       return this;
     }
 
+    /**
+     * @param replayBufferFrameSize the maximum size in bytes of a single replay buffer frame; must
+     *     be in [1, 65536]
+     * @return this builder
+     */
     public Builder replayBufferFrameSize(final int replayBufferFrameSize) {
       this.replayBufferFrameSize = replayBufferFrameSize;
       return this;
     }
 
+    /**
+     * @param commandsPerSecSustained the sustained command rate limit per second; must be > 0
+     * @return this builder
+     */
     public Builder commandsPerSecSustained(final int commandsPerSecSustained) {
       this.commandsPerSecSustained = commandsPerSecSustained;
       return this;
     }
 
+    /**
+     * @param commandsBurst the burst command rate limit; must be >= commandsPerSecSustained
+     * @return this builder
+     */
     public Builder commandsBurst(final int commandsBurst) {
       this.commandsBurst = commandsBurst;
       return this;
     }
 
+    /**
+     * @param subscriptionsPerSec the subscription request rate limit per second; must be > 0
+     * @return this builder
+     */
     public Builder subscriptionsPerSec(final int subscriptionsPerSec) {
       this.subscriptionsPerSec = subscriptionsPerSec;
       return this;
     }
 
+    /**
+     * @param heartbeatIntervalMs the server-to-client heartbeat interval in milliseconds; must be >
+     *     0
+     * @return this builder
+     */
     public Builder heartbeatIntervalMs(final long heartbeatIntervalMs) {
       this.heartbeatIntervalMs = heartbeatIntervalMs;
       return this;
     }
 
+    /**
+     * @param snapshotFragmentSizeBytes the maximum fragment size in bytes for snapshot streaming;
+     *     must be in [1, 65536]
+     * @return this builder
+     */
     public Builder snapshotFragmentSizeBytes(final int snapshotFragmentSizeBytes) {
       this.snapshotFragmentSizeBytes = snapshotFragmentSizeBytes;
       return this;
     }
 
+    /**
+     * @param tlsCertPath the file path to the TLS certificate; empty string disables TLS
+     * @return this builder
+     */
     public Builder tlsCertPath(final String tlsCertPath) {
       this.tlsCertPath = tlsCertPath;
       return this;
     }
 
+    /**
+     * @param tlsKeyPath the file path to the TLS private key; empty string disables TLS
+     * @return this builder
+     */
     public Builder tlsKeyPath(final String tlsKeyPath) {
       this.tlsKeyPath = tlsKeyPath;
       return this;
     }
 
+    /**
+     * @param cipherSuites the list of allowed TLS 1.3 cipher suite names; must not be null
+     * @return this builder
+     */
     public Builder cipherSuites(final List<String> cipherSuites) {
-      this.cipherSuites = cipherSuites;
+      this.cipherSuites = Objects.requireNonNull(cipherSuites, "cipherSuites");
       return this;
     }
 
+    /**
+     * @param originsWhitelist the list of allowed WebSocket origins; empty list permits all
+     *     origins; must not be null
+     * @return this builder
+     */
     public Builder originsWhitelist(final List<String> originsWhitelist) {
-      this.originsWhitelist = originsWhitelist;
+      this.originsWhitelist = Objects.requireNonNull(originsWhitelist, "originsWhitelist");
       return this;
     }
 
+    /**
+     * @param maxRevokedJtis the maximum number of revoked JTI entries for replay prevention; must
+     *     be > 0
+     * @return this builder
+     */
     public Builder maxRevokedJtis(final int maxRevokedJtis) {
       this.maxRevokedJtis = maxRevokedJtis;
       return this;
     }
 
+    /**
+     * @param revocationTtlMinutes the TTL in minutes for revoked JTI entries; must be > 0
+     * @return this builder
+     */
     public Builder revocationTtlMinutes(final int revocationTtlMinutes) {
       this.revocationTtlMinutes = revocationTtlMinutes;
       return this;
     }
 
+    /**
+     * @param writeBufferLowWaterMark the Netty write buffer low water mark in bytes; must be > 0
+     * @return this builder
+     */
     public Builder writeBufferLowWaterMark(final int writeBufferLowWaterMark) {
       this.writeBufferLowWaterMark = writeBufferLowWaterMark;
       return this;
     }
 
+    /**
+     * @param writeBufferHighWaterMark the Netty write buffer high water mark in bytes; must be >
+     *     writeBufferLowWaterMark
+     * @return this builder
+     */
     public Builder writeBufferHighWaterMark(final int writeBufferHighWaterMark) {
       this.writeBufferHighWaterMark = writeBufferHighWaterMark;
       return this;
     }
 
+    /**
+     * @param egressQueueCapacity the egress queue capacity; must be a power of 2
+     * @return this builder
+     */
     public Builder egressQueueCapacity(final int egressQueueCapacity) {
       this.egressQueueCapacity = egressQueueCapacity;
       return this;
     }
 
+    /**
+     * @param issuerRegistry a map of JWT issuer identifiers to JWKS endpoint URIs; must not be null
+     * @return this builder
+     */
     public Builder issuerRegistry(final Map<String, String> issuerRegistry) {
-      this.issuerRegistry = issuerRegistry;
+      this.issuerRegistry = Objects.requireNonNull(issuerRegistry, "issuerRegistry");
       return this;
     }
 

@@ -7,6 +7,10 @@ import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.BooleanType;
 import com.trading.engine.messages.sbe.CancelOrderRequestEncoder;
+import com.trading.engine.messages.sbe.ClientAckEncoder;
+import com.trading.engine.messages.sbe.ClientHeartbeatEncoder;
+import com.trading.engine.messages.sbe.CommandAckEncoder;
+import com.trading.engine.messages.sbe.CommandAckStatus;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventEncoder;
@@ -42,12 +46,20 @@ import com.trading.engine.messages.sbe.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.QuoteRequestedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteStatusEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.ReplayCompleteEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
+import com.trading.engine.messages.sbe.SessionResumeEncoder;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
+import com.trading.engine.messages.sbe.WebSocketAuthAckEncoder;
+import com.trading.engine.messages.sbe.WebSocketAuthEncoder;
+import com.trading.engine.messages.sbe.WebSocketErrorCode;
+import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
+import com.trading.engine.messages.sbe.WebSocketGapRequestEncoder;
+import com.trading.engine.messages.sbe.WebSocketHeartbeatEncoder;
 import org.agrona.MutableDirectBuffer;
 
 /**
@@ -2072,5 +2084,256 @@ public final class SbeTestEncoder {
         side,
         "ACCT001",
         ProductTypeEnum.Spot);
+  }
+
+  // -----------------------------------------------------------------------
+  // WebSocket control messages (templates 60-72)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Encodes a {@link WebSocketAuthEncoder} (template 60) — browser-to-server JWT authentication
+   * after WebSocket upgrade.
+   *
+   * <p>The token is written as SBE varData (4-byte length header + raw bytes). Callers should pass
+   * the UTF-8 bytes of the JWT string (e.g., {@code "myJwt".getBytes(StandardCharsets.UTF_8)}).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param protocolVersion protocol version negotiated by the client (field id 1)
+   * @param token JWT token bytes (varData, field id 2); max 1 MiB
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketAuth(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final int protocolVersion,
+      final byte[] token) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketAuthEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.protocolVersion(protocolVersion);
+    enc.putToken(token, 0, token.length);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketAuthAckEncoder} (template 61) — server-to-browser authentication
+   * accepted with assigned session UUID.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param sessionIdMsb most significant bits of the assigned session UUID (field id 1)
+   * @param sessionIdLsb least significant bits of the assigned session UUID (field id 1)
+   * @param protocolVersion negotiated protocol version echoed back (field id 2)
+   * @param maxSubscriptions maximum number of concurrent subscriptions allowed (field id 3)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketAuthAck(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long sessionIdMsb,
+      final long sessionIdLsb,
+      final int protocolVersion,
+      final int maxSubscriptions) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketAuthAckEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sessionId().mostSignificantBits(sessionIdMsb).leastSignificantBits(sessionIdLsb);
+    enc.protocolVersion(protocolVersion);
+    enc.maxSubscriptions(maxSubscriptions);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketHeartbeatEncoder} (template 64) — server-to-browser heartbeat with
+   * wall-clock epoch nanos.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param serverNanos server wall-clock timestamp in epoch nanos (field id 1)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketHeartbeat(
+      final MutableDirectBuffer dst, final int offset, final long serverNanos) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketHeartbeatEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.serverNanos(serverNanos);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link ClientHeartbeatEncoder} (template 65) — browser-to-server heartbeat with
+   * client-side epoch nanos.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param clientNanos client wall-clock timestamp in epoch nanos (field id 1)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeClientHeartbeat(
+      final MutableDirectBuffer dst, final int offset, final long clientNanos) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new ClientHeartbeatEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.clientNanos(clientNanos);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketErrorEncoder} (template 67) — server-to-browser error notification.
+   *
+   * <p>The errorText is written as SBE varData (4-byte length header + raw bytes). Callers should
+   * pass the UTF-8 bytes of the error description (e.g., {@code "auth
+   * failed".getBytes(StandardCharsets.UTF_8)}).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param errorCode structured error code enum (field id 1)
+   * @param errorText error description bytes (varData, field id 2); max 1 MiB
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketError(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final WebSocketErrorCode errorCode,
+      final byte[] errorText) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketErrorEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.errorCode(errorCode);
+    enc.putErrorText(errorText, 0, errorText.length);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketGapRequestEncoder} (template 68) — browser-to-server request to
+   * replay missed reliable messages in the range {@code [fromSeqNo, toSeqNo]}.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param fromSeqNo first missed sequence number (inclusive, field id 1)
+   * @param toSeqNo last missed sequence number (inclusive, field id 2)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketGapRequest(
+      final MutableDirectBuffer dst, final int offset, final long fromSeqNo, final long toSeqNo) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketGapRequestEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.fromSeqNo(fromSeqNo);
+    enc.toSeqNo(toSeqNo);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link SessionResumeEncoder} (template 69) — browser-to-server reconnection to an
+   * existing session within the 30-second grace period.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param sessionIdMsb most significant bits of the previous session UUID (field id 1)
+   * @param sessionIdLsb least significant bits of the previous session UUID (field id 1)
+   * @param lastSeqNo last reliable sequence number received by the client (field id 2)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeSessionResume(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long sessionIdMsb,
+      final long sessionIdLsb,
+      final long lastSeqNo) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new SessionResumeEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.sessionId().mostSignificantBits(sessionIdMsb).leastSignificantBits(sessionIdLsb);
+    enc.lastSeqNo(lastSeqNo);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link CommandAckEncoder} (template 70) — server-to-browser acknowledgement of a
+   * browser command (NOS, Cancel, QuoteReq).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param clientCmdSeqNo client-assigned command sequence number (field id 1)
+   * @param status acknowledgement status (field id 2)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeCommandAck(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final long clientCmdSeqNo,
+      final CommandAckStatus status) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new CommandAckEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.clientCmdSeqNo(clientCmdSeqNo);
+    enc.status(status);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link ClientAckEncoder} (template 71) — browser-to-server acknowledgement of the
+   * highest received reliable sequence number. Used for slow-consumer detection.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param lastReceivedSeqNo highest reliable seqNo successfully processed by the client (field id
+   *     1)
+   * @return total encoded length including SBE header
+   */
+  public static int encodeClientAck(
+      final MutableDirectBuffer dst, final int offset, final long lastReceivedSeqNo) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new ClientAckEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    enc.lastReceivedSeqNo(lastReceivedSeqNo);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link ReplayCompleteEncoder} (template 72) — server-to-browser marker indicating gap
+   * replay is finished and live delivery resumes. Empty body (header only).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @return total encoded length including SBE header
+   */
+  public static int encodeReplayComplete(final MutableDirectBuffer dst, final int offset) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new ReplayCompleteEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
 }
