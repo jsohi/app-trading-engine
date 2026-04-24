@@ -204,7 +204,7 @@ graph LR
     end
 
     subgraph Consumers["Consumers"]
-        Babl["Babl → Browser"]
+        Netty["Netty → Browser"]
         FIX["Gateway → FIX Client"]
         Grafana["Grafana Dashboards"]
     end
@@ -238,10 +238,10 @@ graph LR
     ALR --> AP
     ALR --> EL
 
-    OP --> Babl
-    PP --> Babl
-    QP --> Babl
-    AP --> Babl
+    OP --> Netty
+    PP --> Netty
+    QP --> Netty
+    AP --> Netty
     OP --> FIX
     QP --> FIX
     EL --> Grafana

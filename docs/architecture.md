@@ -11,7 +11,7 @@ graph TB
 
     subgraph Web["Web Tier"]
         WebUI["Web UI<br/>React + AG Grid"]
-        Babl["Babl WebSocket<br/>:8443"]
+        Netty["Netty WebSocket<br/>:8443"]
         FIXBridge["FIX Client Bridge<br/>:8444"]
     end
 
@@ -34,11 +34,11 @@ graph TB
         Grafana["Grafana :3000"]
     end
 
-    Trader -- "WebSocket (binary SBE)" --> Babl
+    Trader -- "WebSocket (binary SBE)" --> Netty
     Trader -- "WebSocket (JSON)" --> FIXBridge
     FIXClient -- "FIX 4.4 TCP" --> Gateway
 
-    Babl -- "Aeron IPC" --> MediaDriver
+    Netty -- "Aeron IPC" --> MediaDriver
     FIXBridge -- "Aeron IPC" --> Gateway
     Gateway -- "Aeron IPC" --> MediaDriver
     MediaDriver -- "Aeron UDP" --> Cluster
@@ -47,7 +47,7 @@ graph TB
     Cluster -- "Events (Aeron)" --> Projections
     Cluster -- "Events (Aeron)" --> EventLogger
     Projections --> QueryService
-    QueryService -- "Aeron IPC" --> Babl
+    QueryService -- "Direct call (same JVM)" --> Netty
 
     EventLogger -- "Micrometer" --> Prometheus
     EventLogger -- "Structured logs" --> Loki
@@ -87,6 +87,7 @@ graph TB
     websocket-server --> launcher
 
     projections --> query-service["query-service"]
+    query-service --> websocket-server
 
     gateway --> fix-client-bridge
 
@@ -102,6 +103,6 @@ graph TB
 | Gateway | Cluster | Aeron IPC (shared memory) | ~1-5us |
 | Cluster | Cluster (inter-node) | Aeron UDP multicast | ~5-50us |
 | Cluster | Projections | Aeron IPC | ~1-5us |
-| QueryService | Babl | Aeron IPC | ~1-5us |
-| Babl | Browser | WebSocket TCP | ~0.1-1ms |
+| QueryService | Netty WebSocket | Direct Java call (same JVM) | ~1us |
+| Netty WebSocket | Browser | WebSocket TCP | ~0.1-1ms |
 | FIX Bridge | Browser | WebSocket TCP (JSON) | ~0.1-1ms |

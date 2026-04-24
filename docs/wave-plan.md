@@ -148,7 +148,7 @@ Browser-based trading UI: SBE TypeScript codegen, WebSocket, React blotters.
 | Issue  | Title |
 |--------|-------|
 | APP-34 | SBE TypeScript code generator |
-| APP-35 | Babl WebSocket server with Aeron IPC passthrough |
+| APP-35 | Netty WebSocket server with Aeron IPC passthrough |
 | APP-36 | Web Worker + WebSocket client + SBE decoding + RxJS plumbing |
 | APP-37 | React 19 streaming blotter with AG Grid |
 | APP-40 | RFQ trading panel + FIX message log |

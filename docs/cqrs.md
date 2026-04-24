@@ -34,9 +34,9 @@ graph LR
 
     subgraph Query["Query Side"]
         QS["QueryService"]
-        BABL["Babl → Browser"]
+        WS["Netty → Browser"]
         REST["REST / API"]
-        QS --> BABL
+        QS --> WS
         QS --> REST
     end
 
