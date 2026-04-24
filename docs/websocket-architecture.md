@@ -10,7 +10,7 @@ Target architecture for the trading engine's UI-to-server communication layer (W
 
 ### Design: Single Multiplexed Binary WebSocket
 
-```
+```text
 Browser (React 19 + Web Worker)
   │
   │ single wss://:8443 (binary SBE, bidirectional)
@@ -68,7 +68,7 @@ The WebSocket server creates its own `AeronCluster` client session (like the gat
 
 **Threading model:** `AeronCluster.pollEgress()` is a blocking call incompatible with Netty's non-blocking event loop. A dedicated `AeronEgressThread` (core-pinned via `taskset`) polls cluster egress and writes to a lock-free `MpscArrayQueue` (Agrona). The Netty worker thread drains the queue without blocking.
 
-```
+```text
 AeronEgressThread (dedicated thread, core-pinned via taskset)
   ├── AeronCluster.connect() — own cluster session
   ├── aeronCluster.offer() — sends commands from CommandDispatcher
@@ -95,7 +95,7 @@ Netty Worker Thread (event loop, scheduled drain every 1ms)
 
 ### Full Data Flow
 
-```
+```text
 ┌─────────────────────── Browser ──────────────────────────┐
 │  React 19 + Web Worker                                    │
 │   ├── SBE TypeScript Decoders + Encoders                  │
@@ -143,7 +143,7 @@ Netty Worker Thread (event loop, scheduled drain every 1ms)
 
 ### Envelope
 
-```
+```text
 Reliable stream (17-byte header):
 ┌──────────────────────────────────────────────────────┐
 │ Byte 0-3:   totalLength (uint32, little-endian)      │
@@ -246,14 +246,14 @@ Invalid combinations must be rejected by both server and client parsers.
 | 61 | `WebSocketAuthAck` | Server → Browser | sessionId (uuid composite), protocolVersion (uint16), maxSubscriptions (uint16) |
 | 62 | `WebSocketSubscribe` | Browser → Server | repeating group: symbol (char[8]) + eventTypes (uint32 bitmask). Max 100 symbols enforced by server (not schema). |
 | 63 | `WebSocketUnsubscribe` | Browser → Server | repeating group: symbol (char[8]) |
-| 64 | `WebSocketHeartbeat` | Server → Browser | serverNanos (int64 — `EpochNanoClock` wall-clock epoch nanoseconds, NOT cluster timestamp). Client uses for clock-skew detection: alert ops if `|clientTime - serverTime| > 1s`. |
+| 64 | `WebSocketHeartbeat` | Server → Browser | serverNanos (int64 — `EpochNanoClock` wall-clock epoch nanoseconds, NOT cluster timestamp). Client uses for clock-skew detection: alert ops if `\|clientTime - serverTime\| > 1s`. |
 | 65 | `ClientHeartbeat` | Browser → Server | clientNanos (int64) |
 | 66 | `WebSocketSnapshot` | Server → Browser | snapshotId (uuid), fragmentIndex (uint16), totalFragments (uint16), **payload** (varDataEncoding — packed SBE messages from templates 100-107, MUST be last) |
 | 67 | `WebSocketError` | Server → Browser | errorCode (WebSocketErrorCode enum), **errorText** (varDataEncoding, restricted to predefined strings, MUST be last) |
 | 68 | `WebSocketGapRequest` | Browser → Server | fromSeqNo (int64), toSeqNo (int64) |
 | 69 | `SessionResume` | Browser → Server | sessionId (uuid), lastSeqNo (int64) |
 | 70 | `CommandAck` | Server → Browser | clientCmdSeqNo (int64), status (CommandAckStatus enum) |
-| 71 | `ClientAck` | Browser → Server | lastReceivedSeqNo (int64). Sent every 100 reliable data messages (excludes heartbeats). Rationale: at 5000 msg/sec, 100-msg interval = 20ms resolution, sufficient for 5s lag detection window. Configurable via `WebSocketServerConfig`. |
+| 71 | `ClientAck` | Browser → Server | lastReceivedSeqNo (int64). Sent every 100 reliable messages OR every 1s if unacknowledged messages exist (whichever comes first). Count-based rationale: at 5000 msg/sec, 100-msg interval = 20ms resolution. Time-based fallback prevents false-positive disconnection of low-volume clients within the 5s lag detection window. Both thresholds configurable via `WebSocketServerConfig`. |
 | 72 | `ReplayComplete` | Server → Browser | gap replay finished, live resumes |
 
 Templates 60-79 reserved for WebSocket control messages.
@@ -263,7 +263,7 @@ Templates 60-79 reserved for WebSocket control messages.
 - Fragments MUST arrive in order (guaranteed by WebSocket RFC 6455)
 - Client assembles fragments by `snapshotId`, concatenates payload bytes, then decodes embedded SBE templates
 - If fragment not received within 10s, client sends `WebSocketGapRequest` for retransmission
-- Individual entities (orders, positions) are never split across fragments — if an entity exceeds the fragment size, it is dropped (and logged server-side)
+- Individual entities (orders, positions) are never split across fragments — if an entity exceeds the fragment size, the entire snapshot request fails with `WebSocketError(SNAPSHOT_ENTITY_TOO_LARGE)` and the oversized entity is logged server-side with its templateId and byte size for investigation
 - Fragment size: 16KB max (configurable via `WebSocketServerConfig.snapshotFragmentSizeBytes`)
 
 ### Reliable vs Best-Effort
@@ -281,7 +281,7 @@ Heartbeat is best-effort (no seqNo, no gap recovery). Heartbeat loss detection i
 
 ### Lifecycle
 
-```
+```text
 1. Browser opens wss://:8443
 2. TLS handshake (Netty SslHandler, TLS 1.3, strong ciphers)
 3. WebSocket upgrade (Origin validated against exact-match whitelist)
@@ -510,7 +510,7 @@ At-least-once. Client deduplicates by seqNo (`if seqNo <= lastProcessedSeqNo, dr
 | Allocator | `PooledByteBufAllocator.DEFAULT` (direct buffers from `-XX:MaxDirectMemorySize=1g`) |
 | Leak detection | `PARANOID` in tests, `DISABLED` in production |
 | Max frame size | `maxFramePayloadLength = 65536` |
-| Heartbeat | App-level only (template 64, 5s). IdleStateHandler REMOVED — app-level heartbeat monitoring in `WebSocketSessionManager` (20s timeout). RFC 6455 ping/pong DISABLED (redundant). |
+| Heartbeat | App-level (template 64, 5s) + RFC 6455 ping/pong ENABLED (30s interval). App-level heartbeat handles logic-level liveness via `WebSocketSessionManager` (20s timeout). RFC 6455 pings kept for infrastructure compatibility — load balancers, stateful firewalls, and proxies rely on control frames to maintain connections. IdleStateHandler REMOVED (app-level monitoring replaces it). |
 
 ### AeronEgressThread
 
@@ -532,7 +532,7 @@ For >100 clients: shard into 2 drain tasks on separate worker threads (partition
 | Component | Strategy |
 |-----------|----------|
 | SubscriptionFilter | `SymbolPacker.pack()` → `LongHashSet.contains()`. No String creation. |
-| ConflationTracker | `Long2LongHashMap` keyed by `(packedSymbol << 8) | msgType`. Value = CRC32C hash of packed price fields (bidPx int64 `||` askPx int64, 16 bytes). If value matches stored hash, skip write. Zero-alloc: direct buffer read of price fields, JDK CRC32C intrinsic (no object creation). |
+| ConflationTracker | `Long2LongHashMap` keyed by `(packedSymbol << 8) \| msgType`. Value = CRC32C hash of packed price fields (bidPx int64 `\|\|` askPx int64, 16 bytes). If value matches stored hash, skip write. Zero-alloc: direct buffer read of price fields, JDK CRC32C intrinsic (no object creation). |
 | RateLimiter | Two longs: `tokens` + `lastRefillNanos`. `NanoClock` injected (monotonic, not wall-clock — avoids NTP adjustment skips). |
 | ReplayBuffer | Agrona `RingBuffer` wrapping primitive `long[]` arrays. Pre-allocated `ReusableArrayPool` (256 slots). No GC pressure on client disconnect/reconnect. |
 
@@ -613,7 +613,7 @@ Micrometer metrics exported to Prometheus:
 | `websocket-server` | `JwtAuthHandler.java` | RS256, JWKS/HTTPS, claims validation, 5s auth timeout, forced-refresh on key rotation |
 | `websocket-server` | `UserEntitlementService.java` | JWT accounts claim → permitted account set. 60s cache TTL. |
 | `websocket-server` | `SubscriptionFilter.java` | LongHashSet of packed symbols. Zero-alloc. |
-| `websocket-server` | `ConflationTracker.java` | Long2LongHashMap keyed by (packedSymbol `<<` 8 `|` msgType). Value = CRC32C of price fields. |
+| `websocket-server` | `ConflationTracker.java` | Long2LongHashMap keyed by (packedSymbol `<<` 8 `\|` msgType). Value = CRC32C of price fields. |
 | `websocket-server` | `ReliableStreamTracker.java` | Agrona RingBuffer (4096 x 1024B, heap), seq assignment, gap replay (pause-live, ReplayComplete). ReusableArrayPool for buffer lifecycle. |
 | `websocket-server` | `CommandDispatcher.java` | Validate entitlements, dedup (ClOrdID cache 10K), rate limit, offer to cluster via queue, send CommandAck |
 | `websocket-server` | `RateLimiter.java` | Long-based token bucket, per-user, zero-alloc, `NanoClock` (monotonic) |
@@ -632,7 +632,7 @@ Micrometer metrics exported to Prometheus:
 
 ### Normal
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │  Trading Engine              ● CONNECTED  wss://     [dark]  │
 ├────────────────────────────────┬─────────────────────────────┤
@@ -656,7 +656,7 @@ Micrometer metrics exported to Prometheus:
 
 ### Reconnecting
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │  Trading Engine       ◌ RECONNECTING (4s)  [Reconnect Now]   │
 ├──────────────────────────────────────────────────────────────┤
@@ -670,7 +670,7 @@ Micrometer metrics exported to Prometheus:
 
 ### Server Restarting / Cluster Failover
 
-```
+```text
 Server:   ◌ SERVER RESTARTING — reconnecting in 5s...
 Failover: ● CONNECTED — Cluster failover detected. Data resynced. [x]
 ```
