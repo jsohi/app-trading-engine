@@ -22,11 +22,11 @@ graph TB
     end
 
     subgraph Server["Server"]
-        Babl["Babl WebSocket :8443<br/>(binary SBE frames)"]
+        Netty["Netty WebSocket :8443<br/>(binary SBE frames)"]
         FIXBridge["FIX Client Bridge :8444<br/>(JSON messages)"]
     end
 
-    Babl -- "binary WebSocket" --> SBE
+    Netty -- "binary WebSocket" --> SBE
     SBE --> RxJS
     RxJS --> Throttle
     Throttle -- "postMessage" --> Store
@@ -50,7 +50,7 @@ graph TB
 ## Data Flow: Price Update
 
 ```
-Babl sends binary SBE frame
+Netty sends binary SBE frame
          │
          ▼
 ┌─── Web Worker ─────────────────────────────────┐
@@ -136,7 +136,7 @@ Babl sends binary SBE frame
 | Panel | Issue | Key Tech |
 |-------|-------|----------|
 | SBE TypeScript decoders | APP-34 | Code generator reads SBE XML, outputs TS decoders |
-| Babl WebSocket server | APP-35 | Aeron-native, zero-copy SBE passthrough |
+| Netty WebSocket server | APP-35 | Aeron-native, zero-copy SBE passthrough |
 | Web Worker + RxJS | APP-36 | Worker thread decodes, throttles, postMessages to main |
 | AG Grid blotters | APP-37 | applyTransactionAsync, getRowId, cell flash |
 | Event Log viewer | APP-42 | Virtual scrolling, type filter, auto-scroll toggle |

@@ -147,7 +147,7 @@ Plan the sequence, agent roles, and verification strategy for implementing 66 Li
 | Issue | Title | Depends On |
 |-------|-------|-----------|
 | APP-34 | SBE TypeScript code generator | APP-6, APP-19, APP-28 |
-| APP-35 | Babl WebSocket server | APP-14, APP-19 |
+| APP-35 | Netty WebSocket server | APP-14, APP-19 |
 | APP-36 | Web Worker + RxJS plumbing | APP-34, APP-35 |
 | APP-37 | React + AG Grid streaming blotters | APP-36 |
 | APP-42 | Event Log viewer panel | APP-36, APP-37 |

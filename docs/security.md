@@ -78,7 +78,7 @@ to a configuration file or environment variable so it can be managed without rec
 
 Both WebSocket endpoints accept connections without any credential exchange:
 
-- **Babl WebSocket Server (port 8443)** -- binary SBE frame streaming for the browser UI.
+- **Netty WebSocket Server (port 8443)** -- binary SBE frame streaming for the browser UI.
   Any client that connects receives real-time order, position, and quote updates.
 - **FIX Client Bridge (port 8444)** -- JSON API for browser-based order entry and RFQ
   submission. Any connected client can submit orders.
@@ -119,7 +119,7 @@ the idiomatic extension point provided by Aeron Cluster for authentication.
 | Port | Service | Protocol | Exposure | Auth | Rationale |
 |------|---------|----------|----------|------|-----------|
 | 9880 | FIX Gateway (Artio) | FIX 4.4 / TCP | **External** | CompID allowlist | Counterparty FIX connections |
-| 8443 | Babl WebSocket | WS (binary) | Internal only | **None** | Unauthenticated SBE streaming |
+| 8443 | Netty WebSocket | WS (binary) | Internal only | **None** | Unauthenticated SBE streaming |
 | 8444 | FIX Client Bridge | WS (JSON) | Internal only | **None** | Unauthenticated order/RFQ API |
 | 20110/21110/22110 | Cluster ingress | Aeron / UDP | Internal only | **None** | Client-to-cluster commands |
 | 20220/21220/22220 | Cluster consensus | Aeron / UDP | Internal only | **None** | Raft log replication |
@@ -136,7 +136,7 @@ For any environment beyond localhost development:
 
 ```text
 ALLOW  tcp/9880  FROM counterparty-CIDRs   # FIX clients
-ALLOW  tcp/8443  FROM web-ui-container      # Babl WebSocket (internal proxy only)
+ALLOW  tcp/8443  FROM web-ui-container      # Netty WebSocket (internal proxy only)
 ALLOW  tcp/8444  FROM web-ui-container      # FIX Client Bridge (internal proxy only)
 ALLOW  udp/20110-22440  FROM cluster-nodes    # Ingress + consensus + log + catchup
 ALLOW  udp/8010-8012   FROM cluster-nodes    # Archive control
@@ -242,7 +242,7 @@ FIX client access without recompilation.
 
 ### APP-160: WebSocket JWT Authentication
 
-Add token-based authentication to the Babl WebSocket server (port 8443) and FIX Client
+Add token-based authentication to the Netty WebSocket server (port 8443) and FIX Client
 Bridge (port 8444). Tokens will be validated during the HTTP upgrade handshake. Rejected
 connections will receive a 401 response before the WebSocket session is established.
 

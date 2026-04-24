@@ -12,7 +12,7 @@ sequenceDiagram
     participant K as Cluster (Leader)
     participant P as Projections
     participant Q as QueryService
-    participant B as Babl WebSocket
+    participant B as Netty WebSocket
     participant W as Browser
 
     C->>G: FIX 4.4 NewOrderSingle (35=D)
@@ -76,7 +76,7 @@ sequenceDiagram
     participant O as Orchestrator
     participant PS as Pricing Service
     participant P as Projections
-    participant B as Browser (via Babl)
+    participant B as Browser (via Netty)
 
     C->>G: FIX QuoteRequest (35=R)
     G->>K: QuoteRequest (SBE)

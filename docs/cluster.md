@@ -47,7 +47,7 @@ graph TD
         OP --> QS["QueryService"]
         PP --> QS
         QP --> QS
-        QS --> Babl["Babl → N WebSockets"]
+        QS --> Netty["Netty → N WebSockets"]
     end
 ```
 
@@ -119,7 +119,7 @@ graph TD
 
 **For our trading engine (current design):**
 - 1 projection set co-located with the cluster (sub-millisecond)
-- Serves all browsers via Babl WebSocket + QueryService
+- Serves all browsers via Netty WebSocket + QueryService
 - Sufficient for ~1000 concurrent browser sessions
 
 **If we needed more:**

@@ -54,7 +54,7 @@ projections           — Read-side projections (Order, Position, Account)
 reference-data        — Reference data loaders (YAML/CSV) + ReferenceDataOrchestrator
 pricing-service       — Dummy price generation over Aeron IPC
 orchestrator          — RFQ orchestration between gateway, pricing-service, and cluster
-websocket-server      — Babl WebSocket server for browser clients
+websocket-server      — Netty WebSocket server for browser clients (binary SBE frames)
 fix-client-bridge     — Artio initiator + WebSocket JSON API
 event-logger          — Structured event logging + metrics
 sbe-typescript-generator — SBE → TypeScript code generator
@@ -86,10 +86,17 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **No `java.util.*` collections** — use Agrona: `Long2ObjectHashMap`, `Object2ObjectHashMap`, `ObjectHashSet`, `Int2ObjectHashMap`
 - All operations must be deterministic for Aeron log replay
 
+### WebSocket Server (Non-Deterministic)
+- **Outside cluster service** — runs in same JVM but does NOT participate in Raft consensus or state machine
+- **CAN use randomness** — `UUID.randomUUID()` for session IDs is acceptable
+- **CAN allocate** — Netty pooled ByteBuf allocation acceptable; replay buffers use heap-based Agrona RingBuffer
+- **Clock**: Use `EpochNanoClock` for wall-clock timestamps (heartbeat `serverNanos`). Use `NanoClock` for monotonic timeouts (rate limiter, heartbeat tracking). Never use cluster timestamps.
+- **Receives events** via own `AeronCluster` client session (like gateway). Session state is ephemeral — not snapshotted.
+
 ### SBE Schema
-- Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55)
+- Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55). **Exception:** WebSocket control templates 60-72 have no FIX equivalents — use sequential field IDs (1, 2, 3, ...) per template. Fields with FIX equivalents (e.g., symbol=55) still reuse those tag numbers.
 - Schema changes to `trading-schema.xml` must be merged sequentially (no parallel merges)
-- Template IDs: commands 1-16, pricing 50-53, events 100-116, snapshots 200-209 (200=SnapshotTaken, 201=Account, 202=OrderBook, 203=RfqState, 204=Position, 205=IdGenerator, 206=EventSequencer, 208=Currency, 209=RiskLimit). Reserved: commands 17-19, pricing 54-59, events 117-119, snapshots 210+
+- Template IDs: commands 1-16, pricing 50-53, websocket 60-72, events 100-116, snapshots 200-209 (200=SnapshotTaken, 201=Account, 202=OrderBook, 203=RfqState, 204=Position, 205=IdGenerator, 206=EventSequencer, 208=Currency, 209=RiskLimit). Reserved: commands 17-19, pricing 54-59, websocket 73-79, events 117-119, snapshots 210+
 - **Pre-production: schema is pinned at `version="1"` / `semanticVersion="0.1.0"`** for the entire dev phase. Do NOT bump either attribute on `<sbe:messageSchema>`. Make breaking changes freely — there are no deployed consumers to preserve compatibility for. The first version bump happens only when we cut the first production release. Do not use `sinceVersion="..."` on new fields either; just add them.
 
 ### Event Sourcing

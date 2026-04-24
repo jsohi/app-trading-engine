@@ -15,7 +15,7 @@ localhost
 ├── Cluster Node 2        (follower, ingress 22110, consensus 22220, aeron-dir: /tmp/aeron-node-2)
 ├── Gateway               (FIX acceptor, port 9880)
 ├── Pricing Service       (Aeron IPC)
-├── Babl WebSocket Server (port 8443)
+├── Netty WebSocket Server (port 8443)
 ├── FIX Client Bridge     (WS port 8444)
 └── Web UI (Vite)         (port 5173 → proxies WS to 8443/8444)
 ```
@@ -35,7 +35,7 @@ localhost
 │  │  └────┬────┘  └────────┘  └────────┘                   │        │
 │  │       │                                                  │        │
 │  │  ┌────┴─────┐ ┌──────────┐ ┌────────────────┐          │        │
-│  │  │ Gateway  │ │ Pricing  │ │ Babl WebSocket │          │        │
+│  │  │ Gateway  │ │ Pricing  │ │ Netty WebSocket │          │        │
 │  │  │ :9880    │ │ Service  │ │ :8443          │          │        │
 │  │  └──────────┘ └──────────┘ └────────────────┘          │        │
 │  │                                                          │        │
@@ -82,7 +82,7 @@ localhost
 |------|---------|----------|---------|---------|
 | 9880 | Gateway (Artio) | FIX 4.4 TCP | Counterparty FIX sessions | **External** |
 | 5173 | Vite dev server | HTTP | Dev mode only, hot reload | Internal only |
-| 8443 | Babl WebSocket | WS (binary) | Browser streaming (SBE frames) | Internal only |
+| 8443 | Netty WebSocket | WS (binary) | Browser streaming (SBE frames) | Internal only |
 | 8444 | FIX Client Bridge | WS (JSON) | Browser RFQ/order entry | Internal only |
 | 20110/21110/22110 | Cluster ingress | Aeron UDP | Client-to-cluster commands | Internal only |
 | 20220/21220/22220 | Cluster consensus | Aeron UDP | Inter-node Raft consensus | Internal only |
@@ -133,6 +133,6 @@ The Aeron Archive log must **never be truncated**. Projections depend on replayi
 | Cluster (3 nodes) | 1 core each | 512 MB each | 1 GB (log) |
 | Gateway | 0.5 core | 256 MB | minimal |
 | Pricing Service | 0.5 core | 128 MB | none |
-| Babl WebSocket | 0.5 core | 128 MB | none |
+| Netty WebSocket | 0.5 core | 128 MB | none |
 | Observability stack | 1 core | 1 GB | 5 GB |
 | **Total (dev)** | **~6 cores** | **~3 GB** | **~7 GB** |
