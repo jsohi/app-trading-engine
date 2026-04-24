@@ -821,7 +821,7 @@
         <group name="symbols" id="10050" dimensionType="groupSizeEncoding"
                description="Subscription entries — each specifies a symbol and bitmask of desired event types">
             <field name="symbol"     id="55" type="Symbol" description="Instrument symbol (FIX tag 55)"/>
-            <field name="eventTypes" id="2"  type="uint32" description="Bitmask of desired event categories. Bit positions are NOT EventTypeEnum values (those are 100+). Instead, the server defines compact category flags: bit 0=orders (templateId 100-103), bit 1=fills (102), bit 2=cancels (103), bit 3=positions (204), bit 4=prices (51), bit 5=quotes (105-107). SubscriptionFilter maps between these compact flags and actual templateIds. Value 0xFFFFFFFF means subscribe to all."/>
+            <field name="eventTypes" id="2"  type="uint32" description="Bitmask of desired event categories. Bit positions are compact server-defined flags (NOT EventTypeEnum ordinals). bit 0=order lifecycle (Created/Rejected/Filled/Canceled, templates 100-103), bit 1=positions (template 204), bit 2=prices (template 51), bit 3=quotes (QuoteRequested/Created/Rejected/Expired, templates 104-107), bit 4=account events (templates 110-111). SubscriptionFilter maps these flags to actual templateIds. Value 0xFFFFFFFF = subscribe to all."/>
         </group>
     </sbe:message>
 

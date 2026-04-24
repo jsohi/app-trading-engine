@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.netty.codec.http)
     implementation(libs.netty.tcnative.boringssl)
     runtimeOnly(libs.netty.transport.native.epoll) { artifact { classifier = "linux-x86_64" } }
+    runtimeOnly(libs.netty.transport.native.epoll) { artifact { classifier = "linux-aarch_64" } }
     runtimeOnly(libs.netty.transport.native.kqueue) { artifact { classifier = "osx-x86_64" } }
     runtimeOnly(libs.netty.transport.native.kqueue) { artifact { classifier = "osx-aarch_64" } }
 
