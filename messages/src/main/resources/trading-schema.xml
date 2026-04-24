@@ -821,7 +821,7 @@
         <group name="symbols" id="10050" dimensionType="groupSizeEncoding"
                description="Subscription entries — each specifies a symbol and bitmask of desired event types">
             <field name="symbol"     id="55" type="Symbol" description="Instrument symbol (FIX tag 55)"/>
-            <field name="eventTypes" id="2"  type="uint32" description="Bitmask of subscribed event types (bit positions map to EventTypeEnum values)"/>
+            <field name="eventTypes" id="2"  type="uint32" description="Bitmask of subscribed event types. Bit 0=orders, 1=fills, 2=cancels, 3=positions, 4=prices, 5=quotes. Server-side mapping — EventTypeEnum values (100+) are mapped to compact bit positions by SubscriptionFilter."/>
         </group>
     </sbe:message>
 

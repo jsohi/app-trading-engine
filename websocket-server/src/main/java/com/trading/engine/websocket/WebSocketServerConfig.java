@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 /**
  * Immutable configuration for the Netty WebSocket server, loaded from YAML.
@@ -188,7 +190,7 @@ public final class WebSocketServerConfig {
   public static WebSocketServerConfig fromYaml(final Path filePath) throws IOException {
     final Object raw;
     try (InputStream in = Files.newInputStream(filePath)) {
-      raw = new Yaml().load(in);
+      raw = new Yaml(new SafeConstructor(new LoaderOptions())).load(in);
     }
     if (raw == null) {
       return builder().build();
@@ -208,14 +210,14 @@ public final class WebSocketServerConfig {
     ifPresent(root, "maxConnectionsPerUser", Integer.class, b::maxConnectionsPerUser);
     ifPresent(root, "perIpNewConnectionsPerSec", Integer.class, b::perIpNewConnectionsPerSec);
     ifPresent(root, "globalNewConnectionsPerSec", Integer.class, b::globalNewConnectionsPerSec);
-    ifPresent(root, "sessionGracePeriodMs", Integer.class, v -> b.sessionGracePeriodMs(v));
-    ifPresent(root, "clientTimeoutMs", Integer.class, v -> b.clientTimeoutMs(v));
+    ifPresent(root, "sessionGracePeriodMs", Long.class, b::sessionGracePeriodMs);
+    ifPresent(root, "clientTimeoutMs", Long.class, b::clientTimeoutMs);
     ifPresent(root, "replayBufferFrames", Integer.class, b::replayBufferFrames);
     ifPresent(root, "replayBufferFrameSize", Integer.class, b::replayBufferFrameSize);
     ifPresent(root, "commandsPerSecSustained", Integer.class, b::commandsPerSecSustained);
     ifPresent(root, "commandsBurst", Integer.class, b::commandsBurst);
     ifPresent(root, "subscriptionsPerSec", Integer.class, b::subscriptionsPerSec);
-    ifPresent(root, "heartbeatIntervalMs", Integer.class, v -> b.heartbeatIntervalMs(v));
+    ifPresent(root, "heartbeatIntervalMs", Long.class, b::heartbeatIntervalMs);
     ifPresent(root, "snapshotFragmentSizeBytes", Integer.class, b::snapshotFragmentSizeBytes);
     ifPresent(root, "tlsCertPath", String.class, b::tlsCertPath);
     ifPresent(root, "tlsKeyPath", String.class, b::tlsKeyPath);
@@ -227,12 +229,12 @@ public final class WebSocketServerConfig {
 
     final var ciphers = root.get("cipherSuites");
     if (ciphers instanceof List<?> list) {
-      b.cipherSuites(list.stream().map(String::valueOf).toList());
+      b.cipherSuites(requireStringList(list, "cipherSuites"));
     }
 
     final var origins = root.get("originsWhitelist");
     if (origins instanceof List<?> list) {
-      b.originsWhitelist(list.stream().map(String::valueOf).toList());
+      b.originsWhitelist(requireStringList(list, "originsWhitelist"));
     }
 
     final var issuers = root.get("issuerRegistry");
@@ -260,8 +262,30 @@ public final class WebSocketServerConfig {
       final Consumer<T> setter) {
     final var value = map.get(key);
     if (value != null) {
-      if (type == Integer.class && value instanceof Number n) {
-        setter.accept(type.cast(n.intValue()));
+      if (value instanceof Number n) {
+        // Reject floating-point values for integer/long fields (e.g., "port: 8443.9")
+        if (n instanceof Double || n instanceof Float) {
+          throw new IllegalArgumentException(
+              "Config key '" + key + "' must be an integer, got floating-point: " + value);
+        }
+        if (type == Integer.class) {
+          long longVal = n.longValue();
+          if (longVal < Integer.MIN_VALUE || longVal > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                "Config key '" + key + "' overflows int range: " + longVal);
+          }
+          setter.accept(type.cast(n.intValue()));
+        } else if (type == Long.class) {
+          setter.accept(type.cast(n.longValue()));
+        } else {
+          throw new IllegalArgumentException(
+              "Config key '"
+                  + key
+                  + "' expected "
+                  + type.getSimpleName()
+                  + " but got Number: "
+                  + value);
+        }
       } else if (type.isInstance(value)) {
         setter.accept(type.cast(value));
       } else {
@@ -276,6 +300,23 @@ public final class WebSocketServerConfig {
                 + value);
       }
     }
+  }
+
+  private static List<String> requireStringList(final List<?> list, final String key) {
+    for (int i = 0; i < list.size(); i++) {
+      if (!(list.get(i) instanceof String)) {
+        throw new IllegalArgumentException(
+            "Config key '"
+                + key
+                + "' element ["
+                + i
+                + "] must be a string, got: "
+                + list.get(i).getClass().getSimpleName());
+      }
+    }
+    @SuppressWarnings("unchecked")
+    final var stringList = (List<String>) list;
+    return List.copyOf(stringList);
   }
 
   // --- Accessors ---
