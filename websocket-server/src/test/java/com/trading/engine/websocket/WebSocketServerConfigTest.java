@@ -235,4 +235,22 @@ final class WebSocketServerConfigTest {
         IllegalArgumentException.class,
         () -> WebSocketServerConfig.builder().tlsCertPath("/path/to/cert.pem").build());
   }
+
+  @Test
+  void fromYaml_floatingPointForIntegerField_throwsIllegalArgument(@TempDir final Path tempDir)
+      throws IOException {
+    final var yaml = tempDir.resolve("float.yaml");
+    Files.writeString(yaml, "port: 8443.5\n");
+
+    assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
+  }
+
+  @Test
+  void fromYaml_issuerRegistryMissingJwksUri_throwsIllegalArgument(@TempDir final Path tempDir)
+      throws IOException {
+    final var yaml = tempDir.resolve("bad-issuer.yaml");
+    Files.writeString(yaml, "issuerRegistry:\n  my-issuer:\n    notJwksUri: https://example.com\n");
+
+    assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
+  }
 }

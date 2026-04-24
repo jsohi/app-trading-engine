@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -272,7 +273,7 @@ public final class WebSocketServerConfig {
           throw new IllegalArgumentException(
               "Config key '" + key + "' must be an integer, got floating-point: " + value);
         }
-        if (n instanceof java.math.BigInteger) {
+        if (n instanceof BigInteger) {
           throw new IllegalArgumentException(
               "Config key '" + key + "' exceeds long range: " + value);
         }
