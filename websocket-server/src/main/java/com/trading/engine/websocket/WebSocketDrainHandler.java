@@ -102,6 +102,11 @@ public final class WebSocketDrainHandler {
     }
   }
 
+  /**
+   * Fan out a single egress entry to all active sessions. Complexity is O(S) per message where S is
+   * the number of active sessions. The drain loop is O(M × S) per cycle where M is the queue depth.
+   * PR 3 adds SubscriptionFilter which reduces effective S to only matching sessions per message.
+   */
   private void writeToAllChannels(final EgressEntry entry) {
     // Allocate a pooled ByteBuf for the wire envelope
     final int frameSize =
