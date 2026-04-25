@@ -161,7 +161,10 @@ public final class ConnectionRateLimiter extends ChannelInboundHandlerAdapter {
         // CAS to ensure only one thread refills per second
         if (lastRefillNs.compareAndSet(lastNs, nowNs)) {
           globalTokens.set(globalLimit);
-          perIpTokens.clear();
+          // Reset counters in-place instead of clear() to avoid race with concurrent
+          // computeIfAbsent() — a thread holding a reference to an AtomicLong from
+          // computeIfAbsent() would decrement an orphaned counter after clear().
+          perIpTokens.forEach((ip, counter) -> counter.set(perIpLimit));
         }
       }
     }

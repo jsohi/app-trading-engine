@@ -29,7 +29,10 @@ import org.apache.logging.log4j.Logger;
  * <p><b>Threading.</b> Runs on the Netty worker event loop thread only. Not thread-safe.
  *
  * <p><b>Allocation.</b> One pooled {@link ByteBuf} per message per drain cycle (from {@link
- * PooledByteBufAllocator}). No Java object allocation on the hot path.
+ * PooledByteBufAllocator}). Cross-thread writes: the drain task runs on a single event loop, but
+ * channels are distributed across N worker threads. For channels on other event loops, each {@code
+ * ch.write()} and {@code ch.flush()} allocates a Runnable task object for cross-thread dispatch.
+ * With N worker threads, (N-1)/N of channels incur this overhead per message.
  *
  * @see <a href="docs/websocket-architecture.md">WebSocket Architecture — Section 1, Section 6</a>
  */
@@ -122,9 +125,16 @@ public final class WebSocketDrainHandler {
       sessionManager.forEachSession(
           session -> {
             final var ch = session.channel();
-            if (ch.isActive()) {
-              ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
+            if (!ch.isActive()) {
+              return;
             }
+            // Best-effort messages: skip slow consumers whose write buffer exceeds the high
+            // water mark. Reliable messages (orders, fills) are always written — the full
+            // SlowConsumerHandler in PR 4 handles graduated backpressure and disconnect.
+            if (!entry.isReliable() && !ch.isWritable()) {
+              return;
+            }
+            ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
           });
     } catch (final Exception e) {
       LOG.warn("Failed to encode frame for templateId={}: {}", entry.templateId(), e.getMessage());

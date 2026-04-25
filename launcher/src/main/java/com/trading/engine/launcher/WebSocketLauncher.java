@@ -121,7 +121,14 @@ public final class WebSocketLauncher {
     try {
       server.start();
     } catch (final Exception ex) {
-      LOG.error("WebSocket server start failed — cleaning up egress thread and cluster client", ex);
+      LOG.error(
+          "WebSocket server start failed — cleaning up server, egress thread, and cluster client",
+          ex);
+      try {
+        server.close(); // Shuts down EventLoopGroup threads created by TransportDetector.detect()
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing WebSocketServerMain during partial-failure cleanup", closeEx);
+      }
       try {
         egressThread.close();
       } catch (final Exception closeEx) {
