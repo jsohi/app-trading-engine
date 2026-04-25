@@ -1,0 +1,102 @@
+package com.trading.engine.websocket;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.trading.engine.testsupport.clock.ControllableNanoClock;
+import io.netty.channel.embedded.EmbeddedChannel;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Tests for {@link ConnectionRateLimiter} — verifies global and per-IP token bucket rate limiting
+ * with refill after one-second intervals.
+ *
+ * <p>Uses tight limits ({@code perIpNewConnectionsPerSec=2, globalNewConnectionsPerSec=3}) and a
+ * {@link ControllableNanoClock} to deterministically test bucket exhaustion and refill.
+ */
+final class ConnectionRateLimiterTest {
+
+  private ControllableNanoClock clock;
+  private ConnectionRateLimiter limiter;
+
+  @BeforeEach
+  void setUp() {
+    clock = new ControllableNanoClock(1_000_000_000L);
+    final var config =
+        WebSocketServerConfig.builder()
+            .perIpNewConnectionsPerSec(2)
+            .globalNewConnectionsPerSec(3)
+            .build();
+    limiter = new ConnectionRateLimiter(config, clock);
+  }
+
+  @Test
+  void channelActive_withinGlobalLimit_passesThrough() {
+    final var channel = new EmbeddedChannel(limiter);
+
+    assertTrue(
+        channel.isActive(),
+        "Channel must remain active when connection is within the global rate limit");
+  }
+
+  @Test
+  void channelActive_exceedsGlobalLimit_closesChannel() {
+    // Global limit = 3. EmbeddedChannel.remoteAddress() returns null -> all share "unknown" IP,
+    // but per-IP limit is 2, so the third connection hits global limit (3) before per-IP (2)
+    // only if we consume tokens across multiple IPs. Since all channels share "unknown" IP and
+    // per-IP limit is 2, the third connection is blocked by per-IP first.
+    //
+    // To test global limit specifically, we exhaust global tokens (3) with per-IP limit (2) by
+    // making the per-IP limit higher. Reconstruct with higher per-IP.
+    final var globalConfig =
+        WebSocketServerConfig.builder()
+            .perIpNewConnectionsPerSec(3)
+            .globalNewConnectionsPerSec(3)
+            .build();
+    final var globalClock = new ControllableNanoClock(1_000_000_000L);
+    final var globalLimiter = new ConnectionRateLimiter(globalConfig, globalClock);
+
+    // Consume all 3 global tokens
+    new EmbeddedChannel(globalLimiter);
+    new EmbeddedChannel(globalLimiter);
+    new EmbeddedChannel(globalLimiter);
+
+    // Fourth channel should be closed
+    final var excess = new EmbeddedChannel(globalLimiter);
+
+    assertFalse(
+        excess.isActive(),
+        "Channel must be closed when the global connection rate limit is exceeded");
+  }
+
+  @Test
+  void channelActive_afterOneSecondRefill_allowsNewConnections() {
+    // Use a config where per-IP and global both allow 2 per second.
+    final var refillConfig =
+        WebSocketServerConfig.builder()
+            .perIpNewConnectionsPerSec(2)
+            .globalNewConnectionsPerSec(2)
+            .build();
+    final var refillClock = new ControllableNanoClock(1_000_000_000L);
+    final var refillLimiter = new ConnectionRateLimiter(refillConfig, refillClock);
+
+    // Exhaust all 2 tokens
+    new EmbeddedChannel(refillLimiter);
+    new EmbeddedChannel(refillLimiter);
+
+    // Third connection should be rejected (tokens exhausted)
+    final var rejected = new EmbeddedChannel(refillLimiter);
+    assertFalse(rejected.isActive(), "Channel must be closed when tokens are exhausted");
+
+    // Advance clock by 1 second to trigger refill
+    refillClock.advanceSeconds(1);
+
+    // After refill, a new connection should succeed
+    final var afterRefill = new EmbeddedChannel(refillLimiter);
+
+    assertTrue(
+        afterRefill.isActive(),
+        "Channel must remain active after token bucket refill (1 second elapsed)");
+  }
+}
