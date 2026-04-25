@@ -22,6 +22,7 @@ public final class WebSocketSession {
 
   private final UUID sessionId;
   private final Channel channel;
+  private final String remoteIp;
   private String userId;
   private long jti;
   private long reliableSeqCounter;
@@ -36,10 +37,13 @@ public final class WebSocketSession {
    *
    * @param channel the Netty channel for this client
    * @param nowNs current monotonic time in nanoseconds (for heartbeat tracking)
+   * @param remoteIp the remote IP address captured at registration time; stored so that it remains
+   *     available after the channel disconnects (when {@code channel.remoteAddress()} returns null)
    */
-  public WebSocketSession(final Channel channel, final long nowNs) {
+  public WebSocketSession(final Channel channel, final long nowNs, final String remoteIp) {
     this.sessionId = UUID.randomUUID();
     this.channel = Objects.requireNonNull(channel, "channel");
+    this.remoteIp = Objects.requireNonNull(remoteIp, "remoteIp");
     this.lastClientHeartbeatNs = nowNs;
   }
 
@@ -55,6 +59,13 @@ public final class WebSocketSession {
    */
   public Channel channel() {
     return channel;
+  }
+
+  /**
+   * @return the remote IP address captured at registration time (remains valid after disconnect)
+   */
+  public String remoteIp() {
+    return remoteIp;
   }
 
   /**
@@ -88,7 +99,7 @@ public final class WebSocketSession {
   /**
    * Assign the next reliable sequence number for outbound messages.
    *
-   * @return the next sequence number (post-increment)
+   * @return the next sequence number (pre-increment — starts at 1)
    */
   public long nextReliableSeqNo() {
     return ++reliableSeqCounter;

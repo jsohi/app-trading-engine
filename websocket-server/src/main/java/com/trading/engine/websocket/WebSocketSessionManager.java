@@ -1,18 +1,18 @@
 package com.trading.engine.websocket;
 
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelId;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.Object2IntHashMap;
 import org.agrona.concurrent.NanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * Manages WebSocket client sessions with capacity enforcement, heartbeat monitoring, and reconnect
- * throttling.
+ * Manages WebSocket client sessions with capacity enforcement and per-IP/per-user counting.
  *
  * <p><b>Capacity limits</b> (all configurable via {@link WebSocketServerConfig}):
  *
@@ -22,21 +22,14 @@ import org.apache.logging.log4j.Logger;
  *   <li>Per-user: 4 concurrent sessions for the same JWT {@code sub} claim
  * </ul>
  *
- * <p><b>Heartbeat timeout.</b> Clients must send {@code ClientHeartbeat} (template 65) at least
- * every 20 seconds. Sessions that miss a heartbeat are disconnected with {@code
- * WebSocketError(HeartbeatTimeout)}.
+ * <p><b>Threading.</b> Thread-safe. Uses {@link ConcurrentHashMap} for sessions (keyed by {@link
+ * ChannelId}), per-IP counts, and per-user counts. Session lifecycle (register/remove) may be
+ * called from different Netty worker threads. The drain handler calls {@link #forEachSession} from
+ * a single worker event loop thread, which iterates a weakly-consistent view of the sessions map.
  *
- * <p><b>Grace period.</b> After disconnect, session state (including replay buffer) is held for 30
- * seconds. Grace-period sessions count toward the global limit. Subscriptions are cleared on
- * disconnect (transient — client re-subscribes after reconnect).
- *
- * <p><b>Reconnect throttle.</b> Maximum 10 reconnects per minute per user (anti-thundering-herd).
- *
- * <p><b>Threading.</b> Not thread-safe — all methods must be called from the Netty event loop
- * thread only.
- *
- * <p><b>Allocation.</b> Agrona primitive-keyed maps avoid boxing. Session creation allocates
- * (acceptable — one-time per connection, not hot path).
+ * <p><b>Allocation.</b> {@link ConcurrentHashMap} entries are allocated per session (acceptable —
+ * one-time per connection, not hot path). {@link AtomicInteger} instances are allocated per unique
+ * IP and per unique user.
  *
  * @see <a href="docs/websocket-architecture.md">WebSocket Architecture — Section 3</a>
  */
@@ -48,14 +41,18 @@ public final class WebSocketSessionManager {
   private final WebSocketMetrics metrics;
   private final NanoClock nanoClock;
 
-  /** Active sessions keyed by Netty channel ID hash. */
-  private final Long2ObjectHashMap<WebSocketSession> sessions;
+  /**
+   * Active sessions keyed by {@link ChannelId}. Uses {@code ChannelId.equals()/hashCode()} which is
+   * designed for map keying, avoiding the collision-prone {@code channel.id().hashCode()} int
+   * widened to long.
+   */
+  private final ConcurrentHashMap<ChannelId, WebSocketSession> sessions;
 
-  /** Per-IP connection count. Key: IP address string hash. Sentinel: -1. */
-  private final Object2IntHashMap<String> perIpCount;
+  /** Per-IP connection count. Key: IP address string. */
+  private final ConcurrentHashMap<String, AtomicInteger> perIpCount;
 
-  /** Per-user connection count. Key: JWT sub claim. Sentinel: -1. */
-  private final Object2IntHashMap<String> perUserCount;
+  /** Per-user connection count. Key: JWT sub claim. */
+  private final ConcurrentHashMap<String, AtomicInteger> perUserCount;
 
   /**
    * Create a new session manager.
@@ -71,13 +68,17 @@ public final class WebSocketSessionManager {
     this.config = Objects.requireNonNull(config, "config");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
-    this.sessions = new Long2ObjectHashMap<>();
-    this.perIpCount = new Object2IntHashMap<>(-1);
-    this.perUserCount = new Object2IntHashMap<>(-1);
+    this.sessions = new ConcurrentHashMap<>();
+    this.perIpCount = new ConcurrentHashMap<>();
+    this.perUserCount = new ConcurrentHashMap<>();
   }
 
   /**
-   * Try to register a new session. Enforces global, per-IP, and per-user limits.
+   * Try to register a new session. Enforces global and per-IP limits.
+   *
+   * <p>The remote IP address is captured at registration time and stored in the session so that
+   * {@link #removeSession} can use the stored IP even after the channel has disconnected (when
+   * {@code channel.remoteAddress()} may return null).
    *
    * @param channel the Netty channel for this client
    * @return the created session, or null if capacity is exceeded
@@ -93,7 +94,8 @@ public final class WebSocketSessionManager {
 
     // Per-IP limit
     final var remoteAddr = extractIp(channel);
-    final int ipCount = perIpCount.getOrDefault(remoteAddr, 0);
+    final var ipCounter = perIpCount.computeIfAbsent(remoteAddr, k -> new AtomicInteger(0));
+    final int ipCount = ipCounter.get();
     if (ipCount >= config.maxConnectionsPerIp()) {
       LOG.warn(
           "Per-IP session limit reached ({}) for {}", config.maxConnectionsPerIp(), remoteAddr);
@@ -101,10 +103,10 @@ public final class WebSocketSessionManager {
     }
 
     final long nowNs = nanoClock.nanoTime();
-    final var session = new WebSocketSession(channel, nowNs);
-    final long channelId = channel.id().hashCode();
+    final var session = new WebSocketSession(channel, nowNs, remoteAddr);
+    final var channelId = channel.id();
     sessions.put(channelId, session);
-    perIpCount.put(remoteAddr, ipCount + 1);
+    ipCounter.incrementAndGet();
     metrics.connectionOpened();
 
     LOG.info(
@@ -116,7 +118,9 @@ public final class WebSocketSessionManager {
   }
 
   /**
-   * Set the user ID on a session after JWT authentication. Enforces per-user limit.
+   * Set the user ID on a session after JWT authentication. Enforces per-user limit. Idempotent — if
+   * the session already has a userId set, the call is a no-op and returns true (the user was
+   * already counted).
    *
    * @param session the session to update
    * @param userId the JWT {@code sub} claim
@@ -126,7 +130,13 @@ public final class WebSocketSessionManager {
     Objects.requireNonNull(session, "session");
     Objects.requireNonNull(userId, "userId");
 
-    final int userCount = perUserCount.getOrDefault(userId, 0);
+    // Idempotent: if userId is already set on this session, skip re-increment
+    if (session.userId() != null) {
+      return true;
+    }
+
+    final var userCounter = perUserCount.computeIfAbsent(userId, k -> new AtomicInteger(0));
+    final int userCount = userCounter.get();
     if (userCount >= config.maxConnectionsPerUser()) {
       LOG.warn(
           "Per-user session limit reached ({}) for user {}",
@@ -135,41 +145,44 @@ public final class WebSocketSessionManager {
       return false;
     }
     session.userId(userId);
-    perUserCount.put(userId, userCount + 1);
+    userCounter.incrementAndGet();
     return true;
   }
 
   /**
-   * Remove a session on disconnect. Decrements IP and user counters.
+   * Remove a session on disconnect. Decrements IP and user counters. Uses the IP address stored in
+   * the session at registration time (not from the channel, which may already be disconnected).
    *
    * @param channel the disconnected Netty channel
    */
   public void removeSession(final Channel channel) {
     Objects.requireNonNull(channel, "channel");
 
-    final long channelId = channel.id().hashCode();
+    final var channelId = channel.id();
     final var session = sessions.remove(channelId);
     if (session == null) {
       return;
     }
 
-    // Decrement per-IP
-    final var remoteAddr = extractIp(channel);
-    final int ipCount = perIpCount.getOrDefault(remoteAddr, 0);
-    if (ipCount <= 1) {
-      perIpCount.remove(remoteAddr);
-    } else {
-      perIpCount.put(remoteAddr, ipCount - 1);
+    // Decrement per-IP using the IP stored at registration time
+    final var remoteAddr = session.remoteIp();
+    final var ipCounter = perIpCount.get(remoteAddr);
+    if (ipCounter != null) {
+      final int remaining = ipCounter.decrementAndGet();
+      if (remaining <= 0) {
+        perIpCount.remove(remoteAddr, ipCounter);
+      }
     }
 
     // Decrement per-user
     final var userId = session.userId();
     if (userId != null) {
-      final int userCount = perUserCount.getOrDefault(userId, 0);
-      if (userCount <= 1) {
-        perUserCount.remove(userId);
-      } else {
-        perUserCount.put(userId, userCount - 1);
+      final var userCounter = perUserCount.get(userId);
+      if (userCounter != null) {
+        final int remaining = userCounter.decrementAndGet();
+        if (remaining <= 0) {
+          perUserCount.remove(userId, userCounter);
+        }
       }
     }
 
@@ -185,14 +198,16 @@ public final class WebSocketSessionManager {
    */
   public WebSocketSession findSession(final Channel channel) {
     Objects.requireNonNull(channel, "channel");
-    return sessions.get(channel.id().hashCode());
+    return sessions.get(channel.id());
   }
 
   /**
    * Iterate over all active sessions. Used by the drain handler to fan-out egress messages to all
    * connected channels.
    *
-   * <p><b>Threading.</b> Must be called from the Netty event loop thread only.
+   * <p><b>Threading.</b> Uses {@link ConcurrentHashMap#values()} which provides a weakly-consistent
+   * iterator — safe for concurrent modification from other threads. Sessions added or removed
+   * during iteration may or may not be visible.
    *
    * @param action the action to perform on each session
    */

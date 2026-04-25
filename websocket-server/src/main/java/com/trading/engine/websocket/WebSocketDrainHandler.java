@@ -110,8 +110,9 @@ public final class WebSocketDrainHandler {
 
     try {
       if (entry.isReliable()) {
-        // For now, use seqNo=0 — proper per-session seq assignment comes in PR 3/4
-        // when SubscriptionFilter and ReliableStreamTracker are wired in.
+        // TODO(APP-35): replace hardcoded seqNo=0 with per-session sequence assignment via
+        // session.nextReliableSeqNo() once SubscriptionFilter and ReliableStreamTracker are
+        // wired in (PR 3/4 scope).
         FrameParser.encodeReliable(frameBuf, 0L, entry.bytes(), 0, entry.length());
       } else {
         FrameParser.encodeBestEffort(frameBuf, entry.bytes(), 0, entry.length());

@@ -2,8 +2,8 @@ package com.trading.engine.websocket;
 
 import java.util.Objects;
 import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
-import org.agrona.concurrent.SleepingMillisIdleStrategy;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -16,16 +16,13 @@ import org.apache.logging.log4j.Logger;
  * performs {@code pollEgress()}, and the {@link WebSocketEgressListener} copies messages into the
  * queue.
  *
- * <p><b>Queue backpressure monitoring</b> (architecture doc Section 1, 3 levels):
+ * <p><b>Queue backpressure.</b> Currently, when the queue is full, messages are dropped by the
+ * {@link WebSocketEgressListener} with a metric increment. The 3-level queue monitoring (75% pause,
+ * 100% stop, 2s restart) described in architecture doc Section 1 and the 4-level graduated
+ * backpressure (Section 5, byte-based lag) are deferred to PR 4 ({@code SlowConsumerHandler}).
  *
- * <ul>
- *   <li>75% full → {@code QUEUE_NEAR_FULL} metric + 100us pause
- *   <li>100% full → {@code SESSION_BACKPRESSURE} flag + stop polling
- *   <li>Backpressured &gt;2s → restart thread + emit alert
- * </ul>
- *
- * <p>The 4-level graduated backpressure (Section 5, byte-based lag) is deferred to PR 4 ({@code
- * SlowConsumerHandler}).
+ * <p><b>Idle strategy.</b> Uses {@link BackoffIdleStrategy} (spin → yield → park) matching the
+ * gateway pattern for low-latency egress polling.
  *
  * <p><b>Threading.</b> Owns a single named thread ("aeron-egress"). All queue monitoring runs on
  * this thread.
@@ -61,9 +58,11 @@ public final class AeronEgressThread implements AutoCloseable {
     this.queue = Objects.requireNonNull(queue, "queue");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.queueCapacity = queueCapacity;
+    // BackoffIdleStrategy: spin → yield → park. Matches the gateway pattern for low-latency
+    // egress polling. Defaults: 1 spin, 1 yield, 1us min park, 1ms max park.
     this.agentRunner =
         new AgentRunner(
-            new SleepingMillisIdleStrategy(1),
+            new BackoffIdleStrategy(),
             throwable -> LOG.error("AeronEgressThread error", throwable),
             null, // no AtomicCounter
             clusterClient);
