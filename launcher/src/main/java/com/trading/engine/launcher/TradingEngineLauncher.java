@@ -133,6 +133,7 @@ public final class TradingEngineLauncher {
     final var gatewayRef = new AtomicReference<GatewayComponents>();
     final var orchestratorRef = new AtomicReference<OrchestratorComponents>();
     final var pricingRef = new AtomicReference<PricingComponents>();
+    final var websocketRef = new AtomicReference<WebSocketComponents>();
 
     final var barrier = new ShutdownSignalBarrier();
 
@@ -141,7 +142,9 @@ public final class TradingEngineLauncher {
             new Thread(
                 () -> {
                   LOG.info("Shutdown hook triggered — cleaning up in reverse order");
-                  // Shutdown order: gateway → orchestrator → pricing → cluster → media drivers
+                  // Shutdown order: websocket → gateway → orchestrator → pricing → cluster →
+                  // media drivers. WebSocket first: needs to drain before cluster session closes.
+                  CloseHelper.quietClose(websocketRef.get());
                   CloseHelper.quietClose(gatewayRef.get());
                   CloseHelper.quietClose(orchestratorRef.get());
                   CloseHelper.quietClose(pricingRef.get());
@@ -252,6 +255,17 @@ public final class TradingEngineLauncher {
               ingressEndpoints,
               new BackoffIdleStrategy()));
       LOG.info("Step 10 complete: gateway thread started in {}ms", elapsedMs(stepStart));
+
+      // ===== Step 10b: Launch WebSocket server (conditional) =====
+      final var wsConfigFile = System.getProperty("websocket.config.file");
+      if (wsConfigFile != null && !wsConfigFile.isBlank()) {
+        stepStart = NANO_CLOCK.nanoTime();
+        websocketRef.set(
+            WebSocketLauncher.launch(aeronDirs[gwIndex], ingressEndpoints, Path.of(wsConfigFile)));
+        LOG.info("Step 10b complete: WebSocket server started in {}ms", elapsedMs(stepStart));
+      } else {
+        LOG.info("Step 10b skipped: no -Dwebsocket.config.file, WebSocket server not started");
+      }
 
       // ===== Step 11: Wait for gateway readiness =====
       // AgentRunner.startOnThread() only spawns the thread — FixGateway.onStart() runs
