@@ -3,6 +3,7 @@ package com.trading.engine.websocket;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,6 +39,17 @@ public final class WebSocketMetrics {
   private final Counter authSuccess;
   private final Counter authFailure;
   private final Counter rateLimited;
+
+  /**
+   * Create a WebSocketMetrics instance with a simple in-memory registry. Suitable for dev/test or
+   * when a Prometheus endpoint is not yet wired. Production callers should use {@link
+   * #WebSocketMetrics(MeterRegistry)} with a PrometheusMeterRegistry.
+   *
+   * @return a new metrics instance with a SimpleMeterRegistry
+   */
+  public static WebSocketMetrics createWithDefaults() {
+    return new WebSocketMetrics(new SimpleMeterRegistry());
+  }
 
   /**
    * Register all metrics with the given registry.
