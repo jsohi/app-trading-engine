@@ -2,8 +2,8 @@ package com.trading.engine.websocket;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import java.util.Objects;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -55,10 +55,10 @@ public final class WebSocketDrainHandler {
       final WebSocketEgressListener egressListener,
       final WebSocketSessionManager sessionManager,
       final WebSocketMetrics metrics) {
-    this.queue = queue;
-    this.egressListener = egressListener;
-    this.sessionManager = sessionManager;
-    this.metrics = metrics;
+    this.queue = Objects.requireNonNull(queue, "queue");
+    this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
+    this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
+    this.metrics = Objects.requireNonNull(metrics, "metrics");
   }
 
   /**
@@ -90,7 +90,7 @@ public final class WebSocketDrainHandler {
       // Flush all active channels once at the end of the drain cycle
       sessionManager.forEachSession(
           session -> {
-            final Channel ch = session.channel();
+            final var ch = session.channel();
             if (ch.isActive()) {
               ch.flush();
             }
@@ -106,7 +106,7 @@ public final class WebSocketDrainHandler {
             ? FrameParser.RELIABLE_HEADER_SIZE + entry.length()
             : FrameParser.BEST_EFFORT_HEADER_SIZE + entry.length();
 
-    final ByteBuf frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
+    final var frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
 
     try {
       if (entry.isReliable()) {
@@ -120,7 +120,7 @@ public final class WebSocketDrainHandler {
       // Fan-out: retainedDuplicate() per active channel, release original after all writes
       sessionManager.forEachSession(
           session -> {
-            final Channel ch = session.channel();
+            final var ch = session.channel();
             if (ch.isActive()) {
               ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
             }

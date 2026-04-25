@@ -17,7 +17,7 @@ final class EgressEntryTest {
 
   @Test
   void constructor_validSize_createsByteArray() {
-    int maxSize = 1024;
+    final int maxSize = 1024;
     final var entry = new EgressEntry(maxSize);
 
     assertEquals(maxSize, entry.bytes().length);
@@ -37,7 +37,7 @@ final class EgressEntryTest {
   void fill_fromExternalSource_copiesBytes() {
     final var entry = new EgressEntry(64);
     final var source = new byte[] {0x0A, 0x0B, 0x0C, 0x0D, 0x0E};
-    int templateId = 51;
+    final int templateId = 51;
 
     entry.fill(source, 0, source.length, templateId);
 
@@ -55,7 +55,7 @@ final class EgressEntryTest {
     // SBE header: [blockLength:uint16][templateId:uint16][schemaId:uint16][version:uint16]
     // templateId at offset 2, little-endian
     final var buffer = new byte[8];
-    int expectedTemplateId = 300; // 0x012C in LE: buffer[2]=0x2C, buffer[3]=0x01
+    final int expectedTemplateId = 300; // 0x012C in LE: buffer[2]=0x2C, buffer[3]=0x01
 
     // Write blockLength placeholder
     buffer[0] = 0x00;
@@ -64,7 +64,7 @@ final class EgressEntryTest {
     buffer[2] = (byte) (expectedTemplateId & 0xFF);
     buffer[3] = (byte) ((expectedTemplateId >> 8) & 0xFF);
 
-    int result = EgressEntry.extractTemplateId(buffer, 0);
+    final int result = EgressEntry.extractTemplateId(buffer, 0);
     assertEquals(expectedTemplateId, result);
   }
 

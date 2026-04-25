@@ -1,5 +1,6 @@
 package com.trading.engine.websocket;
 
+import java.util.Objects;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SleepingMillisIdleStrategy;
@@ -56,8 +57,9 @@ public final class AeronEgressThread implements AutoCloseable {
       final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
       final WebSocketMetrics metrics,
       final int queueCapacity) {
-    this.queue = queue;
-    this.metrics = metrics;
+    Objects.requireNonNull(clusterClient, "clusterClient");
+    this.queue = Objects.requireNonNull(queue, "queue");
+    this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.queueCapacity = queueCapacity;
     this.agentRunner =
         new AgentRunner(

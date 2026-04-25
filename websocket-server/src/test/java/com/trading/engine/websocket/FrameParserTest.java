@@ -40,23 +40,23 @@ final class FrameParserTest {
   void encodeReliable_validPayload_produces17ByteHeaderPlusSbe() {
     buf = Unpooled.buffer(64);
     final var payload = new byte[] {0x01, 0x02, 0x03, 0x04, 0x05};
-    long seqNo = 42L;
+    final long seqNo = 42L;
 
     FrameParser.encodeReliable(buf, seqNo, payload, 0, payload.length);
 
-    int expectedTotal = FrameParser.RELIABLE_HEADER_SIZE + payload.length;
+    final int expectedTotal = FrameParser.RELIABLE_HEADER_SIZE + payload.length;
     assertEquals(expectedTotal, buf.readableBytes());
 
     // totalLength (LE uint32)
-    int totalLength = buf.readIntLE();
+    final int totalLength = buf.readIntLE();
     assertEquals(expectedTotal, totalLength);
 
     // seqNo (LE int64)
-    long readSeqNo = buf.readLongLE();
+    final long readSeqNo = buf.readLongLE();
     assertEquals(seqNo, readSeqNo);
 
     // flags
-    byte flags = buf.readByte();
+    final byte flags = buf.readByte();
     assertEquals(FrameParser.FLAG_RELIABLE, flags);
 
     // CRC32C (4 bytes, skip for now)
@@ -75,19 +75,19 @@ final class FrameParserTest {
 
     FrameParser.encodeBestEffort(buf, payload, 0, payload.length);
 
-    int expectedTotal = FrameParser.BEST_EFFORT_HEADER_SIZE + payload.length;
+    final int expectedTotal = FrameParser.BEST_EFFORT_HEADER_SIZE + payload.length;
     assertEquals(expectedTotal, buf.readableBytes());
 
     // totalLength (LE uint32)
-    int totalLength = buf.readIntLE();
+    final int totalLength = buf.readIntLE();
     assertEquals(expectedTotal, totalLength);
 
     // seqNo = 0 (LE int64)
-    long readSeqNo = buf.readLongLE();
+    final long readSeqNo = buf.readLongLE();
     assertEquals(0L, readSeqNo);
 
     // flags = 0
-    byte flags = buf.readByte();
+    final byte flags = buf.readByte();
     assertEquals(0, flags);
 
     // SBE payload (no CRC)
@@ -100,7 +100,7 @@ final class FrameParserTest {
   void encodeReliable_crc32c_matchesJdkComputation() {
     buf = Unpooled.buffer(64);
     final var payload = new byte[] {0x10, 0x20, 0x30, 0x40};
-    long seqNo = 7L;
+    final long seqNo = 7L;
 
     FrameParser.encodeReliable(buf, seqNo, payload, 0, payload.length);
 
@@ -111,10 +111,10 @@ final class FrameParserTest {
     buf.getBytes(0, headerBytes);
     crc.update(headerBytes, 0, headerBytes.length);
     crc.update(payload, 0, payload.length);
-    int expectedCrc = (int) crc.getValue();
+    final int expectedCrc = (int) crc.getValue();
 
     // Read CRC from frame at offset 13 (after header, before payload)
-    int frameCrc = buf.getIntLE(13);
+    final int frameCrc = buf.getIntLE(13);
     assertEquals(expectedCrc, frameCrc);
   }
 
@@ -122,17 +122,17 @@ final class FrameParserTest {
   void encodeReliableReplay_validPayload_setsReplayFlag() {
     buf = Unpooled.buffer(64);
     final var payload = new byte[] {0x01};
-    long seqNo = 99L;
+    final long seqNo = 99L;
 
     FrameParser.encodeReliableReplay(buf, seqNo, payload, 0, payload.length);
 
     // Skip totalLength (4) + seqNo (8) = offset 12
-    byte flags = buf.getByte(12);
-    byte expectedFlags = (byte) (FrameParser.FLAG_RELIABLE | FrameParser.FLAG_REPLAY);
+    final byte flags = buf.getByte(12);
+    final byte expectedFlags = (byte) (FrameParser.FLAG_RELIABLE | FrameParser.FLAG_REPLAY);
     assertEquals(expectedFlags, flags);
 
     // Verify total length includes reliable header
-    int totalLength = buf.getIntLE(0);
+    final int totalLength = buf.getIntLE(0);
     assertEquals(FrameParser.RELIABLE_HEADER_SIZE + payload.length, totalLength);
   }
 
@@ -196,7 +196,7 @@ final class FrameParserTest {
 
   @Test
   void isSnapshotFinal_bothBits_returnsTrue() {
-    byte finalSnapshot = (byte) (FrameParser.FLAG_SNAPSHOT | FrameParser.FLAG_SNAPSHOT_FINAL);
+    final byte finalSnapshot = (byte) (FrameParser.FLAG_SNAPSHOT | FrameParser.FLAG_SNAPSHOT_FINAL);
     assertTrue(FrameParser.isSnapshotFinal(finalSnapshot));
     // Snapshot without final bit is not final
     assertFalse(FrameParser.isSnapshotFinal(FrameParser.FLAG_SNAPSHOT));

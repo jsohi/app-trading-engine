@@ -9,6 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import io.netty.channel.DefaultChannelId;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ResourceLeakDetector;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -29,10 +32,16 @@ import org.junit.jupiter.api.Test;
  */
 final class WebSocketSessionManagerTest {
 
+  private final java.util.List<EmbeddedChannel> openChannels = new java.util.ArrayList<>();
   private WebSocketServerConfig config;
   private WebSocketMetrics metrics;
   private ControllableNanoClock clock;
   private WebSocketSessionManager manager;
+
+  @BeforeAll
+  static void setLeakDetection() {
+    ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.PARANOID);
+  }
 
   @BeforeEach
   void setUp() {
@@ -47,14 +56,24 @@ final class WebSocketSessionManagerTest {
     manager = new WebSocketSessionManager(config, metrics, clock);
   }
 
+  @AfterEach
+  void tearDown() {
+    for (final var ch : openChannels) {
+      ch.finishAndReleaseAll();
+    }
+    openChannels.clear();
+  }
+
   /**
    * Create an {@link EmbeddedChannel} with a unique {@link DefaultChannelId} so that each channel
    * has a distinct {@code channel.id().hashCode()} for the session manager's keyed map.
    *
    * @return a new EmbeddedChannel with a globally unique channel ID
    */
-  private static EmbeddedChannel newUniqueChannel() {
-    return new EmbeddedChannel(DefaultChannelId.newInstance());
+  private EmbeddedChannel newUniqueChannel() {
+    final var ch = new EmbeddedChannel(DefaultChannelId.newInstance());
+    openChannels.add(ch);
+    return ch;
   }
 
   @Test
@@ -137,8 +156,8 @@ final class WebSocketSessionManagerTest {
     assertNotNull(session1);
     assertNotNull(session2);
 
-    boolean firstSet = userManager.setUserId(session1, "trader-1");
-    boolean secondSet = userManager.setUserId(session2, "trader-1");
+    final boolean firstSet = userManager.setUserId(session1, "trader-1");
+    final boolean secondSet = userManager.setUserId(session2, "trader-1");
 
     assertTrue(firstSet, "First setUserId for a user must succeed");
     assertFalse(secondSet, "Second setUserId for same user must fail (per-user limit=1)");

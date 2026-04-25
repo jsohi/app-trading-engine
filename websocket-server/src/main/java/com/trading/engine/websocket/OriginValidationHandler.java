@@ -7,7 +7,6 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpVersion;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -89,7 +88,7 @@ public final class OriginValidationHandler extends ChannelInboundHandlerAdapter 
 
   private static void reject(final ChannelHandlerContext ctx, final FullHttpRequest request) {
     // Read protocol version BEFORE releasing the request to avoid use-after-release.
-    final HttpVersion protocolVersion = request.protocolVersion();
+    final var protocolVersion = request.protocolVersion();
     request.release();
     final var response = new DefaultFullHttpResponse(protocolVersion, HttpResponseStatus.FORBIDDEN);
     ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
