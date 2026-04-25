@@ -101,6 +101,7 @@ public final class OriginValidationHandler extends ChannelInboundHandlerAdapter 
    * @param newOrigins the new list of allowed origins
    */
   public void reloadOrigins(final List<String> newOrigins) {
+    Objects.requireNonNull(newOrigins, "newOrigins");
     this.allowedOrigins = Set.copyOf(newOrigins);
     LOG.info("Origin whitelist reloaded: {} origins", newOrigins.size());
   }

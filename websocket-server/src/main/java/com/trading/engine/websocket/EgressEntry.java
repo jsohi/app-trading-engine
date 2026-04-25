@@ -1,6 +1,7 @@
 package com.trading.engine.websocket;
 
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
+import java.util.Objects;
 
 /**
  * Pre-allocated pool entry for buffering SBE messages between the Aeron egress thread and the Netty
@@ -46,6 +47,7 @@ public final class EgressEntry {
    */
   public void fill(
       final byte[] srcBytes, final int srcOffset, final int srcLength, final int templateId) {
+    Objects.requireNonNull(srcBytes, "srcBytes");
     System.arraycopy(srcBytes, srcOffset, bytes, 0, srcLength);
     this.length = srcLength;
     this.templateId = templateId;

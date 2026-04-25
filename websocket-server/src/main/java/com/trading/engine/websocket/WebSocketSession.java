@@ -1,6 +1,7 @@
 package com.trading.engine.websocket;
 
 import io.netty.channel.Channel;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -38,7 +39,7 @@ public final class WebSocketSession {
    */
   public WebSocketSession(final Channel channel, final long nowNs) {
     this.sessionId = UUID.randomUUID();
-    this.channel = channel;
+    this.channel = Objects.requireNonNull(channel, "channel");
     this.lastClientHeartbeatNs = nowNs;
   }
 
