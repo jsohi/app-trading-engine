@@ -59,12 +59,17 @@ public final class TransportDetector {
         final var channelClazz = Class.forName("io.netty.channel.epoll.EpollServerSocketChannel");
         final var bossGroup =
             (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(1);
-        final var workerGroup =
-            (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(workerThreads);
-        @SuppressWarnings("unchecked")
-        final var channelClass = (Class<? extends ServerChannel>) channelClazz;
-        LOG.info("Netty transport: epoll (Linux native), {} worker threads", workerThreads);
-        return new Result(bossGroup, workerGroup, channelClass, "epoll");
+        try {
+          final var workerGroup =
+              (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(workerThreads);
+          @SuppressWarnings("unchecked")
+          final var channelClass = (Class<? extends ServerChannel>) channelClazz;
+          LOG.info("Netty transport: epoll (Linux native), {} worker threads", workerThreads);
+          return new Result(bossGroup, workerGroup, channelClass, "epoll");
+        } catch (final Exception e) {
+          bossGroup.shutdownGracefully();
+          throw e;
+        }
       }
     } catch (final Exception e) {
       LOG.debug("Epoll not available: {}", e.getMessage());
@@ -79,21 +84,31 @@ public final class TransportDetector {
         final var channelClazz = Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel");
         final var bossGroup =
             (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(1);
-        final var workerGroup =
-            (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(workerThreads);
-        @SuppressWarnings("unchecked")
-        final var channelClass = (Class<? extends ServerChannel>) channelClazz;
-        LOG.info("Netty transport: kqueue (macOS native), {} worker threads", workerThreads);
-        return new Result(bossGroup, workerGroup, channelClass, "kqueue");
+        try {
+          final var workerGroup =
+              (EventLoopGroup) bossGroupClass.getConstructor(int.class).newInstance(workerThreads);
+          @SuppressWarnings("unchecked")
+          final var channelClass = (Class<? extends ServerChannel>) channelClazz;
+          LOG.info("Netty transport: kqueue (macOS native), {} worker threads", workerThreads);
+          return new Result(bossGroup, workerGroup, channelClass, "kqueue");
+        } catch (final Exception e) {
+          bossGroup.shutdownGracefully();
+          throw e;
+        }
       }
     } catch (final Exception e) {
       LOG.debug("KQueue not available: {}", e.getMessage());
     }
 
-    // Fallback: NIO
+    // Fallback: NIO. Wrap workerGroup creation in try-catch to close bossGroup on partial failure.
     final var bossGroup = new NioEventLoopGroup(1);
-    final var workerGroup = new NioEventLoopGroup(workerThreads);
-    LOG.info("Netty transport: NIO (Java fallback), {} worker threads", workerThreads);
-    return new Result(bossGroup, workerGroup, NioServerSocketChannel.class, "nio");
+    try {
+      final var workerGroup = new NioEventLoopGroup(workerThreads);
+      LOG.info("Netty transport: NIO (Java fallback), {} worker threads", workerThreads);
+      return new Result(bossGroup, workerGroup, NioServerSocketChannel.class, "nio");
+    } catch (final Exception e) {
+      bossGroup.shutdownGracefully();
+      throw e;
+    }
   }
 }

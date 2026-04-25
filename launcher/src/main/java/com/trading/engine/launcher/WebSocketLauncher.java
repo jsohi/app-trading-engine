@@ -67,10 +67,14 @@ public final class WebSocketLauncher {
 
     LOG.info("Launching WebSocket server: config={} aeronDir={}", configPath, aeronDir);
 
+    // Note: Netty ResourceLeakDetector level is set by the websocket-server module at
+    // startup (DISABLED in production). Tests override to PARANOID via @BeforeAll or JVM arg
+    // -Dio.netty.leakDetection.level=PARANOID.
+
     // 1. Config
     final var config = WebSocketServerConfig.fromYaml(configPath);
 
-    // 2. Metrics (uses WebSocketMetrics.createWithPrometheus() which owns the registry)
+    // 2. Metrics (uses WebSocketMetrics.createWithDefaults() — SimpleMeterRegistry for dev/test)
     final var metrics = WebSocketMetrics.createWithDefaults();
 
     // 3. Egress queues (MpscArrayQueue: Aeron → Netty, return: Netty → Aeron pool)
@@ -110,10 +114,26 @@ public final class WebSocketLauncher {
         new AeronEgressThread(clusterClient, egressQueue, metrics, config.egressQueueCapacity());
     egressThread.start();
 
-    // 9. Netty WebSocket server (binds port)
+    // 9. Netty WebSocket server (binds port). Wrap in try-catch to clean up the egress thread
+    // and cluster client on partial failure — they are already started and must be closed.
     final var server =
         new WebSocketServerMain(config, egressQueue, egressListener, sessionManager, metrics);
-    server.start();
+    try {
+      server.start();
+    } catch (final Exception ex) {
+      LOG.error("WebSocket server start failed — cleaning up egress thread and cluster client", ex);
+      try {
+        egressThread.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing AeronEgressThread during partial-failure cleanup", closeEx);
+      }
+      try {
+        clusterClient.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
+      }
+      throw ex;
+    }
 
     LOG.info(
         "WebSocket server launched: port={} queueCapacity={}",

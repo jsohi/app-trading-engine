@@ -125,20 +125,22 @@ public final class WebSocketEgressListener implements EgressListener {
     }
     final var entry = pool[--poolCount];
 
-    // Bounds check — truncate if message exceeds entry capacity
-    int copyLength = length;
-    if (copyLength > entry.bytes().length) {
+    // Bounds check — drop (not truncate) if message exceeds entry capacity. A truncated SBE
+    // message is corrupt and would cause decode failures downstream. Better to drop entirely.
+    if (length > entry.bytes().length) {
       LOG.warn(
-          "Egress message exceeds entry capacity ({} > {}) — truncating",
+          "Egress message exceeds entry capacity ({} > {}) — dropping",
           length,
           entry.bytes().length);
-      copyLength = entry.bytes().length;
+      pool[poolCount++] = entry;
+      metrics.messageDropped();
+      return;
     }
 
     // Copy raw SBE bytes (DirectBuffer only valid during this callback)
-    buffer.getBytes(offset, entry.bytes(), 0, copyLength);
+    buffer.getBytes(offset, entry.bytes(), 0, length);
     final int templateId = EgressEntry.extractTemplateId(entry.bytes(), 0);
-    entry.setMetadata(copyLength, templateId);
+    entry.setMetadata(length, templateId);
 
     // Enqueue for the Netty drain handler
     if (!queue.offer(entry)) {
@@ -211,7 +213,12 @@ public final class WebSocketEgressListener implements EgressListener {
    */
   public void returnToPool(final EgressEntry entry) {
     Objects.requireNonNull(entry, "entry");
-    returnQueue.offer(entry);
+    if (!returnQueue.offer(entry)) {
+      LOG.warn(
+          "Return queue full — pool entry leaked (templateId={}). This indicates the Aeron egress "
+              + "thread is not draining the return queue fast enough.",
+          entry.templateId());
+    }
   }
 
   /**

@@ -13,7 +13,6 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-import io.netty.util.ResourceLeakDetector;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.Objects;
@@ -99,16 +98,19 @@ public final class WebSocketServerMain implements AutoCloseable {
    * @throws Exception if TLS initialization or port binding fails
    */
   public void start() throws Exception {
-    // Production: disable leak detection (enabled as PARANOID in tests via JVM arg)
-    ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.DISABLED);
+    // Note: ResourceLeakDetector level should be set by the caller (TradingEngineLauncher or test
+    // harness) before starting the server. Tests use PARANOID via @BeforeAll; production uses
+    // DISABLED via the launcher. This avoids a JVM-wide side effect inside start().
 
     transport = TransportDetector.detect();
     final var sslCtx = buildSslContext();
     final var nanoClock = SystemNanoClock.INSTANCE;
 
-    // Create shared @Sharable handler instances once — reused across all channels
+    // Create shared @Sharable handler instances once — reused across all channels.
+    // ConnectionRateLimiter is NOT @Sharable — a new instance per channel, sharing thread-safe
+    // state.
     final var securityHeaderHandler = new SecurityHeaderHandler();
-    final var rateLimiter = new ConnectionRateLimiter(config, nanoClock);
+    final var rateLimiterState = new ConnectionRateLimiter.RateLimiterState(config, nanoClock);
     final var originValidator = new OriginValidationHandler(config);
 
     final var bootstrap = new ServerBootstrap();
@@ -135,7 +137,7 @@ public final class WebSocketServerMain implements AutoCloseable {
                     "ws-protocol",
                     new WebSocketServerProtocolHandler(
                         "/", null, false, 65_536, false, true, 30_000));
-                pipeline.addLast("rate-limiter", rateLimiter);
+                pipeline.addLast("rate-limiter", new ConnectionRateLimiter(rateLimiterState));
                 pipeline.addLast("origin-validator", originValidator);
                 // PR 3: JwtAuthHandler + WebSocketFrameDispatcher will be added here
               }
@@ -143,13 +145,26 @@ public final class WebSocketServerMain implements AutoCloseable {
 
     serverChannel = bootstrap.bind(config.port()).sync().channel();
 
-    // Schedule the drain handler on the worker event loop — single instance serves all channels
+    // Schedule the drain handler on the worker event loop — single instance serves all channels.
+    // Uses scheduleWithFixedDelay (not scheduleAtFixedRate) to prevent catch-up storms when a
+    // drain cycle takes longer than 1ms. The drain call is wrapped in a try-catch to prevent
+    // exceptions from killing the scheduled task.
     final var drainHandler =
         new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics);
     transport
         .workerGroup()
         .next()
-        .scheduleAtFixedRate(drainHandler::drain, 0, 1, TimeUnit.MILLISECONDS);
+        .scheduleWithFixedDelay(
+            () -> {
+              try {
+                drainHandler.drain();
+              } catch (final Exception e) {
+                LOG.error("Drain handler exception — task continues", e);
+              }
+            },
+            0,
+            1,
+            TimeUnit.MILLISECONDS);
 
     LOG.info(
         "WebSocket server started on port {} (transport={}, TLS 1.3, {})",

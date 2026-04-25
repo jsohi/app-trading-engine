@@ -77,6 +77,10 @@ public final class FrameParser {
   // Thread-local CRC32C for zero-alloc per-frame computation
   private static final ThreadLocal<CRC32C> CRC = ThreadLocal.withInitial(CRC32C::new);
 
+  // Thread-local 13-byte buffer for bulk CRC header computation (totalLength + seqNo + flags).
+  // Avoids byte-by-byte ByteBuf.getByte() loop, enabling HW-accelerated CRC32C via JDK intrinsic.
+  private static final ThreadLocal<byte[]> HEADER_BUF = ThreadLocal.withInitial(() -> new byte[13]);
+
   private FrameParser() {}
 
   /**
@@ -102,13 +106,13 @@ public final class FrameParser {
     out.writeLongLE(seqNo); // seqNo
     out.writeByte(FLAG_RELIABLE); // flags
 
-    // Compute CRC32C over header bytes (0..12) + payload
+    // Compute CRC32C over header bytes (0..12) + payload.
+    // Bulk copy into thread-local byte[] for HW-accelerated CRC32C via JDK intrinsic.
     final var crc = CRC.get();
     crc.reset();
-    // Header bytes 0..12 (totalLength + seqNo + flags = 13 bytes)
-    for (int i = startIndex; i < startIndex + 13; i++) {
-      crc.update(out.getByte(i));
-    }
+    final var headerBytes = HEADER_BUF.get();
+    out.getBytes(startIndex, headerBytes, 0, 13);
+    crc.update(headerBytes, 0, 13);
     crc.update(sbePayload, sbeOffset, sbeLength);
 
     out.writeIntLE((int) crc.getValue()); // CRC32C
@@ -138,11 +142,12 @@ public final class FrameParser {
     out.writeLongLE(seqNo);
     out.writeByte(flags);
 
+    // Bulk copy into thread-local byte[] for HW-accelerated CRC32C via JDK intrinsic.
     final var crc = CRC.get();
     crc.reset();
-    for (int i = startIndex; i < startIndex + 13; i++) {
-      crc.update(out.getByte(i));
-    }
+    final var headerBytes = HEADER_BUF.get();
+    out.getBytes(startIndex, headerBytes, 0, 13);
+    crc.update(headerBytes, 0, 13);
     crc.update(sbePayload, sbeOffset, sbeLength);
 
     out.writeIntLE((int) crc.getValue());

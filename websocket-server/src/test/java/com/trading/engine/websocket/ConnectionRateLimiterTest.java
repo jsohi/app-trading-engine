@@ -22,7 +22,7 @@ final class ConnectionRateLimiterTest {
 
   private final java.util.List<EmbeddedChannel> openChannels = new java.util.ArrayList<>();
   private ControllableNanoClock clock;
-  private ConnectionRateLimiter limiter;
+  private ConnectionRateLimiter.RateLimiterState state;
 
   @BeforeAll
   static void setLeakDetection() {
@@ -37,7 +37,7 @@ final class ConnectionRateLimiterTest {
             .perIpNewConnectionsPerSec(2)
             .globalNewConnectionsPerSec(3)
             .build();
-    limiter = new ConnectionRateLimiter(config, clock);
+    state = new ConnectionRateLimiter.RateLimiterState(config, clock);
   }
 
   @AfterEach
@@ -53,9 +53,25 @@ final class ConnectionRateLimiterTest {
     return ch;
   }
 
+  /** Create a new per-channel ConnectionRateLimiter backed by the shared state. */
+  private ConnectionRateLimiter newLimiter() {
+    return new ConnectionRateLimiter(state);
+  }
+
+  /**
+   * Create a new per-channel ConnectionRateLimiter backed by a given state.
+   *
+   * @param sharedState the shared rate limiter state
+   * @return a new handler instance
+   */
+  private static ConnectionRateLimiter newLimiter(
+      final ConnectionRateLimiter.RateLimiterState sharedState) {
+    return new ConnectionRateLimiter(sharedState);
+  }
+
   @Test
   void channelActive_withinGlobalLimit_passesThrough() {
-    final var channel = trackChannel(new EmbeddedChannel(limiter));
+    final var channel = trackChannel(new EmbeddedChannel(newLimiter()));
 
     assertTrue(
         channel.isActive(),
@@ -77,15 +93,15 @@ final class ConnectionRateLimiterTest {
             .globalNewConnectionsPerSec(3)
             .build();
     final var globalClock = new ControllableNanoClock(1_000_000_000L);
-    final var globalLimiter = new ConnectionRateLimiter(globalConfig, globalClock);
+    final var globalState = new ConnectionRateLimiter.RateLimiterState(globalConfig, globalClock);
 
-    // Consume all 3 global tokens
-    trackChannel(new EmbeddedChannel(globalLimiter));
-    trackChannel(new EmbeddedChannel(globalLimiter));
-    trackChannel(new EmbeddedChannel(globalLimiter));
+    // Consume all 3 global tokens (each channel gets its own handler instance)
+    trackChannel(new EmbeddedChannel(newLimiter(globalState)));
+    trackChannel(new EmbeddedChannel(newLimiter(globalState)));
+    trackChannel(new EmbeddedChannel(newLimiter(globalState)));
 
     // Fourth channel should be closed
-    final var excess = trackChannel(new EmbeddedChannel(globalLimiter));
+    final var excess = trackChannel(new EmbeddedChannel(newLimiter(globalState)));
 
     assertFalse(
         excess.isActive(),
@@ -101,21 +117,21 @@ final class ConnectionRateLimiterTest {
             .globalNewConnectionsPerSec(2)
             .build();
     final var refillClock = new ControllableNanoClock(1_000_000_000L);
-    final var refillLimiter = new ConnectionRateLimiter(refillConfig, refillClock);
+    final var refillState = new ConnectionRateLimiter.RateLimiterState(refillConfig, refillClock);
 
     // Exhaust all 2 tokens
-    trackChannel(new EmbeddedChannel(refillLimiter));
-    trackChannel(new EmbeddedChannel(refillLimiter));
+    trackChannel(new EmbeddedChannel(newLimiter(refillState)));
+    trackChannel(new EmbeddedChannel(newLimiter(refillState)));
 
     // Third connection should be rejected (tokens exhausted)
-    final var rejected = trackChannel(new EmbeddedChannel(refillLimiter));
+    final var rejected = trackChannel(new EmbeddedChannel(newLimiter(refillState)));
     assertFalse(rejected.isActive(), "Channel must be closed when tokens are exhausted");
 
     // Advance clock by 1 second to trigger refill
     refillClock.advanceSeconds(1);
 
     // After refill, a new connection should succeed
-    final var afterRefill = trackChannel(new EmbeddedChannel(refillLimiter));
+    final var afterRefill = trackChannel(new EmbeddedChannel(newLimiter(refillState)));
 
     assertTrue(
         afterRefill.isActive(),
