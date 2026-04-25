@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ResourceLeakDetector;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -17,8 +20,14 @@ import org.junit.jupiter.api.Test;
  */
 final class ConnectionRateLimiterTest {
 
+  private final java.util.List<EmbeddedChannel> openChannels = new java.util.ArrayList<>();
   private ControllableNanoClock clock;
   private ConnectionRateLimiter limiter;
+
+  @BeforeAll
+  static void setLeakDetection() {
+    ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.PARANOID);
+  }
 
   @BeforeEach
   void setUp() {
@@ -31,9 +40,22 @@ final class ConnectionRateLimiterTest {
     limiter = new ConnectionRateLimiter(config, clock);
   }
 
+  @AfterEach
+  void tearDown() {
+    for (final var ch : openChannels) {
+      ch.finishAndReleaseAll();
+    }
+    openChannels.clear();
+  }
+
+  private EmbeddedChannel trackChannel(final EmbeddedChannel ch) {
+    openChannels.add(ch);
+    return ch;
+  }
+
   @Test
   void channelActive_withinGlobalLimit_passesThrough() {
-    final var channel = new EmbeddedChannel(limiter);
+    final var channel = trackChannel(new EmbeddedChannel(limiter));
 
     assertTrue(
         channel.isActive(),
@@ -58,12 +80,12 @@ final class ConnectionRateLimiterTest {
     final var globalLimiter = new ConnectionRateLimiter(globalConfig, globalClock);
 
     // Consume all 3 global tokens
-    new EmbeddedChannel(globalLimiter);
-    new EmbeddedChannel(globalLimiter);
-    new EmbeddedChannel(globalLimiter);
+    trackChannel(new EmbeddedChannel(globalLimiter));
+    trackChannel(new EmbeddedChannel(globalLimiter));
+    trackChannel(new EmbeddedChannel(globalLimiter));
 
     // Fourth channel should be closed
-    final var excess = new EmbeddedChannel(globalLimiter);
+    final var excess = trackChannel(new EmbeddedChannel(globalLimiter));
 
     assertFalse(
         excess.isActive(),
@@ -82,18 +104,18 @@ final class ConnectionRateLimiterTest {
     final var refillLimiter = new ConnectionRateLimiter(refillConfig, refillClock);
 
     // Exhaust all 2 tokens
-    new EmbeddedChannel(refillLimiter);
-    new EmbeddedChannel(refillLimiter);
+    trackChannel(new EmbeddedChannel(refillLimiter));
+    trackChannel(new EmbeddedChannel(refillLimiter));
 
     // Third connection should be rejected (tokens exhausted)
-    final var rejected = new EmbeddedChannel(refillLimiter);
+    final var rejected = trackChannel(new EmbeddedChannel(refillLimiter));
     assertFalse(rejected.isActive(), "Channel must be closed when tokens are exhausted");
 
     // Advance clock by 1 second to trigger refill
     refillClock.advanceSeconds(1);
 
     // After refill, a new connection should succeed
-    final var afterRefill = new EmbeddedChannel(refillLimiter);
+    final var afterRefill = trackChannel(new EmbeddedChannel(refillLimiter));
 
     assertTrue(
         afterRefill.isActive(),

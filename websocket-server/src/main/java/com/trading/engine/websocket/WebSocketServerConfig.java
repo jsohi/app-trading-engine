@@ -278,7 +278,7 @@ public final class WebSocketServerConfig {
               "Config key '" + key + "' exceeds long range: " + value);
         }
         if (type == Integer.class) {
-          long longVal = n.longValue();
+          final long longVal = n.longValue();
           if (longVal < Integer.MIN_VALUE || longVal > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                 "Config key '" + key + "' overflows int range: " + longVal);

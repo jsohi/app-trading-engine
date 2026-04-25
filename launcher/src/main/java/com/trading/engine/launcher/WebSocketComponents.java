@@ -3,6 +3,7 @@ package com.trading.engine.launcher;
 import com.trading.engine.websocket.AeronEgressThread;
 import com.trading.engine.websocket.WebSocketClusterClient;
 import com.trading.engine.websocket.WebSocketServerMain;
+import java.util.Objects;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -39,9 +40,9 @@ public final class WebSocketComponents implements AutoCloseable {
       final WebSocketServerMain server,
       final AeronEgressThread egressThread,
       final WebSocketClusterClient clusterClient) {
-    this.server = server;
-    this.egressThread = egressThread;
-    this.clusterClient = clusterClient;
+    this.server = Objects.requireNonNull(server, "server");
+    this.egressThread = Objects.requireNonNull(egressThread, "egressThread");
+    this.clusterClient = Objects.requireNonNull(clusterClient, "clusterClient");
   }
 
   /**

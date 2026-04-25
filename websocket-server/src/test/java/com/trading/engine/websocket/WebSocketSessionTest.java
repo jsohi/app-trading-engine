@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ResourceLeakDetector;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -17,11 +19,16 @@ import org.junit.jupiter.api.Test;
  */
 final class WebSocketSessionTest {
 
+  @BeforeAll
+  static void setLeakDetection() {
+    ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.PARANOID);
+  }
+
   @Test
   void constructor_newSession_generatesUniqueSessionId() {
     final var channel1 = new EmbeddedChannel();
     final var channel2 = new EmbeddedChannel();
-    long nowNs = 1_000_000_000L;
+    final long nowNs = 1_000_000_000L;
 
     final var session1 = new WebSocketSession(channel1, nowNs);
     final var session2 = new WebSocketSession(channel2, nowNs);
@@ -30,6 +37,9 @@ final class WebSocketSessionTest {
     assertNotNull(session2.sessionId(), "Session ID must not be null");
     assertNotEquals(
         session1.sessionId(), session2.sessionId(), "Two sessions must have distinct UUIDs");
+
+    channel1.finishAndReleaseAll();
+    channel2.finishAndReleaseAll();
   }
 
   @Test
@@ -37,13 +47,15 @@ final class WebSocketSessionTest {
     final var channel = new EmbeddedChannel();
     final var session = new WebSocketSession(channel, 0L);
 
-    long first = session.nextReliableSeqNo();
-    long second = session.nextReliableSeqNo();
-    long third = session.nextReliableSeqNo();
+    final long first = session.nextReliableSeqNo();
+    final long second = session.nextReliableSeqNo();
+    final long third = session.nextReliableSeqNo();
 
     assertEquals(1L, first, "First sequence number must be 1");
     assertEquals(2L, second, "Second sequence number must be 2");
     assertEquals(3L, third, "Third sequence number must be 3");
+
+    channel.finishAndReleaseAll();
   }
 
   @Test
@@ -54,6 +66,8 @@ final class WebSocketSessionTest {
     session.userId("trader-42");
 
     assertEquals("trader-42", session.userId(), "userId must return the value that was set");
+
+    channel.finishAndReleaseAll();
   }
 
   @Test
@@ -64,12 +78,14 @@ final class WebSocketSessionTest {
     session.jti(987_654_321L);
 
     assertEquals(987_654_321L, session.jti(), "jti must return the value that was set");
+
+    channel.finishAndReleaseAll();
   }
 
   @Test
   void updateHeartbeat_newTimestamp_updatesLastHeartbeat() {
     final var channel = new EmbeddedChannel();
-    long initialNs = 1_000_000_000L;
+    final long initialNs = 1_000_000_000L;
     final var session = new WebSocketSession(channel, initialNs);
 
     assertEquals(
@@ -77,11 +93,13 @@ final class WebSocketSessionTest {
         session.lastClientHeartbeatNs(),
         "Initial heartbeat must equal the constructor timestamp");
 
-    long updatedNs = 5_000_000_000L;
+    final long updatedNs = 5_000_000_000L;
     session.updateHeartbeat(updatedNs);
 
     assertEquals(
         updatedNs, session.lastClientHeartbeatNs(), "Heartbeat must reflect the updated timestamp");
+
+    channel.finishAndReleaseAll();
   }
 
   @Test
@@ -92,7 +110,7 @@ final class WebSocketSessionTest {
     assertFalse(session.isDisconnected(), "New session must not be disconnected");
     assertEquals(0L, session.gracePeriodStartNs(), "Grace period must be 0 before disconnect");
 
-    long disconnectNs = 10_000_000_000L;
+    final long disconnectNs = 10_000_000_000L;
     session.markDisconnected(disconnectNs);
 
     assertTrue(session.isDisconnected(), "Session must be disconnected after markDisconnected");
@@ -100,6 +118,8 @@ final class WebSocketSessionTest {
         disconnectNs,
         session.gracePeriodStartNs(),
         "Grace period start must equal the disconnect timestamp");
+
+    channel.finishAndReleaseAll();
   }
 
   @Test
@@ -112,5 +132,7 @@ final class WebSocketSessionTest {
     session.replayInProgress(true);
 
     assertTrue(session.isReplayInProgress(), "Replay must be true after setting to true");
+
+    channel.finishAndReleaseAll();
   }
 }
