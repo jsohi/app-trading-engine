@@ -83,6 +83,8 @@ public final class WebSocketSessionManager {
    * @return the created session, or null if capacity is exceeded
    */
   public WebSocketSession tryRegister(final Channel channel) {
+    Objects.requireNonNull(channel, "channel");
+
     // Global limit
     if (sessions.size() >= config.maxConcurrentSessions()) {
       LOG.warn("Global session limit reached ({})", config.maxConcurrentSessions());
@@ -121,6 +123,9 @@ public final class WebSocketSessionManager {
    * @return true if the per-user limit allows this session, false if exceeded
    */
   public boolean setUserId(final WebSocketSession session, final String userId) {
+    Objects.requireNonNull(session, "session");
+    Objects.requireNonNull(userId, "userId");
+
     final int userCount = perUserCount.getOrDefault(userId, 0);
     if (userCount >= config.maxConnectionsPerUser()) {
       LOG.warn(
@@ -140,6 +145,8 @@ public final class WebSocketSessionManager {
    * @param channel the disconnected Netty channel
    */
   public void removeSession(final Channel channel) {
+    Objects.requireNonNull(channel, "channel");
+
     final long channelId = channel.id().hashCode();
     final var session = sessions.remove(channelId);
     if (session == null) {
@@ -177,6 +184,7 @@ public final class WebSocketSessionManager {
    * @return the session, or null if not found
    */
   public WebSocketSession findSession(final Channel channel) {
+    Objects.requireNonNull(channel, "channel");
     return sessions.get(channel.id().hashCode());
   }
 
@@ -189,6 +197,7 @@ public final class WebSocketSessionManager {
    * @param action the action to perform on each session
    */
   public void forEachSession(final Consumer<WebSocketSession> action) {
+    Objects.requireNonNull(action, "action");
     for (final WebSocketSession session : sessions.values()) {
       action.accept(session);
     }
