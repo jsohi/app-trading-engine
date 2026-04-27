@@ -169,22 +169,26 @@ public final class WebSocketSessionManager {
     // Decrement per-IP using the IP stored at registration time.
     // updateAndGet with Math.max(0, ...) prevents negative counters on double-removal.
     final var remoteAddr = session.remoteIp();
-    // Decrement per-IP count. Don't remove the counter from the map — a concurrent tryRegister
-    // could computeIfAbsent the same instance and increment it between our decrement and remove,
-    // causing the remove to delete a counter with a non-zero value (Gemini review G19).
-    // The AtomicInteger stays in the map with count 0 until the next connection from that IP.
-    final var ipCounter = perIpCount.get(remoteAddr);
-    if (ipCounter != null) {
-      ipCounter.updateAndGet(v -> Math.max(0, v - 1));
-    }
+    // Decrement per-IP count. Use computeIfPresent to atomically decrement and remove if zero,
+    // preventing both the G19 race (remove while another thread increments) and the unbounded
+    // growth of zero-count entries (Gemini R2-4). The lambda runs under the segment lock, so
+    // concurrent computeIfAbsent on the same key will see the removal atomically.
+    perIpCount.computeIfPresent(
+        remoteAddr,
+        (k, counter) -> {
+          final int remaining = counter.updateAndGet(v -> Math.max(0, v - 1));
+          return remaining > 0 ? counter : null; // remove entry when count reaches 0
+        });
 
-    // Decrement per-user (same pattern — don't remove counter from map)
+    // Decrement per-user (same atomic pattern)
     final var userId = session.userId();
     if (userId != null) {
-      final var userCounter = perUserCount.get(userId);
-      if (userCounter != null) {
-        userCounter.updateAndGet(v -> Math.max(0, v - 1));
-      }
+      perUserCount.computeIfPresent(
+          userId,
+          (k, counter) -> {
+            final int remaining = counter.updateAndGet(v -> Math.max(0, v - 1));
+            return remaining > 0 ? counter : null;
+          });
     }
 
     metrics.connectionClosed();

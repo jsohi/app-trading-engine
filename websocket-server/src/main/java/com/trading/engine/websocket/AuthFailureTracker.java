@@ -146,14 +146,19 @@ public final class AuthFailureTracker {
     return entries.size();
   }
 
-  /** Remove entries that have not had a failure in the last 5 minutes. */
+  /**
+   * Remove entries that have not had a failure in the last 5 minutes. Scans at most 2048 entries
+   * per call to bound CPU time on the Netty event loop under DDoS (Gemini R2-2).
+   */
   private void evictStaleEntries(final long nowNs) {
     final var it = entries.entrySet().iterator();
-    while (it.hasNext()) {
+    int scanned = 0;
+    while (it.hasNext() && scanned < 2048) {
       final var entry = it.next();
       if (nowNs - entry.getValue().lastFailureNs > STALE_THRESHOLD_NS) {
         it.remove();
       }
+      scanned++;
     }
   }
 

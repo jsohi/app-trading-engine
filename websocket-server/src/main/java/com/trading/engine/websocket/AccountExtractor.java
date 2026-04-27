@@ -68,6 +68,9 @@ public final class AccountExtractor {
    * @param length the total length of the SBE message
    * @return the trimmed account code, or {@code null} if the template has no account field or the
    *     payload is truncated. Returns an empty string if the account field is all NUL bytes.
+   *     <b>Drain handler contract:</b> when null is returned, the message has no account field and
+   *     account-level entitlement filtering is not applicable — the message should pass through
+   *     based on symbol/event-type filtering alone.
    */
   public static String extractAccountCode(
       final int templateId, final byte[] sbePayload, final int offset, final int length) {
