@@ -103,6 +103,11 @@ After convergence, produce a summary including:
 
 Write the full report to `docs/review-reports/APP-{N}-session-{date}.md`.
 
+6. **Session index** — append one-line entry to `docs/review-reports/INDEX.md`
+7. **Compliance history** — append scores to `docs/review-reports/compliance-history.json`
+8. **Session metrics** — wall time, iterations, agents spawned, Gemini rounds, commits
+9. **Conflict check** — if other PRs modify the same files, flag for merge ordering
+
 ## Rules You MUST Follow
 
 - **NEVER skip the orchestrator loop** — even if you think the code is perfect

@@ -28,8 +28,16 @@ These rules are non-negotiable and OVERRIDE any judgment about efficiency or sho
    commentLedger = []
    iteration = 0
    converged = false
+   startTime = now
+   agentsSpawned = 0
+   geminiRounds = 0
    ```
 3. Record the start time for the session report.
+4. **Record the rollback checkpoint** — save the current commit SHA so we can revert if the loop makes things worse:
+   ```bash
+   BASELINE_SHA=$(git rev-parse HEAD)
+   ```
+   If the loop hits max iterations without converging, offer to revert to this SHA.
 
 ## Step 1: Local Review (every iteration)
 
@@ -260,7 +268,39 @@ Generate the full report and write it to `docs/review-reports/APP-{N}-session-{d
 | E2E | {PASS/FAIL} | {time} | 3-node cluster + FIX validation |
 ```
 
-### 7c: Print Summary
+### 7c: Append to Session Report Index
+
+Append a one-line entry to `docs/review-reports/INDEX.md` (create if it doesn't exist):
+
+```markdown
+| {date} | APP-{N} | {iterations} | {total_comments} | {fixed}/{total} | {compliance_pct}% | [report](APP-{N}-session-{date}.md) |
+```
+
+### 7d: Track Cost and Duration
+
+Add to the session report:
+
+```markdown
+## Session Metrics
+- **Wall time:** {minutes}m {seconds}s
+- **Iterations:** {N}
+- **Agents spawned:** {count} (review: {N}, compliance: {N}, plan: {N})
+- **Gemini rounds:** {N}
+- **Commits:** {N}
+```
+
+### 7e: Save to Cross-Session Memory
+
+After each session, check if common patterns emerge. If the same finding type appeared in 3+ sessions, write a memory file:
+
+```
+File: ~/.claude/projects/{project}/memory/orchestrator_common_findings.md
+Content: Top recurring findings across sessions with file paths and fix patterns
+```
+
+This lets future `/review` runs prioritize checking patterns that commonly fail.
+
+### 7f: Print Summary
 
 Print the comment ledger and compliance dashboard to the conversation so the user sees it immediately.
 
@@ -286,3 +326,15 @@ The loop converges when a FULL pass through Steps 1-6 produces ZERO changes:
 - **Max commits per iteration:** 2 (one for local review fixes, one for Gemini fixes).
 - **E2E failure recovery:** Run `./gradlew e2eClean` before retrying E2E if the previous run failed (kills stale Aeron processes).
 - **Context management:** Keep the comment ledger as a compact markdown table. Summarize test output (pass/fail + failure count) rather than including raw logs.
+- **Rollback safety net:** If the loop hits max iterations without converging, show the user:
+  ```
+  ⚠ Orchestrator did not converge after 10 iterations.
+  Baseline: {BASELINE_SHA} ({baseline_commit_msg})
+  Current:  {HEAD_SHA}
+  Changes:  git diff {BASELINE_SHA}..HEAD --stat
+
+  Options:
+  1. Keep changes and review manually
+  2. Revert to baseline: git reset --hard {BASELINE_SHA}
+  ```
+  NEVER auto-revert — always ask the user. Show the diff stat so they can make an informed decision.
