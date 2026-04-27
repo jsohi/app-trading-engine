@@ -6,6 +6,7 @@ dependencies {
     implementation(platform(libs.netty.bom))
 
     implementation(project(":messages"))
+    implementation(project(":projections"))
     implementation(project(":query-service"))
 
     implementation(libs.aeron.client)
