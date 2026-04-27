@@ -13,7 +13,7 @@ package com.trading.engine.websocket;
  *
  * <p><b>Allocation.</b> All methods are zero-allocation. {@link #packHigh(byte[], int)} and {@link
  * #packLow(byte[], int)} pack from raw bytes. {@link #pack(String, long[])} packs directly from
- * String chars without intermediate byte arrays.
+ * String chars into the output array without intermediate byte arrays.
  *
  * @see AccountExtractor
  */
@@ -71,7 +71,7 @@ public final class AccountPacker {
    * to match SBE wire encoding, ensuring packed values from this method equal packed values
    * extracted from SBE payloads.
    *
-   * <p><b>Allocation.</b> Allocates a temporary byte array. Auth-time only, not hot path.
+   * <p><b>Allocation.</b> Zero-allocation — packs directly from String chars into the output array.
    *
    * @param accountCode the account code string (1-16 ASCII characters)
    * @param out a pre-allocated {@code long[2]} array; {@code out[0]} receives high, {@code out[1]}
@@ -80,6 +80,9 @@ public final class AccountPacker {
    *     contains non-ASCII characters
    */
   public static void pack(final String accountCode, final long[] out) {
+    if (out == null || out.length < 2) {
+      throw new IllegalArgumentException("out array must be non-null with length >= 2");
+    }
     if (accountCode == null || accountCode.isEmpty()) {
       throw new IllegalArgumentException("accountCode must not be null or empty");
     }
