@@ -6,7 +6,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -196,14 +195,20 @@ public final class WebSocketServerConfig {
     require(
         authFailureLockoutSeconds > 0,
         "authFailureLockoutSeconds must be > 0, got: " + authFailureLockoutSeconds);
-    // jwtAudience must be non-empty when issuerRegistry is configured (auth is enabled)
+    // jwtAudience and issuerRegistry must be configured together — one without the other
+    // indicates a misconfiguration (audience without issuers can never authenticate;
+    // issuers without audience creates a confused-deputy risk).
     require(
         issuerRegistry.isEmpty() || !jwtAudience.isBlank(),
         "jwtAudience must be non-blank when issuerRegistry is configured");
-    // All JWKS URIs must use HTTPS to prevent SSRF and MITM attacks
+    require(
+        jwtAudience.isBlank() || !issuerRegistry.isEmpty(),
+        "issuerRegistry must be non-empty when jwtAudience is configured");
+    // All JWKS URIs must use HTTPS to prevent SSRF and MITM attacks.
+    // regionMatches avoids String allocation from toLowerCase in the validation loop.
     for (final var entry : issuerRegistry.entrySet()) {
       require(
-          entry.getValue().toLowerCase(Locale.ROOT).startsWith("https://"),
+          entry.getValue().regionMatches(true, 0, "https://", 0, 8),
           "issuerRegistry entry '"
               + entry.getKey()
               + "' jwksUri must use https:// scheme, got: "
