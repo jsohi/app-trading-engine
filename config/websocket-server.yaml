@@ -1,0 +1,57 @@
+# WebSocket Server Configuration
+# See docs/websocket-architecture.md Section 6 for rationale.
+# Load via: -Dwebsocket.config.file=config/websocket-server.yaml
+
+# --- Server ---
+port: 8443
+maxConcurrentSessions: 256
+maxSubscriptionsPerClient: 100
+
+# --- Connection Limits (DDoS mitigation) ---
+maxConnectionsPerIp: 10
+maxConnectionsPerUser: 4
+perIpNewConnectionsPerSec: 10
+globalNewConnectionsPerSec: 256
+
+# --- Session ---
+sessionGracePeriodMs: 30000
+clientTimeoutMs: 20000
+
+# --- Replay Buffer (per-session, heap-based) ---
+replayBufferFrames: 4096
+replayBufferFrameSize: 1024
+
+# --- Rate Limits (per-user token bucket) ---
+commandsPerSecSustained: 50
+commandsBurst: 100
+subscriptionsPerSec: 5
+
+# --- Heartbeat ---
+heartbeatIntervalMs: 5000
+
+# --- Snapshot ---
+snapshotFragmentSizeBytes: 16384
+
+# --- TLS (BoringSSL, TLS 1.3) ---
+tlsCertPath: ""
+tlsKeyPath: ""
+cipherSuites:
+  - TLS_AES_256_GCM_SHA384
+  - TLS_CHACHA20_POLY1305_SHA256
+  - TLS_AES_128_GCM_SHA256
+
+# --- Security ---
+# Empty list rejects all origins (CSWSH protection). Add allowed origins for production.
+originsWhitelist: []
+maxRevokedJtis: 10000
+revocationTtlMinutes: 15
+
+# --- Backpressure (Netty WriteBufferWaterMark) ---
+writeBufferLowWaterMark: 131072
+writeBufferHighWaterMark: 262144
+egressQueueCapacity: 8192
+
+# --- Issuer Registry (JWT iss -> JWKS URL mapping) ---
+# issuerRegistry:
+#   my-issuer:
+#     jwksUri: https://auth.example.com/.well-known/jwks.json
