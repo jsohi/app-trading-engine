@@ -160,6 +160,40 @@ public final class SubscriptionFilter {
    *
    * @param packedSymbol the packed symbol to unsubscribe
    */
+  /**
+   * Add multiple subscriptions in a single batch. Rebuilds the snapshot only once at the end,
+   * avoiding O(N^2) snapshot rebuilds when subscribing to many symbols at once.
+   *
+   * @param packedSymbols array of packed symbols
+   * @param eventTypes parallel array of event type bitmasks
+   * @param count number of entries to process from the arrays
+   * @return the number of subscriptions successfully added
+   */
+  public int addSubscriptionsBatch(
+      final long[] packedSymbols, final int[] eventTypes, final int count) {
+    int added = 0;
+    for (int i = 0; i < count; i++) {
+      final int masked = eventTypes[i] & VALID_EVENT_TYPES_MASK;
+      if (masked == 0) {
+        continue;
+      }
+      if (!mutable.containsKey(packedSymbols[i]) && mutable.size() >= maxSubscriptions) {
+        break; // at capacity
+      }
+      mutable.put(packedSymbols[i], masked);
+      added++;
+    }
+    if (added > 0) {
+      publishSnapshot();
+    }
+    return added;
+  }
+
+  /**
+   * Remove a subscription for a symbol.
+   *
+   * @param packedSymbol the packed symbol to unsubscribe
+   */
   public void removeSubscription(final long packedSymbol) {
     if (mutable.containsKey(packedSymbol)) {
       mutable.remove(packedSymbol);

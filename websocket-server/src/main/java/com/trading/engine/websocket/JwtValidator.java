@@ -255,7 +255,11 @@ public final class JwtValidator implements AutoCloseable {
     try {
       return processor.process(signedJwt, null);
     } catch (final BadJWSException e) {
-      // Signature failure — retry once. RemoteJWKSet refreshes cache on next key selection.
+      // Signature failure — retry once. Note: RemoteJWKSet refreshes its cache on kid-not-found,
+      // not on bad-signature for the same kid. The retry is effective when the IdP has rotated to
+      // a new kid that isn't in the cached set. For same-kid rotation (key replacement), the
+      // retry may not help — this is a known limitation of nimbus 10.3. Full forced-refresh
+      // requires JWKSourceBuilder (nimbus 10.7+) or manual cache eviction.
       LOG.warn("JWT signature failed, retrying with refreshed JWKS: {}", e.getMessage());
       try {
         return processor.process(SignedJWT.parse(signedJwt.serialize()), null);
