@@ -64,6 +64,30 @@ Read every changed file in full. Check for these **blocking violations** — any
 
 9. **No direct wall-clock calls outside cluster** — flag `System.currentTimeMillis()`, `Instant.now()`, `LocalDateTime.now()`, `new Date()`, `System.nanoTime()` in any non-test module. Must use injected `EpochNanoClock` (epoch time) or `NanoClock` (monotonic time). Exception: test code.
 
+10. **`final var` for all reference-type local variables** — flag any local variable declaration in changed files that declares a reference type explicitly instead of using `var`. All reference-type locals must use `final var x = ...`.
+
+    Primitives (`int`, `long`, `byte`, `boolean`, `short`, `char`, `float`, `double`) MUST keep explicit types with `final` — explicit primitive types make zero-allocation intent self-documenting and prevent silent type drift if a return type changes from primitive to wrapper (which would introduce autoboxing per Rule #8).
+
+    **Violations (blocking):**
+    - `final String msg = ex.getMessage()` → should be `final var msg = ex.getMessage()`
+    - `String s = "hello"` → should be `final var s = "hello"`
+    - `final Map<Long, Order> map = ...` → should be `final var map = ...`
+    - `List<String> items = getItems()` → should be `final var items = getItems()`
+    - `Iterator<X> it = collection.iterator()` → should be `final var it = collection.iterator()`
+    - Any non-final local variable of reference type: `var x = ...` without `final`
+
+    **NOT violations (correct):**
+    - `final long price = decoder.price()` — primitive, explicit type required
+    - `final int count = 0` — primitive
+    - `final boolean active = true` — primitive
+    - `final var account = accountStore.get(id)` — already correct
+    - Method/constructor parameters (var not allowed in parameters by Java spec)
+    - Field declarations (var not allowed for fields by Java spec)
+    - Catch clause variables (`catch (final IOException ex)` — var not allowed)
+    - Enhanced for-each loop variables with primitives (`for (final long id : ids)`) — note: while the explicit type is correct per Rule #10, enhanced-for over Agrona primitive collections still causes autoboxing per Rule #8; use primitive iterators instead
+    - Cases where var genuinely cannot infer the correct type (null literal, diamond with ambiguous target, intersection types)
+    - Resource declarations in try-with-resources where the type is needed for clarity
+
 Report each violation with: file path, line number, the offending code, which rule it violates, and a suggested fix.
 
 ### Agent B: General Code Quality Review
