@@ -50,6 +50,7 @@ final class WebSocketSessionManagerTest {
             .maxConcurrentSessions(2)
             .maxConnectionsPerIp(1)
             .maxConnectionsPerUser(1)
+            .maxPendingAuth(2)
             .build();
     metrics = WebSocketMetrics.createWithDefaults();
     clock = new ControllableNanoClock(1_000_000_000L);
@@ -96,6 +97,7 @@ final class WebSocketSessionManagerTest {
             .maxConcurrentSessions(2)
             .maxConnectionsPerIp(10)
             .maxConnectionsPerUser(10)
+            .maxPendingAuth(2)
             .build();
     final var globalManager = new WebSocketSessionManager(globalConfig, metrics, clock);
 
@@ -124,6 +126,7 @@ final class WebSocketSessionManagerTest {
             .maxConcurrentSessions(10)
             .maxConnectionsPerIp(1)
             .maxConnectionsPerUser(10)
+            .maxPendingAuth(10)
             .build();
     final var ipManager = new WebSocketSessionManager(ipConfig, metrics, clock);
 
@@ -145,6 +148,7 @@ final class WebSocketSessionManagerTest {
             .maxConcurrentSessions(10)
             .maxConnectionsPerIp(10)
             .maxConnectionsPerUser(1)
+            .maxPendingAuth(10)
             .build();
     final var userManager = new WebSocketSessionManager(userConfig, metrics, clock);
 
@@ -210,6 +214,7 @@ final class WebSocketSessionManagerTest {
             .maxConcurrentSessions(10)
             .maxConnectionsPerIp(10)
             .maxConnectionsPerUser(10)
+            .maxPendingAuth(10)
             .build();
     final var countManager = new WebSocketSessionManager(countConfig, metrics, clock);
 

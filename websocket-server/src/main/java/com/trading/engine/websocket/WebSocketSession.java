@@ -35,6 +35,14 @@ public final class WebSocketSession {
   // Volatile: written by channel event loop at auth/re-auth time, read by drain handler event loop
   // during account entitlement checks via AccountExtractor.
   private volatile Set<String> entitledAccounts = Set.of();
+  // Packed representation of entitledAccounts for zero-allocation drain-path comparison.
+  // Format: [high0, low0, high1, low1, ...] — pairs of longs per account code.
+  // Volatile: published after entitledAccounts above (two separate volatile stores, not atomic;
+  // safe because no single code path reads both fields — Set<String> is used for cold-path
+  // String lookups, long[] is used exclusively by isEntitledAccount on the drain hot path).
+  private static final long[] EMPTY_PACKED_ACCOUNTS = new long[0];
+
+  private volatile long[] packedEntitledAccounts = EMPTY_PACKED_ACCOUNTS;
   private long reliableSeqCounter;
   private long lastClientCmdSeqNo;
   private long lastClientHeartbeatNs;
@@ -130,12 +138,46 @@ public final class WebSocketSession {
   }
 
   /**
-   * Set the entitled account codes after validation by {@link UserEntitlementService}.
+   * Set the entitled account codes after validation by {@link UserEntitlementService}. Also builds
+   * the packed {@code long[]} representation for zero-allocation drain-path comparison via {@link
+   * #isEntitledAccount(long, long)}.
    *
    * @param entitledAccounts unmodifiable set of validated active account codes
    */
   public void entitledAccounts(final Set<String> entitledAccounts) {
     this.entitledAccounts = Objects.requireNonNull(entitledAccounts, "entitledAccounts");
+
+    // Build packed representation: 2 longs per account (high + low)
+    final var packed = new long[entitledAccounts.size() * 2];
+    final var buf = new long[2];
+    int idx = 0;
+    for (final var code : entitledAccounts) {
+      AccountPacker.pack(code, buf);
+      packed[idx++] = buf[0];
+      packed[idx++] = buf[1];
+    }
+    this.packedEntitledAccounts = packed;
+  }
+
+  /**
+   * Zero-allocation account entitlement check for the drain hot path. Compares the packed account
+   * code against all entitled accounts using linear scan over packed {@code long} pairs.
+   *
+   * <p>Linear scan is optimal for 1-4 accounts (2-8 long comparisons) — faster than hash-based
+   * lookup due to no hashing overhead and L1 cache locality.
+   *
+   * @param high the packed high half (bytes 0-7) from {@link AccountPacker#packHigh}
+   * @param low the packed low half (bytes 8-15) from {@link AccountPacker#packLow}
+   * @return {@code true} if the account is in the entitled set
+   */
+  public boolean isEntitledAccount(final long high, final long low) {
+    final var packed = this.packedEntitledAccounts; // single volatile read
+    for (int i = 0; i < packed.length; i += 2) {
+      if (packed[i] == high && packed[i + 1] == low) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -217,6 +259,7 @@ public final class WebSocketSession {
       subscriptionFilter.clear();
     }
     entitledAccounts = Set.of();
+    packedEntitledAccounts = EMPTY_PACKED_ACCOUNTS;
   }
 
   /**

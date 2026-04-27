@@ -49,6 +49,49 @@ public final class AccountExtractor {
   private AccountExtractor() {}
 
   /**
+   * Extract the packed account code from a raw SBE message payload into a pre-allocated output
+   * array. Zero-allocation — suitable for the drain hot path.
+   *
+   * <p>Writes {@code out[0] = high} (bytes 0-7) and {@code out[1] = low} (bytes 8-15) of the
+   * account code field packed as little-endian longs via {@link AccountPacker}.
+   *
+   * @param templateId the SBE templateId from the message header
+   * @param sbePayload the raw SBE message bytes (header + body)
+   * @param offset the start offset of the SBE message within the byte array
+   * @param length the total length of the SBE message
+   * @param out a pre-allocated {@code long[2]} array to receive the packed account; not modified if
+   *     this method returns {@code false}
+   * @return {@code true} if the template has an account code field and the payload is not
+   *     truncated; {@code false} otherwise (out array is not modified)
+   */
+  public static boolean extractPackedAccount(
+      final int templateId,
+      final byte[] sbePayload,
+      final int offset,
+      final int length,
+      final long[] out) {
+
+    if (offset < 0 || length < 0 || offset > sbePayload.length) {
+      return false;
+    }
+
+    final int accountOffset = absoluteAccountOffset(templateId);
+    if (accountOffset < 0) {
+      return false;
+    }
+
+    if (accountOffset + ACCOUNT_CODE_LENGTH > length
+        || accountOffset + ACCOUNT_CODE_LENGTH > sbePayload.length - offset) {
+      return false;
+    }
+
+    final int absOffset = offset + accountOffset;
+    out[0] = AccountPacker.packHigh(sbePayload, absOffset);
+    out[1] = AccountPacker.packLow(sbePayload, absOffset);
+    return true;
+  }
+
+  /**
    * Extract the account code from a raw SBE message payload.
    *
    * <p>Returns {@code null} if:

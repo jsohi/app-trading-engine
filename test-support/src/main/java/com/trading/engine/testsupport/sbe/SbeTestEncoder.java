@@ -60,6 +60,8 @@ import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
 import com.trading.engine.messages.sbe.WebSocketGapRequestEncoder;
 import com.trading.engine.messages.sbe.WebSocketHeartbeatEncoder;
+import com.trading.engine.messages.sbe.WebSocketSubscribeEncoder;
+import com.trading.engine.messages.sbe.WebSocketUnsubscribeEncoder;
 import org.agrona.MutableDirectBuffer;
 
 /**
@@ -2333,6 +2335,73 @@ public final class SbeTestEncoder {
     final var header = new MessageHeaderEncoder();
     final var enc = new ReplayCompleteEncoder();
     enc.wrapAndApplyHeader(dst, offset, header);
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketSubscribeEncoder} (template 62) — browser-to-server subscribe request
+   * with a repeating group of symbol + eventTypes entries.
+   *
+   * <p>Each group entry is 12 bytes: 8-byte symbol (ASCII, NUL-padded) + 4-byte eventTypes bitmask.
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param symbols array of symbol strings (max 8 chars each)
+   * @param eventTypes parallel array of event type bitmasks as unsigned 32-bit values in {@code
+   *     long} to match SBE {@code uint32} convention (same length as symbols)
+   * @return total encoded length including SBE header
+   * @throws IllegalArgumentException if symbols and eventTypes have different lengths
+   */
+  public static int encodeWebSocketSubscribe(
+      final MutableDirectBuffer dst,
+      final int offset,
+      final String[] symbols,
+      final long[] eventTypes) {
+
+    if (symbols.length != eventTypes.length) {
+      throw new IllegalArgumentException(
+          "symbols and eventTypes must have the same length: "
+              + symbols.length
+              + " vs "
+              + eventTypes.length);
+    }
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketSubscribeEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    final var group = enc.symbolsCount(symbols.length);
+    for (int i = 0; i < symbols.length; i++) {
+      group.next().symbol(symbols[i]).eventTypes(eventTypes[i]);
+    }
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a {@link WebSocketUnsubscribeEncoder} (template 63) — browser-to-server unsubscribe
+   * request with a repeating group of symbol entries.
+   *
+   * <p>Each group entry is 8 bytes: 8-byte symbol (ASCII, NUL-padded). An empty array encodes an
+   * "unsubscribe all" request (group count = 0).
+   *
+   * @param dst destination buffer
+   * @param offset byte offset within {@code dst}
+   * @param symbols array of symbol strings to unsubscribe; empty array means unsubscribe all
+   * @return total encoded length including SBE header
+   */
+  public static int encodeWebSocketUnsubscribe(
+      final MutableDirectBuffer dst, final int offset, final String[] symbols) {
+
+    final var header = new MessageHeaderEncoder();
+    final var enc = new WebSocketUnsubscribeEncoder();
+    enc.wrapAndApplyHeader(dst, offset, header);
+
+    final var group = enc.symbolsCount(symbols.length);
+    for (final var symbol : symbols) {
+      group.next().symbol(symbol);
+    }
 
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
