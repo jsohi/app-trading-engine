@@ -42,11 +42,11 @@ After implementation is complete, run the FULL orchestrator loop. This is NOT op
    - This spawns 2 fresh agents (Constraint Checker + Code Quality) on ALL changes.
    - Collect all findings. Fix ALL of them.
 
-2. **Test Suites:** Run all 3 sequentially:
+2. **Test Suites — ALL THREE, NO EXCEPTIONS:** Run all 3 sequentially. Never skip. Never claim "already passing." Execute each and report actual results.
    ```bash
-   ./gradlew test
-   ./gradlew :integration-tests:test
-   ./gradlew e2e
+   ./gradlew test                        # Unit tests — MANDATORY
+   ./gradlew :integration-tests:test     # Integration — MANDATORY
+   ./gradlew e2e                         # Full E2E — MANDATORY
    ```
    If any fail, fix and restart from step 1.
 

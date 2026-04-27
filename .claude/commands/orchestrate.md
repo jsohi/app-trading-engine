@@ -55,9 +55,9 @@ Collect all findings. For each finding, append to the comment ledger:
 
 If there are findings: fix ALL of them (edit the files), then run `./gradlew spotlessApply`.
 
-## Step 2: Test Suites
+## Step 2: Test Suites — ALL THREE, NO EXCEPTIONS
 
-Run all 3 test suites sequentially:
+**MANDATORY: Run ALL 3 test suites EVERY iteration. No exceptions. No "already passing." No "UP-TO-DATE means skip." No "only markdown changed." Execute each command and report the actual result.**
 
 ```bash
 ./gradlew test
@@ -73,6 +73,8 @@ If failures: fix them, add to ledger (source: "IntegrationTest"), run `./gradlew
 ./gradlew e2e
 ```
 If failures: first run `./gradlew e2eClean`, then retry. If still failing, fix, add to ledger (source: "E2E"), commit, and **restart from Step 1**.
+
+**NEVER skip any suite. NEVER claim a suite was "already run." Execute all three and report pass/fail with actual output.**
 
 ## Step 3: Formatting
 

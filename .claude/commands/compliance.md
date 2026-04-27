@@ -146,6 +146,14 @@ For every file in hot-path modules, check for:
 - `String.format`, `String.getBytes`, `Arrays.asList`, `List.of`, `Map.of`, `Set.of`
 - `stream()`, `collect()`, `.map()`, `.filter()`, `Optional.of()`
 - Lambda expressions that capture local variables (allocate a closure)
+- **Garbage-creating iterator patterns:**
+  - Enhanced for-each (`for (var x : collection)`) — allocates Iterator
+  - `collection.iterator()` — allocates Iterator (use index-based or Agrona reusable)
+  - `Iterable.forEach(lambda)` — allocates closure if capturing locals
+  - `Map.entrySet()` — allocates Entry wrappers per iteration
+  - `String.split()`, `Pattern.compile()` on hot path
+  - `toArray()`, `Arrays.copyOf()`, `Arrays.stream()`
+  - Varargs calls (`method(T... args)`) — allocate Object[] per invocation
 Report: total hot-path methods, methods with violations, compliance %.
 
 AUTOBOXING CHECK:
