@@ -1,11 +1,24 @@
 package com.trading.engine.websocket;
 
+import com.trading.engine.messages.sbe.ClientAckDecoder;
+import com.trading.engine.messages.sbe.ClientHeartbeatDecoder;
+import com.trading.engine.messages.sbe.MessageHeaderDecoder;
+import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.sbe.WebSocketAuthDecoder;
+import com.trading.engine.messages.sbe.WebSocketErrorCode;
+import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
+import com.trading.engine.messages.sbe.WebSocketSubscribeDecoder;
+import com.trading.engine.messages.sbe.WebSocketUnsubscribeDecoder;
+import com.trading.engine.projections.SymbolPacker;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
+import java.nio.charset.StandardCharsets;
+import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -29,8 +42,9 @@ import org.apache.logging.log4j.Logger;
  * <p><b>Threading.</b> Per-channel instance, NOT {@code @Sharable}. Runs on the channel's Netty
  * event loop thread only. SBE decoders are reusable fields re-wrapped per {@code channelRead}.
  *
- * <p><b>Allocation.</b> SBE decoders reused per-channel. {@link org.agrona.concurrent.UnsafeBuffer}
- * wraps {@code ByteBuf.nioBuffer()} — zero-copy, valid only within {@code channelRead} scope.
+ * <p><b>Allocation.</b> SBE decoders reused per-channel. {@link UnsafeBuffer} wraps {@code
+ * ByteBuf.nioBuffer()} — zero-copy, valid only within {@code channelRead} scope. Response encoding
+ * uses a pre-allocated {@link ExpandableArrayBuffer}.
  *
  * @see JwtAuthHandler
  * @see <a href="docs/websocket-architecture.md">WebSocket Architecture — Section 3</a>
@@ -39,6 +53,9 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
 
   private static final Logger LOG = LogManager.getLogger(WebSocketFrameDispatcher.class);
 
+  /** Close channel after this many consecutive unknown templateIds. */
+  private static final int MAX_CONSECUTIVE_UNKNOWN = 3;
+
   private final WebSocketSessionManager sessionManager;
   private final JwtValidator jwtValidator;
   private final JtiRevocationCache jtiCache;
@@ -46,6 +63,20 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final WebSocketServerConfig config;
   private final WebSocketMetrics metrics;
   private final NanoClock nanoClock;
+
+  // --- Reusable SBE decoders (per-channel, re-wrapped per channelRead) ---
+  private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
+  private final WebSocketSubscribeDecoder subscribeDecoder = new WebSocketSubscribeDecoder();
+  private final WebSocketUnsubscribeDecoder unsubscribeDecoder = new WebSocketUnsubscribeDecoder();
+  private final WebSocketAuthDecoder authDecoder = new WebSocketAuthDecoder();
+  private final ClientHeartbeatDecoder heartbeatDecoder = new ClientHeartbeatDecoder();
+  private final ClientAckDecoder ackDecoder = new ClientAckDecoder();
+  private final UnsafeBuffer wrapBuffer = new UnsafeBuffer(new byte[0]);
+  private final ExpandableArrayBuffer responseBuf = new ExpandableArrayBuffer(128);
+  private final byte[] symbolDecodeBuffer = new byte[8];
+
+  // --- Per-channel mutable state ---
+  private int consecutiveUnknownCount;
 
   /**
    * Create a per-channel frame dispatcher.
@@ -75,23 +106,241 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     this.nanoClock = nanoClock;
   }
 
-  // TODO(APP-35): Full routing implementation in Phase B2.
-  // This stub ensures JwtAuthHandler compiles and can dynamically add the dispatcher.
-
   @Override
   public void channelRead(final ChannelHandlerContext ctx, final Object msg) {
+    // TextWebSocketFrame: release to prevent ByteBuf leak, log warning
     if (msg instanceof TextWebSocketFrame) {
-      // TextWebSocketFrame: release to prevent ByteBuf leak, log warning
       ReferenceCountUtil.release(msg);
       LOG.warn("TextWebSocketFrame received post-auth — not supported, releasing");
+      consecutiveUnknownCount++;
+      if (consecutiveUnknownCount >= MAX_CONSECUTIVE_UNKNOWN) {
+        LOG.warn("Closing channel after {} consecutive unknown frames", consecutiveUnknownCount);
+        ctx.close();
+      }
       return;
     }
-    if (!(msg instanceof BinaryWebSocketFrame)) {
+
+    if (!(msg instanceof BinaryWebSocketFrame frame)) {
       ReferenceCountUtil.release(msg);
       return;
     }
-    // Stub: release frame — full routing implemented in Phase B2
-    ReferenceCountUtil.release(msg);
+
+    try {
+      // Null session guard — session may have been deregistered by timeout/admin
+      final var session = sessionManager.findSession(ctx.channel());
+      if (session == null) {
+        return;
+      }
+
+      final var content = frame.content();
+      if (content.readableBytes() < MessageHeaderDecoder.ENCODED_LENGTH) {
+        LOG.warn("Frame too small for SBE header: {} bytes", content.readableBytes());
+        return;
+      }
+
+      // Wrap ByteBuf in UnsafeBuffer — zero-copy, valid only within this channelRead scope
+      wrapBuffer.wrap(content.nioBuffer());
+      headerDecoder.wrap(wrapBuffer, 0);
+
+      final int templateId = headerDecoder.templateId();
+      final int blockLength = headerDecoder.blockLength();
+      final int version = headerDecoder.version();
+
+      boolean known = true;
+      switch (templateId) {
+        case 60 -> handleReAuth(ctx, session, blockLength, version);
+        case 62 -> handleSubscribe(session, blockLength, version);
+        case 63 -> handleUnsubscribe(session, blockLength, version);
+        case 65 -> handleClientHeartbeat(session, blockLength, version);
+        case 68 -> handleGapRequest(ctx);
+        case 69 -> handleSessionResume(ctx);
+        case 71 -> handleClientAck(session, blockLength, version);
+        default -> {
+          known = false;
+          consecutiveUnknownCount++;
+          LOG.warn("Unknown templateId={} from session={}", templateId, session.sessionId());
+          if (consecutiveUnknownCount >= MAX_CONSECUTIVE_UNKNOWN) {
+            LOG.warn(
+                "Closing channel after {} consecutive unknown templateIds",
+                consecutiveUnknownCount);
+            ctx.close();
+          }
+        }
+      }
+
+      if (known) {
+        consecutiveUnknownCount = 0;
+      }
+    } finally {
+      frame.release();
+    }
+  }
+
+  // --- Template handlers ---
+
+  private void handleReAuth(
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final int blockLength,
+      final int version) {
+    authDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+
+    final int tokenLen = authDecoder.tokenLength();
+    final var tokenBytes = new byte[tokenLen];
+    authDecoder.getToken(tokenBytes, 0, tokenLen);
+    final var tokenString = new String(tokenBytes, StandardCharsets.UTF_8);
+
+    try {
+      final var claims = jwtValidator.validate(tokenString);
+
+      // Verify sub matches existing session — prevents session hijacking
+      if (!claims.sub().equals(session.userId())) {
+        LOG.warn("Re-auth sub mismatch: session={}, token sub={}", session.userId(), claims.sub());
+        sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+        return; // Do NOT close — existing session continues with old token
+      }
+
+      // Check new JTI is not revoked
+      if (jtiCache.isRevoked(claims.jti())) {
+        LOG.warn("Re-auth with revoked JTI for userId={}", session.userId());
+        sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+        return;
+      }
+
+      // Revoke old JTI
+      final var oldJti = session.jti();
+      if (oldJti != null && !oldJti.isEmpty()) {
+        jtiCache.revoke(oldJti);
+      }
+
+      // Refresh entitlements
+      final var validatedAccounts = entitlementService.validateAccounts(claims.accounts());
+      if (validatedAccounts.isEmpty()) {
+        LOG.warn("Re-auth: all accounts invalid for userId={}", session.userId());
+        sendError(ctx, WebSocketErrorCode.AuthorizationFailed);
+        return;
+      }
+
+      // Update session
+      session.jti(claims.jti());
+      session.entitledAccounts(validatedAccounts);
+
+      LOG.info("Re-auth success: userId={}", session.userId());
+    } catch (final JwtValidator.JwtValidationException e) {
+      LOG.warn("Re-auth JWT validation failed: {}", e.getMessage());
+      sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+    }
+  }
+
+  private void handleSubscribe(
+      final WebSocketSession session, final int blockLength, final int version) {
+    subscribeDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+
+    final var filter = session.subscriptionFilter();
+    if (filter == null) {
+      return; // pre-auth — should not happen since dispatcher is post-auth
+    }
+
+    final var symbols = subscribeDecoder.symbols();
+    while (symbols.hasNext()) {
+      symbols.next();
+      // Extract 8-byte symbol and pack into long
+      for (int i = 0; i < 8; i++) {
+        symbolDecodeBuffer[i] = symbols.symbol(i);
+      }
+      final long packedSymbol = SymbolPacker.pack(symbolDecodeBuffer, 0);
+
+      // Mask eventTypes to valid bits only (0x1F = bits 0-4)
+      final long eventTypes = symbols.eventTypes() & 0x1FL;
+
+      if (!filter.addSubscription(packedSymbol, (int) eventTypes)) {
+        LOG.debug(
+            "Subscription limit reached ({}) for session={}",
+            config.maxSubscriptionsPerClient(),
+            session.sessionId());
+        break; // partial accept — stop adding, keep what was added
+      }
+    }
+    LOG.debug("Subscribe: {} symbols for session={}", symbols.count(), session.sessionId());
+  }
+
+  private void handleUnsubscribe(
+      final WebSocketSession session, final int blockLength, final int version) {
+    unsubscribeDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+
+    final var filter = session.subscriptionFilter();
+    if (filter == null) {
+      return;
+    }
+
+    final var symbols = unsubscribeDecoder.symbols();
+    if (symbols.count() == 0) {
+      // Empty symbols group = unsubscribe all
+      filter.clear();
+      LOG.debug("Unsubscribe all for session={}", session.sessionId());
+      return;
+    }
+
+    while (symbols.hasNext()) {
+      symbols.next();
+      for (int i = 0; i < 8; i++) {
+        symbolDecodeBuffer[i] = symbols.symbol(i);
+      }
+      final long packedSymbol = SymbolPacker.pack(symbolDecodeBuffer, 0);
+      filter.removeSubscription(packedSymbol);
+    }
+    LOG.debug("Unsubscribe: {} symbols for session={}", symbols.count(), session.sessionId());
+  }
+
+  private void handleClientHeartbeat(
+      final WebSocketSession session, final int blockLength, final int version) {
+    heartbeatDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+    session.updateHeartbeat(nanoClock.nanoTime());
+  }
+
+  private void handleGapRequest(final ChannelHandlerContext ctx) {
+    // TODO(APP-35): implement with ReliableStreamTracker in PR 4
+    LOG.warn("GapRequest received but not yet implemented");
+    sendError(ctx, WebSocketErrorCode.CommandRejected);
+  }
+
+  private void handleSessionResume(final ChannelHandlerContext ctx) {
+    // TODO(APP-35): implement session resume in PR 4
+    LOG.warn("SessionResume received but not yet implemented");
+    sendError(ctx, WebSocketErrorCode.CommandRejected);
+  }
+
+  private void handleClientAck(
+      final WebSocketSession session, final int blockLength, final int version) {
+    ackDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+    session.lastClientCmdSeqNo(ackDecoder.lastReceivedSeqNo());
+  }
+
+  // --- Response helpers ---
+
+  private void sendError(final ChannelHandlerContext ctx, final WebSocketErrorCode errorCode) {
+    if (!ctx.channel().isActive()) {
+      return;
+    }
+    final var errorText = ErrorTextRegistry.textFor(errorCode);
+    final var enc = new WebSocketErrorEncoder();
+    final var header = new MessageHeaderEncoder();
+    enc.wrapAndApplyHeader(responseBuf, 0, header);
+    enc.errorCode(errorCode);
+    enc.putErrorText(errorText, 0, errorText.length);
+
+    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final var nettyBuf = ctx.alloc().buffer(encodedLen);
+    boolean written = false;
+    try {
+      nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
+      ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
+      written = true;
+    } finally {
+      if (!written) {
+        nettyBuf.release();
+      }
+    }
   }
 
   @Override
