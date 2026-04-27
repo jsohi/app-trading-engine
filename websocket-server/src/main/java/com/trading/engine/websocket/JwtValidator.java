@@ -1,7 +1,6 @@
 package com.trading.engine.websocket;
 
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.jwk.source.RemoteJWKSet;
 import com.nimbusds.jose.proc.BadJOSEException;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
@@ -14,7 +13,6 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.text.ParseException;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,9 +98,9 @@ public final class JwtValidator implements AutoCloseable {
     this.expectedAudience = expectedAudience;
     this.processors = new ConcurrentHashMap<>();
 
-    for (final Map.Entry<String, String> entry : issuerRegistry.entrySet()) {
-      final String issuer = entry.getKey();
-      final String jwksUrl = entry.getValue();
+    for (final var entry : issuerRegistry.entrySet()) {
+      final var issuer = entry.getKey();
+      final var jwksUrl = entry.getValue();
 
       if (!jwksUrl.startsWith("https://")) {
         throw new IllegalArgumentException(
@@ -156,7 +154,7 @@ public final class JwtValidator implements AutoCloseable {
     }
 
     // Reject non-RS256 algorithms (alg:none, HS256, ES256, etc.)
-    final JWSHeader header = signedJwt.getHeader();
+    final var header = signedJwt.getHeader();
     if (!JWSAlgorithm.RS256.equals(header.getAlgorithm())) {
       throw new JwtValidationException(
           "Unsupported algorithm: " + header.getAlgorithm() + " (only RS256 is accepted)");
@@ -178,7 +176,7 @@ public final class JwtValidator implements AutoCloseable {
       throw new JwtValidationException("Missing iss claim");
     }
 
-    final DefaultJWTProcessor<SecurityContext> processor = processors.get(issuer);
+    final var processor = processors.get(issuer);
     if (processor == null) {
       throw new JwtValidationException("Unknown issuer: " + issuer);
     }
@@ -194,7 +192,7 @@ public final class JwtValidator implements AutoCloseable {
     }
 
     // Validate iat (issued-at): reject tokens issued more than 15 minutes ago or too far in future
-    final Date iat = claims.getIssueTime();
+    final var iat = claims.getIssueTime();
     if (iat == null) {
       throw new JwtValidationException("Missing iat claim");
     }
@@ -210,18 +208,18 @@ public final class JwtValidator implements AutoCloseable {
     }
 
     // Extract required claims
-    final String sub = claims.getSubject();
+    final var sub = claims.getSubject();
     if (sub == null || sub.isEmpty()) {
       throw new JwtValidationException("Missing or empty sub claim");
     }
 
-    final String jti = claims.getJWTID();
+    final var jti = claims.getJWTID();
     if (jti == null || jti.isEmpty()) {
       throw new JwtValidationException("Missing or empty jti claim");
     }
 
     // Extract accounts claim (custom claim, List<String>)
-    final List<String> accounts = extractAccountsClaim(claims);
+    final var accounts = extractAccountsClaim(claims);
     if (accounts.isEmpty()) {
       throw new JwtValidationException("Missing or empty accounts claim");
     }
@@ -284,7 +282,7 @@ public final class JwtValidator implements AutoCloseable {
    */
   @SuppressWarnings("unchecked")
   private static List<String> extractAccountsClaim(final JWTClaimsSet claims) {
-    final Object raw = claims.getClaim("accounts");
+    final var raw = claims.getClaim("accounts");
     if (raw instanceof List<?> list) {
       final var result = new ArrayList<String>(list.size());
       for (final Object item : list) {

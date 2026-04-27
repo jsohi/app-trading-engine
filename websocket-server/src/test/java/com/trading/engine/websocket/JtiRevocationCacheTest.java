@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -202,21 +203,17 @@ final class JtiRevocationCacheTest {
 
   @Test
   void constructor_invalidCapacity_throws() {
-    try {
-      new JtiRevocationCache(0, 15, testClock);
-      throw new AssertionError("Expected IllegalArgumentException");
-    } catch (final IllegalArgumentException e) {
-      assertTrue(e.getMessage().contains("maxCapacity"));
-    }
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class, () -> new JtiRevocationCache(0, 15, testClock));
+    assertTrue(ex.getMessage().contains("maxCapacity"));
   }
 
   @Test
   void constructor_invalidTtl_throws() {
-    try {
-      new JtiRevocationCache(1000, 0, testClock);
-      throw new AssertionError("Expected IllegalArgumentException");
-    } catch (final IllegalArgumentException e) {
-      assertTrue(e.getMessage().contains("revocationTtlMinutes"));
-    }
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class, () -> new JtiRevocationCache(1000, 0, testClock));
+    assertTrue(ex.getMessage().contains("revocationTtlMinutes"));
   }
 }

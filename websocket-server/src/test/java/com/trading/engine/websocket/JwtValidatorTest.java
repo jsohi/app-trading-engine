@@ -20,6 +20,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
+import com.trading.engine.messages.clock.TradingClocks;
 import java.time.Instant;
 import java.util.Date;
 import java.util.HashSet;
@@ -65,7 +66,7 @@ final class JwtValidatorTest {
     assertEquals("user-001", claims.sub());
     assertNotNull(claims.jti());
     assertEquals(List.of("ACME-001", "HEDGE-002"), claims.accounts());
-    assertTrue(claims.expiryEpochSec() > Instant.now().getEpochSecond());
+    assertTrue(claims.expiryEpochSec() > nowFromTestClock().getEpochSecond());
   }
 
   // --- Algorithm rejection ---
@@ -112,9 +113,9 @@ final class JwtValidatorTest {
         new JWTClaimsSet.Builder()
             .issuer(ISSUER)
             .audience(AUDIENCE)
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -134,9 +135,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .claim("accounts", List.of("ACME-001"))
             .build();
 
@@ -155,9 +156,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .build();
 
@@ -176,9 +177,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of())
             .build();
@@ -200,9 +201,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().minusSeconds(60)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(900)))
-            .issueTime(Date.from(Instant.now().minusSeconds(900)))
+            .expirationTime(Date.from(nowFromTestClock().minusSeconds(60)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(900)))
+            .issueTime(Date.from(nowFromTestClock().minusSeconds(900)))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -221,9 +222,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(1800)))
-            .issueTime(Date.from(Instant.now().minusSeconds(1800)))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(1800)))
+            .issueTime(Date.from(nowFromTestClock().minusSeconds(1800)))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -245,9 +246,9 @@ final class JwtValidatorTest {
             .issuer("https://unknown-issuer.test")
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -285,9 +286,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().minusSeconds(3)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(600)))
-            .issueTime(Date.from(Instant.now().minusSeconds(600)))
+            .expirationTime(Date.from(nowFromTestClock().minusSeconds(3)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(600)))
+            .issueTime(Date.from(nowFromTestClock().minusSeconds(600)))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -306,9 +307,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", "SINGLE-ACCT")
             .build();
@@ -326,9 +327,9 @@ final class JwtValidatorTest {
         new JWTClaimsSet.Builder()
             .audience(AUDIENCE)
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -350,9 +351,9 @@ final class JwtValidatorTest {
             .issuer(ISSUER)
             .audience("https://wrong-service.test") // wrong audience
             .subject("user-001")
-            .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-            .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-            .issueTime(Date.from(Instant.now()))
+            .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+            .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+            .issueTime(Date.from(nowFromTestClock()))
             .jwtID(UUID.randomUUID().toString())
             .claim("accounts", List.of("ACME-001"))
             .build();
@@ -397,9 +398,17 @@ final class JwtValidatorTest {
 
   // --- Helpers ---
 
-  /** Test clock returning real epoch nanos — acceptable for non-timing-critical tests. */
-  private static final EpochNanoClock TEST_CLOCK =
-      () -> TimeUnit.MILLISECONDS.toNanos(System.currentTimeMillis());
+  /** Project epoch clock — used by both JwtValidator and claim construction for consistency. */
+  private static final EpochNanoClock TEST_CLOCK = TradingClocks.epochNanoClock();
+
+  /**
+   * Derive an Instant from the same clock source as TEST_CLOCK, ensuring claim construction and
+   * validation use the same time reference. Eliminates timing sensitivity from clock drift between
+   * nowFromTestClock() and TEST_CLOCK.
+   */
+  private static Instant nowFromTestClock() {
+    return Instant.ofEpochSecond(TimeUnit.NANOSECONDS.toSeconds(TEST_CLOCK.nanoTime()));
+  }
 
   /** Build a JwtValidator using the package-private factory with an ImmutableJWKSet (no HTTP). */
   private static JwtValidator buildTestValidator() {
@@ -437,9 +446,9 @@ final class JwtValidatorTest {
         .issuer(ISSUER)
         .audience(AUDIENCE)
         .subject("user-001")
-        .expirationTime(Date.from(Instant.now().plusSeconds(900)))
-        .notBeforeTime(Date.from(Instant.now().minusSeconds(10)))
-        .issueTime(Date.from(Instant.now()))
+        .expirationTime(Date.from(nowFromTestClock().plusSeconds(900)))
+        .notBeforeTime(Date.from(nowFromTestClock().minusSeconds(10)))
+        .issueTime(Date.from(nowFromTestClock()))
         .jwtID(UUID.randomUUID().toString())
         .claim("accounts", List.of("ACME-001", "HEDGE-002"))
         .build();

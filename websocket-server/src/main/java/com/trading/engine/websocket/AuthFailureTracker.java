@@ -1,7 +1,5 @@
 package com.trading.engine.websocket;
 
-import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -82,7 +80,7 @@ public final class AuthFailureTracker {
     if (ip == null) {
       return false;
     }
-    final FailureRecord record = entries.get(ip);
+    final var record = entries.get(ip);
     if (record == null) {
       return false;
     }
@@ -92,7 +90,11 @@ public final class AuthFailureTracker {
       if (nowNs < record.lockoutUntilNs) {
         return true; // still in lockout period
       }
-      // Lockout expired — reset count for fresh tracking
+      // Lockout expired — reset count for fresh tracking.
+      // Thread-safety note: concurrent isBlocked()+recordFailure() on the same FailureRecord is a
+      // benign race. Worst case: one extra failure before re-lockout. This is acceptable for a
+      // rate limiter (secondary defense behind Netty connection rate limiting). Full atomicity
+      // would require a lock or AtomicReference<State>, which is overkill for this cold path.
       record.failureCount.set(0);
       record.lockoutUntilNs = 0;
     }
@@ -120,10 +122,13 @@ public final class AuthFailureTracker {
       }
     }
 
-    final FailureRecord record = entries.computeIfAbsent(ip, k -> new FailureRecord());
+    final var record = entries.computeIfAbsent(ip, k -> new FailureRecord());
     record.lastFailureNs = nowNs;
     final int count = record.failureCount.incrementAndGet();
 
+    // Non-atomic check-then-act: two threads may both see lockoutUntilNs == 0 and both write.
+    // Benign: both write nearly identical values (nowNs + lockoutNanos), so the second write
+    // merely extends the lockout by a few nanoseconds. Not worth a lock for this cold path.
     if (count >= lockoutThreshold && record.lockoutUntilNs == 0) {
       record.lockoutUntilNs = nowNs + lockoutNanos;
       LOG.warn("Auth failure lockout activated for IP {} ({} failures)", ip, count);
@@ -139,9 +144,9 @@ public final class AuthFailureTracker {
 
   /** Remove entries that have not had a failure in the last 5 minutes. */
   private void evictStaleEntries(final long nowNs) {
-    final Iterator<Map.Entry<String, FailureRecord>> it = entries.entrySet().iterator();
+    final var it = entries.entrySet().iterator();
     while (it.hasNext()) {
-      final Map.Entry<String, FailureRecord> entry = it.next();
+      final var entry = it.next();
       if (nowNs - entry.getValue().lastFailureNs > STALE_THRESHOLD_NS) {
         it.remove();
       }
@@ -157,8 +162,8 @@ public final class AuthFailureTracker {
     String oldestIp = null;
     long oldestNs = Long.MAX_VALUE;
 
-    for (final Map.Entry<String, FailureRecord> entry : entries.entrySet()) {
-      final FailureRecord rec = entry.getValue();
+    for (final var entry : entries.entrySet()) {
+      final var rec = entry.getValue();
       // Skip IPs currently in active lockout
       if (rec.lockoutUntilNs > 0 && nowNs < rec.lockoutUntilNs) {
         continue;

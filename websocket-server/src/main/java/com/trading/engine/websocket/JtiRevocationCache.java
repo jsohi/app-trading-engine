@@ -1,7 +1,5 @@
 package com.trading.engine.websocket;
 
-import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import org.agrona.concurrent.NanoClock;
@@ -45,6 +43,9 @@ public final class JtiRevocationCache {
    */
   private static final int CLOCK_SKEW_EXTENSION_MINUTES = 2;
 
+  // ConcurrentHashMap<String, Long> boxes long→Long on every put(). This is acceptable because
+  // revoke() is cold-path (once per auth, not per-message). Agrona Object2LongHashMap is not
+  // thread-safe, so ConcurrentHashMap is required here for multi-event-loop access.
   private final ConcurrentHashMap<String, Long> entries;
   private final int maxCapacity;
   private final long ttlNanos;
@@ -94,6 +95,10 @@ public final class JtiRevocationCache {
     // clear fail-safe and resume normal operation. Without this, fail-safe would be permanently
     // sticky because isRevoked() blocks auth, which blocks revoke(), which is the only other
     // place that clears fail-safe.
+    //
+    // Thread-safety note: concurrent isRevoked() calls may both enter this block, both evict
+    // (idempotent via ConcurrentHashMap iterator), and both set failSafe = false. This is benign
+    // — the worst case is a redundant eviction pass, not a correctness issue.
     if (failSafe) {
       final long nowNs = nanoClock.nanoTime();
       evictExpired(nowNs);
@@ -105,7 +110,7 @@ public final class JtiRevocationCache {
       }
     }
 
-    final Long insertionNs = entries.get(jti);
+    final var insertionNs = entries.get(jti);
     if (insertionNs == null) {
       return false;
     }
@@ -176,9 +181,9 @@ public final class JtiRevocationCache {
    */
   private void evictExpired(final long nowNs) {
     int evicted = 0;
-    final Iterator<Map.Entry<String, Long>> it = entries.entrySet().iterator();
+    final var it = entries.entrySet().iterator();
     while (it.hasNext()) {
-      final Map.Entry<String, Long> entry = it.next();
+      final var entry = it.next();
       if (nowNs - entry.getValue() > ttlNanos) {
         it.remove();
         evicted++;

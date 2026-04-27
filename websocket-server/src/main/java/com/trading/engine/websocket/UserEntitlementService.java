@@ -33,6 +33,7 @@ import org.apache.logging.log4j.Logger;
  * time and again on re-auth (token refresh). The {@code QueryService} read path is O(1) per account
  * via the AccountProjection's secondary index.
  *
+ * @see JwtValidator.ValidatedClaims
  * @see <a href="docs/websocket-architecture.md">WebSocket Architecture — Section 4</a>
  */
 public final class UserEntitlementService {
@@ -82,7 +83,7 @@ public final class UserEntitlementService {
         continue;
       }
 
-      final AccountReadModel account = accountLookup.apply(code);
+      final var account = accountLookup.apply(code);
       if (account == null) {
         LOG.info("Account code not found in projections: {}", code);
         rejected++;

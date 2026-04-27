@@ -92,7 +92,7 @@ public final class SubscriptionFilter {
   public boolean matches(
       final int templateId, final byte[] sbePayload, final int offset, final int length) {
 
-    final SubscriptionSnapshot snap = snapshot; // single volatile read
+    final var snap = snapshot; // single volatile read — returns SubscriptionSnapshot
     if (snap.count == 0) {
       return false;
     }
