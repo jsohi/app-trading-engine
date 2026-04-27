@@ -172,8 +172,12 @@ public final class AuthFailureTracker {
   private boolean evictOldestUnlockedEntry(final long nowNs) {
     String oldestIp = null;
     long oldestNs = Long.MAX_VALUE;
+    int scanned = 0;
 
     for (final var entry : entries.entrySet()) {
+      if (++scanned > 2048) {
+        break; // cap scan to bound CPU on Netty event loop under DDoS
+      }
       final var rec = entry.getValue();
       if (rec.lockoutUntilNs > 0 && nowNs < rec.lockoutUntilNs) {
         continue; // skip locked-out IPs
@@ -199,8 +203,12 @@ public final class AuthFailureTracker {
   private void evictOldestEntry() {
     String oldestIp = null;
     long oldestNs = Long.MAX_VALUE;
+    int scanned = 0;
 
     for (final var entry : entries.entrySet()) {
+      if (++scanned > 2048) {
+        break; // cap scan to bound CPU
+      }
       if (entry.getValue().lastFailureNs < oldestNs) {
         oldestNs = entry.getValue().lastFailureNs;
         oldestIp = entry.getKey();
