@@ -102,10 +102,18 @@ public final class SubscriptionFilter {
       return false; // unknown or internal template — never delivered
     }
 
+    // Check if this template is SUPPOSED to have a symbol field.
+    // SymbolExtractor returns UNKNOWN_SYMBOL for both (a) templates without a symbol field
+    // (110/111/112/204) and (b) templates WITH a symbol field but truncated payload.
+    // Case (a): use globalEventBitMask. Case (b): drop the malformed message.
+    final boolean templateHasSymbol = SymbolExtractor.absoluteSymbolOffset(templateId) >= 0;
     final long packedSymbol =
         SymbolExtractor.extractPackedSymbol(templateId, sbePayload, offset, length);
 
     if (packedSymbol == SymbolExtractor.UNKNOWN_SYMBOL) {
+      if (templateHasSymbol) {
+        return false; // truncated payload — drop malformed message, don't deliver
+      }
       // No-symbol template (110, 111, 112, 204): match if ANY subscription includes this event type
       return (snap.globalEventBitMask & eventBit) != 0;
     }

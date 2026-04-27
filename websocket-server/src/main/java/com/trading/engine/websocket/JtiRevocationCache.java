@@ -55,6 +55,12 @@ public final class JtiRevocationCache {
   private volatile boolean failSafe;
 
   /**
+   * Cooldown for fail-safe recovery attempts. Rate-limits the O(N) evictExpired scan in isRevoked
+   * to at most once per second, preventing CPU exhaustion under auth floods.
+   */
+  private volatile long lastFailSafeRecoveryNs;
+
+  /**
    * Create a new JTI revocation cache.
    *
    * @param maxCapacity maximum number of revoked JTI entries (from config.maxRevokedJtis())
@@ -71,8 +77,13 @@ public final class JtiRevocationCache {
       throw new IllegalArgumentException(
           "revocationTtlMinutes must be > 0, got: " + revocationTtlMinutes);
     }
+    if (revocationTtlMinutes > 525_600) { // 1 year in minutes — sanity cap
+      throw new IllegalArgumentException(
+          "revocationTtlMinutes unreasonably large: " + revocationTtlMinutes);
+    }
     this.maxCapacity = maxCapacity;
-    this.ttlNanos = (revocationTtlMinutes + CLOCK_SKEW_EXTENSION_MINUTES) * NANOS_PER_MINUTE;
+    // Cast to long before multiplication to avoid int overflow on extreme values
+    this.ttlNanos = ((long) revocationTtlMinutes + CLOCK_SKEW_EXTENSION_MINUTES) * NANOS_PER_MINUTE;
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     this.entries = new ConcurrentHashMap<>();
   }
@@ -101,6 +112,12 @@ public final class JtiRevocationCache {
     // — the worst case is a redundant eviction pass, not a correctness issue.
     if (failSafe) {
       final long nowNs = nanoClock.nanoTime();
+      // Rate-limit recovery scans to at most once per second to prevent O(N) CPU exhaustion
+      // under auth floods when fail-safe is active.
+      if (nowNs - lastFailSafeRecoveryNs < 1_000_000_000L) {
+        return true; // cooldown active — reject without scanning
+      }
+      lastFailSafeRecoveryNs = nowNs;
       evictExpired(nowNs);
       if (entries.size() < maxCapacity) {
         failSafe = false;
@@ -143,13 +160,18 @@ public final class JtiRevocationCache {
     if (entries.size() >= maxCapacity) {
       evictExpired(nowNs);
 
-      // Fail-safe: if still at capacity after eviction, reject all
+      // Fail-safe: if still at capacity after eviction, activate fail-safe but STILL add the JTI.
+      // Without adding, if fail-safe later clears (entries expire), this JTI would be missing from
+      // the cache — a revocation bypass (Gemini review finding G10).
       if (entries.size() >= maxCapacity) {
         failSafe = true;
         LOG.warn(
             "JTI revocation cache at capacity ({}) after eviction — fail-safe activated, "
                 + "rejecting all new tokens until entries expire",
             maxCapacity);
+        // Still add — the map may briefly exceed maxCapacity by 1, which is acceptable.
+        // The alternative (not adding) creates a revocation bypass.
+        entries.put(jti, nowNs);
         return;
       }
       failSafe = false; // clear fail-safe if eviction freed space

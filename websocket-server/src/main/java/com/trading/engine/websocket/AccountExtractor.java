@@ -72,7 +72,7 @@ public final class AccountExtractor {
   public static String extractAccountCode(
       final int templateId, final byte[] sbePayload, final int offset, final int length) {
 
-    if (offset < 0 || length < 0) {
+    if (offset < 0 || length < 0 || offset > sbePayload.length) {
       return null;
     }
 
@@ -81,10 +81,9 @@ public final class AccountExtractor {
       return null;
     }
 
-    // Bounds check against actual array length — a caller may pass offset/length that exceed the
-    // backing array. A truncated message must not crash the drain loop for all sessions.
-    final int endIndex = offset + accountOffset + ACCOUNT_CODE_LENGTH;
-    if (endIndex > sbePayload.length || accountOffset + ACCOUNT_CODE_LENGTH > length) {
+    // Bounds check: use subtraction to avoid integer overflow on pathological offset values.
+    if (accountOffset + ACCOUNT_CODE_LENGTH > length
+        || accountOffset + ACCOUNT_CODE_LENGTH > sbePayload.length - offset) {
       return null;
     }
 

@@ -169,23 +169,21 @@ public final class WebSocketSessionManager {
     // Decrement per-IP using the IP stored at registration time.
     // updateAndGet with Math.max(0, ...) prevents negative counters on double-removal.
     final var remoteAddr = session.remoteIp();
+    // Decrement per-IP count. Don't remove the counter from the map — a concurrent tryRegister
+    // could computeIfAbsent the same instance and increment it between our decrement and remove,
+    // causing the remove to delete a counter with a non-zero value (Gemini review G19).
+    // The AtomicInteger stays in the map with count 0 until the next connection from that IP.
     final var ipCounter = perIpCount.get(remoteAddr);
     if (ipCounter != null) {
-      final int remaining = ipCounter.updateAndGet(v -> Math.max(0, v - 1));
-      if (remaining <= 0) {
-        perIpCount.remove(remoteAddr, ipCounter);
-      }
+      ipCounter.updateAndGet(v -> Math.max(0, v - 1));
     }
 
-    // Decrement per-user (same negative-guard pattern)
+    // Decrement per-user (same pattern — don't remove counter from map)
     final var userId = session.userId();
     if (userId != null) {
       final var userCounter = perUserCount.get(userId);
       if (userCounter != null) {
-        final int remaining = userCounter.updateAndGet(v -> Math.max(0, v - 1));
-        if (remaining <= 0) {
-          perUserCount.remove(userId, userCounter);
-        }
+        userCounter.updateAndGet(v -> Math.max(0, v - 1));
       }
     }
 
