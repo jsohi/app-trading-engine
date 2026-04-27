@@ -138,7 +138,11 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
         return;
       }
 
-      // Wrap ByteBuf in UnsafeBuffer — zero-copy, valid only within this channelRead scope
+      // Wrap ByteBuf in UnsafeBuffer — zero-copy, valid only within this channelRead scope.
+      // Assertion documents the zero-copy assumption: BinaryWebSocketFrame from Netty's
+      // WebSocketDecoder always wraps a single non-composite ByteBuf.
+      assert !(content instanceof io.netty.buffer.CompositeByteBuf)
+          : "Composite ByteBuf not supported — nioBuffer() would copy";
       wrapBuffer.wrap(content.nioBuffer());
       headerDecoder.wrap(wrapBuffer, 0);
 
@@ -149,7 +153,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       boolean known = true;
       switch (templateId) {
         case 60 -> handleReAuth(ctx, session, blockLength, version);
-        case 62 -> handleSubscribe(session, blockLength, version);
+        case 62 -> handleSubscribe(ctx, session, blockLength, version);
         case 63 -> handleUnsubscribe(session, blockLength, version);
         case 65 -> handleClientHeartbeat(session, blockLength, version);
         case 68 -> handleGapRequest(ctx);
@@ -186,10 +190,21 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     authDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
 
     final int tokenLen = authDecoder.tokenLength();
+    // Validate token length before allocation — prevents OOM from malicious clients.
+    if (tokenLen <= 0 || tokenLen > config.maxTokenSizeBytes()) {
+      LOG.warn("Re-auth token length invalid: {}", tokenLen);
+      sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+      return;
+    }
     final var tokenBytes = new byte[tokenLen];
     authDecoder.getToken(tokenBytes, 0, tokenLen);
     final var tokenString = new String(tokenBytes, StandardCharsets.UTF_8);
 
+    // Re-auth validate() is synchronous on the event loop. This is acceptable because:
+    // (1) Re-auth is cold path (~once per 15-min token refresh, not per-connection)
+    // (2) JWKS is cached with 1-hour TTL — cache hits return in <1ms
+    // (3) Offloading to CompletableFuture adds complexity (async session mutation)
+    // If JWKS cache miss becomes a problem, offload to executor in a future PR.
     try {
       final var claims = jwtValidator.validate(tokenString);
 
@@ -233,7 +248,10 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   }
 
   private void handleSubscribe(
-      final WebSocketSession session, final int blockLength, final int version) {
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final int blockLength,
+      final int version) {
     subscribeDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
 
     final var filter = session.subscriptionFilter();
@@ -258,7 +276,8 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
             "Subscription limit reached ({}) for session={}",
             config.maxSubscriptionsPerClient(),
             session.sessionId());
-        break; // partial accept — stop adding, keep what was added
+        sendError(ctx, WebSocketErrorCode.InvalidSubscription);
+        break; // partial accept — stop adding, notify client
       }
     }
     LOG.debug("Subscribe: {} symbols for session={}", symbols.count(), session.sessionId());

@@ -134,6 +134,8 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   public void channelActive(final ChannelHandlerContext ctx) throws Exception {
     final int pending = pendingAuthCount.incrementAndGet();
     if (pending > config.maxPendingAuth()) {
+      // Set authResolved before close to prevent channelInactive from double-decrementing.
+      authResolved = true;
       pendingAuthCount.decrementAndGet();
       LOG.warn("Pending auth limit exceeded ({}/{}), closing", pending, config.maxPendingAuth());
       ctx.close();
@@ -194,6 +196,8 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       return;
     }
 
+    assert !(content instanceof io.netty.buffer.CompositeByteBuf)
+        : "Composite ByteBuf not supported — nioBuffer() would copy";
     final var buf = new UnsafeBuffer(content.nioBuffer());
     headerDecoder.wrap(buf, 0);
 
