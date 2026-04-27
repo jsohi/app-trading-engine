@@ -43,7 +43,7 @@ Read every changed file in full. Check for these **blocking violations** — any
    - **`collection.iterator()`** — allocates a new `Iterator` instance. Use Agrona's `ObjectHashSet.iterator()` only if the iterator is reset/reused; otherwise use index-based iteration or `forEachInt()`/`forEachLong()`.
    - **`Iterable.forEach(lambda)`** — allocates a lambda/closure if it captures local variables. Acceptable only if the lambda is a non-capturing method reference to a `final` field.
    - **`Map.entrySet()`** — allocates `Map.Entry` wrappers on every iteration for most implementations. Use Agrona's `Long2ObjectHashMap.EntryIterator` with `reset()` or iterate keys + `get()` instead.
-   - **`String.split()`, `String.substring()` (pre-JDK-7u6), `Pattern.compile()`** — allocate arrays or regex objects. Pre-compile patterns at construction; avoid split on hot path.
+   - **`String.split()`, `String.substring()`, `Pattern.compile()`** — allocate arrays or regex objects. Pre-compile patterns at construction; avoid split on hot path.
    - **`toArray()`, `Arrays.copyOf()`, `Arrays.stream()`** — array allocation. Pre-allocate and reuse.
    - **`try-with-resources`** — may allocate a suppressed-exceptions list if exceptions occur. Acceptable for I/O-bound code but flag on hot path.
    - **Varargs calls** (`method(T... args)`) — allocate an `Object[]` per invocation. Use overloaded fixed-arity methods instead.

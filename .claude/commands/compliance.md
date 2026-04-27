@@ -65,14 +65,14 @@ Run all of these via Bash in parallel:
 ### Category 4: Determinism (cluster module)
 ```bash
 # Search for non-deterministic operations in cluster production code
-grep -rn 'System\.currentTimeMillis\|System\.nanoTime\|Instant\.now\|LocalDateTime\.now\|Clock\.systemUTC\|Clock\.systemDefaultZone\|Math\.random\|new Random\|ThreadLocalRandom\|SecureRandom\|UUID\.randomUUID\|new Date()' \
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new (Random|Date)|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
   cluster/src/main --include="*.java"
 # 0 hits = 100%, each hit = violation
 ```
 
 ### Category 5: Collection Compliance (hot-path modules)
 ```bash
-grep -rn 'import java\.util\.HashMap\|import java\.util\.ArrayList\|import java\.util\.LinkedList\|import java\.util\.HashSet\|import java\.util\.TreeMap\|import java\.util\.LinkedHashMap\|import java\.util\.Map;\|import java\.util\.List;\|import java\.util\.Set;\|import java\.util\.Collection;' \
+grep -rEn 'import java\.util\.(\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|Map;|List;|Set;|Collection;)' \
   cluster/src/main gateway/src/main orchestrator/src/main pricing-service/src/main projections/src/main \
   --include="*.java"
 # 0 hits = 100%, each file with hits = violation
@@ -100,7 +100,7 @@ grep -rl 'import com\.epam\.deltix\.gflog' \
 
 ### Category 10: Clock Discipline (all non-test code)
 ```bash
-grep -rn 'System\.currentTimeMillis\|System\.nanoTime\|Instant\.now\|LocalDateTime\.now\|new Date()\|Clock\.systemUTC\|Clock\.systemDefaultZone' \
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|new Date\(\)|Clock\.system(UTC|DefaultZone)' \
   */src/main --include="*.java" | grep -v 'TradingClocks\.java\|OffsetEpochNanoClock'
 # 0 hits = 100%, each hit = violation
 # Exception: TradingClocks.java itself (it's the blessed wrapper)
@@ -147,7 +147,7 @@ For every file in hot-path modules, check for:
 - `stream()`, `collect()`, `.map()`, `.filter()`, `Optional.of()`
 - Lambda expressions that capture local variables (allocate a closure)
 - **Garbage-creating iterator patterns:**
-  - Enhanced for-each (`for (var x : collection)`) — allocates Iterator
+  - Enhanced for-each (`for (final var x : collection)`) — allocates Iterator
   - `collection.iterator()` — allocates Iterator (use index-based or Agrona reusable)
   - `Iterable.forEach(lambda)` — allocates closure if capturing locals
   - `Map.entrySet()` — allocates Entry wrappers per iteration

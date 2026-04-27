@@ -116,16 +116,18 @@ pr=$(gh pr view --json number -q .number)
 repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 
 # Get Gemini review comments created after the push
-gh api "repos/${repo}/pulls/${pr}/comments" --jq '
-  .[] | select(.user.login == "gemini-code-assist[bot]") |
+PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # record before push, use after wait
+
+gh api --paginate "repos/${repo}/pulls/${pr}/comments" --jq "
+  .[] | select(.user.login == \"gemini-code-assist[bot]\" and .created_at > \"$PUSH_TIME\") |
   {path, line, body, created_at}
-'
+"
 
 # Also get review-level summary
-gh api "repos/${repo}/pulls/${pr}/reviews" --jq '
-  .[] | select(.user.login == "gemini-code-assist[bot]") |
+gh api --paginate "repos/${repo}/pulls/${pr}/reviews" --jq "
+  .[] | select(.user.login == \"gemini-code-assist[bot]\" and .submitted_at > \"$PUSH_TIME\") |
   {body, submitted_at}
-'
+"
 ```
 
 If no Gemini review found, wait another 120 seconds and poll again. Maximum 3 polls (total ~8.5 min).
