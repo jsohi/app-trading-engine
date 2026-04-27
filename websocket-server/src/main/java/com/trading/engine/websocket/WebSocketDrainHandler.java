@@ -1,10 +1,10 @@
 package com.trading.engine.websocket;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import java.util.Objects;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
+import org.agrona.concurrent.NanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -14,25 +14,24 @@ import org.apache.logging.log4j.Logger;
  * and writing to all active client channels.
  *
  * <p><b>Scheduling.</b> Scheduled once on the Netty worker event loop at 1ms fixed rate via {@code
- * scheduleAtFixedRate} in {@link WebSocketServerMain#start()}. Not a {@code ChannelHandler} — a
+ * scheduleWithFixedDelay} in {@link WebSocketServerMain#start()}. Not a {@code ChannelHandler} — a
  * single instance serves all channels, avoiding the per-channel timer leak of the previous design.
  *
- * <p><b>Message priority.</b> Reliable messages (orders, fills, positions, errors, CommandAck) are
- * processed before best-effort messages (prices, quotes, heartbeat) within each drain cycle. This
- * ensures order fill notifications are not delayed behind price ticks.
+ * <p><b>Filtering.</b> Per-session {@link SubscriptionFilter} checks symbol + event type. Per-
+ * session account entitlement checks via zero-allocation packed long comparison through {@link
+ * AccountExtractor#extractPackedAccount} and {@link WebSocketSession#isEntitledAccount}. Messages
+ * that don't match a session's subscriptions or entitlements are skipped (O(M*S) reduced to O(M*S')
+ * where S' is the matching subset).
  *
- * <p><b>ByteBuf fan-out.</b> For each message, one {@link ByteBuf} is allocated, then each active
- * channel receives a {@code retainedDuplicate()} sharing the same underlying memory. The original
- * is released after all writes. A single {@code flush()} per channel at the end of the drain cycle
- * batches all writes.
+ * <p><b>Reliable vs best-effort.</b> Reliable messages get per-session ByteBuf (different seqNo →
+ * different CRC32C → can't share). Best-effort messages share one ByteBuf via {@code
+ * retainedDuplicate()} (seqNo=0 for all).
  *
  * <p><b>Threading.</b> Runs on the Netty worker event loop thread only. Not thread-safe.
  *
- * <p><b>Allocation.</b> One pooled {@link ByteBuf} per message per drain cycle (from {@link
- * PooledByteBufAllocator}). Cross-thread writes: the drain task runs on a single event loop, but
- * channels are distributed across N worker threads. For channels on other event loops, each {@code
- * ch.write()} and {@code ch.flush()} allocates a Runnable task object for cross-thread dispatch.
- * With N worker threads, (N-1)/N of channels incur this overhead per message.
+ * <p><b>Allocation.</b> Per-session pooled ByteBuf for reliable messages (acceptable per CLAUDE.md
+ * WebSocket exception). Shared ByteBuf with retainedDuplicate for best-effort. Pre-allocated {@code
+ * long[2]} flyweight for zero-alloc packed account extraction.
  *
  * @see <a href="docs/websocket-architecture.md">WebSocket Architecture — Section 1, Section 6</a>
  */
@@ -44,6 +43,10 @@ public final class WebSocketDrainHandler {
   private final WebSocketEgressListener egressListener;
   private final WebSocketSessionManager sessionManager;
   private final WebSocketMetrics metrics;
+  private final NanoClock nanoClock;
+
+  /** Pre-allocated flyweight for zero-alloc packed account extraction on the drain hot path. */
+  private final long[] packedAccountBuf = new long[2];
 
   /**
    * Create a drain handler.
@@ -51,100 +54,160 @@ public final class WebSocketDrainHandler {
    * @param queue the egress queue to drain
    * @param egressListener the listener (for returning entries to the pool)
    * @param sessionManager the session manager (for iterating active sessions)
-   * @param metrics metrics instance for queue depth updates
+   * @param metrics metrics instance for queue depth and filter metrics
+   * @param nanoClock monotonic clock for drain cycle latency measurement
    */
   public WebSocketDrainHandler(
       final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
       final WebSocketEgressListener egressListener,
       final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics) {
+      final WebSocketMetrics metrics,
+      final NanoClock nanoClock) {
     this.queue = Objects.requireNonNull(queue, "queue");
     this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
+    this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
   }
 
   /**
-   * Drain all available entries from the queue and fan-out to every active session channel. Called
+   * Drain all available entries from the queue and fan-out to matching session channels. Called
    * from the Netty worker event loop at 1ms fixed rate.
    *
-   * <p>For each entry, a single pooled {@link ByteBuf} is allocated with the wire frame. Each
-   * active channel receives a {@code retainedDuplicate()} of the frame, and the original is
-   * released after all writes. Channels are flushed once at the end of the drain cycle.
+   * <p>Per-session {@link SubscriptionFilter} and account entitlement checks reduce fan-out to only
+   * matching sessions. Reliable messages use per-session ByteBuf with per-session seqNo.
+   * Best-effort messages share a single ByteBuf via {@code retainedDuplicate()}.
    */
   public void drain() {
+    final long cycleStartNs = nanoClock.nanoTime();
     int drained = 0;
     EgressEntry entry;
 
-    // Drain all available entries from the queue.
-    // In a future optimization, reliable messages would be separated and processed first.
-    // For now, entries are processed in queue order (FIFO from Aeron egress).
     while ((entry = queue.poll()) != null) {
       try {
-        writeToAllChannels(entry);
+        if (entry.isReliable()) {
+          writeReliableToAllChannels(entry);
+        } else {
+          writeBestEffortToAllChannels(entry);
+        }
         drained++;
       } finally {
-        // Return entry to the egress listener pool (via thread-safe return queue)
         egressListener.returnToPool(entry);
       }
     }
 
     if (drained > 0) {
-      // Flush all active channels once at the end of the drain cycle
-      sessionManager.forEachSession(
-          session -> {
-            final var ch = session.channel();
-            if (ch.isActive()) {
-              ch.flush();
-            }
-          });
+      // Flush all active channels once at the end of the drain cycle (for-loop, not lambda)
+      for (final var session : sessionManager.sessions()) {
+        final var ch = session.channel();
+        if (ch.isActive()) {
+          ch.flush();
+        }
+      }
       metrics.updateQueueDepth(queue.size());
+
+      // Record drain cycle latency using injected NanoClock (not System.nanoTime)
+      final long cycleNs = nanoClock.nanoTime() - cycleStartNs;
+      metrics.recordDrainCycleNanos(cycleNs);
     }
   }
 
   /**
-   * Fan out a single egress entry to all active sessions. Complexity is O(S) per message where S is
-   * the number of active sessions. The drain loop is O(M × S) per cycle where M is the queue depth.
-   * PR 3 adds SubscriptionFilter which reduces effective S to only matching sessions per message.
+   * Fan out a reliable message to all matching sessions with per-session sequence numbers. Each
+   * session gets its own ByteBuf because different seqNo values produce different CRC32C checksums.
    */
-  private void writeToAllChannels(final EgressEntry entry) {
-    // Allocate a pooled ByteBuf for the wire envelope
-    final int frameSize =
-        entry.isReliable()
-            ? FrameParser.RELIABLE_HEADER_SIZE + entry.length()
-            : FrameParser.BEST_EFFORT_HEADER_SIZE + entry.length();
+  private void writeReliableToAllChannels(final EgressEntry entry) {
+    final var bytes = entry.bytes();
+    final int length = entry.length();
+    final int templateId = entry.templateId();
 
-    final var frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
+    for (final var session : sessionManager.sessions()) {
+      final var filter = session.subscriptionFilter();
+      if (filter == null) {
+        continue; // pre-auth session — no subscriptions yet
+      }
+      // SubscriptionFilter only applies to mapped event templates (orders, prices, quotes,
+      // positions, accounts). Unmapped templates (CommandAck=70, WebSocketError=67, etc.)
+      // are control messages that bypass filtering and are delivered to all sessions.
+      final int eventBit = SubscriptionFilter.templateIdToEventBit(templateId);
+      if (eventBit >= 0) {
+        if (!filter.matches(templateId, bytes, 0, length)) {
+          metrics.filterFiltered();
+          continue;
+        }
 
-    try {
-      if (entry.isReliable()) {
-        // TODO(APP-35): replace hardcoded seqNo=0 with per-session sequence assignment via
-        // session.nextReliableSeqNo() once SubscriptionFilter and ReliableStreamTracker are
-        // wired in (PR 3/4 scope).
-        FrameParser.encodeReliable(frameBuf, 0L, entry.bytes(), 0, entry.length());
-      } else {
-        FrameParser.encodeBestEffort(frameBuf, entry.bytes(), 0, entry.length());
+        // Zero-alloc account entitlement check (single-call packed long extraction)
+        if (AccountExtractor.extractPackedAccount(templateId, bytes, 0, length, packedAccountBuf)
+            && !session.isEntitledAccount(packedAccountBuf[0], packedAccountBuf[1])) {
+          metrics.filterFiltered();
+          continue;
+        }
       }
 
-      // Fan-out: retainedDuplicate() per active channel, release original after all writes
-      sessionManager.forEachSession(
-          session -> {
-            final var ch = session.channel();
-            if (!ch.isActive()) {
-              return;
-            }
-            // Best-effort messages: skip slow consumers whose write buffer exceeds the high
-            // water mark. Reliable messages (orders, fills) are always written — the full
-            // SlowConsumerHandler in PR 4 handles graduated backpressure and disconnect.
-            if (!entry.isReliable() && !ch.isWritable()) {
-              return;
-            }
-            ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
-          });
+      metrics.filterMatched();
+
+      final var buf =
+          PooledByteBufAllocator.DEFAULT.buffer(
+              FrameParser.RELIABLE_HEADER_SIZE + length, FrameParser.RELIABLE_HEADER_SIZE + length);
+      boolean written = false;
+      try {
+        FrameParser.encodeReliable(buf, session.nextReliableSeqNo(), bytes, 0, length);
+        session.channel().write(new BinaryWebSocketFrame(buf));
+        written = true;
+      } finally {
+        if (!written) {
+          buf.release();
+        }
+      }
+    }
+  }
+
+  /**
+   * Fan out a best-effort message to all matching sessions. Shared ByteBuf with {@code
+   * retainedDuplicate()} — seqNo=0 for all sessions (no per-session CRC variation).
+   */
+  private void writeBestEffortToAllChannels(final EgressEntry entry) {
+    final var bytes = entry.bytes();
+    final int length = entry.length();
+    final int templateId = entry.templateId();
+    final int frameSize = FrameParser.BEST_EFFORT_HEADER_SIZE + length;
+
+    final var frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
+    try {
+      FrameParser.encodeBestEffort(frameBuf, bytes, 0, length);
+
+      for (final var session : sessionManager.sessions()) {
+        final var filter = session.subscriptionFilter();
+        if (filter == null) {
+          continue;
+        }
+
+        final var ch = session.channel();
+        if (!ch.isActive() || !ch.isWritable()) {
+          continue;
+        }
+
+        // Same filter bypass as reliable path — unmapped templates are control messages.
+        final int bestEffortEventBit = SubscriptionFilter.templateIdToEventBit(templateId);
+        if (bestEffortEventBit >= 0) {
+          if (!filter.matches(templateId, bytes, 0, length)) {
+            metrics.filterFiltered();
+            continue;
+          }
+
+          if (AccountExtractor.extractPackedAccount(templateId, bytes, 0, length, packedAccountBuf)
+              && !session.isEntitledAccount(packedAccountBuf[0], packedAccountBuf[1])) {
+            metrics.filterFiltered();
+            continue;
+          }
+        }
+
+        metrics.filterMatched();
+        ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
+      }
     } catch (final Exception e) {
-      LOG.warn("Failed to encode frame for templateId={}: {}", entry.templateId(), e.getMessage());
+      LOG.warn("Failed to encode best-effort frame for templateId={}", templateId);
     } finally {
-      // Release the original ByteBuf — each channel holds its own retained duplicate
       frameBuf.release();
     }
   }
