@@ -219,6 +219,19 @@ public final class WebSocketSessionManager {
   }
 
   /**
+   * Returns a directly iterable view of all sessions for for-loop iteration in the drain handler.
+   * Avoids the per-message lambda/Runnable allocation of {@link #forEachSession(Consumer)}.
+   *
+   * <p><b>Threading.</b> Uses {@link ConcurrentHashMap#values()} which provides a weakly-consistent
+   * view — same semantics as {@link #forEachSession(Consumer)}.
+   *
+   * @return an iterable of all active sessions
+   */
+  public Iterable<WebSocketSession> sessions() {
+    return sessions.values();
+  }
+
+  /**
    * @return the current number of active sessions (including grace-period)
    */
   public int activeSessionCount() {
