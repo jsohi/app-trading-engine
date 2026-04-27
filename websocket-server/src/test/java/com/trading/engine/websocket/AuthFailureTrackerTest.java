@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -160,22 +161,17 @@ final class AuthFailureTrackerTest {
 
   @Test
   void constructor_invalidThreshold_throws() {
-    try {
-      new AuthFailureTracker(0, 60, testClock);
-      throw new AssertionError("Expected IllegalArgumentException");
-    } catch (final IllegalArgumentException e) {
-      assertTrue(e.getMessage().contains("lockoutThreshold"));
-    }
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class, () -> new AuthFailureTracker(0, 60, testClock));
+    assertTrue(ex.getMessage().contains("lockoutThreshold"));
   }
 
   @Test
   void constructor_invalidLockoutSeconds_throws() {
-    try {
-      new AuthFailureTracker(5, 0, testClock);
-      throw new AssertionError("Expected IllegalArgumentException");
-    } catch (final IllegalArgumentException e) {
-      assertTrue(e.getMessage().contains("lockoutSeconds"));
-    }
+    final var ex =
+        assertThrows(IllegalArgumentException.class, () -> new AuthFailureTracker(5, 0, testClock));
+    assertTrue(ex.getMessage().contains("lockoutSeconds"));
   }
 
   // --- trackedIpCount ---
