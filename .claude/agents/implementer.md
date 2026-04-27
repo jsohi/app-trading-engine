@@ -70,7 +70,7 @@ After implementation is complete, run the FULL orchestrator loop. This is NOT op
    ```bash
    pr=$(gh pr view --json number -q .number)
    repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-   gh api "repos/${repo}/pulls/${pr}/comments" --jq '.[] | select(.user.login == "gemini-code-assist[bot]") | {path, line, body}'
+   gh api --paginate "repos/${repo}/pulls/${pr}/comments" --jq '.[] | select(.user.login == "gemini-code-assist[bot]") | {path, line, body}'
    ```
    Fix ALL Gemini findings. If fixes made, restart from step 1.
 
