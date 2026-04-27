@@ -2,11 +2,14 @@ package com.trading.engine.websocket;
 
 import io.netty.channel.Channel;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Per-client WebSocket session state. Created on successful authentication, held for the grace
- * period after disconnect, and destroyed on expiry.
+ * period after disconnect, and destroyed on expiry. Stores JWT {@code jti} for revocation tracking,
+ * a per-session {@link SubscriptionFilter} for event delivery filtering, and an entitled accounts
+ * set from {@link UserEntitlementService} for account-level drain-path filtering.
  *
  * <p><b>Thread safety.</b> Owned by the Netty event loop thread. Not shared across threads. The
  * AeronEgressThread writes to the {@link org.agrona.concurrent.ManyToOneConcurrentArrayQueue} and
@@ -24,7 +27,11 @@ public final class WebSocketSession {
   private final Channel channel;
   private final String remoteIp;
   private String userId;
-  private long jti;
+  private String jti;
+  private SubscriptionFilter subscriptionFilter;
+  // Volatile: written by channel event loop at auth time, read by drain handler event loop
+  // during account entitlement checks via AccountExtractor.
+  private volatile Set<String> entitledAccounts = Set.of();
   private long reliableSeqCounter;
   private long lastClientCmdSeqNo;
   private long lastClientHeartbeatNs;
@@ -83,17 +90,49 @@ public final class WebSocketSession {
   }
 
   /**
-   * @return the JWT {@code jti} claim hash for session hijack prevention
+   * @return the JWT {@code jti} claim (full string for collision-resistant revocation tracking)
    */
-  public long jti() {
+  public String jti() {
     return jti;
   }
 
   /**
-   * @param jti the JWT jti claim hash
+   * @param jti the JWT jti claim (full string, not a hash)
    */
-  public void jti(final long jti) {
+  public void jti(final String jti) {
     this.jti = jti;
+  }
+
+  /**
+   * @return the subscription filter for this session, or null if not yet initialized (pre-auth)
+   */
+  public SubscriptionFilter subscriptionFilter() {
+    return subscriptionFilter;
+  }
+
+  /**
+   * Initialize the subscription filter after successful authentication.
+   *
+   * @param maxSubscriptions the maximum number of symbol subscriptions allowed per session
+   */
+  public void initSubscriptionFilter(final int maxSubscriptions) {
+    this.subscriptionFilter = new SubscriptionFilter(maxSubscriptions);
+  }
+
+  /**
+   * @return the set of account codes this session is entitled to access (from JWT accounts claim)
+   */
+  public Set<String> entitledAccounts() {
+    return entitledAccounts;
+  }
+
+  /**
+   * Set the entitled account codes after validation by {@link UserEntitlementService}.
+   *
+   * @param entitledAccounts unmodifiable set of validated active account codes
+   */
+  public void entitledAccounts(final Set<String> entitledAccounts) {
+    this.entitledAccounts = Objects.requireNonNull(entitledAccounts, "entitledAccounts");
   }
 
   /**
@@ -169,6 +208,12 @@ public final class WebSocketSession {
   public void markDisconnected(final long nowNs) {
     this.disconnected = true;
     this.gracePeriodStartNs = nowNs;
+    // Architecture doc: grace period does NOT hold subscriptions or entitlements.
+    // Clear to stop receiving events during grace period.
+    if (subscriptionFilter != null) {
+      subscriptionFilter.clear();
+    }
+    entitledAccounts = Set.of();
   }
 
   /**

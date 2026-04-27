@@ -4,10 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.ResourceLeakDetector;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -75,9 +77,9 @@ final class WebSocketSessionTest {
     final var channel = new EmbeddedChannel();
     final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
 
-    session.jti(987_654_321L);
+    session.jti("test-jti-abc-123");
 
-    assertEquals(987_654_321L, session.jti(), "jti must return the value that was set");
+    assertEquals("test-jti-abc-123", session.jti(), "jti must return the value that was set");
 
     channel.finishAndReleaseAll();
   }
@@ -118,6 +120,53 @@ final class WebSocketSessionTest {
         disconnectNs,
         session.gracePeriodStartNs(),
         "Grace period start must equal the disconnect timestamp");
+
+    channel.finishAndReleaseAll();
+  }
+
+  @Test
+  void initSubscriptionFilter_afterInit_returnsNonNullFilter() {
+    final var channel = new EmbeddedChannel();
+    final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
+
+    assertNull(session.subscriptionFilter(), "Filter must be null before init");
+    session.initSubscriptionFilter(100);
+    assertNotNull(session.subscriptionFilter(), "Filter must be non-null after init");
+    assertEquals(0, session.subscriptionFilter().subscriptionCount());
+
+    channel.finishAndReleaseAll();
+  }
+
+  @Test
+  void entitledAccounts_setAndGet_returnsSetValue() {
+    final var channel = new EmbeddedChannel();
+    final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
+
+    assertEquals(Set.of(), session.entitledAccounts(), "Default must be empty set");
+    session.entitledAccounts(Set.of("ACC1", "ACC2"));
+    assertEquals(Set.of("ACC1", "ACC2"), session.entitledAccounts());
+
+    channel.finishAndReleaseAll();
+  }
+
+  @Test
+  void markDisconnected_withActiveSubscriptions_clearsSubscriptionFilterAndEntitlements() {
+    final var channel = new EmbeddedChannel();
+    final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
+
+    session.initSubscriptionFilter(100);
+    session.subscriptionFilter().addSubscription(0x4555525553440000L, 0x01);
+    session.entitledAccounts(Set.of("ACC1"));
+
+    assertEquals(1, session.subscriptionFilter().subscriptionCount());
+    assertFalse(session.entitledAccounts().isEmpty());
+
+    session.markDisconnected(10_000_000_000L);
+
+    assertEquals(0, session.subscriptionFilter().subscriptionCount());
+    assertTrue(session.subscriptionFilter().isEmpty());
+    assertTrue(
+        session.entitledAccounts().isEmpty(), "Entitled accounts must be cleared on disconnect");
 
     channel.finishAndReleaseAll();
   }

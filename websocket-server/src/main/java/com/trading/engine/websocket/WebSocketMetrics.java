@@ -39,6 +39,15 @@ public final class WebSocketMetrics {
   private final Counter authSuccess;
   private final Counter authFailure;
   private final Counter rateLimited;
+  private final Counter filterMatched;
+  private final Counter filterFiltered;
+  private final Counter authLockout;
+
+  // --- Subscription filtering gauges ---
+  private final AtomicInteger activeSubscriptions = new AtomicInteger();
+
+  // --- Authentication timers ---
+  private final Timer authLatency;
 
   /**
    * Create a WebSocketMetrics instance with a simple in-memory registry. Suitable for dev/test or
@@ -98,6 +107,30 @@ public final class WebSocketMetrics {
     this.rateLimited =
         Counter.builder("websocket.rate.limited")
             .description("Commands rejected due to rate limiting")
+            .register(registry);
+
+    // --- Subscription filtering + auth metrics ---
+    this.filterMatched =
+        Counter.builder("websocket.filter.matched")
+            .description("Messages that passed SubscriptionFilter and were delivered")
+            .register(registry);
+
+    this.filterFiltered =
+        Counter.builder("websocket.filter.filtered")
+            .description("Messages filtered out by SubscriptionFilter (not delivered)")
+            .register(registry);
+
+    this.authLockout =
+        Counter.builder("websocket.auth.lockout")
+            .description("Connections rejected due to per-IP auth failure lockout")
+            .register(registry);
+
+    registry.gauge(
+        "websocket.subscriptions.active", activeSubscriptions, AtomicInteger::doubleValue);
+
+    this.authLatency =
+        Timer.builder("websocket.auth.latency")
+            .description("JWT validation latency including JWKS fetch on cache miss")
             .register(registry);
   }
 
@@ -169,5 +202,40 @@ public final class WebSocketMetrics {
   /** Record a rate-limited command rejection. */
   public void commandRateLimited() {
     rateLimited.increment();
+  }
+
+  // --- Subscription filter + auth counter/timer access ---
+
+  /** Record a message that passed the SubscriptionFilter. */
+  public void filterMatched() {
+    filterMatched.increment();
+  }
+
+  /** Record a message that was filtered out by the SubscriptionFilter. */
+  public void filterFiltered() {
+    filterFiltered.increment();
+  }
+
+  /** Record a connection rejected due to per-IP auth failure lockout. */
+  public void authLockout() {
+    authLockout.increment();
+  }
+
+  /**
+   * Update the total active subscription count across all sessions.
+   *
+   * @param count the current total subscription count
+   */
+  public void updateActiveSubscriptions(final int count) {
+    activeSubscriptions.set(count);
+  }
+
+  /**
+   * Returns the auth latency timer for recording JWT validation durations.
+   *
+   * @return the auth latency timer
+   */
+  public Timer authLatency() {
+    return authLatency;
   }
 }
