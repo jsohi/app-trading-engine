@@ -163,7 +163,7 @@ git commit -m "APP-{N}: orchestrate R{iteration} — review fixes"
 
 Record the push timestamp with a 30s clock-skew buffer (for Gemini polling in Step 5), then push:
 ```bash
-PUSH_TIME=$(date -u -v-30S +%Y-%m-%dT%H:%M:%SZ)  # 30s buffer for clock skew
+PUSH_TIME=$(date -u -d '30 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30S +%Y-%m-%dT%H:%M:%SZ)  # portable 30s clock-skew buffer (GNU || BSD)
 LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 git push origin HEAD
 ```
 

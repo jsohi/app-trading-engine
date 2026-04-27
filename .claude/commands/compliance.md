@@ -66,18 +66,18 @@ Run all of these via Bash in parallel:
 ### Category 4: Determinism (cluster module)
 ```bash
 # Search for non-deterministic operations in cluster production code
-grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new\s+([a-zA-Z0-9.]+\.)?(Random|Date)\s*\(|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|\bnew\s+(java\.util\.)?(Random|Date)\b|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
   cluster/src/main --include="*.java"
 # 0 hits = 100%, each hit = violation
 ```
 
 ### Category 5: Collection Compliance (hot-path modules)
 ```bash
-grep -rEn 'import java\.util\.(concurrent\.)?(\\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|ConcurrentHashMap|CopyOnWriteArrayList|ConcurrentLinkedQueue|LinkedBlockingQueue|ConcurrentMap|Map\s*;|List\s*;|Set\s*;|Collection\s*;)' \
+grep -rEn 'import java\.util\.' \
   cluster/src/main gateway/src/main orchestrator/src/main pricing-service/src/main projections/src/main \
-  --include="*.java"
-# 0 hits = 100%, each file with hits = violation
-# Exceptions: java.util.Objects (utility), java.util.Arrays (sort), java.util.zip.CRC32C
+  --include="*.java" | grep -Ev 'Objects|Arrays|zip\.CRC32C'
+# 0 hits = 100%. Catches ALL java.util imports (collections, concurrent, etc.)
+# Exceptions: java.util.Objects (static utility), java.util.Arrays (sort), java.util.zip.CRC32C
 ```
 
 ### Category 9: Logging Compliance
@@ -101,8 +101,8 @@ grep -rl 'import com\.epam\.deltix\.gflog' \
 
 ### Category 10: Clock Discipline (all non-test code)
 ```bash
-grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|new Date\(\)|Clock\.system(UTC|DefaultZone)' \
-  */src/main --include="*.java" | grep -v 'TradingClocks\.java\|OffsetEpochNanoClock'
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|new\s+([a-zA-Z0-9.]+\.)?Date\s*\(' \
+  */src/main --include="*.java" | grep -Ev 'TradingClocks\.java|OffsetEpochNanoClock'
 # 0 hits = 100%, each hit = violation
 # Exception: TradingClocks.java itself (it's the blessed wrapper)
 ```
