@@ -46,8 +46,12 @@ pipeline
   .addLast(new WebSocketServerProtocolHandler("/", null,      // RFC 6455 compliance
            true, 65536, false, true, 30000))
   .addLast(new OriginValidationHandler(originsWhitelist))    // CSWSH prevention
-  .addLast(new JwtAuthHandler(jwtValidator, 5000))           // 5s auth timeout
-  .addLast(new WebSocketFrameDispatcher(sessionManager))     // SBE decode + dispatch
+  .addLast(new JwtAuthHandler(pendingAuthCount, jwtValidator, // 5s auth timeout, async JWT
+           jtiCache, entitlementService, authFailureTracker, // validation via CompletableFuture,
+           sessionManager, metrics, config, nanoClock,       // IP lockout, pendingAuth limit,
+           ForkJoinPool.commonPool()))                        // one-shot: removes self on success
+  // WebSocketFrameDispatcher added dynamically by JwtAuthHandler on auth success:
+  // routes templateIds 60/62/63/65/68/69/71, TextWebSocketFrame release, 3-unknown close
 ```
 
 `WebSocketServerProtocolHandler` handles Sec-WebSocket-Key validation, ping/pong, and close handshakes per RFC 6455. Application-level heartbeat (template 64) is separate from RFC 6455 pings. RFC 6455 pings are disabled (application heartbeat is preferred — 5s interval vs 30s RFC default).
@@ -698,7 +702,25 @@ Failover: ● CONNECTED — Cluster failover detected. Data resynced. [x]
 
 ---
 
-## 10. Review History
+## 10. Implementation Status (PR 3 — APP-35)
+
+| Component | Status | Key Design Decisions |
+|-----------|--------|---------------------|
+| JwtAuthHandler | **Implemented** | Async JWT validation via CompletableFuture (injected Executor), 5s auth timeout, authResolved volatile guard, registeredSession cleanup on partial failure, per-IP lockout via AuthFailureTracker |
+| WebSocketFrameDispatcher | **Implemented** | SBE routing (60/62/63/65/68/69/71), re-auth with sub-match + JTI revocation, subscribe with SymbolPacker, empty-unsubscribe=clear-all, 3-consecutive-unknown close, TextWebSocketFrame release, null session guard |
+| SubscriptionFilter | **Implemented** | Copy-on-write volatile snapshot, binary search on sorted packed-symbol arrays, globalEventBitMask for no-symbol templates |
+| AccountPacker | **Implemented** | Zero-alloc 16-byte account code packing into 2 longs, direct char-to-long packing without byte[] intermediary |
+| AccountExtractor.extractPackedAccount | **Implemented** | Zero-alloc packed extraction with pre-allocated long[2] flyweight on drain handler |
+| WebSocketDrainHandler filtering | **Implemented** | SubscriptionFilter + packed account entitlement checks, per-session reliable seqNo, control message bypass (CommandAck/WebSocketError), drainCycleLatency timer via injected NanoClock |
+| WebSocketServerConfig auth fields | **Implemented** | jwtAudience, maxTokenSizeBytes, maxPendingAuth, authFailureLockoutThreshold/Seconds, HTTPS-only JWKS URI validation, inverse jwtAudience/issuerRegistry validation |
+| JwtValidator JWKS hardening | **Implemented** | 256KB response size limit, HTTP redirects disabled (SSRF prevention) |
+| WebSocketSession packed entitlements | **Implemented** | Parallel long[] for zero-alloc isEntitledAccount() linear scan alongside Set<String> for cold-path lookups |
+| Pipeline wiring | **Implemented** | JwtAuthHandler added after origin-validator in WebSocketServerMain, dynamically adds dispatcher on auth success |
+| Launcher wiring | **Implemented** | WebSocketLauncher creates all auth deps; TODO(APP-237) for real AccountProjection |
+
+---
+
+## 11. Review History
 
 | Round | Findings | CRITICAL | HIGH | MEDIUM | LOW |
 |-------|----------|----------|------|--------|-----|
