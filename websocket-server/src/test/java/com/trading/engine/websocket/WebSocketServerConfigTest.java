@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,6 +48,11 @@ final class WebSocketServerConfigTest {
     assertEquals(3, config.cipherSuites().size());
     assertTrue(config.originsWhitelist().isEmpty());
     assertTrue(config.issuerRegistry().isEmpty());
+    assertEquals("", config.jwtAudience());
+    assertEquals(8192, config.maxTokenSizeBytes());
+    assertEquals(64, config.maxPendingAuth());
+    assertEquals(5, config.authFailureLockoutThreshold());
+    assertEquals(60, config.authFailureLockoutSeconds());
   }
 
   @Test
@@ -65,6 +71,7 @@ final class WebSocketServerConfigTest {
         originsWhitelist:
           - https://app.example.com
           - https://staging.example.com
+        jwtAudience: wss://trading.example.com/ws
         issuerRegistry:
           my-issuer:
             jwksUri: https://auth.example.com/.well-known/jwks.json
@@ -83,6 +90,7 @@ final class WebSocketServerConfigTest {
     assertEquals("https://app.example.com", config.originsWhitelist().get(0));
     assertEquals(
         "https://auth.example.com/.well-known/jwks.json", config.issuerRegistry().get("my-issuer"));
+    assertEquals("wss://trading.example.com/ws", config.jwtAudience());
   }
 
   @Test
@@ -252,5 +260,135 @@ final class WebSocketServerConfigTest {
     Files.writeString(yaml, "issuerRegistry:\n  my-issuer:\n    notJwksUri: https://example.com\n");
 
     assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
+  }
+
+  // --- Authentication field validation tests (PR 3 Steps 13-18) ---
+
+  @Test
+  void validate_jwtAudienceRequiredWhenIssuerRegistryPresent_throws() {
+    // jwtAudience defaults to "" (empty), issuerRegistry is non-empty → must throw
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder()
+                .issuerRegistry(Map.of("issuer", "https://auth.example.com/.well-known/jwks.json"))
+                .build());
+  }
+
+  @Test
+  void validate_jwtAudienceEmptyWithEmptyIssuerRegistry_succeeds() {
+    // Both empty → auth disabled, should succeed
+    assertDoesNotThrow(
+        () -> WebSocketServerConfig.builder().jwtAudience("").issuerRegistry(Map.of()).build());
+  }
+
+  @Test
+  void validate_maxTokenSizeBytesTooSmall_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().maxTokenSizeBytes(255).build());
+  }
+
+  @Test
+  void validate_maxTokenSizeBytesTooLarge_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().maxTokenSizeBytes(65_537).build());
+  }
+
+  @Test
+  void validate_maxTokenSizeBytesAtBoundaries_succeeds() {
+    assertDoesNotThrow(() -> WebSocketServerConfig.builder().maxTokenSizeBytes(256).build());
+    assertDoesNotThrow(() -> WebSocketServerConfig.builder().maxTokenSizeBytes(65_536).build());
+  }
+
+  @Test
+  void validate_maxPendingAuthZero_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().maxPendingAuth(0).build());
+  }
+
+  @Test
+  void validate_issuerRegistryHttpUrl_throws() {
+    // JWKS URLs must use https:// — http:// is rejected to prevent SSRF and MITM
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder()
+                .jwtAudience("wss://trading.example.com/ws")
+                .issuerRegistry(Map.of("issuer", "http://auth.example.com/.well-known/jwks.json"))
+                .build());
+  }
+
+  @Test
+  void validate_authFailureLockoutFieldsValidation() {
+    // Zero values
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().authFailureLockoutThreshold(0).build());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().authFailureLockoutSeconds(0).build());
+    // Negative values
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().authFailureLockoutThreshold(-1).build());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().authFailureLockoutSeconds(-1).build());
+  }
+
+  @Test
+  void validate_maxPendingAuthNegative_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> WebSocketServerConfig.builder().maxPendingAuth(-1).build());
+  }
+
+  @Test
+  void validate_maxPendingAuthEqualsMaxSessions_succeeds() {
+    assertDoesNotThrow(
+        () ->
+            WebSocketServerConfig.builder().maxConcurrentSessions(128).maxPendingAuth(128).build());
+  }
+
+  @Test
+  void validate_maxPendingAuthExceedsMaxSessions_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder().maxConcurrentSessions(128).maxPendingAuth(129).build());
+  }
+
+  @Test
+  void builder_jwtAudienceNull_throwsNullPointerException() {
+    assertThrows(
+        NullPointerException.class, () -> WebSocketServerConfig.builder().jwtAudience(null));
+  }
+
+  @Test
+  void fromYaml_authFieldsOverridden(@TempDir final Path tempDir) throws IOException {
+    final var yaml = tempDir.resolve("auth-config.yaml");
+    Files.writeString(
+        yaml,
+        """
+        jwtAudience: wss://trading.example.com/ws
+        maxTokenSizeBytes: 4096
+        maxPendingAuth: 32
+        authFailureLockoutThreshold: 3
+        authFailureLockoutSeconds: 120
+        issuerRegistry:
+          my-issuer:
+            jwksUri: https://auth.example.com/.well-known/jwks.json
+        """);
+
+    final var config = WebSocketServerConfig.fromYaml(yaml);
+
+    assertEquals("wss://trading.example.com/ws", config.jwtAudience());
+    assertEquals(4096, config.maxTokenSizeBytes());
+    assertEquals(32, config.maxPendingAuth());
+    assertEquals(3, config.authFailureLockoutThreshold());
+    assertEquals(120, config.authFailureLockoutSeconds());
   }
 }

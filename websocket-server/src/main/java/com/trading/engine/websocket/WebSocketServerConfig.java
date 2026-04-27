@@ -1,12 +1,12 @@
 package com.trading.engine.websocket;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -70,6 +70,13 @@ public final class WebSocketServerConfig {
   private final int maxRevokedJtis;
   private final int revocationTtlMinutes;
 
+  // --- Authentication ---
+  private final String jwtAudience;
+  private final int maxTokenSizeBytes;
+  private final int maxPendingAuth;
+  private final int authFailureLockoutThreshold;
+  private final int authFailureLockoutSeconds;
+
   // --- Backpressure ---
   private final int writeBufferLowWaterMark;
   private final int writeBufferHighWaterMark;
@@ -104,6 +111,11 @@ public final class WebSocketServerConfig {
     this.writeBufferLowWaterMark = b.writeBufferLowWaterMark;
     this.writeBufferHighWaterMark = b.writeBufferHighWaterMark;
     this.egressQueueCapacity = b.egressQueueCapacity;
+    this.jwtAudience = Objects.requireNonNull(b.jwtAudience, "jwtAudience");
+    this.maxTokenSizeBytes = b.maxTokenSizeBytes;
+    this.maxPendingAuth = b.maxPendingAuth;
+    this.authFailureLockoutThreshold = b.authFailureLockoutThreshold;
+    this.authFailureLockoutSeconds = b.authFailureLockoutSeconds;
     this.issuerRegistry = Map.copyOf(b.issuerRegistry);
     validate();
   }
@@ -167,6 +179,36 @@ public final class WebSocketServerConfig {
     require(
         tlsCertPath.isEmpty() == tlsKeyPath.isEmpty(),
         "tlsCertPath and tlsKeyPath must both be set or both be empty");
+
+    // --- Authentication validation ---
+    require(
+        maxTokenSizeBytes >= 256 && maxTokenSizeBytes <= 65_536,
+        "maxTokenSizeBytes must be in [256, 65536], got: " + maxTokenSizeBytes);
+    require(
+        maxPendingAuth >= 1 && maxPendingAuth <= maxConcurrentSessions,
+        "maxPendingAuth must be in [1, maxConcurrentSessions("
+            + maxConcurrentSessions
+            + ")], got: "
+            + maxPendingAuth);
+    require(
+        authFailureLockoutThreshold > 0,
+        "authFailureLockoutThreshold must be > 0, got: " + authFailureLockoutThreshold);
+    require(
+        authFailureLockoutSeconds > 0,
+        "authFailureLockoutSeconds must be > 0, got: " + authFailureLockoutSeconds);
+    // jwtAudience must be non-empty when issuerRegistry is configured (auth is enabled)
+    require(
+        issuerRegistry.isEmpty() || !jwtAudience.isBlank(),
+        "jwtAudience must be non-blank when issuerRegistry is configured");
+    // All JWKS URIs must use HTTPS to prevent SSRF and MITM attacks
+    for (final var entry : issuerRegistry.entrySet()) {
+      require(
+          entry.getValue().toLowerCase(Locale.ROOT).startsWith("https://"),
+          "issuerRegistry entry '"
+              + entry.getKey()
+              + "' jwksUri must use https:// scheme, got: "
+              + entry.getValue());
+    }
   }
 
   private static void require(final boolean condition, final String message) {
@@ -190,7 +232,7 @@ public final class WebSocketServerConfig {
    */
   public static WebSocketServerConfig fromYaml(final Path filePath) throws IOException {
     final Object raw;
-    try (InputStream in = Files.newInputStream(filePath)) {
+    try (final var in = Files.newInputStream(filePath)) {
       raw = new Yaml(new SafeConstructor(new LoaderOptions())).load(in);
     }
     if (raw == null) {
@@ -227,6 +269,11 @@ public final class WebSocketServerConfig {
     ifPresent(root, "writeBufferLowWaterMark", Integer.class, b::writeBufferLowWaterMark);
     ifPresent(root, "writeBufferHighWaterMark", Integer.class, b::writeBufferHighWaterMark);
     ifPresent(root, "egressQueueCapacity", Integer.class, b::egressQueueCapacity);
+    ifPresent(root, "jwtAudience", String.class, b::jwtAudience);
+    ifPresent(root, "maxTokenSizeBytes", Integer.class, b::maxTokenSizeBytes);
+    ifPresent(root, "maxPendingAuth", Integer.class, b::maxPendingAuth);
+    ifPresent(root, "authFailureLockoutThreshold", Integer.class, b::authFailureLockoutThreshold);
+    ifPresent(root, "authFailureLockoutSeconds", Integer.class, b::authFailureLockoutSeconds);
 
     final var ciphers = root.get("cipherSuites");
     if (ciphers != null) {
@@ -552,6 +599,45 @@ public final class WebSocketServerConfig {
     return issuerRegistry;
   }
 
+  /**
+   * @return the expected JWT audience claim; empty string when auth is disabled (no issuerRegistry
+   *     configured)
+   */
+  public String jwtAudience() {
+    return jwtAudience;
+  }
+
+  /**
+   * @return the maximum JWT token size in bytes before parsing; rejects oversized tokens early to
+   *     prevent parser DoS (default 8192)
+   */
+  public int maxTokenSizeBytes() {
+    return maxTokenSizeBytes;
+  }
+
+  /**
+   * @return the maximum number of unauthenticated connections allowed concurrently; prevents FD
+   *     exhaustion from connection floods (default 64)
+   */
+  public int maxPendingAuth() {
+    return maxPendingAuth;
+  }
+
+  /**
+   * @return the number of auth failures within the lockout window before an IP is blocked (default
+   *     5)
+   */
+  public int authFailureLockoutThreshold() {
+    return authFailureLockoutThreshold;
+  }
+
+  /**
+   * @return the lockout duration in seconds after exceeding the failure threshold (default 60)
+   */
+  public int authFailureLockoutSeconds() {
+    return authFailureLockoutSeconds;
+  }
+
   // --- Builder ---
 
   /**
@@ -596,6 +682,11 @@ public final class WebSocketServerConfig {
     private int writeBufferHighWaterMark = 262_144;
     private int egressQueueCapacity = 8192;
     private Map<String, String> issuerRegistry = Map.of();
+    private String jwtAudience = "";
+    private int maxTokenSizeBytes = 8192;
+    private int maxPendingAuth = 64;
+    private int authFailureLockoutThreshold = 5;
+    private int authFailureLockoutSeconds = 60;
 
     private Builder() {}
 
@@ -842,6 +933,53 @@ public final class WebSocketServerConfig {
      */
     public Builder issuerRegistry(final Map<String, String> issuerRegistry) {
       this.issuerRegistry = Objects.requireNonNull(issuerRegistry, "issuerRegistry");
+      return this;
+    }
+
+    /**
+     * @param jwtAudience the expected JWT audience claim; must be non-empty when issuerRegistry is
+     *     configured
+     * @return this builder
+     */
+    public Builder jwtAudience(final String jwtAudience) {
+      this.jwtAudience = Objects.requireNonNull(jwtAudience, "jwtAudience");
+      return this;
+    }
+
+    /**
+     * @param maxTokenSizeBytes the maximum JWT token size in bytes; must be in [256, 65536]
+     * @return this builder
+     */
+    public Builder maxTokenSizeBytes(final int maxTokenSizeBytes) {
+      this.maxTokenSizeBytes = maxTokenSizeBytes;
+      return this;
+    }
+
+    /**
+     * @param maxPendingAuth the maximum unauthenticated connections allowed concurrently; must be
+     *     >= 1
+     * @return this builder
+     */
+    public Builder maxPendingAuth(final int maxPendingAuth) {
+      this.maxPendingAuth = maxPendingAuth;
+      return this;
+    }
+
+    /**
+     * @param authFailureLockoutThreshold failures before IP lockout; must be > 0
+     * @return this builder
+     */
+    public Builder authFailureLockoutThreshold(final int authFailureLockoutThreshold) {
+      this.authFailureLockoutThreshold = authFailureLockoutThreshold;
+      return this;
+    }
+
+    /**
+     * @param authFailureLockoutSeconds lockout duration in seconds; must be > 0
+     * @return this builder
+     */
+    public Builder authFailureLockoutSeconds(final int authFailureLockoutSeconds) {
+      this.authFailureLockoutSeconds = authFailureLockoutSeconds;
       return this;
     }
 
