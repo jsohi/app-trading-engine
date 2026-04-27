@@ -150,7 +150,7 @@ public final class WebSocketServerMain implements AutoCloseable {
     // drain cycle takes longer than 1ms. The drain call is wrapped in a try-catch to prevent
     // exceptions from killing the scheduled task.
     final var drainHandler =
-        new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics);
+        new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics, nanoClock);
     transport
         .workerGroup()
         .next()

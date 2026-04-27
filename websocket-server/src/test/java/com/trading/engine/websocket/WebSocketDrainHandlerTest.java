@@ -16,6 +16,7 @@ import java.util.List;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
+import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,7 +66,9 @@ final class WebSocketDrainHandlerTest {
     final var config = WebSocketServerConfig.builder().build();
     final var clock = new ControllableNanoClock(1_000_000_000L);
     sessionManager = new WebSocketSessionManager(config, metrics, clock);
-    drainHandler = new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics);
+    drainHandler =
+        new WebSocketDrainHandler(
+            queue, egressListener, sessionManager, metrics, SystemNanoClock.INSTANCE);
   }
 
   @AfterEach
@@ -86,7 +89,19 @@ final class WebSocketDrainHandlerTest {
   private EmbeddedChannel createSessionChannel() {
     final var ch = new EmbeddedChannel(DefaultChannelId.newInstance());
     openChannels.add(ch);
-    sessionManager.tryRegister(ch);
+    final var session = sessionManager.tryRegister(ch);
+    // Init subscription filter with a broad match so drain handler doesn't skip this session.
+    // SubscriptionFilter.matches() returns false if no subscriptions — add a wildcard-like sub
+    // that matches the CommandAck templateId used in most tests (bit 0 = orders).
+    session.initSubscriptionFilter(100);
+    // Subscribe with all event types for both the "any" sentinel and "EURUSD" (used in tests).
+    // packedSymbol=0L covers no-symbol templates via globalEventBitMask.
+    // "EURUSD" covers PriceResponse (template 51) tests.
+    session.subscriptionFilter().addSubscription(0L, 0x1F);
+    session
+        .subscriptionFilter()
+        .addSubscription(com.trading.engine.projections.SymbolPacker.pack("EURUSD  "), 0x1F);
+    session.entitledAccounts(java.util.Set.of("TEST-ACCT"));
     return ch;
   }
 
@@ -219,7 +234,9 @@ final class WebSocketDrainHandlerTest {
   void constructor_nullQueue_throwsNullPointerException() {
     assertThrows(
         NullPointerException.class,
-        () -> new WebSocketDrainHandler(null, egressListener, sessionManager, metrics),
+        () ->
+            new WebSocketDrainHandler(
+                null, egressListener, sessionManager, metrics, SystemNanoClock.INSTANCE),
         "Constructor with null queue must throw NullPointerException");
   }
 }

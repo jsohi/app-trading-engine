@@ -49,6 +49,9 @@ public final class WebSocketMetrics {
   // --- Authentication timers ---
   private final Timer authLatency;
 
+  // --- Drain cycle timer ---
+  private final Timer drainCycleLatency;
+
   /**
    * Create a WebSocketMetrics instance with a simple in-memory registry. Suitable for dev/test or
    * when a Prometheus endpoint is not yet wired. Production callers should use {@link
@@ -131,6 +134,11 @@ public final class WebSocketMetrics {
     this.authLatency =
         Timer.builder("websocket.auth.latency")
             .description("JWT validation latency including JWKS fetch on cache miss")
+            .register(registry);
+
+    this.drainCycleLatency =
+        Timer.builder("websocket.drain.cycle.latency")
+            .description("Wall-clock duration of a single drain cycle (queue poll + fan-out)")
             .register(registry);
   }
 
@@ -237,5 +245,14 @@ public final class WebSocketMetrics {
    */
   public Timer authLatency() {
     return authLatency;
+  }
+
+  /**
+   * Record the duration of a single drain cycle in nanoseconds.
+   *
+   * @param nanos elapsed nanoseconds from injected {@code NanoClock}
+   */
+  public void recordDrainCycleNanos(final long nanos) {
+    drainCycleLatency.record(nanos, java.util.concurrent.TimeUnit.NANOSECONDS);
   }
 }
