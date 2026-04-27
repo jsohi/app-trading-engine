@@ -280,7 +280,6 @@ public final class JwtValidator implements AutoCloseable {
    * @param claims the validated JWT claims set
    * @return the list of account codes, or empty list if the claim is missing/invalid
    */
-  @SuppressWarnings("unchecked")
   private static List<String> extractAccountsClaim(final JWTClaimsSet claims) {
     final var raw = claims.getClaim("accounts");
     if (raw instanceof List<?> list) {
@@ -313,7 +312,7 @@ public final class JwtValidator implements AutoCloseable {
    * Thrown when JWT validation fails. The message contains only the failure reason — never the
    * token content or user-identifiable claims (to prevent information leakage in logs).
    */
-  public static final class JwtValidationException extends Exception {
+  public static final class JwtValidationException extends RuntimeException {
 
     /**
      * @param message the validation failure reason (safe for logging)
