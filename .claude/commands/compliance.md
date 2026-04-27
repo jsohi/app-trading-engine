@@ -13,6 +13,7 @@ Score the codebase against 13 weighted industry metrics for a production trading
 2. **Score the ENTIRE codebase** — not just the current branch's changes. This is a health check on all production code.
 3. **Run ALL automated scans** — do not skip any scan even if you "already know" the result.
 4. **Spawn BOTH review agents** — Agent A (Documentation + Thread-Safety) and Agent B (Allocation + Autoboxing + `final var`).
+5. **NEVER estimate, guess, or approximate a score** — every number in the report must come from an actual command execution. Never write "~", "approximately", "estimated", or "about". If a scan wasn't run, report "NOT MEASURED" instead of guessing.
 
 ## Scoring Rubric — 13 Categories, 100 Points
 
