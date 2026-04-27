@@ -250,8 +250,77 @@ in another wave/issue, note that instead of duplicating the effort.
    Planned in: {APP-{N} / Wave {N} / Not yet planned}
 ────────────────────────────────────────────────────────────────
 
+REGRESSION TREND (vs last run):
+────────────────────────────────────────────────────────────────
+Read `docs/review-reports/compliance-history.json` if it exists.
+Compare each category's current score to the previous run's score.
+
+ #  │ Category                    │ Current │ Previous │ Trend
+────┼─────────────────────────────┼─────────┼──────────┼──────
+ 1  │ Test Coverage               │ XX.X%   │ XX.X%    │ +X.X% ↑ | -X.X% ↓ | ── stable
+ ...
+────────────────────────────────────────────────────────────────
+
+If ANY category decreased by more than 5%, flag as REGRESSION.
+If no previous data exists, show "First run — no baseline for comparison."
+
+After printing the report, append the current scores to
+`docs/review-reports/compliance-history.json`:
+```json
+{
+  "runs": [
+    {
+      "date": "{YYYY-MM-DD}",
+      "branch": "{branch}",
+      "issue": "APP-{N}",
+      "overall": XX.X,
+      "categories": {
+        "test_coverage": XX.X,
+        "zero_allocation": XX.X,
+        "documentation": XX.X,
+        "determinism": XX.X,
+        "collections": XX.X,
+        "autoboxing": XX.X,
+        "fix_protocol": XX.X,
+        "formatting": XX.X,
+        "logging": XX.X,
+        "clock_discipline": XX.X,
+        "final_var": XX.X,
+        "security": XX.X,
+        "thread_safety": XX.X
+      }
+    }
+  ]
+}
+```
+────────────────────────────────────────────────────────────────
+
 ACCEPTED ITEMS:     0  (dev phase: nothing should be accepted)
 OUT OF SCOPE ITEMS: 0  (dev phase: nothing should be out of scope)
+```
+
+## Phase 4: Parallel Agent Conflict Detection
+
+When running compliance as part of a multi-agent workflow (multiple implementer agents
+working on different issues in parallel), check for file-level conflicts:
+
+```bash
+# Get files changed on current branch
+git diff main...HEAD --name-only > /tmp/my_changed_files.txt
+
+# Check all other open PRs for overlapping files
+gh pr list --state open --json number,headRefName,files --jq '
+  .[] | select(.headRefName != "'$(git rev-parse --abbrev-ref HEAD)'") |
+  {pr: .number, branch: .headRefName, files: [.files[].path]}
+' > /tmp/other_pr_files.json
+```
+
+If any files overlap between the current branch and another open PR, report:
+```
+⚠ CONFLICT RISK: {N} files modified by both this branch and PR #{other_pr}
+  - {file1} (also modified in #{other_pr}: {branch_name})
+  - {file2} (also modified in #{other_pr}: {branch_name})
+  Recommendation: Merge #{lower_number} first, then rebase this branch.
 ```
 
 Print the report to the conversation AND return it so the caller (e.g., `/orchestrate`) can include it in the session report file.
