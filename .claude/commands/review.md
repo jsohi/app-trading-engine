@@ -38,6 +38,18 @@ Read every changed file in full. Check for these **blocking violations** — any
 
 1. **No heap allocation in cluster/gateway hot path** — flag any `new` keyword in files under `cluster/` or `gateway/` packages (except in snapshot restore, startup, or test code). Look for `new ArrayList`, `new HashMap`, `new String`, boxing of primitives, string concatenation with `+`, autoboxing, `String.format`, `Arrays.asList`, `List.of`, `Map.of`, `stream()`, `collect()`, lambdas that capture variables.
 
+   **Iterator and garbage-creating patterns (MUST be flagged for approval):**
+   - **Enhanced for-each** (`for (final var x : collection)`) — allocates an `Iterator` object on every invocation. On hot path, use index-based loops (`for (int i = 0; i < size; i++)`) or Agrona's reusable iterator pattern instead.
+   - **`collection.iterator()`** — allocates a new `Iterator` instance. Use Agrona's `ObjectHashSet.iterator()` only if the iterator is reset/reused; otherwise use index-based iteration or `forEachInt()`/`forEachLong()`.
+   - **`Iterable.forEach(lambda)`** — allocates a lambda/closure if it captures local variables. Acceptable only if the lambda is a non-capturing method reference to a `final` field.
+   - **`Map.entrySet()`** — allocates `Map.Entry` wrappers on every iteration for most implementations. Use Agrona's `Long2ObjectHashMap.EntryIterator` with `reset()` or iterate keys + `get()` instead.
+   - **`String.split()`, `String.substring()` (pre-JDK-7u6), `Pattern.compile()`** — allocate arrays or regex objects. Pre-compile patterns at construction; avoid split on hot path.
+   - **`toArray()`, `Arrays.copyOf()`, `Arrays.stream()`** — array allocation. Pre-allocate and reuse.
+   - **`try-with-resources`** — may allocate a suppressed-exceptions list if exceptions occur. Acceptable for I/O-bound code but flag on hot path.
+   - **Varargs calls** (`method(T... args)`) — allocate an `Object[]` per invocation. Use overloaded fixed-arity methods instead.
+
+   Any of these patterns in hot-path code (cluster/, gateway/, orchestrator/, pricing-service/ production code, excluding snapshot restore, startup, and tests) MUST be flagged. If the pattern appears on a non-hot path (startup, snapshot, diagnostic), flag as WARNING with a note that it should be documented with an `// Allocation: ...` comment justifying why it is acceptable.
+
 2. **No `java.util.*` collections in cluster/gateway modules** — flag any import of `java.util.HashMap`, `java.util.ArrayList`, `java.util.Map`, `java.util.List`, `java.util.Set`, etc. in files under cluster or gateway packages. Must use Agrona: `Object2ObjectHashMap`, `Long2ObjectHashMap`, `Int2ObjectHashMap`, `ObjectHashSet`, etc.
 
 3. **No floating-point for prices/quantities** — flag any `double`, `float`, `BigDecimal`, or `Double` used for price, quantity, amount, or notional fields. Must use `long` with fixed-point scaling (× 10⁻⁸).
