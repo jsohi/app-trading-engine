@@ -6,6 +6,7 @@ import com.nimbusds.jose.proc.BadJOSEException;
 import com.nimbusds.jose.proc.BadJWSException;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
@@ -288,7 +289,7 @@ public final class JwtValidator implements AutoCloseable {
     // 5s connect + 5s read prevents Netty event loop blocking if IdP is unresponsive.
     final int timeoutMs = 5_000;
     final var retriever =
-        new com.nimbusds.jose.util.DefaultResourceRetriever(
+        new DefaultResourceRetriever(
             timeoutMs, timeoutMs, 0); // connectTimeout, readTimeout, sizeLimit (0 = default)
 
     @SuppressWarnings("deprecation") // RemoteJWKSet deprecated in nimbus 9.35+ but
@@ -365,6 +366,8 @@ public final class JwtValidator implements AutoCloseable {
    * token content or user-identifiable claims (to prevent information leakage in logs).
    */
   public static final class JwtValidationException extends RuntimeException {
+
+    private static final long serialVersionUID = 1L;
 
     /**
      * @param message the validation failure reason (safe for logging)

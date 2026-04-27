@@ -163,6 +163,44 @@ final class JtiRevocationCacheTest {
   }
 
   @Test
+  void isRevoked_failSafeCooldown_skipsEvictionWithin1Second() {
+    final var cache = new JtiRevocationCache(3, 15, testClock);
+    cache.revoke("jti-001");
+    cache.revoke("jti-002");
+    cache.revoke("jti-003");
+    cache.revoke("jti-004"); // activates fail-safe
+    assertTrue(cache.isFailSafeActive());
+
+    // Advance past TTL
+    clockNs.addAndGet(18L * 60_000_000_000L);
+
+    // First isRevoked triggers recovery scan — should clear fail-safe
+    assertFalse(cache.isRevoked("check-1"));
+    assertFalse(cache.isFailSafeActive());
+
+    // Re-fill to trigger fail-safe again
+    cache.revoke("jti-A");
+    cache.revoke("jti-B");
+    cache.revoke("jti-C");
+    cache.revoke("jti-D"); // fail-safe again
+    assertTrue(cache.isFailSafeActive());
+
+    // Advance only 500ms (within 1s cooldown)
+    clockNs.addAndGet(500_000_000L);
+
+    // isRevoked should return true without running eviction (cooldown active)
+    assertTrue(cache.isRevoked("check-2"));
+    assertTrue(cache.isFailSafeActive()); // still active — cooldown prevented scan
+
+    // Advance past cooldown (1.5s total)
+    clockNs.addAndGet(18L * 60_000_000_000L); // also past TTL for entries
+
+    // Now isRevoked should trigger recovery
+    assertFalse(cache.isRevoked("check-3"));
+    assertFalse(cache.isFailSafeActive());
+  }
+
+  @Test
   void revoke_duplicateJti_updatesTimestamp() {
     final var cache = new JtiRevocationCache(1000, 15, testClock);
     cache.revoke("jti-001");

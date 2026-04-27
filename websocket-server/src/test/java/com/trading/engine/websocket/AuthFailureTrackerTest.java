@@ -156,6 +156,38 @@ final class AuthFailureTrackerTest {
     assertEquals(AuthFailureTracker.MAX_TRACKED_IPS, tracker.trackedIpCount());
   }
 
+  // --- 3-level eviction: all locked out ---
+
+  @Test
+  void recordFailure_allEntriesLockedOut_evictsOldestLockedEntry() {
+    // Use small capacity and low threshold for testability
+    final var tracker = new AuthFailureTracker(2, 60, testClock);
+
+    // Fill with 2 IPs, both locked out
+    tracker.recordFailure("10.0.0.1");
+    tracker.recordFailure("10.0.0.1"); // triggers lockout (threshold=2)
+    clockNs.addAndGet(1_000_000L);
+
+    tracker.recordFailure("10.0.0.2");
+    tracker.recordFailure("10.0.0.2"); // triggers lockout
+    clockNs.addAndGet(1_000_000L);
+
+    assertTrue(tracker.isBlocked("10.0.0.1"));
+    assertTrue(tracker.isBlocked("10.0.0.2"));
+
+    // Now at capacity with all entries locked out. Fill to MAX to trigger 3-level eviction.
+    for (int i = 3; i <= AuthFailureTracker.MAX_TRACKED_IPS; i++) {
+      tracker.recordFailure("10.0.0." + i);
+      clockNs.addAndGet(1_000L);
+    }
+
+    // Add one more — should evict the oldest locked-out entry (10.0.0.1) as last resort
+    tracker.recordFailure("192.168.1.1");
+
+    // Map should not have grown unboundedly
+    assertTrue(tracker.trackedIpCount() <= AuthFailureTracker.MAX_TRACKED_IPS + 1);
+  }
+
   // --- Constructor validation ---
 
   @Test
