@@ -56,6 +56,28 @@
           },
           {
             "type": "command",
+            "command": "pr=$(gh pr view --json number -q .number 2>/dev/null); [ -n \"$pr\" ] && gh pr comment \"$pr\" --body \"@gemini review\" >/dev/null 2>&1; exit 0",
+            "if": "Bash(make push:*)",
+            "async": true,
+            "timeout": 30,
+            "statusMessage": "Requesting Gemini review on PR (via make push)..."
+          },
+          {
+            "type": "prompt",
+            "if": "Bash(make push:*)",
+            "prompt": "A push just completed via make push. You MUST now poll for Gemini review and fix all findings:\n\n1. Record PUSH_TIME=$(date -u -v-30S +%%Y-%%m-%%dT%%H:%%M:%%SZ) (30s clock-skew buffer)\n2. Wait for Gemini review: poll every 30s until gemini-code-assist[bot] review appears\n3. Fetch ALL Gemini line-level comments created after PUSH_TIME\n4. Fix ALL high, medium, and low severity findings\n5. If fixes made: run spotlessApply, commit, run all 3 test suites, push again (which triggers another Gemini round)\n6. Loop until Gemini has zero actionable comments\n\nDo NOT skip this. Do NOT say 'I already pushed'. Do NOT move on without polling Gemini. This is MANDATORY after every push.",
+            "timeout": 10,
+            "statusMessage": "Enforcing Gemini review poll after push..."
+          },
+          {
+            "type": "prompt",
+            "if": "Bash(git push:*)",
+            "prompt": "A push just completed. You MUST now poll for Gemini review and fix all findings:\n\n1. Record PUSH_TIME=$(date -u -v-30S +%%Y-%%m-%%dT%%H:%%M:%%SZ) (30s clock-skew buffer)\n2. Wait for Gemini review: poll every 30s until gemini-code-assist[bot] review appears\n3. Fetch ALL Gemini line-level comments created after PUSH_TIME\n4. Fix ALL high, medium, and low severity findings\n5. If fixes made: run spotlessApply, commit, run all 3 test suites, push again (which triggers another Gemini round)\n6. Loop until Gemini has zero actionable comments\n\nDo NOT skip this. Do NOT say 'I already pushed'. Do NOT move on without polling Gemini. This is MANDATORY after every push.",
+            "timeout": 10,
+            "statusMessage": "Enforcing Gemini review poll after push..."
+          },
+          {
+            "type": "command",
             "command": "[ \"$EXIT_CODE\" -eq 0 ] && jq -nc '{decision:\"block\", reason:\"A git commit just completed. You MUST now run ALL three test suites before pushing or doing anything else:\\n\\n  1. ./gradlew test\\n  2. ./gradlew :integration-tests:test\\n  3. ./gradlew e2e\\n\\nDo NOT skip any suite. Do NOT claim they were already run. Execute each command and report results.\"}' || exit 0",
             "if": "Bash(git commit:*)",
             "timeout": 5,
