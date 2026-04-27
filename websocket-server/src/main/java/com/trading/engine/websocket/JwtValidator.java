@@ -3,6 +3,7 @@ package com.trading.engine.websocket;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.jwk.source.RemoteJWKSet;
 import com.nimbusds.jose.proc.BadJOSEException;
+import com.nimbusds.jose.proc.BadJWSException;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -13,6 +14,7 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -181,15 +183,12 @@ public final class JwtValidator implements AutoCloseable {
       throw new JwtValidationException("Unknown issuer: " + issuer);
     }
 
-    // Process (verify signature + validate standard claims)
-    final JWTClaimsSet claims;
-    try {
-      claims = processor.process(signedJwt, null);
-    } catch (final BadJOSEException e) {
-      throw new JwtValidationException("JWT verification failed: " + e.getMessage());
-    } catch (final Exception e) {
-      throw new JwtValidationException("JWT processing error: " + e.getMessage());
-    }
+    // Process (verify signature + validate standard claims).
+    // On BadJWSException (signature verification failure), force-refresh JWKS and retry once.
+    // This handles IdP key rotation where the local cache may have a stale key set.
+    // RemoteJWKSet automatically refreshes its cache on the next get() call after a failed
+    // verification, so re-processing the same JWT triggers a JWKS fetch.
+    final var claims = processWithRetry(signedJwt, processor);
 
     // Validate iat (issued-at): reject tokens issued more than 15 minutes ago or too far in future
     final var iat = claims.getIssueTime();
@@ -241,6 +240,37 @@ public final class JwtValidator implements AutoCloseable {
   }
 
   /**
+   * Process a signed JWT with one retry on signature verification failure. On {@link
+   * BadJWSException}, the processor's {@link RemoteJWKSet} will automatically refresh its JWKS
+   * cache on the next key selection attempt, so re-processing the JWT triggers a fresh fetch.
+   *
+   * @param signedJwt the parsed JWT
+   * @param processor the issuer-specific JWT processor
+   * @return the validated claims set
+   * @throws JwtValidationException if validation fails after retry
+   */
+  private static JWTClaimsSet processWithRetry(
+      final SignedJWT signedJwt, final DefaultJWTProcessor<SecurityContext> processor)
+      throws JwtValidationException {
+    try {
+      return processor.process(signedJwt, null);
+    } catch (final BadJWSException e) {
+      // Signature failure — retry once. RemoteJWKSet refreshes cache on next key selection.
+      LOG.warn("JWT signature failed, retrying with refreshed JWKS: {}", e.getMessage());
+      try {
+        return processor.process(SignedJWT.parse(signedJwt.serialize()), null);
+      } catch (final Exception retryEx) {
+        throw new JwtValidationException(
+            "JWT verification failed after JWKS refresh: " + retryEx.getMessage());
+      }
+    } catch (final BadJOSEException e) {
+      throw new JwtValidationException("JWT verification failed: " + e.getMessage());
+    } catch (final Exception e) {
+      throw new JwtValidationException("JWT processing error: " + e.getMessage());
+    }
+  }
+
+  /**
    * Build a JWT processor for a specific JWKS endpoint URL.
    *
    * @param jwksUrl the JWKS endpoint URL (HTTPS)
@@ -250,7 +280,16 @@ public final class JwtValidator implements AutoCloseable {
   private DefaultJWTProcessor<SecurityContext> buildProcessor(final String jwksUrl)
       throws MalformedURLException {
 
-    final var jwkSource = new RemoteJWKSet<SecurityContext>(URI.create(jwksUrl).toURL());
+    // Configure HTTP retriever with explicit timeouts per architecture doc Section 4:
+    // 5s connect + 5s read prevents Netty event loop blocking if IdP is unresponsive.
+    final int timeoutMs = 5_000;
+    final var retriever =
+        new com.nimbusds.jose.util.DefaultResourceRetriever(
+            timeoutMs, timeoutMs, 0); // connectTimeout, readTimeout, sizeLimit (0 = default)
+
+    @SuppressWarnings("deprecation") // RemoteJWKSet deprecated in nimbus 9.35+ but
+    // JWKSourceBuilder requires nimbus 10.7+; our version (10.3) must use RemoteJWKSet.
+    final var jwkSource = new RemoteJWKSet<SecurityContext>(URI.create(jwksUrl).toURL(), retriever);
 
     final var keySelector = new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, jwkSource);
 
@@ -264,9 +303,18 @@ public final class JwtValidator implements AutoCloseable {
     requiredClaims.add("jti");
     requiredClaims.add("iss");
 
+    // Override currentTime() to use the injected EpochNanoClock instead of System clock.
+    // This ensures exp/nbf validation uses the same clock source as iat validation.
+    final var clock = wallClock; // capture for anonymous class
     final var claimsVerifier =
         new DefaultJWTClaimsVerifier<SecurityContext>(
-            new JWTClaimsSet.Builder().audience(expectedAudience).build(), requiredClaims);
+            new JWTClaimsSet.Builder().audience(expectedAudience).build(), requiredClaims) {
+          @Override
+          protected Date currentTime() {
+            final long epochMs = TimeUnit.NANOSECONDS.toMillis(clock.nanoTime());
+            return new Date(epochMs);
+          }
+        };
     claimsVerifier.setMaxClockSkew(CLOCK_SKEW_SECONDS);
 
     processor.setJWTClaimsSetVerifier(claimsVerifier);

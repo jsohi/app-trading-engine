@@ -73,7 +73,7 @@ public final class SymbolExtractor {
   public static long extractPackedSymbol(
       final int templateId, final byte[] sbePayload, final int offset, final int length) {
 
-    if (offset < 0 || length < 0) {
+    if (offset < 0 || length < 0 || offset > sbePayload.length) {
       return UNKNOWN_SYMBOL;
     }
 
@@ -82,10 +82,10 @@ public final class SymbolExtractor {
       return UNKNOWN_SYMBOL;
     }
 
-    // Bounds check against actual array length — a caller may pass offset/length that exceed the
-    // backing array. A truncated message must not crash the drain loop for all sessions.
-    final int endIndex = offset + symbolOffset + SYMBOL_LENGTH;
-    if (endIndex > sbePayload.length || symbolOffset + SYMBOL_LENGTH > length) {
+    // Bounds check: use subtraction to avoid integer overflow on pathological offset values.
+    // (offset + symbolOffset + SYMBOL_LENGTH) could overflow int; instead check each component.
+    if (symbolOffset + SYMBOL_LENGTH > length
+        || symbolOffset + SYMBOL_LENGTH > sbePayload.length - offset) {
       return UNKNOWN_SYMBOL;
     }
 

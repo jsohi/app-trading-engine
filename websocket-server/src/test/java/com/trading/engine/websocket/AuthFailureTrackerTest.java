@@ -151,10 +151,9 @@ final class AuthFailureTrackerTest {
 
     assertEquals(AuthFailureTracker.MAX_TRACKED_IPS, tracker.trackedIpCount());
 
-    // Add one more — should evict the oldest (10.0.0.0)
+    // Add one more — should evict the oldest, keeping size at MAX_TRACKED_IPS
     tracker.recordFailure("192.168.1.1");
-    // Size should not exceed MAX_TRACKED_IPS + 1 (the new entry is added after eviction)
-    assertTrue(tracker.trackedIpCount() <= AuthFailureTracker.MAX_TRACKED_IPS + 1);
+    assertEquals(AuthFailureTracker.MAX_TRACKED_IPS, tracker.trackedIpCount());
   }
 
   // --- Constructor validation ---

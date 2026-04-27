@@ -10,9 +10,9 @@ import org.apache.logging.log4j.Logger;
 /**
  * Per-IP authentication failure rate limiter for DDoS mitigation against brute-force JWT attacks.
  *
- * <p>Tracks authentication failures per remote IP address and applies exponential lockout when the
- * failure threshold is exceeded. This prevents an attacker from consuming RSA verification CPU and
- * JWKS fetch bandwidth by sending a high rate of invalid JWTs.
+ * <p>Tracks authentication failures per remote IP address and applies a fixed-duration lockout when
+ * the failure threshold is exceeded. This prevents an attacker from consuming RSA verification CPU
+ * and JWKS fetch bandwidth by sending a high rate of invalid JWTs.
  *
  * <p><b>Lockout policy.</b> After {@code lockoutThreshold} failures within the tracking window, the
  * IP is locked out for {@code lockoutSeconds} seconds. During lockout, {@link #isBlocked(String)}
@@ -114,11 +114,15 @@ public final class AuthFailureTracker {
 
     final long nowNs = nanoClock.nanoTime();
 
-    // Evict stale entries and enforce capacity before adding
+    // Evict stale entries and enforce hard capacity before adding.
+    // Three-level eviction: (1) stale entries, (2) oldest non-locked entry, (3) oldest any entry.
+    // Level 3 prevents unbounded memory growth when all entries are locked out (DDoS scenario).
     if (entries.size() >= MAX_TRACKED_IPS) {
       evictStaleEntries(nowNs);
       if (entries.size() >= MAX_TRACKED_IPS) {
-        evictOldestEntry();
+        if (!evictOldestUnlockedEntry(nowNs)) {
+          evictOldestEntry(); // last resort: evict oldest even if locked out
+        }
       }
     }
 
@@ -154,22 +158,46 @@ public final class AuthFailureTracker {
   }
 
   /**
-   * Remove the entry with the oldest lastFailureNs (LRU eviction). Entries currently in lockout are
-   * skipped to prevent an attacker with many unique IPs from flushing locked-out IP entries.
+   * Evict the oldest non-locked-out entry (preferred eviction). Entries currently in active lockout
+   * are skipped to preserve DDoS protection for known-bad IPs.
+   *
+   * @param nowNs current monotonic time
+   * @return true if an entry was evicted, false if all entries are locked out
    */
-  private void evictOldestEntry() {
-    final long nowNs = nanoClock.nanoTime();
+  private boolean evictOldestUnlockedEntry(final long nowNs) {
     String oldestIp = null;
     long oldestNs = Long.MAX_VALUE;
 
     for (final var entry : entries.entrySet()) {
       final var rec = entry.getValue();
-      // Skip IPs currently in active lockout
       if (rec.lockoutUntilNs > 0 && nowNs < rec.lockoutUntilNs) {
-        continue;
+        continue; // skip locked-out IPs
       }
       if (rec.lastFailureNs < oldestNs) {
         oldestNs = rec.lastFailureNs;
+        oldestIp = entry.getKey();
+      }
+    }
+
+    if (oldestIp != null) {
+      entries.remove(oldestIp);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Last-resort eviction: remove the oldest entry regardless of lockout status. Called only when
+   * all entries are locked out and the map would otherwise grow unboundedly. This sacrifices one
+   * locked- out IP's tracking to prevent memory exhaustion under sustained distributed DDoS.
+   */
+  private void evictOldestEntry() {
+    String oldestIp = null;
+    long oldestNs = Long.MAX_VALUE;
+
+    for (final var entry : entries.entrySet()) {
+      if (entry.getValue().lastFailureNs < oldestNs) {
+        oldestNs = entry.getValue().lastFailureNs;
         oldestIp = entry.getKey();
       }
     }
