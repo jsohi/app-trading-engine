@@ -16,7 +16,9 @@ import io.netty.handler.ssl.util.SelfSignedCertificate;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.apache.logging.log4j.LogManager;
@@ -67,6 +69,11 @@ public final class WebSocketServerMain implements AutoCloseable {
   private final WebSocketEgressListener egressListener;
   private final WebSocketSessionManager sessionManager;
   private final WebSocketMetrics metrics;
+  private final JwtValidator jwtValidator;
+  private final JtiRevocationCache jtiCache;
+  private final UserEntitlementService entitlementService;
+  private final AuthFailureTracker authFailureTracker;
+  private final AtomicInteger pendingAuthCount = new AtomicInteger(0);
   private Channel serverChannel;
   private TransportDetector.Result transport;
 
@@ -78,18 +85,30 @@ public final class WebSocketServerMain implements AutoCloseable {
    * @param egressListener the egress listener (for entry pool returns)
    * @param sessionManager the session manager
    * @param metrics metrics instance
+   * @param jwtValidator JWT RS256 validator with JWKS caching (closed on server shutdown)
+   * @param jtiCache JTI revocation cache for replay prevention
+   * @param entitlementService account entitlement validator
+   * @param authFailureTracker per-IP auth failure rate limiter
    */
   public WebSocketServerMain(
       final WebSocketServerConfig config,
       final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
       final WebSocketEgressListener egressListener,
       final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics) {
+      final WebSocketMetrics metrics,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final UserEntitlementService entitlementService,
+      final AuthFailureTracker authFailureTracker) {
     this.config = Objects.requireNonNull(config, "config");
     this.queue = Objects.requireNonNull(queue, "queue");
     this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
+    this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
+    this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
+    this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
+    this.authFailureTracker = Objects.requireNonNull(authFailureTracker, "authFailureTracker");
   }
 
   /**
@@ -139,7 +158,21 @@ public final class WebSocketServerMain implements AutoCloseable {
                         "/", null, false, 65_536, false, true, 30_000));
                 pipeline.addLast("rate-limiter", new ConnectionRateLimiter(rateLimiterState));
                 pipeline.addLast("origin-validator", originValidator);
-                // PR 3: JwtAuthHandler + WebSocketFrameDispatcher will be added here
+                // JwtAuthHandler: per-channel one-shot auth gate. Dynamically adds
+                // WebSocketFrameDispatcher on auth success and removes itself.
+                pipeline.addLast(
+                    "auth-handler",
+                    new JwtAuthHandler(
+                        pendingAuthCount,
+                        jwtValidator,
+                        jtiCache,
+                        entitlementService,
+                        authFailureTracker,
+                        sessionManager,
+                        metrics,
+                        config,
+                        nanoClock,
+                        ForkJoinPool.commonPool()));
               }
             });
 
@@ -237,6 +270,12 @@ public final class WebSocketServerMain implements AutoCloseable {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
+    }
+    // Close JwtValidator to release JWKS HTTP client resources
+    try {
+      jwtValidator.close();
+    } catch (final Exception e) {
+      LOG.error("Error closing JwtValidator", e);
     }
     LOG.info("WebSocket server stopped");
   }

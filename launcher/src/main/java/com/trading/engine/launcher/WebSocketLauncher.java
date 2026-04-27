@@ -1,7 +1,11 @@
 package com.trading.engine.launcher;
 
 import com.trading.engine.websocket.AeronEgressThread;
+import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.EgressEntry;
+import com.trading.engine.websocket.JtiRevocationCache;
+import com.trading.engine.websocket.JwtValidator;
+import com.trading.engine.websocket.UserEntitlementService;
 import com.trading.engine.websocket.WebSocketClusterClient;
 import com.trading.engine.websocket.WebSocketEgressListener;
 import com.trading.engine.websocket.WebSocketMetrics;
@@ -114,10 +118,36 @@ public final class WebSocketLauncher {
         new AeronEgressThread(clusterClient, egressQueue, metrics, config.egressQueueCapacity());
     egressThread.start();
 
+    // 8b. Auth dependencies
+    final var jwtValidator =
+        new JwtValidator(
+            config.issuerRegistry(),
+            config.jwtAudience(),
+            com.trading.engine.messages.clock.TradingClocks.epochNanoClock());
+    final var jtiCache =
+        new JtiRevocationCache(
+            config.maxRevokedJtis(), config.revocationTtlMinutes(), SystemNanoClock.INSTANCE);
+    // TODO(APP-237): wire AccountProjection for real account lookup
+    final var entitlementService = new UserEntitlementService(code -> null);
+    final var authFailureTracker =
+        new AuthFailureTracker(
+            config.authFailureLockoutThreshold(),
+            config.authFailureLockoutSeconds(),
+            SystemNanoClock.INSTANCE);
+
     // 9. Netty WebSocket server (binds port). Wrap in try-catch to clean up the egress thread
     // and cluster client on partial failure — they are already started and must be closed.
     final var server =
-        new WebSocketServerMain(config, egressQueue, egressListener, sessionManager, metrics);
+        new WebSocketServerMain(
+            config,
+            egressQueue,
+            egressListener,
+            sessionManager,
+            metrics,
+            jwtValidator,
+            jtiCache,
+            entitlementService,
+            authFailureTracker);
     try {
       server.start();
     } catch (final Exception ex) {
