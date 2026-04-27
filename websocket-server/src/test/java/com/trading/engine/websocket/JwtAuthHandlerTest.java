@@ -323,8 +323,9 @@ final class JwtAuthHandlerTest {
     if (outbound instanceof BinaryWebSocketFrame frame) {
       frame.release();
     }
-    // Channel should be closing
+    // Channel should be closing or closed
     channel.runPendingTasks();
+    assertFalse(channel.isOpen(), "Channel should be closed after auth error");
   }
 
   private JwtValidator buildTestValidator() {

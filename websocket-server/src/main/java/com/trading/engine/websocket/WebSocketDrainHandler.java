@@ -97,7 +97,9 @@ public final class WebSocketDrainHandler {
     }
 
     if (drained > 0) {
-      // Flush all active channels once at the end of the drain cycle (for-loop, not lambda)
+      // Flush all active channels once at the end of the drain cycle (for-loop, not lambda).
+      // sessionManager.sessions() returns ConcurrentHashMap.values() — weakly-consistent
+      // iterator, safe for cross-thread iteration without external synchronization.
       for (final var session : sessionManager.sessions()) {
         final var ch = session.channel();
         if (ch.isActive()) {
