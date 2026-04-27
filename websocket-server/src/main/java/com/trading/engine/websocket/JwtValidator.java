@@ -297,12 +297,15 @@ public final class JwtValidator implements AutoCloseable {
   private DefaultJWTProcessor<SecurityContext> buildProcessor(final String jwksUrl)
       throws MalformedURLException {
 
-    // Configure HTTP retriever with explicit timeouts per architecture doc Section 4:
-    // 5s connect + 5s read prevents Netty event loop blocking if IdP is unresponsive.
+    // Configure HTTP retriever with explicit timeouts and SSRF hardening per architecture doc
+    // Section 4: 5s connect + 5s read prevents Netty event loop blocking if IdP is unresponsive.
+    // 256KB size limit prevents a compromised IdP from serving oversized JWKS responses.
+    // Redirects disabled to prevent SSRF via DNS rebinding or open-redirect attacks.
     final int timeoutMs = 5_000;
+    final int maxSizeBytes = 256_000;
+    final boolean disconnectOnRedirect = true;
     final var retriever =
-        new DefaultResourceRetriever(
-            timeoutMs, timeoutMs, 0); // connectTimeout, readTimeout, sizeLimit (0 = default)
+        new DefaultResourceRetriever(timeoutMs, timeoutMs, maxSizeBytes, disconnectOnRedirect);
 
     @SuppressWarnings("deprecation") // RemoteJWKSet deprecated in nimbus 9.35+ but
     // JWKSourceBuilder requires nimbus 10.7+; our version (10.3) must use RemoteJWKSet.

@@ -1,7 +1,5 @@
 package com.trading.engine.websocket;
 
-import java.nio.charset.StandardCharsets;
-
 /**
  * Packs and unpacks 16-byte SBE {@code char[16]} account codes into two {@code long} values for
  * zero-allocation comparison on the drain hot path.
@@ -13,9 +11,9 @@ import java.nio.charset.StandardCharsets;
  *
  * <p><b>Threading.</b> All methods are stateless static. Thread-safe.
  *
- * <p><b>Allocation.</b> {@link #packHigh(byte[], int)} and {@link #packLow(byte[], int)} are
- * zero-allocation. {@link #pack(String)} allocates a temporary byte array (auth-time only, not hot
- * path).
+ * <p><b>Allocation.</b> All methods are zero-allocation. {@link #packHigh(byte[], int)} and {@link
+ * #packLow(byte[], int)} pack from raw bytes. {@link #pack(String, long[])} packs directly from
+ * String chars without intermediate byte arrays.
  *
  * @see AccountExtractor
  */
@@ -85,26 +83,30 @@ public final class AccountPacker {
     if (accountCode == null || accountCode.isEmpty()) {
       throw new IllegalArgumentException("accountCode must not be null or empty");
     }
-    if (accountCode.length() > ACCOUNT_CODE_LENGTH) {
-      throw new IllegalArgumentException(
-          "accountCode exceeds 16 characters: " + accountCode.length());
+    final int len = accountCode.length();
+    if (len > ACCOUNT_CODE_LENGTH) {
+      throw new IllegalArgumentException("accountCode exceeds 16 characters: " + len);
     }
 
-    // Validate ASCII — non-ASCII chars would be silently replaced with '?' by getBytes(US_ASCII),
-    // producing packed values that differ from SBE wire encoding and breaking entitlement checks.
-    for (int i = 0; i < accountCode.length(); i++) {
-      if (accountCode.charAt(i) > 0x7F) {
+    // Pack directly from String chars into two longs — zero allocation.
+    // Each char is validated as ASCII (0x00-0x7F) and placed at its little-endian bit position.
+    // Chars beyond the string length are implicitly NUL (0x00) via the initial value of 0L,
+    // matching SBE char[16] NUL-padding on the wire.
+    long high = 0L;
+    long low = 0L;
+    for (int i = 0; i < len; i++) {
+      final char c = accountCode.charAt(i);
+      if (c > 0x7F) {
         throw new IllegalArgumentException(
             "accountCode contains non-ASCII character at index " + i);
       }
+      if (i < 8) {
+        high |= (c & 0xFFL) << (i * 8);
+      } else {
+        low |= (c & 0xFFL) << ((i - 8) * 8);
+      }
     }
-
-    // NUL-pad to 16 bytes to match SBE char[16] wire encoding
-    final var padded = new byte[ACCOUNT_CODE_LENGTH];
-    final var bytes = accountCode.getBytes(StandardCharsets.US_ASCII);
-    System.arraycopy(bytes, 0, padded, 0, bytes.length);
-
-    out[0] = packHigh(padded, 0);
-    out[1] = packLow(padded, 0);
+    out[0] = high;
+    out[1] = low;
   }
 }
