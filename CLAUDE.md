@@ -26,6 +26,8 @@ All Java code must follow **industry-standard documentation practices** for a pr
 ./gradlew :messages:compileJava          # Compile generated codecs
 ./gradlew :MODULE:test                   # Run tests for a specific module
 ./gradlew :integration-tests:test        # Run integration tests
+./gradlew e2e                            # Full E2E test (3-node cluster + FIX validation via scripts/e2e.sh)
+./gradlew e2eClean                       # Remove E2E artifacts (logs, cluster data, Aeron dirs) + kill stale processes
 ./gradlew spotlessApply                  # Auto-format all source files
 ./gradlew spotlessCheck                  # Check formatting (CI)
 ./gradlew jacocoTestReport               # Generate code coverage (HTML + XML)
@@ -92,6 +94,12 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **CAN allocate** — Netty pooled ByteBuf allocation acceptable; replay buffers use heap-based Agrona RingBuffer
 - **Clock**: Use `EpochNanoClock` for wall-clock timestamps (heartbeat `serverNanos`). Use `NanoClock` for monotonic timeouts (rate limiter, heartbeat tracking). Never use cluster timestamps.
 - **Receives events** via own `AeronCluster` client session (like gateway). Session state is ephemeral — not snapshotted.
+
+### Local Variable Style
+- **Reference types**: `final var x = ...` — always use `var` for reference-type local variables
+- **Primitives**: `final long x = ...` — always use explicit type with `final` for readability and to prevent silent type drift
+- **No bare locals**: all local variables must be `final` (reference types via `final var`, primitives via `final <type>`)
+- **Rationale**: consistent with exchange-core and LMAX coding style; prevents accidental reassignment; `var` for references reduces verbosity while explicit type for primitives makes zero-allocation intent self-documenting and prevents silent type drift if a return type changes from primitive to wrapper (which would introduce autoboxing)
 
 ### SBE Schema
 - Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55). **Exception:** WebSocket control templates 60-72 have no FIX equivalents — use sequential field IDs (1, 2, 3, ...) per template. Fields with FIX equivalents (e.g., symbol=55) still reuse those tag numbers.
