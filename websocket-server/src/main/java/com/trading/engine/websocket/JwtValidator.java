@@ -119,6 +119,18 @@ public final class JwtValidator implements AutoCloseable {
             "Malformed JWKS URL for issuer '" + issuer + "': " + jwksUrl, e);
       }
     }
+
+    // Preflight JWKS fetch: attempt to retrieve keys at startup to fail-fast on misconfigured
+    // endpoints. Failures are logged but do not prevent startup — the first auth attempt will
+    // retry the fetch. This catches DNS errors, unreachable hosts, and TLS issues early.
+    for (final var entry : processors.entrySet()) {
+      try {
+        entry.getValue().getJWSKeySelector().selectJWSKeys(null, null);
+      } catch (final Exception e) {
+        LOG.error(
+            "Preflight JWKS fetch failed for issuer '{}': {}", entry.getKey(), e.getMessage());
+      }
+    }
   }
 
   /**
