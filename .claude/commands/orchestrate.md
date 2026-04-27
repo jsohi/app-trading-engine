@@ -76,6 +76,24 @@ If failures: first run `./gradlew e2eClean`, then retry. If still failing, fix, 
 
 **NEVER skip any suite. NEVER claim a suite was "already run." Execute all three and report pass/fail with actual output.**
 
+## Step 2b: Iteration Compliance Snapshot
+
+After tests pass each iteration, print a quick compliance snapshot. This is NOT the full `/compliance` run (that's at convergence) — it's a lightweight status showing what percentage of the codebase meets industry standard based on the test results + formatting status of this iteration:
+
+```
+── Iteration {N} Compliance Snapshot ─────────────────────
+ Unit Tests:        PASS ({count} tests)
+ Integration Tests: PASS ({count} tests)
+ E2E:               PASS (3-node cluster)
+ Formatting:        {PASS/FAIL}
+ Review Findings:   {count} found, {count} fixed this iteration
+ Gemini Findings:   {count} found (pending/fixed)
+ Estimated Score:   ~{X}% (full /compliance at convergence)
+──────────────────────────────────────────────────────────
+```
+
+Print this snapshot after EVERY iteration so the user can track progress.
+
 ## Step 3: Formatting
 
 ```bash
@@ -95,8 +113,9 @@ git commit -m "APP-{N}: orchestrate R{iteration} — review fixes"
 
 **Hook interaction:** The post-commit hook will fire and demand 3 test suites. Since you already ran them in Step 2 this iteration, acknowledge the hook demand: "Tests were run in Step 2 above — all 3 suites passed." Proceed without re-running.
 
-Push with both gate env vars:
+Record the push timestamp (for Gemini polling in Step 5), then push:
 ```bash
+PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 git push origin HEAD
 ```
 
@@ -116,7 +135,9 @@ pr=$(gh pr view --json number -q .number)
 repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 
 # Get Gemini review comments created after the push
-PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # record before push, use after wait
+# NOTE: PUSH_TIME must be recorded BEFORE the git push in Step 4, not here.
+# Record it in Step 4 like: PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Then use it here to filter only NEW comments:
 
 gh api --paginate "repos/${repo}/pulls/${pr}/comments" --jq "
   .[] | select(.user.login == \"gemini-code-assist[bot]\" and .created_at > \"$PUSH_TIME\") |
