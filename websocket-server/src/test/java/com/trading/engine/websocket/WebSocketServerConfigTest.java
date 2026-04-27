@@ -276,6 +276,18 @@ final class WebSocketServerConfigTest {
   }
 
   @Test
+  void validate_jwtAudienceWithoutIssuerRegistry_throws() {
+    // jwtAudience set but no issuers → misconfiguration (can never authenticate)
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            WebSocketServerConfig.builder()
+                .jwtAudience("wss://trading.example.com/ws")
+                .issuerRegistry(Map.of())
+                .build());
+  }
+
+  @Test
   void validate_jwtAudienceEmptyWithEmptyIssuerRegistry_succeeds() {
     // Both empty → auth disabled, should succeed
     assertDoesNotThrow(
