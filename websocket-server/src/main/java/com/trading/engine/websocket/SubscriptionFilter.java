@@ -156,11 +156,6 @@ public final class SubscriptionFilter {
   }
 
   /**
-   * Remove a subscription for a symbol.
-   *
-   * @param packedSymbol the packed symbol to unsubscribe
-   */
-  /**
    * Add multiple subscriptions in a single batch. Rebuilds the snapshot only once at the end,
    * avoiding O(N^2) snapshot rebuilds when subscribing to many symbols at once.
    *

@@ -383,6 +383,61 @@ final class SubscriptionFilterTest {
     assertTrue(filter.matches(100, bytes, 0, len));
   }
 
+  // --- Batch subscribe ---
+
+  @Test
+  void addSubscriptionsBatch_multipleSymbols_rebuildsSnapshotOnce() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final long[] symbols = {
+      SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD"), SymbolPacker.pack("USDJPY")
+    };
+    final int[] types = {0x01, 0x04, 0x1F};
+
+    final int added = filter.addSubscriptionsBatch(symbols, types, 3);
+
+    assertEquals(3, added);
+    assertEquals(3, filter.subscriptionCount());
+  }
+
+  @Test
+  void addSubscriptionsBatch_atCapacity_returnsPartialCount() {
+    final var filter = new SubscriptionFilter(2);
+    final long[] symbols = {
+      SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD"), SymbolPacker.pack("USDJPY")
+    };
+    final int[] types = {0x01, 0x04, 0x1F};
+
+    final int added = filter.addSubscriptionsBatch(symbols, types, 3);
+
+    assertEquals(2, added); // capacity is 2
+    assertEquals(2, filter.subscriptionCount());
+  }
+
+  @Test
+  void addSubscriptionsBatch_zeroBitmaskEntries_skipped() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final long[] symbols = {SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD")};
+    final int[] types = {0x01, 0x00}; // second has zero bitmask
+
+    final int added = filter.addSubscriptionsBatch(symbols, types, 2);
+
+    assertEquals(1, added); // only first added
+    assertEquals(1, filter.subscriptionCount());
+  }
+
+  // --- Truncated payload vs no-symbol template ---
+
+  @Test
+  void matches_truncatedPayloadOnSymbolTemplate_returnsFalse() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01);
+
+    // Template 100 (OrderCreated) has a symbol field, but provide truncated payload (20 bytes)
+    assertFalse(
+        filter.matches(100, new byte[20], 0, 20),
+        "Truncated payload with symbol template should be dropped, not delivered");
+  }
+
   // --- Helper methods ---
 
   private int encodeOrderCreated(final String symbol) {
