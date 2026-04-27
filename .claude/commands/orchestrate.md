@@ -76,23 +76,63 @@ If failures: first run `./gradlew e2eClean`, then retry. If still failing, fix, 
 
 **NEVER skip any suite. NEVER claim a suite was "already run." Execute all three and report pass/fail with actual output.**
 
-## Step 2b: Iteration Compliance Snapshot
+## Step 2b: Compliance Score — MEASURED, NEVER GUESSED
 
-After tests pass each iteration, print a quick compliance snapshot. This is NOT the full `/compliance` run (that's at convergence) — it's a lightweight status showing what percentage of the codebase meets industry standard based on the test results + formatting status of this iteration:
+**After tests pass each iteration, run the FULL compliance measurement. NEVER estimate or guess a score. ALWAYS execute every scan command and report actual numbers.**
+
+Run these exact commands and report the actual output:
 
 ```
-── Iteration {N} Compliance Snapshot ─────────────────────
- Unit Tests:        PASS ({count} tests)
- Integration Tests: PASS ({count} tests)
- E2E:               PASS (3-node cluster)
- Formatting:        {PASS/FAIL}
- Review Findings:   {count} found, {count} fixed this iteration
- Gemini Findings:   {count} found (pending/fixed)
- Estimated Score:   ~{X}% (full /compliance at convergence)
+── Tools Run Every Iteration ─────────────────────────────────
+ TOOL                              │ PURPOSE                    │ CATEGORY
+──────────────────────────────────┼────────────────────────────┼──────────
+ Skill(/review)                    │ 2 fresh agents, 10 rules   │ All
+ ./gradlew test                    │ Unit tests                 │ Cat 1
+ ./gradlew :integration-tests:test │ Integration tests          │ Cat 1
+ ./gradlew e2e                     │ Full 3-node cluster E2E    │ Cat 1
+ ./gradlew spotlessApply           │ Auto-format                │ Cat 8
+ ./gradlew spotlessCheck           │ Verify format (must pass)  │ Cat 8
+ grep -rEn (determinism)           │ Cluster non-determinism    │ Cat 4
+ grep -rEn (collections)           │ java.util.* in hot-path    │ Cat 5
+ grep -rl  (logging SLF4J)        │ SLF4J anywhere             │ Cat 9
+ grep -rl  (logging Log4j2)       │ Log4j2 in hot-path         │ Cat 9
+ grep -rEn (clock)                 │ Wall-clock outside cluster │ Cat 10
+ Agent A (docs + threading)        │ Javadoc + thread-safety    │ Cat 3, 13
+ Agent B (alloc + autobox + var)   │ Zero-alloc + final var     │ Cat 2, 6, 11
+ ./gradlew dependencyCheckAnalyze  │ OWASP CVE scan             │ Cat 12
+ gh api (Gemini poll)              │ External review            │ Gemini
+──────────────────────────────────┴────────────────────────────┴──────────
+```
+
+After executing ALL scans, print the MEASURED score:
+
+```
+── Iteration {N} Compliance (MEASURED) ───────────────────
+ #  │ Category                    │ Score │ Status
+────┼─────────────────────────────┼───────┼────────
+ 1  │ Test Coverage               │ {X}%  │ {PASS/SUBPAR}
+ 2  │ Zero-Allocation             │ {X}%  │ {PASS/SUBPAR}
+ 3  │ Code Documentation          │ {X}%  │ {PASS/SUBPAR}
+ 4  │ Determinism                 │ {X}%  │ {PASS/SUBPAR}
+ 5  │ Collection Compliance       │ {X}%  │ {PASS/SUBPAR}
+ 6  │ Autoboxing Compliance       │ {X}%  │ {PASS/SUBPAR}
+ 7  │ FIX Protocol                │ {X}%  │ {PASS/SUBPAR}
+ 8  │ Formatting                  │ {X}%  │ {PASS/SUBPAR}
+ 9  │ Logging Compliance          │ {X}%  │ {PASS/SUBPAR}
+ 10 │ Clock Discipline            │ {X}%  │ {PASS/SUBPAR}
+ 11 │ final var Usage             │ {X}%  │ {PASS/SUBPAR}
+ 12 │ Security (OWASP)            │ {X}%  │ {PASS/SUBPAR}
+ 13 │ Thread-Safety Docs          │ {X}%  │ {PASS/SUBPAR}
+────┼─────────────────────────────┼───────┼────────
+    │ OVERALL                     │ {X}%  │
+──────────────────────────────────────────────────────────
+ Review:  {N} found, {N} fixed
+ Gemini:  {N} found, {N} fixed
+ Accepted: 0 | Out of scope: 0
 ──────────────────────────────────────────────────────────
 ```
 
-Print this snapshot after EVERY iteration so the user can track progress.
+**NEVER write "Estimated", "~", "approximately", or "about" for any score. Every number must come from an actual command execution.**
 
 ## Step 3: Formatting
 
