@@ -65,14 +65,14 @@ Run all of these via Bash in parallel:
 ### Category 4: Determinism (cluster module)
 ```bash
 # Search for non-deterministic operations in cluster production code
-grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new (Random|Date)\(|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new\s+([a-zA-Z0-9.]+\.)?(Random|Date)\s*\(|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
   cluster/src/main --include="*.java"
 # 0 hits = 100%, each hit = violation
 ```
 
 ### Category 5: Collection Compliance (hot-path modules)
 ```bash
-grep -rEn 'import java\.util\.(concurrent\.)?(\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|ConcurrentHashMap|CopyOnWriteArrayList|Map;|List;|Set;|Collection;)' \
+grep -rEn 'import java\.util\.(concurrent\.)?(\\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|ConcurrentHashMap|CopyOnWriteArrayList|ConcurrentLinkedQueue|LinkedBlockingQueue|ConcurrentMap|Map\s*;|List\s*;|Set\s*;|Collection\s*;)' \
   cluster/src/main gateway/src/main orchestrator/src/main pricing-service/src/main projections/src/main \
   --include="*.java"
 # 0 hits = 100%, each file with hits = violation
@@ -168,7 +168,7 @@ Sample 20 production files across ALL modules (not just hot-path). For each:
 - Count local variable declarations using `final var` (correct for references)
 - Count local variable declarations using explicit reference type (violation)
 - Count local variable declarations using explicit primitive type with `final` (correct)
-- Count non-final local variables (violation unless reassigned)
+- Count non-final local variables (violation per CLAUDE.md — all locals must be final)
 Report: total declarations sampled, correct count, violation count, compliance %.
 ```
 
@@ -234,6 +234,19 @@ ITEMS REQUIRING ACTION:
  [SUBPAR] #{N} {Category} ({X}%)
    - {file}:{line} — {description}
    Details: {count} of {total} {items} do not meet target
+────────────────────────────────────────────────────────────────
+
+PATH TO 100%:
+────────────────────────────────────────────────────────────────
+For each category below 100%, list the EXACT changes needed to reach full compliance.
+Cross-reference docs/wave-plan.md and Linear issues — if the work is already planned
+in another wave/issue, note that instead of duplicating the effort.
+
+ #{N} {Category} — currently {X}%, needs:
+   - [ ] {specific file}:{line} — {exact change required}
+   - [ ] {specific file}:{line} — {exact change required}
+   Effort estimate: {trivial / small / medium / large}
+   Planned in: {APP-{N} / Wave {N} / Not yet planned}
 ────────────────────────────────────────────────────────────────
 
 ACCEPTED ITEMS:     0  (dev phase: nothing should be accepted)

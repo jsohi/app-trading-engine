@@ -39,7 +39,7 @@ Read every changed file in full. Check for these **blocking violations** — any
 1. **No heap allocation in cluster/gateway hot path** — flag any `new` keyword in files under `cluster/` or `gateway/` packages (except in snapshot restore, startup, or test code). Look for `new ArrayList`, `new HashMap`, `new String`, boxing of primitives, string concatenation with `+`, autoboxing, `String.format`, `Arrays.asList`, `List.of`, `Map.of`, `stream()`, `collect()`, lambdas that capture variables.
 
    **Iterator and garbage-creating patterns (MUST be flagged for approval):**
-   - **Enhanced for-each** (`for (final var x : collection)`) — allocates an `Iterator` object on every invocation. On hot path, use index-based loops (`for (int i = 0; i < size; i++)`) or Agrona's reusable iterator pattern instead.
+   - **Enhanced for-each** (`for (final var x : collection)`) — allocates an `Iterator` object on every invocation when used with `Iterable` types (arrays are exempt — the compiler generates index-based access). On hot path, use index-based loops (`for (int i = 0; i < size; i++)`) or Agrona's reusable iterator pattern instead.
    - **`collection.iterator()`** — allocates a new `Iterator` instance. Use Agrona's `ObjectHashSet.iterator()` only if the iterator is reset/reused; otherwise use index-based iteration or `forEachInt()`/`forEachLong()`.
    - **`Iterable.forEach(lambda)`** — allocates a lambda/closure if it captures local variables. Acceptable only if the lambda is a non-capturing method reference to a `final` field.
    - **`Map.entrySet()`** — allocates `Map.Entry` wrappers on every iteration for most implementations. Use Agrona's `Long2ObjectHashMap.EntryIterator` with `reset()` or iterate keys + `get()` instead.

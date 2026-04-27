@@ -113,9 +113,9 @@ git commit -m "APP-{N}: orchestrate R{iteration} — review fixes"
 
 **Hook interaction:** The post-commit hook will fire and demand 3 test suites. Since you already ran them in Step 2 this iteration, acknowledge the hook demand: "Tests were run in Step 2 above — all 3 suites passed." Proceed without re-running.
 
-Record the push timestamp (for Gemini polling in Step 5), then push:
+Record the push timestamp with a 30s clock-skew buffer (for Gemini polling in Step 5), then push:
 ```bash
-PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PUSH_TIME=$(date -u -v-30S +%Y-%m-%dT%H:%M:%SZ)  # 30s buffer for clock skew
 LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 git push origin HEAD
 ```
 
