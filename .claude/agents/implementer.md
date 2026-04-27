@@ -70,7 +70,10 @@ After implementation is complete, run the FULL orchestrator loop. This is NOT op
    ```bash
    pr=$(gh pr view --json number -q .number)
    repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-   # Record PUSH_TIME before git push above, then filter only NEW comments:
+   # Record PUSH_TIME before git push (portable GNU || BSD):
+   PUSH_TIME=$(date -u -d '30 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30S +%Y-%m-%dT%H:%M:%SZ)
+   LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 git push origin HEAD
+   # Then filter only NEW comments:
    gh api --paginate "repos/${repo}/pulls/${pr}/comments" --jq "
      .[] | select(.user.login == \"gemini-code-assist[bot]\" and .created_at > \"$PUSH_TIME\") |
      {path, line, body, created_at}
