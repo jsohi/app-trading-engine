@@ -65,14 +65,14 @@ Run all of these via Bash in parallel:
 ### Category 4: Determinism (cluster module)
 ```bash
 # Search for non-deterministic operations in cluster production code
-grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new (Random|Date)|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
+grep -rEn 'System\.(currentTimeMillis|nanoTime)|Instant\.now|LocalDateTime\.now|OffsetDateTime\.now|ZonedDateTime\.now|Clock\.system(UTC|DefaultZone)|Math\.random|new (Random|Date)\(|ThreadLocalRandom|SecureRandom|UUID\.randomUUID' \
   cluster/src/main --include="*.java"
 # 0 hits = 100%, each hit = violation
 ```
 
 ### Category 5: Collection Compliance (hot-path modules)
 ```bash
-grep -rEn 'import java\.util\.(\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|Map;|List;|Set;|Collection;)' \
+grep -rEn 'import java\.util\.(concurrent\.)?(\*|HashMap|ArrayList|LinkedList|HashSet|TreeMap|LinkedHashMap|ArrayDeque|PriorityQueue|EnumSet|ConcurrentHashMap|CopyOnWriteArrayList|Map;|List;|Set;|Collection;)' \
   cluster/src/main gateway/src/main orchestrator/src/main pricing-service/src/main projections/src/main \
   --include="*.java"
 # 0 hits = 100%, each file with hits = violation
