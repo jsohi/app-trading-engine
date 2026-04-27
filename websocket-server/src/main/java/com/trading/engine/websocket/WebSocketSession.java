@@ -28,8 +28,11 @@ public final class WebSocketSession {
   private final String remoteIp;
   private String userId;
   private String jti;
-  private SubscriptionFilter subscriptionFilter;
-  // Volatile: written by channel event loop at auth time, read by drain handler event loop
+  // Volatile: written once by channel event loop at auth time, read by drain handler event loop
+  // via matches() call. SubscriptionFilter's internal volatile snapshot handles per-mutation
+  // visibility; this volatile ensures the drain handler sees the non-null reference after init.
+  private volatile SubscriptionFilter subscriptionFilter;
+  // Volatile: written by channel event loop at auth/re-auth time, read by drain handler event loop
   // during account entitlement checks via AccountExtractor.
   private volatile Set<String> entitledAccounts = Set.of();
   private long reliableSeqCounter;

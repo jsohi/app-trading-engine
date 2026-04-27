@@ -92,11 +92,13 @@ public final class WebSocketSessionManager {
       return null;
     }
 
-    // Per-IP limit
+    // Per-IP limit — atomic increment-then-check to prevent TOCTOU race where concurrent
+    // registrations from the same IP both pass the check and exceed the limit.
     final var remoteAddr = extractIp(channel);
     final var ipCounter = perIpCount.computeIfAbsent(remoteAddr, k -> new AtomicInteger(0));
-    final int ipCount = ipCounter.get();
-    if (ipCount >= config.maxConnectionsPerIp()) {
+    final int newIpCount = ipCounter.incrementAndGet();
+    if (newIpCount > config.maxConnectionsPerIp()) {
+      ipCounter.decrementAndGet(); // roll back — limit exceeded
       LOG.warn(
           "Per-IP session limit reached ({}) for {}", config.maxConnectionsPerIp(), remoteAddr);
       return null;
@@ -106,7 +108,6 @@ public final class WebSocketSessionManager {
     final var session = new WebSocketSession(channel, nowNs, remoteAddr);
     final var channelId = channel.id();
     sessions.put(channelId, session);
-    ipCounter.incrementAndGet();
     metrics.connectionOpened();
 
     LOG.info(
@@ -135,9 +136,11 @@ public final class WebSocketSessionManager {
       return true;
     }
 
+    // Atomic increment-then-check to prevent TOCTOU race on per-user limit.
     final var userCounter = perUserCount.computeIfAbsent(userId, k -> new AtomicInteger(0));
-    final int userCount = userCounter.get();
-    if (userCount >= config.maxConnectionsPerUser()) {
+    final int newUserCount = userCounter.incrementAndGet();
+    if (newUserCount > config.maxConnectionsPerUser()) {
+      userCounter.decrementAndGet(); // roll back — limit exceeded
       LOG.warn(
           "Per-user session limit reached ({}) for user {}",
           config.maxConnectionsPerUser(),
@@ -145,7 +148,6 @@ public final class WebSocketSessionManager {
       return false;
     }
     session.userId(userId);
-    userCounter.incrementAndGet();
     return true;
   }
 
@@ -164,22 +166,23 @@ public final class WebSocketSessionManager {
       return;
     }
 
-    // Decrement per-IP using the IP stored at registration time
+    // Decrement per-IP using the IP stored at registration time.
+    // updateAndGet with Math.max(0, ...) prevents negative counters on double-removal.
     final var remoteAddr = session.remoteIp();
     final var ipCounter = perIpCount.get(remoteAddr);
     if (ipCounter != null) {
-      final int remaining = ipCounter.decrementAndGet();
+      final int remaining = ipCounter.updateAndGet(v -> Math.max(0, v - 1));
       if (remaining <= 0) {
         perIpCount.remove(remoteAddr, ipCounter);
       }
     }
 
-    // Decrement per-user
+    // Decrement per-user (same negative-guard pattern)
     final var userId = session.userId();
     if (userId != null) {
       final var userCounter = perUserCount.get(userId);
       if (userCounter != null) {
-        final int remaining = userCounter.decrementAndGet();
+        final int remaining = userCounter.updateAndGet(v -> Math.max(0, v - 1));
         if (remaining <= 0) {
           perUserCount.remove(userId, userCounter);
         }
