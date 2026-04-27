@@ -8,6 +8,17 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "BEFORE exiting plan mode, you MUST complete a full plan review loop. This is automatic — do NOT skip it.\n\n1. Spawn 2 review agents IN PARALLEL on the ENTIRE plan file (not just recent changes):\n   - Agent A (Industry Design Checker): Read the full plan. Cross-check every design decision against CLAUDE.md conventions: zero-alloc hot path, Agrona collections (no java.util.*), fixed-point pricing (long x 10^-8), deterministic cluster (no wall-clock, no randomness), SBE/FIX field IDs, final var for reference types, explicit final for primitives, threading model on every class, Javadoc standards, clock discipline (injected EpochNanoClock/NanoClock), logging (GFLog hot-path, Log4j2 infra, no SLF4J). Flag anything that contradicts or omits these conventions.\n   - Agent B (Completeness + Quality): Check for: missing edge cases, missing error handling, missing test plan, missing verification steps, vague language (should/might/consider), ambiguous instructions, incomplete module coverage, no TODO/TBD without Linear issue reference.\n\n2. Fix ALL findings in the plan file. Nothing accepted, nothing out of scope (dev phase).\n\n3. Re-run BOTH agents on the ENTIRE plan (not just changes). Loop until zero findings.\n\n4. Print the plan compliance report (MEASURED, never guessed):\n   Convention Alignment | Completeness | Testability | Error Handling | Threading Model | Allocation Model | Specificity\n   Each scored PASS/SUBPAR/FAIL with actual finding counts.\n   Accepted/Out-of-scope table (MUST be empty).\n\n5. ONLY THEN proceed with ExitPlanMode.",
+            "timeout": 15,
+            "statusMessage": "Enforcing plan review gate..."
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
