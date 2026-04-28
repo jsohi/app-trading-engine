@@ -8,6 +8,20 @@
       name="description"
       content="Trading Engine browser UI — orders, positions, quotes, RFQ, event log."
     />
+    <!--
+      Permissive dev CSP. Production CSP — strict, nonce-based, with
+      `report-to` — is APP-246 (Web UI security headers). Until that
+      ships, this meta tag at least documents the intent and keeps
+      `'unsafe-inline'` scoped to dev only. Do NOT loosen further.
+      TODO(APP-246): replace with strict prod CSP delivered via HTTP
+      response header from the static-asset host (CDN config), and
+      drop `'unsafe-inline'` from script-src (Vite prod build is
+      compatible with strict CSP).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self' wss: ws:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    />
     <title>Trading Engine</title>
   </head>
   <body>

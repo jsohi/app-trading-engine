@@ -52,7 +52,11 @@ const key = readFileSync(keyPath);
 const jwks = readFileSync(jwksPath);
 
 const server = createServer({ cert, key }, (req, res) => {
-  if (req.url === "/jwks.json" && req.method === "GET") {
+  // Parse the pathname so cache-busting query strings (`/jwks.json?v=1`)
+  // and fragments don't 404. The base host is irrelevant — `req.url`
+  // is server-relative — we just need a valid base for the URL ctor.
+  const pathname = new URL(req.url ?? "/", `https://${host}`).pathname;
+  if (pathname === "/jwks.json" && req.method === "GET") {
     res.writeHead(200, {
       "content-type": "application/json",
       "cache-control": "no-store",

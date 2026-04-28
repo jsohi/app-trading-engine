@@ -42,19 +42,28 @@ const REGISTRY = new Map<string, PanelRegistration>();
 
 /**
  * Register a panel. Called from `src/panels/<name>/register.ts`
- * at module top-level. Throws on duplicate `id` to surface ordering
- * bugs early.
+ * at module top-level.
+ *
+ * Semantics:
+ *   - Same id, any shape → REPLACE (HMR-friendly: a hot-reloaded
+ *     `register.ts` evaluates fresh object literals every time;
+ *     throwing on reference inequality would kill HMR).
+ *   - Different id, same slot → THROW. Slot uniqueness is the
+ *     real merge-race the registry was built to prevent — two
+ *     parallel feature branches landing different panels in the
+ *     same slot would silently override one another at load time.
  *
  * @param registration the panel registration record.
- * @throws Error if a panel with the same id is already registered.
+ * @throws Error if a different panel is already registered in the same slot.
  */
 export function registerPanel(registration: PanelRegistration): void {
-  const existing = REGISTRY.get(registration.id);
-  if (existing && existing !== registration) {
-    throw new Error(
-      `Duplicate panel registration: ${registration.id} (slot ${registration.slot}). ` +
-        `Existing slot: ${existing.slot}.`,
-    );
+  for (const existing of REGISTRY.values()) {
+    if (existing.id !== registration.id && existing.slot === registration.slot) {
+      throw new Error(
+        `Panel slot collision: "${registration.id}" and "${existing.id}" ` +
+          `both target slot "${registration.slot}". Each slot may host at most one panel.`,
+      );
+    }
   }
   REGISTRY.set(registration.id, registration);
 }

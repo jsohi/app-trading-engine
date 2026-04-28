@@ -47,5 +47,11 @@ mkcert \
   -key-file key.pem \
   localhost 127.0.0.1 ::1
 
-echo "Wrote ${CERT_DIR}/cert.pem and ${CERT_DIR}/key.pem"
+# Lock down the private key — mkcert writes 0644 by default. Matches the
+# 0600 discipline applied to jwt-private.pem in dev-key-gen.sh: anyone on
+# the box can read 0644, and a TLS dev key signs the same dev origin the
+# JWKS server lives on.
+chmod 600 "${CERT_DIR}/key.pem"
+
+echo "Wrote ${CERT_DIR}/cert.pem and ${CERT_DIR}/key.pem (key.pem chmod 600)"
 echo "Vite dev server will pick these up automatically (precedence over basic-ssl fallback)."
