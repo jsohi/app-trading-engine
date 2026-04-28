@@ -81,6 +81,12 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   private final NanoClock nanoClock;
   private final Executor validationExecutor;
 
+  /** Singleton command dispatcher passed to the per-channel FrameDispatcher on auth success. */
+  private final CommandDispatcher commandDispatcher;
+
+  /** This channel's WriteByteCounterHandler, captured for wiring into the session post-auth. */
+  private final WriteByteCounterHandler byteCounter;
+
   // --- Per-channel state ---
   private volatile boolean authResolved;
   private ScheduledFuture<?> authTimeoutFuture;
@@ -119,6 +125,51 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       final WebSocketServerConfig config,
       final NanoClock nanoClock,
       final Executor validationExecutor) {
+    this(
+        pendingAuthCount,
+        jwtValidator,
+        jtiCache,
+        entitlementService,
+        authFailureTracker,
+        sessionManager,
+        metrics,
+        config,
+        nanoClock,
+        validationExecutor,
+        null,
+        null);
+  }
+
+  /**
+   * Create a per-channel auth handler with full APP-242 wiring.
+   *
+   * @param pendingAuthCount shared counter
+   * @param jwtValidator JWT validator
+   * @param jtiCache JTI cache
+   * @param entitlementService entitlement validator
+   * @param authFailureTracker auth failure tracker
+   * @param sessionManager session manager
+   * @param metrics metrics
+   * @param config config
+   * @param nanoClock clock
+   * @param validationExecutor JWT validation executor
+   * @param commandDispatcher singleton command dispatcher (may be null in tests)
+   * @param byteCounter the per-channel byte counter installed earlier in the pipeline (may be null
+   *     in tests)
+   */
+  public JwtAuthHandler(
+      final AtomicInteger pendingAuthCount,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final UserEntitlementService entitlementService,
+      final AuthFailureTracker authFailureTracker,
+      final WebSocketSessionManager sessionManager,
+      final WebSocketMetrics metrics,
+      final WebSocketServerConfig config,
+      final NanoClock nanoClock,
+      final Executor validationExecutor,
+      final CommandDispatcher commandDispatcher,
+      final WriteByteCounterHandler byteCounter) {
     this.pendingAuthCount = pendingAuthCount;
     this.jwtValidator = jwtValidator;
     this.jtiCache = jtiCache;
@@ -129,6 +180,8 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     this.config = config;
     this.nanoClock = nanoClock;
     this.validationExecutor = validationExecutor;
+    this.commandDispatcher = commandDispatcher;
+    this.byteCounter = byteCounter;
   }
 
   @Override
@@ -308,8 +361,16 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
 
     // 13. Store session state
     registeredSession.jti(claims.jti());
+    // originalAuthJti is set ONCE on first auth — preserved across re-auth so SessionResume can
+    // verify the original login is still valid.
+    registeredSession.originalAuthJti(claims.jti());
     registeredSession.entitledAccounts(validatedAccounts);
     registeredSession.initSubscriptionFilter(config.maxSubscriptionsPerClient());
+    registeredSession.initReliableStreamTracker(
+        config.replayBufferFrames(), config.replayBufferFrameSize(), metrics);
+    if (byteCounter != null) {
+      registeredSession.pendingBytesRef(byteCounter.pendingBytesRef());
+    }
 
     // 14. Cancel auth timeout
     cancelTimeout();
@@ -335,7 +396,8 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
                 config,
                 metrics,
                 nanoClock,
-                validationExecutor));
+                validationExecutor,
+                commandDispatcher));
 
     // 18. Remove self from pipeline
     ctx.pipeline().remove(this);

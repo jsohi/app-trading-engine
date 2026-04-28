@@ -4,6 +4,7 @@ import io.netty.channel.Channel;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Per-client WebSocket session state. Created on successful authentication, held for the grace
@@ -14,7 +15,9 @@ import java.util.UUID;
  * <p><b>Thread safety.</b> Owned by the Netty event loop thread. Not shared across threads. The
  * AeronEgressThread writes to the {@link org.agrona.concurrent.ManyToOneConcurrentArrayQueue} and
  * the drain handler reads session state — but the session object itself is only accessed from the
- * Netty thread.
+ * Netty thread. Cross-thread fields ({@link #pendingBytesRef}, {@link #replayInProgress}, {@link
+ * #dropBestEffort}) use volatile or atomic semantics where the slow-consumer scan loop (running on
+ * a different worker loop) reads them.
  *
  * <p><b>Allocation.</b> One-time allocation per session. UUID generated via {@code
  * UUID.randomUUID()} (acceptable — WebSocket server is not a cluster service).
@@ -28,6 +31,16 @@ public final class WebSocketSession {
   private final String remoteIp;
   private String userId;
   private String jti;
+
+  /**
+   * The {@code jti} captured at the FIRST successful auth on this session. Unlike {@link #jti},
+   * this field is NOT updated by {@code handleReAuth} — it preserves the original login token
+   * across re-auth so {@code SessionResume} can validate that the original login has not been
+   * revoked, even if a subsequent re-auth has rotated the current token. Cleared only when the
+   * session is removed by {@link WebSocketSessionManager#removeSession}.
+   */
+  private String originalAuthJti;
+
   // Volatile: written once by channel event loop at auth time, read by drain handler event loop
   // via matches() call. SubscriptionFilter's internal volatile snapshot handles per-mutation
   // visibility; this volatile ensures the drain handler sees the non-null reference after init.
@@ -46,9 +59,48 @@ public final class WebSocketSession {
   private long reliableSeqCounter;
   private long lastClientCmdSeqNo;
   private long lastClientHeartbeatNs;
-  private boolean replayInProgress;
+
+  /**
+   * Volatile so the SlowConsumerHandler scan loop (different worker event loop) can read it without
+   * crossing memory barriers.
+   */
+  private volatile boolean replayInProgress;
+
   private long gracePeriodStartNs;
   private boolean disconnected;
+
+  /**
+   * Reliable-stream replay buffer. Allocated lazily via {@link #initReliableStreamTracker(int, int,
+   * WebSocketMetrics)} after auth (same call site as {@link #initSubscriptionFilter}). May be
+   * {@code null} if the session is not yet authenticated.
+   */
+  private ReliableStreamTracker reliableStreamTracker;
+
+  // --- SlowConsumerHandler state (read on the slow-consumer scan loop, written by the channel
+  //     event loop). All volatile so the scan loop sees the most recent values without locks.
+  /**
+   * Reference to the {@link WriteByteCounterHandler}'s {@link AtomicLong} pendingBytes counter.
+   * Volatile because the SlowConsumerHandler scan loop runs on the drain worker event loop and
+   * reads this from a different Netty worker thread than the one that owns the channel.
+   */
+  private volatile AtomicLong pendingBytesRef;
+
+  /**
+   * Slow-consumer level last entered by this session (0 = clear, 1-4 = level ladder). Volatile
+   * because the slow-consumer scan loop reads/writes this and the drain hot path reads it (via
+   * {@link #isDropBestEffort()}).
+   */
+  private volatile int lastLagLevel;
+
+  /** Monotonic nanos when the current lag level was entered (for level-4 disconnect timer). */
+  private volatile long levelEnteredNs;
+
+  /**
+   * When {@code true}, the drain handler MUST drop best-effort messages for this session even if
+   * {@code ch.isWritable()} would otherwise permit them. Set by SlowConsumerHandler on level-2
+   * entry; cleared on transition back to level 0/1.
+   */
+  private volatile boolean dropBestEffort;
 
   /**
    * Create a new session for an authenticated client.
@@ -115,6 +167,36 @@ public final class WebSocketSession {
   }
 
   /**
+   * @return the {@code jti} captured at the FIRST successful auth, or {@code null} if not yet
+   *     captured. Unlike {@link #jti()}, this value does NOT roll on re-auth — it is the binding
+   *     used by {@code SessionResume} to verify the original login has not been revoked.
+   */
+  public String originalAuthJti() {
+    return originalAuthJti;
+  }
+
+  /**
+   * Set the original-auth jti. Idempotent — if already set, the call is a no-op (subsequent
+   * re-auths must NOT overwrite this field). Cleared only on {@link
+   * WebSocketSessionManager#removeSession}.
+   *
+   * @param jti the JWT jti from the FIRST successful auth on this session
+   */
+  public void originalAuthJti(final String jti) {
+    if (this.originalAuthJti == null) {
+      this.originalAuthJti = jti;
+    }
+  }
+
+  /**
+   * Clear the original-auth jti. Called by the session manager during removal so a new session on a
+   * recycled channel starts from a clean state.
+   */
+  public void clearOriginalAuthJti() {
+    this.originalAuthJti = null;
+  }
+
+  /**
    * @return the subscription filter for this session, or null if not yet initialized (pre-auth)
    */
   public SubscriptionFilter subscriptionFilter() {
@@ -128,6 +210,28 @@ public final class WebSocketSession {
    */
   public void initSubscriptionFilter(final int maxSubscriptions) {
     this.subscriptionFilter = new SubscriptionFilter(maxSubscriptions);
+  }
+
+  /**
+   * Initialize the reliable-stream tracker after successful authentication. Idempotent: if a
+   * tracker is already installed (e.g., on session resume), this method is a no-op.
+   *
+   * @param capacity number of frame slots; must be a positive power of two
+   * @param frameSize size of each slot in bytes; must be {@code > 16}
+   * @param metrics metrics instance for replay/eviction counters
+   */
+  public void initReliableStreamTracker(
+      final int capacity, final int frameSize, final WebSocketMetrics metrics) {
+    if (this.reliableStreamTracker == null) {
+      this.reliableStreamTracker = new ReliableStreamTracker(capacity, frameSize, metrics);
+    }
+  }
+
+  /**
+   * @return the reliable-stream tracker, or {@code null} if not initialized (pre-auth)
+   */
+  public ReliableStreamTracker reliableStreamTracker() {
+    return reliableStreamTracker;
   }
 
   /**
@@ -267,5 +371,63 @@ public final class WebSocketSession {
    */
   public long gracePeriodStartNs() {
     return gracePeriodStartNs;
+  }
+
+  // --- Slow-consumer state -------------------------------------------------
+
+  /**
+   * Install the {@link AtomicLong} byte counter that the {@link WriteByteCounterHandler} updates.
+   * Called by {@link WebSocketServerMain} during pipeline assembly.
+   *
+   * @param ref the live byte-counter reference
+   */
+  public void pendingBytesRef(final AtomicLong ref) {
+    this.pendingBytesRef = ref;
+  }
+
+  /**
+   * @return the current pending bytes (Netty outbound queue depth), or {@code 0} if no counter is
+   *     installed yet
+   */
+  public long pendingBytes() {
+    final var ref = this.pendingBytesRef;
+    return ref == null ? 0L : ref.get();
+  }
+
+  /**
+   * @return the last-classified slow-consumer level (0 = clear, 1-4 = ladder)
+   */
+  public int lastLagLevel() {
+    return lastLagLevel;
+  }
+
+  /**
+   * @param level the slow-consumer level just entered
+   * @param nowNs the monotonic time at which the level was entered
+   */
+  public void recordLagLevel(final int level, final long nowNs) {
+    this.lastLagLevel = level;
+    this.levelEnteredNs = nowNs;
+  }
+
+  /**
+   * @return the monotonic time the current lag level was entered
+   */
+  public long levelEnteredNs() {
+    return levelEnteredNs;
+  }
+
+  /**
+   * @return true if best-effort messages must be dropped for this session
+   */
+  public boolean isDropBestEffort() {
+    return dropBestEffort;
+  }
+
+  /**
+   * @param drop true to start dropping best-effort messages, false to resume normal delivery
+   */
+  public void dropBestEffort(final boolean drop) {
+    this.dropBestEffort = drop;
   }
 }

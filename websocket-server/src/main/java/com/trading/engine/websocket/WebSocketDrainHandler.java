@@ -1,8 +1,10 @@
 package com.trading.engine.websocket;
 
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import java.util.Objects;
+import java.util.UUID;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.NanoClock;
 import org.apache.logging.log4j.LogManager;
@@ -27,6 +29,10 @@ import org.apache.logging.log4j.Logger;
  * different CRC32C → can't share). Best-effort messages share one ByteBuf via {@code
  * retainedDuplicate()} (seqNo=0 for all).
  *
+ * <p><b>Slow-consumer interaction.</b> When {@link WebSocketSession#isDropBestEffort()} is true
+ * (set by {@link SlowConsumerHandler} on level-2 entry), best-effort frames are skipped for that
+ * session even if the channel reports {@code isWritable}.
+ *
  * <p><b>Threading.</b> Runs on the Netty worker event loop thread only. Not thread-safe.
  *
  * <p><b>Allocation.</b> Per-session pooled ByteBuf for reliable messages (acceptable per CLAUDE.md
@@ -40,6 +46,8 @@ public final class WebSocketDrainHandler {
   private static final Logger LOG = LogManager.getLogger(WebSocketDrainHandler.class);
 
   private final ManyToOneConcurrentArrayQueue<EgressEntry> queue;
+  private final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue;
+  private final CommandEntryPool commandEntryPool;
   private final WebSocketEgressListener egressListener;
   private final WebSocketSessionManager sessionManager;
   private final WebSocketMetrics metrics;
@@ -49,9 +57,14 @@ public final class WebSocketDrainHandler {
   private final long[] packedAccountBuf = new long[2];
 
   /**
-   * Create a drain handler.
+   * Create a drain handler with full command/ack wiring.
    *
    * @param queue the egress queue to drain
+   * @param ackQueue the back-channel queue for CommandAck(THROTTLED) entries originating from
+   *     {@link AeronEgressThread} after BACK_PRESSURED retries; may be {@code null} if no command
+   *     dispatcher is wired
+   * @param commandEntryPool the pool that owns ack entries (for release after consume); required
+   *     when ackQueue is non-null
    * @param egressListener the listener (for returning entries to the pool)
    * @param sessionManager the session manager (for iterating active sessions)
    * @param metrics metrics instance for queue depth and filter metrics
@@ -59,15 +72,40 @@ public final class WebSocketDrainHandler {
    */
   public WebSocketDrainHandler(
       final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
+      final CommandEntryPool commandEntryPool,
       final WebSocketEgressListener egressListener,
       final WebSocketSessionManager sessionManager,
       final WebSocketMetrics metrics,
       final NanoClock nanoClock) {
     this.queue = Objects.requireNonNull(queue, "queue");
+    this.ackQueue = ackQueue;
+    this.commandEntryPool = commandEntryPool;
     this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+    if (ackQueue != null && commandEntryPool == null) {
+      throw new IllegalArgumentException("commandEntryPool required when ackQueue is non-null");
+    }
+  }
+
+  /**
+   * Convenience overload for callers that don't wire the ack back-channel (e.g., legacy tests).
+   *
+   * @param queue the egress queue to drain
+   * @param egressListener the egress listener (for entry pool returns)
+   * @param sessionManager the session manager
+   * @param metrics metrics instance
+   * @param nanoClock monotonic clock
+   */
+  public WebSocketDrainHandler(
+      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
+      final WebSocketEgressListener egressListener,
+      final WebSocketSessionManager sessionManager,
+      final WebSocketMetrics metrics,
+      final NanoClock nanoClock) {
+    this(queue, null, null, egressListener, sessionManager, metrics, nanoClock);
   }
 
   /**
@@ -93,6 +131,18 @@ public final class WebSocketDrainHandler {
         drained++;
       } finally {
         egressListener.returnToPool(entry);
+      }
+    }
+
+    // Drain ack back-channel: CommandAck frames bound for a single session (carried by sessionId).
+    if (ackQueue != null && commandEntryPool != null) {
+      while ((entry = ackQueue.poll()) != null) {
+        try {
+          writeAckToTargetChannel(entry);
+          drained++;
+        } finally {
+          commandEntryPool.release(entry);
+        }
       }
     }
 
@@ -157,20 +207,49 @@ public final class WebSocketDrainHandler {
 
       metrics.filterMatched();
 
-      final var buf =
-          ch.alloc()
-              .buffer(
-                  FrameParser.RELIABLE_HEADER_SIZE + length,
-                  FrameParser.RELIABLE_HEADER_SIZE + length);
-      boolean written = false;
-      try {
-        FrameParser.encodeReliable(buf, session.nextReliableSeqNo(), bytes, 0, length);
-        ch.write(new BinaryWebSocketFrame(buf));
-        written = true;
-      } finally {
-        if (!written) {
-          buf.release();
+      writeReliableToSession(session, bytes, length, templateId, ch);
+    }
+  }
+
+  /**
+   * Encode and write a reliable frame for a single session, capturing it in the session's {@link
+   * ReliableStreamTracker} so a later gap-request or session-resume can replay it. On any failure
+   * (write throws, capture throws) the captured slot is evicted so replay never serves a frame the
+   * client did not receive (which would produce phantom-gap on next ClientAck).
+   */
+  private void writeReliableToSession(
+      final WebSocketSession session,
+      final byte[] bytes,
+      final int length,
+      final int templateId,
+      final Channel ch) {
+    final long seqNo = session.nextReliableSeqNo();
+    final var tracker = session.reliableStreamTracker();
+    final var buf =
+        ch.alloc()
+            .buffer(
+                FrameParser.RELIABLE_HEADER_SIZE + length,
+                FrameParser.RELIABLE_HEADER_SIZE + length);
+    boolean captured = false;
+    boolean written = false;
+    try {
+      FrameParser.encodeReliable(buf, seqNo, bytes, 0, length);
+      if (tracker != null) {
+        tracker.capture(seqNo, templateId, bytes, 0, length);
+        captured = true;
+      }
+      ch.write(new BinaryWebSocketFrame(buf));
+      written = true;
+    } finally {
+      if (!written) {
+        // Evict the captured slot so replay doesn't deliver a frame the client never received.
+        if (captured && tracker != null) {
+          tracker.evict(seqNo);
+        } else if (tracker != null) {
+          // capture() may have thrown — defensively evict anyway. evict() is idempotent on miss.
+          tracker.evict(seqNo);
         }
+        buf.release();
       }
     }
   }
@@ -210,6 +289,11 @@ public final class WebSocketDrainHandler {
         if (!ch.isActive() || !ch.isWritable()) {
           continue;
         }
+        // SlowConsumerHandler may have flagged this session for best-effort drop at level 2.
+        if (session.isDropBestEffort()) {
+          metrics.messageDropped();
+          continue;
+        }
 
         if (bestEffortEventBit >= 0) {
           if (!filter.matches(templateId, bytes, 0, length)) {
@@ -237,5 +321,24 @@ public final class WebSocketDrainHandler {
     } finally {
       frameBuf.release();
     }
+  }
+
+  /**
+   * Route an ack back-channel entry to the originating session. The entry's payload is a
+   * pre-encoded {@code CommandAck} SBE message; we wrap it in a reliable envelope (capturing it in
+   * the tracker) and write it to that session only.
+   */
+  private void writeAckToTargetChannel(final EgressEntry entry) {
+    final var sessionId = new UUID(entry.sessionIdMsb(), entry.sessionIdLsb());
+    final var session = sessionManager.findById(sessionId);
+    if (session == null) {
+      return; // session disappeared — drop the ack silently
+    }
+    final var ch = session.channel();
+    if (!ch.isActive()) {
+      return;
+    }
+    writeReliableToSession(session, entry.bytes(), entry.length(), entry.templateId(), ch);
+    metrics.filterMatched();
   }
 }

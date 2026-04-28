@@ -227,4 +227,24 @@ public final class WebSocketEgressListener implements EgressListener {
   public int poolAvailable() {
     return poolCount;
   }
+
+  /**
+   * Borrow a free entry from the pool for ack-back-channel use. Called from the AeronEgressThread
+   * (same thread that owns the pool); other threads must NOT call this.
+   *
+   * @return a free entry, or {@code null} if the pool is exhausted
+   */
+  public EgressEntry borrowForAck() {
+    // Drain the return queue first so recently-returned entries become available again.
+    EgressEntry returned;
+    while ((returned = returnQueue.poll()) != null) {
+      if (poolCount < pool.length) {
+        pool[poolCount++] = returned;
+      }
+    }
+    if (poolCount == 0) {
+      return null;
+    }
+    return pool[--poolCount];
+  }
 }

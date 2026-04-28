@@ -1,0 +1,73 @@
+# WebSocket server configuration. All keys default to the values in
+# WebSocketServerConfig.Builder if omitted. See WebSocketServerConfig for documentation.
+
+port: 8443
+maxConcurrentSessions: 256
+maxSubscriptionsPerClient: 100
+maxConnectionsPerIp: 10
+maxConnectionsPerUser: 4
+perIpNewConnectionsPerSec: 10
+globalNewConnectionsPerSec: 256
+sessionGracePeriodMs: 30000
+clientTimeoutMs: 20000
+
+# --- Reliable replay ring (per session) ---
+# 4096 frames * 1024 bytes = 4 MB per session; bounded by maxConcurrentSessions.
+replayBufferFrames: 4096
+replayBufferFrameSize: 1024
+
+# --- Browser command rate limits (per user, lock-free CAS bucket) ---
+commandsPerSecSustained: 50
+commandsBurst: 100
+subscriptionsPerSec: 5
+
+heartbeatIntervalMs: 5000
+snapshotFragmentSizeBytes: 16384
+
+# --- TLS — leave both empty to use a self-signed dev certificate ---
+tlsCertPath: ""
+tlsKeyPath: ""
+cipherSuites:
+  - TLS_AES_256_GCM_SHA384
+  - TLS_CHACHA20_POLY1305_SHA256
+  - TLS_AES_128_GCM_SHA256
+
+# --- Auth + revocation ---
+maxRevokedJtis: 10000
+revocationTtlMinutes: 15
+maxTokenSizeBytes: 8192
+maxPendingAuth: 64
+authFailureLockoutThreshold: 5
+authFailureLockoutSeconds: 60
+
+# --- Backpressure (Netty queue water marks) ---
+# writeBufferHighWaterMark must be >= slowConsumerLevel4Bytes so SlowConsumerHandler observes
+# level-4 entry before Netty's own isWritable flips false.
+writeBufferLowWaterMark: 131072
+writeBufferHighWaterMark: 2097152
+egressQueueCapacity: 8192
+
+# --- Slow-consumer ladder (APP-242) ---
+slowConsumerLevel1Bytes: 102400      # 100 KB — informational
+slowConsumerLevel2Bytes: 524288      # 500 KB — drop best-effort
+slowConsumerLevel3Bytes: 1048576     # 1 MB — send WebSocketError(SlowConsumer)
+slowConsumerLevel4Bytes: 2097152     # 2 MB — disconnect after dwell
+slowConsumerDisconnectMs: 5000
+
+# --- Command dispatcher (APP-242) ---
+commandQueueCapacity: 4096
+commandAckQueueCapacity: 1024
+clOrdIdDedupCapacity: 10000
+clOrdIdDedupTtlMs: 600000            # 10 minutes
+clOrdIdDedupMaxUsers: 100000
+dedupTryLockMicros: 50
+
+# Optional: configure JWT issuers + audience.
+# jwtAudience: "trading-ui"
+# issuerRegistry:
+#   "https://auth.example.com":
+#     jwksUri: "https://auth.example.com/.well-known/jwks.json"
+
+# Optional: restrict allowed WebSocket origins (empty = allow all).
+# originsWhitelist:
+#   - "https://ui.example.com"

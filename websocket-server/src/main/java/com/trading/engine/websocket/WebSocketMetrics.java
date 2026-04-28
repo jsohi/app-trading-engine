@@ -44,6 +44,23 @@ public final class WebSocketMetrics {
   private final Counter filterFiltered;
   private final Counter authLockout;
 
+  // --- Replay / command / slow-consumer counters (APP-242) ---
+  private final Counter gapRequestsReceived;
+  private final Counter sessionResumesReceived;
+  private final Counter replaysSent;
+  private final Counter replayBytesSent;
+  private final Counter commandsDispatched;
+  private final Counter commandsRejected;
+  private final Counter commandsDuplicate;
+  private final Counter commandsBackpressured;
+  private final Counter commandsAckDropped;
+  private final Counter dedupTryLockMisses;
+  private final Counter slowConsumerLevel1;
+  private final Counter slowConsumerLevel2;
+  private final Counter slowConsumerLevel3;
+  private final Counter slowConsumerLevel4;
+  private final Counter slowConsumerDisconnects;
+
   // --- Subscription filtering gauges ---
   private final AtomicInteger activeSubscriptions = new AtomicInteger();
 
@@ -140,6 +157,68 @@ public final class WebSocketMetrics {
     this.drainCycleLatency =
         Timer.builder("websocket.drain.cycle.latency")
             .description("Wall-clock duration of a single drain cycle (queue poll + fan-out)")
+            .register(registry);
+
+    // APP-242 counters
+    this.gapRequestsReceived =
+        Counter.builder("websocket.gap.requests.received")
+            .description("WebSocketGapRequest frames received from clients")
+            .register(registry);
+    this.sessionResumesReceived =
+        Counter.builder("websocket.session.resumes.received")
+            .description("SessionResume frames received from clients")
+            .register(registry);
+    this.replaysSent =
+        Counter.builder("websocket.replays.sent")
+            .description("Replay frames written to clients in response to gap/resume")
+            .register(registry);
+    this.replayBytesSent =
+        Counter.builder("websocket.replay.bytes.sent")
+            .description("Total bytes of replay payload (excluding wire envelope)")
+            .register(registry);
+    this.commandsDispatched =
+        Counter.builder("websocket.commands.dispatched")
+            .description("Commands accepted and forwarded to the cluster")
+            .register(registry);
+    this.commandsRejected =
+        Counter.builder("websocket.commands.rejected")
+            .description("Commands rejected (entitlement/template/format)")
+            .register(registry);
+    this.commandsDuplicate =
+        Counter.builder("websocket.commands.duplicate")
+            .description("Commands rejected as ClOrdID duplicates")
+            .register(registry);
+    this.commandsBackpressured =
+        Counter.builder("websocket.commands.backpressured")
+            .description("Commands throttled due to cluster BACK_PRESSURED")
+            .register(registry);
+    this.commandsAckDropped =
+        Counter.builder("websocket.commands.ack.dropped")
+            .description("CommandAck frames dropped because the ack back-channel was full")
+            .register(registry);
+    this.dedupTryLockMisses =
+        Counter.builder("websocket.dedup.trylock.misses")
+            .description("ClOrdID dedup tryLock misses (fail-open accepts)")
+            .register(registry);
+    this.slowConsumerLevel1 =
+        Counter.builder("websocket.slow.consumer.level1")
+            .description("Sessions entering slow-consumer level 1 (100KB-500KB pendingBytes)")
+            .register(registry);
+    this.slowConsumerLevel2 =
+        Counter.builder("websocket.slow.consumer.level2")
+            .description("Sessions entering slow-consumer level 2 (500KB-1MB pendingBytes)")
+            .register(registry);
+    this.slowConsumerLevel3 =
+        Counter.builder("websocket.slow.consumer.level3")
+            .description("Sessions entering slow-consumer level 3 (1MB-2MB pendingBytes)")
+            .register(registry);
+    this.slowConsumerLevel4 =
+        Counter.builder("websocket.slow.consumer.level4")
+            .description("Sessions entering slow-consumer level 4 (>2MB sustained)")
+            .register(registry);
+    this.slowConsumerDisconnects =
+        Counter.builder("websocket.slow.consumer.disconnects")
+            .description("Slow-consumer sessions disconnected after sustained level 4")
             .register(registry);
   }
 
@@ -255,5 +334,82 @@ public final class WebSocketMetrics {
    */
   public void recordDrainCycleNanos(final long nanos) {
     drainCycleLatency.record(nanos, TimeUnit.NANOSECONDS);
+  }
+
+  // --- APP-242 counter access ---
+
+  /** Record a {@code WebSocketGapRequest} arrival. */
+  public void gapRequestReceived() {
+    gapRequestsReceived.increment();
+  }
+
+  /** Record a {@code SessionResume} arrival. */
+  public void sessionResumeReceived() {
+    sessionResumesReceived.increment();
+  }
+
+  /**
+   * Record a single replay frame sent.
+   *
+   * @param payloadBytes number of payload bytes in this replayed frame (no wire envelope)
+   */
+  public void replaySent(final long payloadBytes) {
+    replaysSent.increment();
+    replayBytesSent.increment(payloadBytes);
+  }
+
+  /** Record a command successfully forwarded to the cluster. */
+  public void commandDispatched() {
+    commandsDispatched.increment();
+  }
+
+  /** Record a command rejected (entitlement, format, etc.). */
+  public void commandRejected() {
+    commandsRejected.increment();
+  }
+
+  /** Record a command rejected as a ClOrdID duplicate. */
+  public void commandDuplicate() {
+    commandsDuplicate.increment();
+  }
+
+  /** Record a command throttled due to cluster BACK_PRESSURED after retries. */
+  public void commandBackpressured() {
+    commandsBackpressured.increment();
+  }
+
+  /** Record a CommandAck dropped because the ack back-channel was full. */
+  public void commandAckDropped() {
+    commandsAckDropped.increment();
+  }
+
+  /** Record a dedup map tryLock failure (fail-open path). */
+  public void dedupTryLockMiss() {
+    dedupTryLockMisses.increment();
+  }
+
+  /** Record a slow-consumer level-1 entry. */
+  public void slowConsumerLevel1() {
+    slowConsumerLevel1.increment();
+  }
+
+  /** Record a slow-consumer level-2 entry. */
+  public void slowConsumerLevel2() {
+    slowConsumerLevel2.increment();
+  }
+
+  /** Record a slow-consumer level-3 entry. */
+  public void slowConsumerLevel3() {
+    slowConsumerLevel3.increment();
+  }
+
+  /** Record a slow-consumer level-4 entry. */
+  public void slowConsumerLevel4() {
+    slowConsumerLevel4.increment();
+  }
+
+  /** Record a slow-consumer disconnect (post-level-4 sustained). */
+  public void slowConsumerDisconnect() {
+    slowConsumerDisconnects.increment();
   }
 }

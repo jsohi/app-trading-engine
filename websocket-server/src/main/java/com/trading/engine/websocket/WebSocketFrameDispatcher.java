@@ -4,9 +4,12 @@ import com.trading.engine.messages.sbe.ClientAckDecoder;
 import com.trading.engine.messages.sbe.ClientHeartbeatDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.sbe.ReplayCompleteEncoder;
+import com.trading.engine.messages.sbe.SessionResumeDecoder;
 import com.trading.engine.messages.sbe.WebSocketAuthDecoder;
 import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
+import com.trading.engine.messages.sbe.WebSocketGapRequestDecoder;
 import com.trading.engine.messages.sbe.WebSocketSubscribeDecoder;
 import com.trading.engine.messages.sbe.WebSocketUnsubscribeDecoder;
 import com.trading.engine.projections.SymbolPacker;
@@ -17,6 +20,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import org.agrona.ExpandableArrayBuffer;
@@ -32,12 +36,15 @@ import org.apache.logging.log4j.Logger;
  * <p><b>Routing:</b>
  *
  * <ul>
+ *   <li>1 → quote request (forwarded to cluster via {@link CommandDispatcher})
+ *   <li>4 → new order single (forwarded to cluster via {@link CommandDispatcher})
+ *   <li>6 → cancel order request (forwarded to cluster via {@link CommandDispatcher})
  *   <li>60 → re-authentication (token refresh before expiry)
  *   <li>62 → subscribe (add symbol + eventType subscriptions)
  *   <li>63 → unsubscribe (remove subscriptions; empty = unsubscribe all)
  *   <li>65 → client heartbeat
- *   <li>68 → gap request (stub — TODO(APP-35): PR 4)
- *   <li>69 → session resume (stub — TODO(APP-35): PR 4)
+ *   <li>68 → gap request (replay missing reliable frames from {@link ReliableStreamTracker})
+ *   <li>69 → session resume (validate originalAuthJti, replay missed frames)
  *   <li>71 → client ack
  *   <li>default → warn + close after 3 consecutive unknowns
  * </ul>
@@ -67,6 +74,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final WebSocketMetrics metrics;
   private final NanoClock nanoClock;
   private final Executor validationExecutor;
+  private final CommandDispatcher commandDispatcher;
 
   // --- Reusable SBE decoders (per-channel, re-wrapped per channelRead) ---
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -75,6 +83,8 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final WebSocketAuthDecoder authDecoder = new WebSocketAuthDecoder();
   private final ClientHeartbeatDecoder heartbeatDecoder = new ClientHeartbeatDecoder();
   private final ClientAckDecoder ackDecoder = new ClientAckDecoder();
+  private final WebSocketGapRequestDecoder gapDecoder = new WebSocketGapRequestDecoder();
+  private final SessionResumeDecoder resumeDecoder = new SessionResumeDecoder();
   private final UnsafeBuffer wrapBuffer = new UnsafeBuffer(new byte[0]);
   private final ExpandableArrayBuffer responseBuf = new ExpandableArrayBuffer(128);
   private final byte[] symbolDecodeBuffer = new byte[8];
@@ -94,6 +104,42 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
    * @param nanoClock monotonic clock for heartbeat timestamps
    * @param validationExecutor executor for async JWT re-auth validation; use {@code
    *     ForkJoinPool.commonPool()} in production, {@code Runnable::run} in tests
+   * @param commandDispatcher dispatcher for browser-to-cluster commands
+   */
+  public WebSocketFrameDispatcher(
+      final WebSocketSessionManager sessionManager,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final UserEntitlementService entitlementService,
+      final WebSocketServerConfig config,
+      final WebSocketMetrics metrics,
+      final NanoClock nanoClock,
+      final Executor validationExecutor,
+      final CommandDispatcher commandDispatcher) {
+    this.sessionManager = sessionManager;
+    this.jwtValidator = jwtValidator;
+    this.jtiCache = jtiCache;
+    this.entitlementService = entitlementService;
+    this.config = config;
+    this.metrics = metrics;
+    this.nanoClock = nanoClock;
+    this.validationExecutor = validationExecutor;
+    this.commandDispatcher = commandDispatcher;
+  }
+
+  /**
+   * Backwards-compatible constructor that omits the {@link CommandDispatcher} (legacy tests). When
+   * a command templateId arrives via this dispatcher, it will be rejected with {@code
+   * WebSocketError(CommandRejected)} since no dispatcher is wired.
+   *
+   * @param sessionManager session manager
+   * @param jwtValidator JWT validator
+   * @param jtiCache JTI revocation cache
+   * @param entitlementService entitlement validator
+   * @param config server config
+   * @param metrics metrics instance
+   * @param nanoClock monotonic clock
+   * @param validationExecutor JWT validation executor
    */
   public WebSocketFrameDispatcher(
       final WebSocketSessionManager sessionManager,
@@ -104,14 +150,16 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       final WebSocketMetrics metrics,
       final NanoClock nanoClock,
       final Executor validationExecutor) {
-    this.sessionManager = sessionManager;
-    this.jwtValidator = jwtValidator;
-    this.jtiCache = jtiCache;
-    this.entitlementService = entitlementService;
-    this.config = config;
-    this.metrics = metrics;
-    this.nanoClock = nanoClock;
-    this.validationExecutor = validationExecutor;
+    this(
+        sessionManager,
+        jwtValidator,
+        jtiCache,
+        entitlementService,
+        config,
+        metrics,
+        nanoClock,
+        validationExecutor,
+        null);
   }
 
   @Override
@@ -166,12 +214,19 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
 
       boolean known = true;
       switch (templateId) {
+        case 1, 4, 6 -> {
+          if (commandDispatcher == null) {
+            sendError(ctx, WebSocketErrorCode.CommandRejected);
+          } else {
+            commandDispatcher.dispatch(ctx, session, content, templateId, blockLength, version);
+          }
+        }
         case 60 -> handleReAuth(ctx, session, blockLength, version);
         case 62 -> handleSubscribe(ctx, session, blockLength, version);
         case 63 -> handleUnsubscribe(session, blockLength, version);
         case 65 -> handleClientHeartbeat(session, blockLength, version);
-        case 68 -> handleGapRequest(ctx);
-        case 69 -> handleSessionResume(ctx);
+        case 68 -> handleGapRequest(ctx, session, blockLength, version);
+        case 69 -> handleSessionResume(ctx, session, blockLength, version);
         case 71 -> handleClientAck(session, blockLength, version);
         default -> {
           known = false;
@@ -256,7 +311,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
                 return;
               }
 
-              // Update session
+              // Update CURRENT jti only — originalAuthJti is preserved across re-auth.
               session.jti(claims.jti());
               session.entitledAccounts(validatedAccounts);
 
@@ -335,16 +390,190 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     session.updateHeartbeat(nanoClock.nanoTime());
   }
 
-  private void handleGapRequest(final ChannelHandlerContext ctx) {
-    // TODO(APP-35): implement with ReliableStreamTracker in PR 4
-    LOG.warn("GapRequest received but not yet implemented");
-    sendError(ctx, WebSocketErrorCode.CommandRejected);
+  /**
+   * Replay missed reliable frames in {@code [fromSeqNo, toSeqNo]} from the per-session ring buffer.
+   * Validates request bounds; missing seqNos within bounds emit {@code
+   * WebSocketError(BufferOverflow)}; out-of-bounds requests emit {@code
+   * WebSocketError(CommandRejected)}.
+   */
+  private void handleGapRequest(
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final int blockLength,
+      final int version) {
+    metrics.gapRequestReceived();
+    gapDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+    final long fromSeqNo = gapDecoder.fromSeqNo();
+    final long toSeqNo = gapDecoder.toSeqNo();
+    final var tracker = session.reliableStreamTracker();
+    if (tracker == null) {
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+    if (fromSeqNo < 1
+        || toSeqNo < 1
+        || fromSeqNo > toSeqNo
+        || toSeqNo > session.reliableSeqCounter()
+        || (toSeqNo - fromSeqNo + 1) > tracker.capacity()) {
+      LOG.warn(
+          "GapRequest out of bounds: from={} to={} highSeqNo={} sessionId={}",
+          fromSeqNo,
+          toSeqNo,
+          session.reliableSeqCounter(),
+          session.sessionId());
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+
+    replayRange(ctx, session, fromSeqNo, toSeqNo);
   }
 
-  private void handleSessionResume(final ChannelHandlerContext ctx) {
-    // TODO(APP-35): implement session resume in PR 4
-    LOG.warn("SessionResume received but not yet implemented");
-    sendError(ctx, WebSocketErrorCode.CommandRejected);
+  /**
+   * Resume an existing session within its grace window. Validates session UUID + originalAuthJti
+   * binding, then triggers a gap-replay from {@code lastSeqNo + 1} through the session's current
+   * reliableSeqCounter. The schema-enforced auth (handler runs only post-auth via the pipeline)
+   * provides the JWT validation; this handler enforces the additional binding that the client's
+   * ORIGINAL login token has not been revoked.
+   */
+  private void handleSessionResume(
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final int blockLength,
+      final int version) {
+    metrics.sessionResumeReceived();
+    resumeDecoder.wrap(wrapBuffer, MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
+    final var sessionIdDec = resumeDecoder.sessionId();
+    final long msb = sessionIdDec.mostSignificantBits();
+    final long lsb = sessionIdDec.leastSignificantBits();
+    final long lastSeqNo = resumeDecoder.lastSeqNo();
+    final var requestedId = new UUID(msb, lsb);
+
+    final var target = sessionManager.findById(requestedId);
+    if (target == null) {
+      LOG.warn("SessionResume: target sessionId={} not found", requestedId);
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+    // sub-binding: the resuming session (this `session`) must belong to the same userId as the
+    // target.
+    if (!target.userId().equals(session.userId())) {
+      LOG.warn(
+          "SessionResume: sub mismatch (target user={}, current user={})",
+          target.userId(),
+          session.userId());
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+    // originalAuthJti must still be on file and not revoked.
+    final var originalJti = target.originalAuthJti();
+    if (originalJti == null || jtiCache.isRevoked(originalJti)) {
+      LOG.warn("SessionResume: originalAuthJti missing/revoked for sessionId={}", requestedId);
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+    // Sanity bound on lastSeqNo — must not exceed what we've issued.
+    if (lastSeqNo < 0 || lastSeqNo > target.reliableSeqCounter()) {
+      LOG.warn(
+          "SessionResume: lastSeqNo={} > target.reliableSeqCounter={} for sessionId={}",
+          lastSeqNo,
+          target.reliableSeqCounter(),
+          requestedId);
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+
+    final long fromSeqNo = lastSeqNo + 1;
+    final long toSeqNo = target.reliableSeqCounter();
+    if (fromSeqNo > toSeqNo) {
+      // No gap. Send a ReplayComplete marker.
+      sendReplayComplete(ctx, session);
+      return;
+    }
+    final var tracker = target.reliableStreamTracker();
+    if (tracker == null) {
+      sendError(ctx, WebSocketErrorCode.CommandRejected);
+      return;
+    }
+    if ((toSeqNo - fromSeqNo + 1) > tracker.capacity()) {
+      // Gap exceeds replay-buffer capacity → client must re-snapshot.
+      sendError(ctx, WebSocketErrorCode.BufferOverflow);
+      return;
+    }
+    // Reuse the same machinery as gap-request, but on the target session's tracker.
+    replayRange(ctx, target, fromSeqNo, toSeqNo);
+  }
+
+  /**
+   * Inline replay loop: iterate from..to inclusive, re-encoding present frames via {@link
+   * FrameParser#encodeReliableReplay}. Missing entries emit {@code BufferOverflow}. Sends {@link
+   * ReplayCompleteEncoder} at the end. Sets {@code session.replayInProgress} for the duration so
+   * SlowConsumerHandler suppresses level-3/4 escalation.
+   */
+  private void replayRange(
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final long fromSeqNo,
+      final long toSeqNo) {
+    final var tracker = session.reliableStreamTracker();
+    final var ch = ctx.channel();
+    if (tracker == null || !ch.isActive()) {
+      return;
+    }
+    session.replayInProgress(true);
+    try {
+      // Use the tracker's payload capacity for a one-time scratch alloc per range.
+      final var scratch = new byte[tracker.payloadCapacity()];
+      for (long s = fromSeqNo; s <= toSeqNo; s++) {
+        final int len = tracker.lookupLength(s);
+        if (len < 0) {
+          // Missing — emit BufferOverflow once and stop the replay (the gap is unrecoverable).
+          sendError(ctx, WebSocketErrorCode.BufferOverflow);
+          break;
+        }
+        tracker.copyPayload(s, scratch, 0);
+        final var buf =
+            ch.alloc()
+                .buffer(
+                    FrameParser.RELIABLE_HEADER_SIZE + len, FrameParser.RELIABLE_HEADER_SIZE + len);
+        boolean written = false;
+        try {
+          FrameParser.encodeReliableReplay(buf, s, scratch, 0, len);
+          ch.write(new BinaryWebSocketFrame(buf));
+          written = true;
+          metrics.replaySent(len);
+        } finally {
+          if (!written) {
+            buf.release();
+          }
+        }
+      }
+      ch.flush();
+      sendReplayComplete(ctx, session);
+    } finally {
+      session.replayInProgress(false);
+    }
+  }
+
+  private void sendReplayComplete(final ChannelHandlerContext ctx, final WebSocketSession session) {
+    final var ch = ctx.channel();
+    if (!ch.isActive()) {
+      return;
+    }
+    final var enc = new ReplayCompleteEncoder();
+    final var header = new MessageHeaderEncoder();
+    enc.wrapAndApplyHeader(responseBuf, 0, header);
+    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final var nettyBuf = ch.alloc().buffer(encodedLen);
+    boolean written = false;
+    try {
+      nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
+      ch.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
+      written = true;
+    } finally {
+      if (!written) {
+        nettyBuf.release();
+      }
+    }
   }
 
   private void handleClientAck(

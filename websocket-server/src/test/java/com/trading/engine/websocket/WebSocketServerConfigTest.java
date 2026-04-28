@@ -43,8 +43,23 @@ final class WebSocketServerConfigTest {
     assertEquals(10_000, config.maxRevokedJtis());
     assertEquals(15, config.revocationTtlMinutes());
     assertEquals(131_072, config.writeBufferLowWaterMark());
-    assertEquals(262_144, config.writeBufferHighWaterMark());
+    // APP-242: bumped from 262_144 to 2_097_152 so SlowConsumerHandler observes level-4 entry
+    // before Netty's own isWritable flips false.
+    assertEquals(2_097_152, config.writeBufferHighWaterMark());
     assertEquals(8192, config.egressQueueCapacity());
+    // APP-242 slow-consumer ladder defaults
+    assertEquals(102_400, config.slowConsumerLevel1Bytes());
+    assertEquals(524_288, config.slowConsumerLevel2Bytes());
+    assertEquals(1_048_576, config.slowConsumerLevel3Bytes());
+    assertEquals(2_097_152, config.slowConsumerLevel4Bytes());
+    assertEquals(5_000L, config.slowConsumerDisconnectMs());
+    // APP-242 command dispatcher defaults
+    assertEquals(4096, config.commandQueueCapacity());
+    assertEquals(1024, config.commandAckQueueCapacity());
+    assertEquals(10_000, config.clOrdIdDedupCapacity());
+    assertEquals(600_000L, config.clOrdIdDedupTtlMs());
+    assertEquals(100_000, config.clOrdIdDedupMaxUsers());
+    assertEquals(50L, config.dedupTryLockMicros());
     assertEquals(3, config.cipherSuites().size());
     assertTrue(config.originsWhitelist().isEmpty());
     assertTrue(config.issuerRegistry().isEmpty());
