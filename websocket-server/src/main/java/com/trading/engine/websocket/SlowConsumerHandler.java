@@ -100,6 +100,12 @@ public final class SlowConsumerHandler {
       final int oldLevel = session.lastLagLevel();
       if (newLevel != oldLevel) {
         applyTransition(session, oldLevel, newLevel, nowNs);
+      } else if (newLevel == 3
+          && session.isSlowConsumerErrorPending()
+          && !session.isReplayInProgress()) {
+        // Replay-suppressed L3 error needs to fire now that replay has ended (Gemini round 2).
+        sendSlowConsumerError(session);
+        session.slowConsumerErrorPending(false);
       } else if (newLevel == 4) {
         // Sustained level 4 — disconnect after dwell timeout.
         final long enteredNs = session.levelEnteredNs();
@@ -139,10 +145,14 @@ public final class SlowConsumerHandler {
 
   private void applyTransition(
       final WebSocketSession session, final int oldLevel, final int newLevel, final long nowNs) {
-    // Downward transition: clear dropBestEffort if returning below L2.
+    // Downward transition: clear dropBestEffort if returning below L2; clear pending L3 error
+    // if returning below L3 (it's no longer applicable to the current state).
     if (newLevel < oldLevel) {
       if (newLevel < 2) {
         session.dropBestEffort(false);
+      }
+      if (newLevel < 3) {
+        session.slowConsumerErrorPending(false);
       }
       session.recordLagLevel(newLevel, nowNs);
       return;
@@ -167,7 +177,12 @@ public final class SlowConsumerHandler {
       }
       case 3 -> {
         metrics.slowConsumerLevel3();
-        if (!session.isReplayInProgress()) {
+        if (session.isReplayInProgress()) {
+          // Replay legitimately spikes pendingBytes; defer the error until replay completes so
+          // the resuming session is not flagged. The scan loop fires it on the next pass once
+          // isReplayInProgress() flips false (Gemini PR #62 round 2).
+          session.slowConsumerErrorPending(true);
+        } else {
           sendSlowConsumerError(session);
         }
         LOG.warn(

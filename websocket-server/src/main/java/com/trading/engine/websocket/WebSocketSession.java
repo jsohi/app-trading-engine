@@ -56,7 +56,17 @@ public final class WebSocketSession {
   private static final long[] EMPTY_PACKED_ACCOUNTS = new long[0];
 
   private volatile long[] packedEntitledAccounts = EMPTY_PACKED_ACCOUNTS;
-  private long reliableSeqCounter;
+
+  /**
+   * Reliable-stream sequence counter. {@link AtomicLong} because writers come from two threads: (a)
+   * {@code WebSocketDrainHandler} (worker event loop hosting the drain task) when fanning live
+   * cluster events into reliable frames, and (b) {@code CommandDispatcher} (channel's own worker
+   * event loop) when emitting {@code CommandAck} as a reliable frame. These workers may differ — a
+   * plain {@code long} {@code ++} is not atomic across threads and would silently produce duplicate
+   * or skipped sequence numbers (Gemini PR #62 round 2).
+   */
+  private final AtomicLong reliableSeqCounter = new AtomicLong();
+
   private long lastClientCmdSeqNo;
   private long lastClientHeartbeatNs;
 
@@ -101,6 +111,15 @@ public final class WebSocketSession {
    * entry; cleared on transition back to level 0/1.
    */
   private volatile boolean dropBestEffort;
+
+  /**
+   * When {@code true}, the level-3 SlowConsumer error frame still needs to be sent for the current
+   * L3 dwell window. Set by SlowConsumerHandler when entering L3 while replay is in progress (the
+   * error is suppressed during replay so the new session is not flagged for the legitimate
+   * replay-induced backlog). Cleared once the error has been sent or the level falls below 3
+   * (Gemini PR #62 round 2).
+   */
+  private volatile boolean slowConsumerErrorPending;
 
   /**
    * Create a new session for an authenticated client.
@@ -285,19 +304,22 @@ public final class WebSocketSession {
   }
 
   /**
-   * Assign the next reliable sequence number for outbound messages.
+   * Assign the next reliable sequence number for outbound messages. Atomic — safe under concurrent
+   * calls from the drain thread (live egress fan-out) and the channel thread (CommandAck emission).
    *
    * @return the next sequence number (pre-increment — starts at 1)
    */
   public long nextReliableSeqNo() {
-    return ++reliableSeqCounter;
+    return reliableSeqCounter.incrementAndGet();
   }
 
   /**
-   * @return the current reliable sequence counter (last assigned)
+   * @return the current reliable sequence counter (last assigned). Read with the same memory
+   *     ordering guarantees as {@link AtomicLong#get} so cross-thread observers see the latest
+   *     committed value (no torn reads of the {@code long}).
    */
   public long reliableSeqCounter() {
-    return reliableSeqCounter;
+    return reliableSeqCounter.get();
   }
 
   /**
@@ -429,5 +451,21 @@ public final class WebSocketSession {
    */
   public void dropBestEffort(final boolean drop) {
     this.dropBestEffort = drop;
+  }
+
+  /**
+   * @return true if a level-3 SlowConsumer error frame is queued for delivery once replay finishes.
+   *     See {@link #slowConsumerErrorPending}.
+   */
+  public boolean isSlowConsumerErrorPending() {
+    return slowConsumerErrorPending;
+  }
+
+  /**
+   * @param pending true to mark a deferred level-3 SlowConsumer error; false to clear it (after
+   *     send or after dropping below level 3)
+   */
+  public void slowConsumerErrorPending(final boolean pending) {
+    this.slowConsumerErrorPending = pending;
   }
 }
