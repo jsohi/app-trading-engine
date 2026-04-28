@@ -13,6 +13,7 @@ import com.trading.engine.messages.util.ByteArrayKey;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
@@ -548,21 +549,39 @@ public final class CommandDispatcher implements AutoCloseable {
   // Sweeper
   // ---------------------------------------------------------------------------
 
-  /** Periodic dedup map TTL/empty-state sweep. Runs on the {@code ws-dedup-sweeper} thread. */
+  /**
+   * Periodic dedup map TTL/empty-state sweep. Runs on the {@code ws-dedup-sweeper} thread.
+   *
+   * <p>Two-phase to avoid a reverse-lock-order deadlock with {@link #dispatch}:
+   *
+   * <ul>
+   *   <li><b>Phase 1</b> (per-user, holds only {@code state.lock}): drop expired inner entries;
+   *       record candidates whose user-state is now empty and stale.
+   *   <li><b>Phase 2</b> (holds {@code userMapLock} first, then {@code state.lock} for each
+   *       candidate — same order as dispatch): re-verify still-empty + still-stale under both locks
+   *       and CAS-remove via {@code dedupByUser.remove(key, expectedState)}. Same-key racing
+   *       inserts from dispatch are observed via {@code computeIfAbsent} returning a fresh state
+   *       object that does NOT match the candidate, so the CAS-remove is a no-op and the
+   *       freshly-touched user survives.
+   * </ul>
+   *
+   * <p>Phase 1 never holds {@code userMapLock}, so the sweeper can never block on {@code
+   * userMapLock} while holding {@code state.lock} — eliminating the deadlock cycle with dispatch
+   * (which holds {@code userMapLock} then waits on {@code state.lock}).
+   */
   private void sweep() {
     try {
       final long nowNs = nanoClock.nanoTime();
       final long ttlNs = TimeUnit.MILLISECONDS.toNanos(config.clOrdIdDedupTtlMs());
-      final var iter = dedupByUser.entrySet().iterator();
-      while (iter.hasNext()) {
-        final Map.Entry<String, UserDedupState> userEntry = iter.next();
+
+      // Phase 1: per-user inner expiry. Collect candidates for outer removal.
+      final var evictionCandidates = new ArrayList<String>();
+      for (final var userEntry : dedupByUser.entrySet()) {
         final var state = userEntry.getValue();
-        // Skip if another thread holds the user lock — try again next cycle.
         if (!state.lock.tryLock()) {
-          continue;
+          continue; // contended — retry next cycle
         }
         try {
-          // Drop expired entries.
           final Iterator<Map.Entry<ByteArrayKey, DedupEntry>> innerIter =
               state.entries.entrySet().iterator();
           while (innerIter.hasNext()) {
@@ -571,17 +590,35 @@ public final class CommandDispatcher implements AutoCloseable {
               innerIter.remove();
             }
           }
-          // If user state is empty and stale, drop the user entry too. Coordinate with
-          // dispatch()'s outer-cap path via userMapLock: prevents the sweeper from removing
-          // a state object that a Netty thread just observed and is about to use under the
-          // userMapLock-protected size+containsKey+computeIfAbsent gate.
           if (state.entries.isEmpty() && nowNs - state.lastTouchedNs > ttlNs) {
-            synchronized (userMapLock) {
-              iter.remove();
-            }
+            evictionCandidates.add(userEntry.getKey());
           }
         } finally {
           state.lock.unlock();
+        }
+      }
+
+      // Phase 2: outer-entry eviction under userMapLock. Re-verify each candidate under both
+      // locks (userMapLock → state.lock — matches dispatch's order, deadlock-free) and remove
+      // via CAS so a fresh state object inserted between phases is left untouched.
+      if (!evictionCandidates.isEmpty()) {
+        synchronized (userMapLock) {
+          for (final var candidateUserId : evictionCandidates) {
+            final var state = dedupByUser.get(candidateUserId);
+            if (state == null) {
+              continue;
+            }
+            if (!state.lock.tryLock()) {
+              continue; // contended again — retry next cycle
+            }
+            try {
+              if (state.entries.isEmpty() && nowNs - state.lastTouchedNs > ttlNs) {
+                dedupByUser.remove(candidateUserId, state);
+              }
+            } finally {
+              state.lock.unlock();
+            }
+          }
         }
       }
       // Sweep stale rate-limiter state too.
