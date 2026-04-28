@@ -1,0 +1,17 @@
+{
+  "name": "@trading/sbe-codecs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generated TypeScript decoders for trading-schema.xml. Output of :sbe-typescript-generator:generateTsCodecs.",
+  "type": "module",
+  "main": "build/generated-ts/index.ts",
+  "exports": {
+    ".": "./build/generated-ts/index.ts"
+  },
+  "files": [
+    "build/generated-ts"
+  ],
+  "scripts": {
+    "clean": "rm -rf build"
+  }
+}

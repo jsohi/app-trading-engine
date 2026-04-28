@@ -1,0 +1,22 @@
+[
+  {
+    "type": "order",
+    "clOrdId": "FIX-ORD-000001",
+    "symbol": "EUR/USD",
+    "side": "BUY",
+    "qty": "100000000000000",
+    "price": "108500000",
+    "status": "OPEN",
+    "serverNanos": "1714400000000000000"
+  },
+  {
+    "type": "order",
+    "clOrdId": "FIX-ORD-000002",
+    "symbol": "GBP/USD",
+    "side": "SELL",
+    "qty": "50000000000000",
+    "price": "126500000",
+    "status": "PARTIAL",
+    "serverNanos": "1714400000100000000"
+  }
+]

@@ -4,3 +4,8 @@
 *.xml text eol=lf
 *.md text eol=lf
 *.jar binary
+
+# Keep shell scripts and Husky hooks LF-only on Windows-via-Git-Bash
+.husky/* text eol=lf
+scripts/*.sh text eol=lf
+scripts/*.mjs text eol=lf

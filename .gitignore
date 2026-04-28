@@ -22,6 +22,15 @@ Thumbs.db
 # Node (web-ui)
 node_modules/
 dist/
+playwright-report/
+test-results/
+storybook-static/
+coverage/
+
+# Local dev secrets / certs (web-ui)
+web-ui/.env.local
+web-ui/.dev-certs/
+**/websocket-server-dev.local.yaml
 
 # Log output (Log4j2)
 logs/

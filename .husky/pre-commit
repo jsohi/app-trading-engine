@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Husky 9 pre-commit hook: run lint-staged at the workspace root.
+# Catches ESLint + Prettier violations on staged TS/TSX files before
+# they reach `git push`. Complements (does not replace) the
+# `/orchestrate` review-test-fix loop.
+npx --no-install lint-staged
