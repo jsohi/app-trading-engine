@@ -46,7 +46,13 @@ function lcg(seed: number): () => number {
 }
 
 function makePrice(rng: () => number, symbol: string, base: bigint): PriceUpdate {
-  // Drift bid/ask by ±0.0005 around `base` (in fixed-point units).
+  // Synthetic jitter around `base` in fixed-point units. The LCG returns
+  // 0..32767 (15-bit), so `rng() % 50_000` is just `rng()` — i.e. the
+  // jitter range is asymmetric: -25_000..+7_767 fixed-point units, which
+  // is roughly -0.000250..+0.000078 in float terms. Asymmetry is fine
+  // for a mock — we don't need cosmetic symmetry, only deterministic
+  // movement. Real prices (post-APP-36) come from the worker decoding
+  // SBE frames; this code never runs in production.
   const jitter = BigInt(rng() % 50_000) - 25_000n;
   const bid = base + jitter;
   const ask = bid + 200_000n; // 2.0 pip spread

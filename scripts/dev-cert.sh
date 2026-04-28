@@ -51,6 +51,12 @@ mkcert \
 # 0600 discipline applied to jwt-private.pem in dev-key-gen.sh: anyone on
 # the box can read 0644, and a TLS dev key signs the same dev origin the
 # JWKS server lives on.
+#
+# We deliberately leave cert.pem at 0644 (the default). The cert is a
+# public artefact — it gets sent in the TLS handshake to every connecting
+# client. Anyone on the box reading it learns nothing they couldn't get
+# by opening https://localhost:5173 in a browser. This asymmetry is
+# intentional and matches OpenSSL/mkcert convention.
 chmod 600 "${CERT_DIR}/key.pem"
 
 echo "Wrote ${CERT_DIR}/cert.pem and ${CERT_DIR}/key.pem (key.pem chmod 600)"

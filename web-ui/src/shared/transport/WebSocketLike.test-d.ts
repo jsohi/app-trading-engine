@@ -4,33 +4,38 @@
  * `WebSocketLike`. Catches drift before APP-36 depends on the
  * polymorphism.
  *
- * We use direct `satisfies`-style assignability checks rather than
- * `expectTypeOf` because the `toExtend` API in expect-type v1.x
- * compares the full structural shape including readonly literals
- * (CONNECTING / OPEN / CLOSING / CLOSED) which we deliberately do
- * NOT include in WebSocketLike (irrelevant to our use case).
+ * Belt-and-suspenders coverage — both approaches must hold:
+ *
+ *   1. `expectTypeOf<...>().toExtend<WebSocketLike>()` — Vitest's
+ *      type-level assertion, narrower than `toEqualTypeOf` (tolerant of
+ *      extra properties on the source). This is the plan-mandated
+ *      assertion form (see APP-254 acceptance criteria).
+ *
+ *   2. `function _acceptsX(socket: X): WebSocketLike { return socket; }`
+ *      — direct assignability via function signature. Catches the same
+ *      drift if `expectTypeOf` ever changes semantics across Vitest
+ *      majors.
  *
  * Verification path:
  *   - `tsc --noEmit -p tsconfig.json` (run via `npm run typecheck` /
- *     `:web-ui:webUiTypecheck`) compiles every file under `src/`,
- *     including this `*.test-d.ts`. The `function _acceptsX`
- *     signatures require their parameter to be assignable to
- *     `WebSocketLike`; if either `WebSocket` or `MockWebSocket`
- *     diverges, the typecheck task fails.
- *   - This file is intentionally not a Vitest test — there is no
- *     runtime body to execute. The `_acceptsX` function declarations
- *     ARE the assertions.
+ *     `:web-ui:webUiTypecheck`) compiles this `*.test-d.ts`. Either
+ *     check failing is a hard typecheck error.
+ *   - This file is intentionally not a Vitest test (no runtime body).
+ *     The declarations + `expectTypeOf` calls ARE the assertions.
  */
+import { expectTypeOf } from "vitest";
 import { type WebSocket as MockWebSocket } from "mock-socket";
 
 import { type WebSocketLike } from "./WebSocketLike";
 
-// The compile-time assignability checks: the function signatures
-// require the argument to be a `WebSocketLike`. If `WebSocket` or
-// `MockWebSocket` ever diverge, these assignments fail to compile.
-//
-// `void` references suppress unused-warning chatter without altering
-// any runtime behaviour (the file has none).
+// (1) Plan-mandated assertion form via Vitest's expectTypeOf.
+expectTypeOf<WebSocket>().toExtend<WebSocketLike>();
+expectTypeOf<InstanceType<typeof MockWebSocket>>().toExtend<WebSocketLike>();
+
+// (2) Belt-and-suspenders: function-signature assignability. The
+// signatures require their argument to be a `WebSocketLike`; if
+// `WebSocket` or `MockWebSocket` ever diverge, these assignments
+// fail to compile. `void` references suppress unused-warning chatter.
 function _acceptsNativeWebSocket(socket: WebSocket): WebSocketLike {
   return socket;
 }

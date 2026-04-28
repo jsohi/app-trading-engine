@@ -74,8 +74,13 @@ server.on("error", (err) => {
       `Port ${port} is in use. On macOS, AirPlay Receiver claims port 7000 — disable it ` +
         `(System Settings → General → AirDrop & Handoff) or override with PORT=7100.\n`,
     );
+    process.exit(1);
   }
-  throw err;
+  // Other errors: emit a clean diagnostic and exit non-zero rather
+  // than rethrow (rethrowing inside an event-emitter callback yields
+  // an uncaught-exception with a noisier stack and the same exit code).
+  process.stderr.write(`dev JWKS server error: ${err?.message ?? String(err)}\n`);
+  process.exit(1);
 });
 
 server.listen(port, host, () => {

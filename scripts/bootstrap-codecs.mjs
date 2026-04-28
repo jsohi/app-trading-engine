@@ -61,6 +61,7 @@ const warn = (msg) => process.stderr.write(`[bootstrap-codecs] ${msg}\n`);
 function ensureHuskyInit() {
   const huskyDir = join(repoRoot, ".husky");
   const huskySupport = join(huskyDir, "_");
+  const committedHook = join(huskyDir, "pre-commit");
   if (existsSync(huskySupport)) {
     return;
   }
@@ -68,12 +69,38 @@ function ensureHuskyInit() {
   if (!existsSync(join(repoRoot, ".git"))) {
     return;
   }
-  log(".husky/_ missing — running `npx husky init`");
-  const result = spawnSync("npx", ["--yes", "husky", "init"], {
-    cwd: repoRoot,
-    stdio: "inherit",
-    shell: isWindows,
-  });
+  // CRITICAL: Husky 9's `init` command writes a default `.husky/pre-commit`
+  // (containing `npm test`) and will OVERWRITE the committed hook if it
+  // exists. The committed hook runs `lint-staged` and is the contract this
+  // repo depends on. If a pre-commit hook is already checked in, we install
+  // ONLY the supporting scaffolding (`.husky/_/`) without touching the hook.
+  if (existsSync(committedHook)) {
+    log(".husky/_ missing but .husky/pre-commit committed — running `husky` (no init) to install scaffolding");
+    const result = spawnSync(
+      isWindows ? "npx.cmd" : "npx",
+      ["--yes", "husky"],
+      {
+        cwd: repoRoot,
+        stdio: "inherit",
+        shell: isWindows,
+      },
+    );
+    if (result.status !== 0) {
+      warn("`npx husky` failed — pre-commit hooks may not work");
+    }
+    return;
+  }
+  // No committed hook — `husky init` is safe.
+  log(".husky/_ + .husky/pre-commit missing — running `npx husky init`");
+  const result = spawnSync(
+    isWindows ? "npx.cmd" : "npx",
+    ["--yes", "husky", "init"],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      shell: isWindows,
+    },
+  );
   if (result.status !== 0) {
     warn("`npx husky init` failed — pre-commit hooks may not work");
   }
@@ -114,6 +141,11 @@ function runGenerator() {
   }
 
   log(`Invoking ${gradleWrapper} :sbe-typescript-generator:generateTsCodecs`);
+  // Capture stderr so we can distinguish "JDK missing" from a real generator
+  // bug. JDK-missing → write placeholder + exit 0 (per non-fatal contract).
+  // Anything else (e.g., schema syntax error after JDK install) → exit
+  // non-zero so the contributor sees the real failure rather than a stale
+  // placeholder masking it.
   const result = spawnSync(
     isWindows ? "gradlew.bat" : "./gradlew",
     [
@@ -121,7 +153,7 @@ function runGenerator() {
       "--quiet",
       "--no-daemon",
     ],
-    { cwd: repoRoot, stdio: "inherit", shell: isWindows },
+    { cwd: repoRoot, stdio: ["inherit", "inherit", "pipe"], shell: isWindows },
   );
 
   if (result.status === 0) {
@@ -129,19 +161,43 @@ function runGenerator() {
     return;
   }
 
-  // Heuristic: a missing JDK manifests as "ERROR: JAVA_HOME is not set"
-  // OR Gradle exit 1 with "Could not determine Java toolchain". We can't
-  // robustly distinguish that from a real Gradle failure without parsing
-  // stderr (which we deliberately stream to user). Soft-fail on any
-  // non-zero exit and write a placeholder; webUiTypecheck will surface
-  // a real failure with a better error if the JDK is the culprit.
-  warn(
-    "Gradle generator task failed. If this is a fresh clone without JDK 25, " +
-      "install it (https://adoptium.net/) and rerun `./gradlew " +
-      ":sbe-typescript-generator:generateTsCodecs`. Continuing with " +
-      "placeholder so `npm ci` succeeds.",
+  // Stream captured stderr so the user still sees Gradle's diagnostic.
+  const stderr = result.stderr ? result.stderr.toString() : "";
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
+
+  // JDK-missing signatures (cover Gradle wrapper + the toolchain
+  // resolver). Anything else is treated as a real generator failure.
+  const jdkMissingSignatures = [
+    "JAVA_HOME is not set",
+    "Could not find tools.jar",
+    "Could not determine Java",
+    "No matching toolchains",
+    "Cannot find a Java installation",
+    "Unsupported class file major version",
+    "ERROR: JAVA_HOME",
+  ];
+  const looksLikeMissingJdk = jdkMissingSignatures.some((sig) =>
+    stderr.includes(sig),
   );
-  writeStubIndex();
+
+  if (looksLikeMissingJdk) {
+    warn(
+      "Gradle could not locate a JDK. Install JDK 25 (https://adoptium.net/) " +
+        "and rerun `./gradlew :sbe-typescript-generator:generateTsCodecs`. " +
+        "Continuing with placeholder so `npm ci` succeeds.",
+    );
+    writeStubIndex();
+    return;
+  }
+
+  warn(
+    "Gradle generator task failed for a reason that does not look like a " +
+      "missing JDK. Surfacing the failure so it is not masked by a stale " +
+      "placeholder. Inspect the Gradle output above.",
+  );
+  process.exit(result.status ?? 1);
 }
 
 ensureHuskyInit();
