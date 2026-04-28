@@ -11,11 +11,20 @@
  *
  * Telemetry contract (versioned with this file):
  *   - Span names:
- *       web-ui.store.subscribe   — createStore subscribe
+ *       web-ui.store.subscribe   — createStore subscribe (lifecycle)
+ *       web-ui.store.error       — createStore upstream error (lifecycle;
+ *                                  emitted by the error handler in
+ *                                  createStore.ts so RUM can detect a
+ *                                  dead store before APP-245 ships)
  *       web-ui.worker.start      — Web Worker bootstrap (APP-36)
  *       web-ui.worker.error      — Web Worker error handler
  *   - Required attributes:
- *       store.name (string)      — on web-ui.store.subscribe
+ *       store.name (string)      — on web-ui.store.subscribe AND
+ *                                  web-ui.store.error
+ *       error.type (string)      — on web-ui.store.error (constructor
+ *                                  name, e.g. "TypeError", or "string"
+ *                                  for non-Error throws)
+ *       error.message (string)   — on web-ui.store.error
  *       worker.id (string)       — on web-ui.worker.*
  *
  * Hot-path discipline:
