@@ -17,6 +17,8 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -64,6 +66,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final WebSocketServerConfig config;
   private final WebSocketMetrics metrics;
   private final NanoClock nanoClock;
+  private final Executor validationExecutor;
 
   // --- Reusable SBE decoders (per-channel, re-wrapped per channelRead) ---
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -89,6 +92,8 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
    * @param config server configuration
    * @param metrics metrics instance
    * @param nanoClock monotonic clock for heartbeat timestamps
+   * @param validationExecutor executor for async JWT re-auth validation; use {@code
+   *     ForkJoinPool.commonPool()} in production, {@code Runnable::run} in tests
    */
   public WebSocketFrameDispatcher(
       final WebSocketSessionManager sessionManager,
@@ -97,7 +102,8 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       final UserEntitlementService entitlementService,
       final WebSocketServerConfig config,
       final WebSocketMetrics metrics,
-      final NanoClock nanoClock) {
+      final NanoClock nanoClock,
+      final Executor validationExecutor) {
     this.sessionManager = sessionManager;
     this.jwtValidator = jwtValidator;
     this.jtiCache = jtiCache;
@@ -105,6 +111,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     this.config = config;
     this.metrics = metrics;
     this.nanoClock = nanoClock;
+    this.validationExecutor = validationExecutor;
   }
 
   @Override
@@ -201,51 +208,55 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     authDecoder.getToken(tokenBytes, 0, tokenLen);
     final var tokenString = new String(tokenBytes, StandardCharsets.UTF_8);
 
-    // Re-auth validate() is synchronous on the event loop. This is acceptable because:
-    // (1) Re-auth is cold path (~once per 15-min token refresh, not per-connection)
-    // (2) JWKS is cached with 1-hour TTL — cache hits return in <1ms
-    // (3) Offloading to CompletableFuture adds complexity (async session mutation)
-    // If JWKS cache miss becomes a problem, offload to executor in a future PR.
-    try {
-      final var claims = jwtValidator.validate(tokenString);
+    // Offload JWT validation to avoid blocking the Netty event loop during JWKS cache miss
+    // (up to 10s). Completion callback runs on the channel's event loop via ctx.executor().
+    final var sessionUserId = session.userId();
+    CompletableFuture.supplyAsync(() -> jwtValidator.validate(tokenString), validationExecutor)
+        .whenCompleteAsync(
+            (claims, ex) -> {
+              if (ex != null) {
+                final var cause = ex.getCause() != null ? ex.getCause() : ex;
+                LOG.warn("Re-auth JWT validation failed: {}", cause.getMessage());
+                sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+                return;
+              }
 
-      // Verify sub matches existing session — prevents session hijacking
-      if (!claims.sub().equals(session.userId())) {
-        LOG.warn("Re-auth sub mismatch: session={}, token sub={}", session.userId(), claims.sub());
-        sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
-        return; // Do NOT close — existing session continues with old token
-      }
+              // Verify sub matches existing session — prevents session hijacking
+              if (!claims.sub().equals(sessionUserId)) {
+                LOG.warn(
+                    "Re-auth sub mismatch: session={}, token sub={}", sessionUserId, claims.sub());
+                sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+                return; // Do NOT close — existing session continues with old token
+              }
 
-      // Check new JTI is not revoked
-      if (jtiCache.isRevoked(claims.jti())) {
-        LOG.warn("Re-auth with revoked JTI for userId={}", session.userId());
-        sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
-        return;
-      }
+              // Check new JTI is not revoked
+              if (jtiCache.isRevoked(claims.jti())) {
+                LOG.warn("Re-auth with revoked JTI for userId={}", sessionUserId);
+                sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
+                return;
+              }
 
-      // Revoke old JTI
-      final var oldJti = session.jti();
-      if (oldJti != null && !oldJti.isEmpty()) {
-        jtiCache.revoke(oldJti);
-      }
+              // Revoke old JTI
+              final var oldJti = session.jti();
+              if (oldJti != null && !oldJti.isEmpty()) {
+                jtiCache.revoke(oldJti);
+              }
 
-      // Refresh entitlements
-      final var validatedAccounts = entitlementService.validateAccounts(claims.accounts());
-      if (validatedAccounts.isEmpty()) {
-        LOG.warn("Re-auth: all accounts invalid for userId={}", session.userId());
-        sendError(ctx, WebSocketErrorCode.AuthorizationFailed);
-        return;
-      }
+              // Refresh entitlements
+              final var validatedAccounts = entitlementService.validateAccounts(claims.accounts());
+              if (validatedAccounts.isEmpty()) {
+                LOG.warn("Re-auth: all accounts invalid for userId={}", sessionUserId);
+                sendError(ctx, WebSocketErrorCode.AuthorizationFailed);
+                return;
+              }
 
-      // Update session
-      session.jti(claims.jti());
-      session.entitledAccounts(validatedAccounts);
+              // Update session
+              session.jti(claims.jti());
+              session.entitledAccounts(validatedAccounts);
 
-      LOG.info("Re-auth success: userId={}", session.userId());
-    } catch (final JwtValidator.JwtValidationException e) {
-      LOG.warn("Re-auth JWT validation failed: {}", e.getMessage());
-      sendError(ctx, WebSocketErrorCode.AuthenticationFailed);
-    }
+              LOG.info("Re-auth success: userId={}", sessionUserId);
+            },
+            ctx.executor());
   }
 
   private void handleSubscribe(

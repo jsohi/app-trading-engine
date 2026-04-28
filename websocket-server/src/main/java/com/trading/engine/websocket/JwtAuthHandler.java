@@ -334,7 +334,8 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
                 entitlementService,
                 config,
                 metrics,
-                nanoClock));
+                nanoClock,
+                validationExecutor));
 
     // 18. Remove self from pipeline
     ctx.pipeline().remove(this);
