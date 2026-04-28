@@ -81,6 +81,21 @@ public final class WebSocketServerConfig {
   private final int writeBufferHighWaterMark;
   private final int egressQueueCapacity;
 
+  // --- Slow consumer thresholds (APP-242) ---
+  private final int slowConsumerLevel1Bytes;
+  private final int slowConsumerLevel2Bytes;
+  private final int slowConsumerLevel3Bytes;
+  private final int slowConsumerLevel4Bytes;
+  private final long slowConsumerDisconnectMs;
+
+  // --- Command dispatcher (APP-242) ---
+  private final int commandQueueCapacity;
+  private final int commandAckQueueCapacity;
+  private final int clOrdIdDedupCapacity;
+  private final long clOrdIdDedupTtlMs;
+  private final int clOrdIdDedupMaxUsers;
+  private final long dedupTryLockMicros;
+
   // --- Issuer Registry ---
   private final Map<String, String> issuerRegistry;
 
@@ -110,6 +125,17 @@ public final class WebSocketServerConfig {
     this.writeBufferLowWaterMark = b.writeBufferLowWaterMark;
     this.writeBufferHighWaterMark = b.writeBufferHighWaterMark;
     this.egressQueueCapacity = b.egressQueueCapacity;
+    this.slowConsumerLevel1Bytes = b.slowConsumerLevel1Bytes;
+    this.slowConsumerLevel2Bytes = b.slowConsumerLevel2Bytes;
+    this.slowConsumerLevel3Bytes = b.slowConsumerLevel3Bytes;
+    this.slowConsumerLevel4Bytes = b.slowConsumerLevel4Bytes;
+    this.slowConsumerDisconnectMs = b.slowConsumerDisconnectMs;
+    this.commandQueueCapacity = b.commandQueueCapacity;
+    this.commandAckQueueCapacity = b.commandAckQueueCapacity;
+    this.clOrdIdDedupCapacity = b.clOrdIdDedupCapacity;
+    this.clOrdIdDedupTtlMs = b.clOrdIdDedupTtlMs;
+    this.clOrdIdDedupMaxUsers = b.clOrdIdDedupMaxUsers;
+    this.dedupTryLockMicros = b.dedupTryLockMicros;
     this.jwtAudience = Objects.requireNonNull(b.jwtAudience, "jwtAudience");
     this.maxTokenSizeBytes = b.maxTokenSizeBytes;
     this.maxPendingAuth = b.maxPendingAuth;
@@ -168,6 +194,52 @@ public final class WebSocketServerConfig {
     require(
         egressQueueCapacity > 0 && Integer.bitCount(egressQueueCapacity) == 1,
         "egressQueueCapacity must be a power of 2, got: " + egressQueueCapacity);
+
+    // --- Slow consumer ladder (strictly increasing) ---
+    require(slowConsumerLevel1Bytes > 0, "slowConsumerLevel1Bytes must be > 0");
+    require(
+        slowConsumerLevel2Bytes > slowConsumerLevel1Bytes,
+        "slowConsumerLevel2Bytes ("
+            + slowConsumerLevel2Bytes
+            + ") must be > slowConsumerLevel1Bytes ("
+            + slowConsumerLevel1Bytes
+            + ")");
+    require(
+        slowConsumerLevel3Bytes > slowConsumerLevel2Bytes,
+        "slowConsumerLevel3Bytes ("
+            + slowConsumerLevel3Bytes
+            + ") must be > slowConsumerLevel2Bytes ("
+            + slowConsumerLevel2Bytes
+            + ")");
+    require(
+        slowConsumerLevel4Bytes > slowConsumerLevel3Bytes,
+        "slowConsumerLevel4Bytes ("
+            + slowConsumerLevel4Bytes
+            + ") must be > slowConsumerLevel3Bytes ("
+            + slowConsumerLevel3Bytes
+            + ")");
+    require(slowConsumerDisconnectMs > 0, "slowConsumerDisconnectMs must be > 0");
+    // Netty must accept writes up to the level-4 threshold so SlowConsumerHandler can observe
+    // the level transition before Netty's own isWritable flips false.
+    require(
+        writeBufferHighWaterMark >= slowConsumerLevel4Bytes,
+        "writeBufferHighWaterMark ("
+            + writeBufferHighWaterMark
+            + ") must be >= slowConsumerLevel4Bytes ("
+            + slowConsumerLevel4Bytes
+            + ")");
+
+    // --- Command dispatcher ---
+    require(
+        commandQueueCapacity > 0 && Integer.bitCount(commandQueueCapacity) == 1,
+        "commandQueueCapacity must be a power of 2, got: " + commandQueueCapacity);
+    require(
+        commandAckQueueCapacity > 0 && Integer.bitCount(commandAckQueueCapacity) == 1,
+        "commandAckQueueCapacity must be a power of 2, got: " + commandAckQueueCapacity);
+    require(clOrdIdDedupCapacity > 0, "clOrdIdDedupCapacity must be > 0");
+    require(clOrdIdDedupTtlMs > 0, "clOrdIdDedupTtlMs must be > 0");
+    require(clOrdIdDedupMaxUsers > 0, "clOrdIdDedupMaxUsers must be > 0");
+    require(dedupTryLockMicros > 0, "dedupTryLockMicros must be > 0");
     require(
         perIpNewConnectionsPerSec <= globalNewConnectionsPerSec,
         "perIpNewConnectionsPerSec ("
@@ -274,6 +346,17 @@ public final class WebSocketServerConfig {
     ifPresent(root, "writeBufferLowWaterMark", Integer.class, b::writeBufferLowWaterMark);
     ifPresent(root, "writeBufferHighWaterMark", Integer.class, b::writeBufferHighWaterMark);
     ifPresent(root, "egressQueueCapacity", Integer.class, b::egressQueueCapacity);
+    ifPresent(root, "slowConsumerLevel1Bytes", Integer.class, b::slowConsumerLevel1Bytes);
+    ifPresent(root, "slowConsumerLevel2Bytes", Integer.class, b::slowConsumerLevel2Bytes);
+    ifPresent(root, "slowConsumerLevel3Bytes", Integer.class, b::slowConsumerLevel3Bytes);
+    ifPresent(root, "slowConsumerLevel4Bytes", Integer.class, b::slowConsumerLevel4Bytes);
+    ifPresent(root, "slowConsumerDisconnectMs", Long.class, b::slowConsumerDisconnectMs);
+    ifPresent(root, "commandQueueCapacity", Integer.class, b::commandQueueCapacity);
+    ifPresent(root, "commandAckQueueCapacity", Integer.class, b::commandAckQueueCapacity);
+    ifPresent(root, "clOrdIdDedupCapacity", Integer.class, b::clOrdIdDedupCapacity);
+    ifPresent(root, "clOrdIdDedupTtlMs", Long.class, b::clOrdIdDedupTtlMs);
+    ifPresent(root, "clOrdIdDedupMaxUsers", Integer.class, b::clOrdIdDedupMaxUsers);
+    ifPresent(root, "dedupTryLockMicros", Long.class, b::dedupTryLockMicros);
     ifPresent(root, "jwtAudience", String.class, b::jwtAudience);
     ifPresent(root, "maxTokenSizeBytes", Integer.class, b::maxTokenSizeBytes);
     ifPresent(root, "maxPendingAuth", Integer.class, b::maxPendingAuth);
@@ -598,6 +681,89 @@ public final class WebSocketServerConfig {
   }
 
   /**
+   * @return level-1 slow-consumer byte threshold (default 102400 = 100 KB)
+   */
+  public int slowConsumerLevel1Bytes() {
+    return slowConsumerLevel1Bytes;
+  }
+
+  /**
+   * @return level-2 slow-consumer byte threshold; activates {@code dropBestEffort} (default 524288
+   *     = 500 KB)
+   */
+  public int slowConsumerLevel2Bytes() {
+    return slowConsumerLevel2Bytes;
+  }
+
+  /**
+   * @return level-3 slow-consumer byte threshold; sends {@code WebSocketError(SlowConsumer)}
+   *     (default 1048576 = 1 MB)
+   */
+  public int slowConsumerLevel3Bytes() {
+    return slowConsumerLevel3Bytes;
+  }
+
+  /**
+   * @return level-4 slow-consumer byte threshold; triggers disconnect after {@link
+   *     #slowConsumerDisconnectMs()} of sustained dwell (default 2097152 = 2 MB)
+   */
+  public int slowConsumerLevel4Bytes() {
+    return slowConsumerLevel4Bytes;
+  }
+
+  /**
+   * @return milliseconds a session must remain at level 4 before being disconnected (default 5000)
+   */
+  public long slowConsumerDisconnectMs() {
+    return slowConsumerDisconnectMs;
+  }
+
+  /**
+   * @return capacity of the browser→cluster command queue (power of two; default 4096)
+   */
+  public int commandQueueCapacity() {
+    return commandQueueCapacity;
+  }
+
+  /**
+   * @return capacity of the cluster→browser CommandAck back-channel queue (power of two; default
+   *     1024)
+   */
+  public int commandAckQueueCapacity() {
+    return commandAckQueueCapacity;
+  }
+
+  /**
+   * @return per-user ClOrdID dedup map capacity (default 10000)
+   */
+  public int clOrdIdDedupCapacity() {
+    return clOrdIdDedupCapacity;
+  }
+
+  /**
+   * @return ClOrdID dedup TTL in milliseconds; entries older than this are evicted (default 600000)
+   */
+  public long clOrdIdDedupTtlMs() {
+    return clOrdIdDedupTtlMs;
+  }
+
+  /**
+   * @return outer cap for the user→dedupState map; protects against unbounded growth (default
+   *     100000)
+   */
+  public int clOrdIdDedupMaxUsers() {
+    return clOrdIdDedupMaxUsers;
+  }
+
+  /**
+   * @return microseconds the dedup tryLock waits before failing open and accepting the command
+   *     (default 50)
+   */
+  public long dedupTryLockMicros() {
+    return dedupTryLockMicros;
+  }
+
+  /**
    * @return an unmodifiable map of JWT issuer identifiers to their JWKS endpoint URIs
    */
   public Map<String, String> issuerRegistry() {
@@ -684,8 +850,21 @@ public final class WebSocketServerConfig {
     private int maxRevokedJtis = 10_000;
     private int revocationTtlMinutes = 15;
     private int writeBufferLowWaterMark = 131_072;
-    private int writeBufferHighWaterMark = 262_144;
+    // Bumped to >= slowConsumerLevel4Bytes (2 MB) so SlowConsumerHandler observes level-4 entry
+    // before Netty's own isWritable flips false.
+    private int writeBufferHighWaterMark = 2_097_152;
     private int egressQueueCapacity = 8192;
+    private int slowConsumerLevel1Bytes = 102_400;
+    private int slowConsumerLevel2Bytes = 524_288;
+    private int slowConsumerLevel3Bytes = 1_048_576;
+    private int slowConsumerLevel4Bytes = 2_097_152;
+    private long slowConsumerDisconnectMs = 5_000L;
+    private int commandQueueCapacity = 4096;
+    private int commandAckQueueCapacity = 1024;
+    private int clOrdIdDedupCapacity = 10_000;
+    private long clOrdIdDedupTtlMs = 600_000L;
+    private int clOrdIdDedupMaxUsers = 100_000;
+    private long dedupTryLockMicros = 50L;
     private Map<String, String> issuerRegistry = Map.of();
     private String jwtAudience = "";
     private int maxTokenSizeBytes = 8192;
@@ -929,6 +1108,106 @@ public final class WebSocketServerConfig {
      */
     public Builder egressQueueCapacity(final int egressQueueCapacity) {
       this.egressQueueCapacity = egressQueueCapacity;
+      return this;
+    }
+
+    /**
+     * @param bytes level-1 slow-consumer byte threshold; must be &gt; 0
+     * @return this builder
+     */
+    public Builder slowConsumerLevel1Bytes(final int bytes) {
+      this.slowConsumerLevel1Bytes = bytes;
+      return this;
+    }
+
+    /**
+     * @param bytes level-2 slow-consumer byte threshold; must be &gt; level1
+     * @return this builder
+     */
+    public Builder slowConsumerLevel2Bytes(final int bytes) {
+      this.slowConsumerLevel2Bytes = bytes;
+      return this;
+    }
+
+    /**
+     * @param bytes level-3 slow-consumer byte threshold; must be &gt; level2
+     * @return this builder
+     */
+    public Builder slowConsumerLevel3Bytes(final int bytes) {
+      this.slowConsumerLevel3Bytes = bytes;
+      return this;
+    }
+
+    /**
+     * @param bytes level-4 slow-consumer byte threshold; must be &gt; level3 and &lt;=
+     *     writeBufferHighWaterMark
+     * @return this builder
+     */
+    public Builder slowConsumerLevel4Bytes(final int bytes) {
+      this.slowConsumerLevel4Bytes = bytes;
+      return this;
+    }
+
+    /**
+     * @param ms milliseconds a session must remain at level 4 before disconnect; must be &gt; 0
+     * @return this builder
+     */
+    public Builder slowConsumerDisconnectMs(final long ms) {
+      this.slowConsumerDisconnectMs = ms;
+      return this;
+    }
+
+    /**
+     * @param capacity command queue capacity; must be a power of two
+     * @return this builder
+     */
+    public Builder commandQueueCapacity(final int capacity) {
+      this.commandQueueCapacity = capacity;
+      return this;
+    }
+
+    /**
+     * @param capacity CommandAck back-channel queue capacity; must be a power of two
+     * @return this builder
+     */
+    public Builder commandAckQueueCapacity(final int capacity) {
+      this.commandAckQueueCapacity = capacity;
+      return this;
+    }
+
+    /**
+     * @param capacity per-user ClOrdID dedup map capacity; must be &gt; 0
+     * @return this builder
+     */
+    public Builder clOrdIdDedupCapacity(final int capacity) {
+      this.clOrdIdDedupCapacity = capacity;
+      return this;
+    }
+
+    /**
+     * @param ms ClOrdID dedup TTL in milliseconds; must be &gt; 0
+     * @return this builder
+     */
+    public Builder clOrdIdDedupTtlMs(final long ms) {
+      this.clOrdIdDedupTtlMs = ms;
+      return this;
+    }
+
+    /**
+     * @param maxUsers outer-map cap for the per-user dedup state map; must be &gt; 0
+     * @return this builder
+     */
+    public Builder clOrdIdDedupMaxUsers(final int maxUsers) {
+      this.clOrdIdDedupMaxUsers = maxUsers;
+      return this;
+    }
+
+    /**
+     * @param micros tryLock timeout in microseconds for dedup map updates; must be &gt; 0
+     * @return this builder
+     */
+    public Builder dedupTryLockMicros(final long micros) {
+      this.dedupTryLockMicros = micros;
       return this;
     }
 

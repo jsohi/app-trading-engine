@@ -4,6 +4,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelId;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -191,6 +192,9 @@ public final class WebSocketSessionManager {
           });
     }
 
+    // Clear original-auth jti so a new session on a recycled channel doesn't inherit it.
+    session.clearOriginalAuthJti();
+
     metrics.connectionClosed();
     LOG.info("Session removed: sessionId={} channelId={}", session.sessionId(), channelId);
   }
@@ -204,6 +208,25 @@ public final class WebSocketSessionManager {
   public WebSocketSession findSession(final Channel channel) {
     Objects.requireNonNull(channel, "channel");
     return sessions.get(channel.id());
+  }
+
+  /**
+   * Find a session by its UUID. Linear scan over the session map — used by the cold-path {@code
+   * SessionResume} handler and the CommandAck back-channel drain loop. The session count is bounded
+   * by {@link WebSocketServerConfig#maxConcurrentSessions} (default 256), so the O(N) cost is
+   * acceptable.
+   *
+   * @param sessionId the session UUID to look up
+   * @return the session, or {@code null} if no session with that UUID is currently registered
+   */
+  public WebSocketSession findById(final UUID sessionId) {
+    Objects.requireNonNull(sessionId, "sessionId");
+    for (final var s : sessions.values()) {
+      if (sessionId.equals(s.sessionId())) {
+        return s;
+      }
+    }
+    return null;
   }
 
   /**

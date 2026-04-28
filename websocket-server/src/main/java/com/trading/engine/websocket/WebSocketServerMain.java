@@ -38,12 +38,12 @@ import org.apache.logging.log4j.Logger;
  *   → WebSocketServerProtocolHandler (allowExtensions=false — CRIME/BREACH prevention)
  *   → ConnectionRateLimiter (per-IP 10/sec, global 256/sec) — shared singleton
  *   → OriginValidationHandler (CSWSH whitelist) — shared singleton
+ *   → JwtAuthHandler (per-channel one-shot auth gate; installs WriteByteCounterHandler +
+ *     WebSocketFrameDispatcher on success)
  * </pre>
  *
  * <p>The drain handler is no longer in the pipeline — it is scheduled as a standalone task on the
  * worker event loop at 1ms fixed rate after the server binds.
- *
- * <p>JwtAuthHandler and WebSocketFrameDispatcher are added in PR 3.
  *
  * <p><b>Transport.</b> Uses native Epoll (Linux) or KQueue (macOS) when available, falling back to
  * NIO. Boss group: 1 thread (accept). Worker group: N = max(2, availableProcessors/2).
@@ -66,6 +66,9 @@ public final class WebSocketServerMain implements AutoCloseable {
 
   private final WebSocketServerConfig config;
   private final ManyToOneConcurrentArrayQueue<EgressEntry> queue;
+  private final ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue;
+  private final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue;
+  private final CommandEntryPool commandEntryPool;
   private final WebSocketEgressListener egressListener;
   private final WebSocketSessionManager sessionManager;
   private final WebSocketMetrics metrics;
@@ -74,21 +77,24 @@ public final class WebSocketServerMain implements AutoCloseable {
   private final UserEntitlementService entitlementService;
   private final AuthFailureTracker authFailureTracker;
   private final AtomicInteger pendingAuthCount = new AtomicInteger(0);
+  private CommandDispatcher commandDispatcher;
   private Channel serverChannel;
   private TransportDetector.Result transport;
 
   /**
-   * Create the WebSocket server (not yet started).
+   * Create the WebSocket server (not yet started). Used by tests that don't exercise the
+   * browser→cluster command path; commandQueue/ackQueue/commandEntryPool default to internal empty
+   * wiring and the dispatcher is constructed but no commands ever reach the cluster.
    *
    * @param config server configuration
    * @param queue the egress queue (shared with AeronEgressThread)
-   * @param egressListener the egress listener (for entry pool returns)
+   * @param egressListener the egress listener
    * @param sessionManager the session manager
    * @param metrics metrics instance
-   * @param jwtValidator JWT RS256 validator with JWKS caching (closed on server shutdown)
-   * @param jtiCache JTI revocation cache for replay prevention
+   * @param jwtValidator JWT validator
+   * @param jtiCache JTI revocation cache
    * @param entitlementService account entitlement validator
-   * @param authFailureTracker per-IP auth failure rate limiter
+   * @param authFailureTracker per-IP auth failure tracker
    */
   public WebSocketServerMain(
       final WebSocketServerConfig config,
@@ -100,8 +106,55 @@ public final class WebSocketServerMain implements AutoCloseable {
       final JtiRevocationCache jtiCache,
       final UserEntitlementService entitlementService,
       final AuthFailureTracker authFailureTracker) {
+    this(
+        config,
+        queue,
+        new ManyToOneConcurrentArrayQueue<>(config.commandQueueCapacity()),
+        new ManyToOneConcurrentArrayQueue<>(config.commandAckQueueCapacity()),
+        new CommandEntryPool(config.commandQueueCapacity(), config.replayBufferFrameSize()),
+        egressListener,
+        sessionManager,
+        metrics,
+        jwtValidator,
+        jtiCache,
+        entitlementService,
+        authFailureTracker);
+  }
+
+  /**
+   * Create the WebSocket server with full command/ack wiring.
+   *
+   * @param config server configuration
+   * @param queue the egress queue (shared with AeronEgressThread)
+   * @param commandQueue the browser→cluster command queue (shared with AeronEgressThread)
+   * @param ackQueue the cluster→browser ack back-channel queue (shared with AeronEgressThread)
+   * @param commandEntryPool the dedicated pool of EgressEntry objects for the command path
+   * @param egressListener the egress listener (for entry pool returns)
+   * @param sessionManager the session manager
+   * @param metrics metrics instance
+   * @param jwtValidator JWT RS256 validator with JWKS caching (closed on server shutdown)
+   * @param jtiCache JTI revocation cache for replay prevention
+   * @param entitlementService account entitlement validator
+   * @param authFailureTracker per-IP auth failure rate limiter
+   */
+  public WebSocketServerMain(
+      final WebSocketServerConfig config,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
+      final CommandEntryPool commandEntryPool,
+      final WebSocketEgressListener egressListener,
+      final WebSocketSessionManager sessionManager,
+      final WebSocketMetrics metrics,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final UserEntitlementService entitlementService,
+      final AuthFailureTracker authFailureTracker) {
     this.config = Objects.requireNonNull(config, "config");
     this.queue = Objects.requireNonNull(queue, "queue");
+    this.commandQueue = Objects.requireNonNull(commandQueue, "commandQueue");
+    this.ackQueue = Objects.requireNonNull(ackQueue, "ackQueue");
+    this.commandEntryPool = Objects.requireNonNull(commandEntryPool, "commandEntryPool");
     this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
@@ -132,6 +185,25 @@ public final class WebSocketServerMain implements AutoCloseable {
     final var rateLimiterState = new ConnectionRateLimiter.RateLimiterState(config, nanoClock);
     final var originValidator = new OriginValidationHandler(config);
 
+    // Create the singleton command dispatcher — used by every channel.
+    commandDispatcher =
+        new CommandDispatcher(
+            config,
+            metrics,
+            nanoClock,
+            commandQueue,
+            new CommandDispatcher.EgressEntryAllocator() {
+              @Override
+              public EgressEntry tryAcquire() {
+                return commandEntryPool.tryAcquire();
+              }
+
+              @Override
+              public void release(final EgressEntry entry) {
+                commandEntryPool.release(entry);
+              }
+            });
+
     final var bootstrap = new ServerBootstrap();
     bootstrap
         .group(transport.bossGroup(), transport.workerGroup())
@@ -158,6 +230,10 @@ public final class WebSocketServerMain implements AutoCloseable {
                         "/", null, false, 65_536, false, true, 30_000));
                 pipeline.addLast("rate-limiter", new ConnectionRateLimiter(rateLimiterState));
                 pipeline.addLast("origin-validator", originValidator);
+                // WriteByteCounterHandler must be installed BEFORE the auth handler so its
+                // tally is updated for ALL outbound writes, including auth-time error frames.
+                final var byteCounter = new WriteByteCounterHandler();
+                pipeline.addLast("byte-counter", byteCounter);
                 // JwtAuthHandler: per-channel one-shot auth gate. Dynamically adds
                 // WebSocketFrameDispatcher on auth success and removes itself.
                 pipeline.addLast(
@@ -172,7 +248,9 @@ public final class WebSocketServerMain implements AutoCloseable {
                         metrics,
                         config,
                         nanoClock,
-                        ForkJoinPool.commonPool()));
+                        ForkJoinPool.commonPool(),
+                        commandDispatcher,
+                        byteCounter));
               }
             });
 
@@ -183,7 +261,10 @@ public final class WebSocketServerMain implements AutoCloseable {
     // drain cycle takes longer than 1ms. The drain call is wrapped in a try-catch to prevent
     // exceptions from killing the scheduled task.
     final var drainHandler =
-        new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics, nanoClock);
+        new WebSocketDrainHandler(
+            queue, ackQueue, commandEntryPool, egressListener, sessionManager, metrics, nanoClock);
+    final var slowConsumerHandler =
+        new SlowConsumerHandler(sessionManager, config, metrics, nanoClock);
     transport
         .workerGroup()
         .next()
@@ -191,6 +272,7 @@ public final class WebSocketServerMain implements AutoCloseable {
             () -> {
               try {
                 drainHandler.drain();
+                slowConsumerHandler.scan();
               } catch (final Exception e) {
                 LOG.error("Drain handler exception — task continues", e);
               }
@@ -246,6 +328,13 @@ public final class WebSocketServerMain implements AutoCloseable {
   /** Shut down the Netty server and release all resources. Awaits event loop termination. */
   @Override
   public void close() {
+    if (commandDispatcher != null) {
+      try {
+        commandDispatcher.close();
+      } catch (final RuntimeException e) {
+        LOG.warn("Error closing CommandDispatcher", e);
+      }
+    }
     if (serverChannel != null) {
       try {
         serverChannel.close().sync();
