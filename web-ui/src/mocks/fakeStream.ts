@@ -29,6 +29,13 @@ const SYMBOLS: readonly string[] = ["EUR/USD", "GBP/USD", "USD/JPY"];
  * Deterministic pseudo-random sequence so test runs are
  * reproducible. Linear congruential generator — NOT for security
  * use. Seeded once per `fakeStream()` call.
+ *
+ * Note on `Date.now()` below: this mock SYNTHESISES timestamps for
+ * dev. The CLAUDE.md/plan prohibition on `Date.now()` targets
+ * server-time comparisons (where wall-clock skew breaks ordering
+ * invariants); generating a coherent `serverNanos` for a fake stream
+ * has no such hazard. The real worker (APP-36) will use the
+ * server-emitted `serverNanos` from SBE frames — never `Date.now()`.
  */
 function lcg(seed: number): () => number {
   let state = seed >>> 0;
