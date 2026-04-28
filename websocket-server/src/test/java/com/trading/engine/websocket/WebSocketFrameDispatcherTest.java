@@ -101,7 +101,8 @@ final class WebSocketFrameDispatcherTest {
                 entitlementService,
                 config,
                 metrics,
-                SystemNanoClock.INSTANCE));
+                SystemNanoClock.INSTANCE,
+                Runnable::run));
   }
 
   @AfterEach
