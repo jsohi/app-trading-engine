@@ -235,8 +235,8 @@ final class WebSocketFrameDispatcherTest {
     final int len = SbeTestEncoder.encodeClientHeartbeat(buf, 0, 0L);
     channel.writeInbound(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(buf.byteArray(), 0, len)));
 
-    // No exception should occur — the frame is handled gracefully
-    assertTrue(channel.isOpen());
+    // Channel should be closed — session not found means invalid state
+    assertFalse(channel.isOpen(), "Channel should close when session is deregistered");
   }
 
   // --- Gap request and session resume stubs ---

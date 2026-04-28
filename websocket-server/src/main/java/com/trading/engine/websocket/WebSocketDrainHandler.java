@@ -123,6 +123,13 @@ public final class WebSocketDrainHandler {
     final int length = entry.length();
     final int templateId = entry.templateId();
 
+    // Hoist per-message invariants out of the session loop to avoid redundant computation.
+    final int eventBit = SubscriptionFilter.templateIdToEventBit(templateId);
+    final boolean hasAccount =
+        eventBit >= 0
+            && AccountExtractor.extractPackedAccount(
+                templateId, bytes, 0, length, packedAccountBuf);
+
     for (final var session : sessionManager.sessions()) {
       final var filter = session.subscriptionFilter();
       if (filter == null) {
@@ -131,16 +138,14 @@ public final class WebSocketDrainHandler {
       // SubscriptionFilter only applies to mapped event templates (orders, prices, quotes,
       // positions, accounts). Unmapped templates (CommandAck=70, WebSocketError=67, etc.)
       // are control messages that bypass filtering and are delivered to all sessions.
-      final int eventBit = SubscriptionFilter.templateIdToEventBit(templateId);
       if (eventBit >= 0) {
         if (!filter.matches(templateId, bytes, 0, length)) {
           metrics.filterFiltered();
           continue;
         }
 
-        // Zero-alloc account entitlement check (single-call packed long extraction)
-        if (AccountExtractor.extractPackedAccount(templateId, bytes, 0, length, packedAccountBuf)
-            && !session.isEntitledAccount(packedAccountBuf[0], packedAccountBuf[1])) {
+        // Zero-alloc account entitlement check using pre-extracted packed values
+        if (hasAccount && !session.isEntitledAccount(packedAccountBuf[0], packedAccountBuf[1])) {
           metrics.filterFiltered();
           continue;
         }
@@ -174,6 +179,13 @@ public final class WebSocketDrainHandler {
     final int templateId = entry.templateId();
     final int frameSize = FrameParser.BEST_EFFORT_HEADER_SIZE + length;
 
+    // Hoist per-message invariants out of the session loop (same as reliable path).
+    final int bestEffortEventBit = SubscriptionFilter.templateIdToEventBit(templateId);
+    final boolean bestEffortHasAccount =
+        bestEffortEventBit >= 0
+            && AccountExtractor.extractPackedAccount(
+                templateId, bytes, 0, length, packedAccountBuf);
+
     final var frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
     try {
       FrameParser.encodeBestEffort(frameBuf, bytes, 0, length);
@@ -189,15 +201,13 @@ public final class WebSocketDrainHandler {
           continue;
         }
 
-        // Same filter bypass as reliable path — unmapped templates are control messages.
-        final int bestEffortEventBit = SubscriptionFilter.templateIdToEventBit(templateId);
         if (bestEffortEventBit >= 0) {
           if (!filter.matches(templateId, bytes, 0, length)) {
             metrics.filterFiltered();
             continue;
           }
 
-          if (AccountExtractor.extractPackedAccount(templateId, bytes, 0, length, packedAccountBuf)
+          if (bestEffortHasAccount
               && !session.isEntitledAccount(packedAccountBuf[0], packedAccountBuf[1])) {
             metrics.filterFiltered();
             continue;

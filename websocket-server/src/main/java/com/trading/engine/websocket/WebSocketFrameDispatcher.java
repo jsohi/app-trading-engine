@@ -137,12 +137,18 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       // Null session guard — session may have been deregistered by timeout/admin
       final var session = sessionManager.findSession(ctx.channel());
       if (session == null) {
+        LOG.warn("Session not found for channel — closing");
+        ctx.close();
         return;
       }
 
       final var content = frame.content();
       if (content.readableBytes() < MessageHeaderDecoder.ENCODED_LENGTH) {
         LOG.warn("Frame too small for SBE header: {} bytes", content.readableBytes());
+        consecutiveUnknownCount++;
+        if (consecutiveUnknownCount >= MAX_CONSECUTIVE_UNKNOWN) {
+          ctx.close();
+        }
         return;
       }
 
@@ -372,6 +378,13 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
         nettyBuf.release();
       }
     }
+  }
+
+  @Override
+  public void channelInactive(final ChannelHandlerContext ctx) throws Exception {
+    // Clean up session from manager to prevent memory leaks
+    sessionManager.removeSession(ctx.channel());
+    ctx.fireChannelInactive();
   }
 
   @Override
