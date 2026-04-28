@@ -131,6 +131,10 @@ public final class WebSocketDrainHandler {
                 templateId, bytes, 0, length, packedAccountBuf);
 
     for (final var session : sessionManager.sessions()) {
+      final var ch = session.channel();
+      if (!ch.isActive()) {
+        continue;
+      }
       final var filter = session.subscriptionFilter();
       if (filter == null) {
         continue; // pre-auth session — no subscriptions yet
@@ -159,7 +163,7 @@ public final class WebSocketDrainHandler {
       boolean written = false;
       try {
         FrameParser.encodeReliable(buf, session.nextReliableSeqNo(), bytes, 0, length);
-        session.channel().write(new BinaryWebSocketFrame(buf));
+        ch.write(new BinaryWebSocketFrame(buf));
         written = true;
       } finally {
         if (!written) {
@@ -215,7 +219,12 @@ public final class WebSocketDrainHandler {
         }
 
         metrics.filterMatched();
-        ch.write(new BinaryWebSocketFrame(frameBuf.retainedDuplicate()));
+        final var dup = frameBuf.retainedDuplicate();
+        try {
+          ch.write(new BinaryWebSocketFrame(dup));
+        } catch (final Exception writeEx) {
+          dup.release(); // prevent leak if write throws
+        }
       }
     } catch (final Exception e) {
       LOG.warn("Failed to encode best-effort frame for templateId={}", templateId);
