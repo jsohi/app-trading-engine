@@ -72,6 +72,14 @@ public final class CommandDispatcher implements AutoCloseable {
   /** Account code field length (16 bytes). */
   private static final int ACCOUNT_CODE_LENGTH = 16;
 
+  /**
+   * Bound on the {@link #evictOldestUser} sample size. With 100k users, an O(N) scan inside the
+   * userMapLock-guarded fast path would block the Netty event loop; sampling 64 entries gives an
+   * effectively-LRU choice (oldest of the sample sits within the oldest ~1.5% of the population on
+   * average) at constant cost. TTL-based eviction by the 60s sweeper backstops the long tail.
+   */
+  private static final int EVICTION_SAMPLE_LIMIT = 64;
+
   // --- Collaborators ---
   private final WebSocketServerConfig config;
   private final WebSocketMetrics metrics;
@@ -432,14 +440,29 @@ public final class CommandDispatcher implements AutoCloseable {
     }
   }
 
+  /**
+   * Approximate-LRU eviction. Samples at most {@link #EVICTION_SAMPLE_LIMIT} entries from {@code
+   * dedupByUser} and removes the one with the oldest {@code lastTouchedNs}.
+   *
+   * <p>Called from {@link #dispatch} on the Netty event loop while holding {@code userMapLock}, so
+   * a full O(N) scan of up to {@code clOrdIdDedupMaxUsers} (default 100k) entries would cause
+   * unacceptable latency spikes. With {@code SAMPLE_LIMIT=64} and 100k users, the sample's oldest
+   * entry sits within the oldest ~1.5% of the population on average — effectively LRU at constant
+   * cost. The non-sampled portion catches up via the 60s sweeper which evicts TTL-expired entries
+   * regardless.
+   */
   private void evictOldestUser() {
     String oldestUser = null;
     long oldestNs = Long.MAX_VALUE;
+    int scanned = 0;
     for (final var entry : dedupByUser.entrySet()) {
       final long t = entry.getValue().lastTouchedNs;
       if (t < oldestNs) {
         oldestNs = t;
         oldestUser = entry.getKey();
+      }
+      if (++scanned >= EVICTION_SAMPLE_LIMIT) {
+        break;
       }
     }
     if (oldestUser != null) {

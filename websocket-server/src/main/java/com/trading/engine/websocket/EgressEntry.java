@@ -1,5 +1,6 @@
 package com.trading.engine.websocket;
 
+import com.trading.engine.messages.sbe.CommandAckEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import java.util.Objects;
 import java.util.UUID;
@@ -156,7 +157,7 @@ public final class EgressEntry {
     Objects.requireNonNull(sessionId, "sessionId");
     System.arraycopy(srcBytes, srcOffset, bytes, 0, srcLength);
     this.length = srcLength;
-    this.templateId = 70; // CommandAck
+    this.templateId = CommandAckEncoder.TEMPLATE_ID;
     this.direction = Direction.CLUSTER_TO_BROWSER;
     this.sessionIdMsb = sessionId.getMostSignificantBits();
     this.sessionIdLsb = sessionId.getLeastSignificantBits();

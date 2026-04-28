@@ -425,7 +425,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       return;
     }
 
-    replayRange(ctx, session, fromSeqNo, toSeqNo);
+    replayRange(ctx, session, session, fromSeqNo, toSeqNo);
   }
 
   /**
@@ -499,27 +499,43 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       sendError(ctx, WebSocketErrorCode.BufferOverflow);
       return;
     }
-    // Reuse the same machinery as gap-request, but on the target session's tracker.
-    replayRange(ctx, target, fromSeqNo, toSeqNo);
+    // Reuse the gap-replay machinery, but read frames from the disconnected `target`'s tracker
+    // while routing replayInProgress + writes to the *current* session whose channel we're
+    // replying on. Mismatching these would let SlowConsumerHandler disconnect the resuming
+    // session as a slow consumer mid-replay (Gemini PR #62).
+    replayRange(ctx, session, target, fromSeqNo, toSeqNo);
   }
 
   /**
    * Inline replay loop: iterate from..to inclusive, re-encoding present frames via {@link
    * FrameParser#encodeReliableReplay}. Missing entries emit {@code BufferOverflow}. Sends {@link
-   * ReplayCompleteEncoder} at the end. Sets {@code session.replayInProgress} for the duration so
-   * SlowConsumerHandler suppresses level-3/4 escalation.
+   * ReplayCompleteEncoder} at the end.
+   *
+   * <p>Reads source frames from {@code source.reliableStreamTracker()} but writes to {@code
+   * ctx.channel()} and manages {@code currentSession.replayInProgress} — for a normal gap-request
+   * these are the same session, but for {@code handleSessionResume} they differ: {@code source} is
+   * the disconnected session whose ring buffer holds the replayed frames, while {@code
+   * currentSession} is the freshly authenticated session whose channel is receiving them. The
+   * slow-consumer flag must apply to whichever session owns the receiving channel — otherwise the
+   * new session can be incorrectly disconnected as a slow consumer mid-replay (Gemini PR #62).
+   *
+   * @param ctx the receiving channel context
+   * @param currentSession the session whose channel + slow-consumer state owns this replay
+   * @param source the session whose tracker holds the frames to replay (== currentSession for
+   *     normal gap-requests, != currentSession for session-resume)
    */
   private void replayRange(
       final ChannelHandlerContext ctx,
-      final WebSocketSession session,
+      final WebSocketSession currentSession,
+      final WebSocketSession source,
       final long fromSeqNo,
       final long toSeqNo) {
-    final var tracker = session.reliableStreamTracker();
+    final var tracker = source.reliableStreamTracker();
     final var ch = ctx.channel();
     if (tracker == null || !ch.isActive()) {
       return;
     }
-    session.replayInProgress(true);
+    currentSession.replayInProgress(true);
     try {
       // Use the tracker's payload capacity for a one-time scratch alloc per range.
       final var scratch = new byte[tracker.payloadCapacity()];
@@ -548,9 +564,9 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
         }
       }
       ch.flush();
-      sendReplayComplete(ctx, session);
+      sendReplayComplete(ctx, currentSession);
     } finally {
-      session.replayInProgress(false);
+      currentSession.replayInProgress(false);
     }
   }
 
