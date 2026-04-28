@@ -158,8 +158,10 @@ public final class WebSocketDrainHandler {
       metrics.filterMatched();
 
       final var buf =
-          PooledByteBufAllocator.DEFAULT.buffer(
-              FrameParser.RELIABLE_HEADER_SIZE + length, FrameParser.RELIABLE_HEADER_SIZE + length);
+          ch.alloc()
+              .buffer(
+                  FrameParser.RELIABLE_HEADER_SIZE + length,
+                  FrameParser.RELIABLE_HEADER_SIZE + length);
       boolean written = false;
       try {
         FrameParser.encodeReliable(buf, session.nextReliableSeqNo(), bytes, 0, length);
@@ -190,6 +192,10 @@ public final class WebSocketDrainHandler {
             && AccountExtractor.extractPackedAccount(
                 templateId, bytes, 0, length, packedAccountBuf);
 
+    // Best-effort: shared ByteBuf allocated before the session loop (retainedDuplicate per
+    // session). Using DEFAULT allocator because the buffer is not channel-specific — it is
+    // shared across all channels via retainedDuplicate(). Channel allocators would be
+    // arbitrary since any active session's allocator would work equivalently.
     final var frameBuf = PooledByteBufAllocator.DEFAULT.buffer(frameSize, frameSize);
     try {
       FrameParser.encodeBestEffort(frameBuf, bytes, 0, length);
