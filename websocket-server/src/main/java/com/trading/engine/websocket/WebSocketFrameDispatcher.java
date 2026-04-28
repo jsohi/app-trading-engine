@@ -10,6 +10,7 @@ import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
 import com.trading.engine.messages.sbe.WebSocketSubscribeDecoder;
 import com.trading.engine.messages.sbe.WebSocketUnsubscribeDecoder;
 import com.trading.engine.projections.SymbolPacker;
+import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
@@ -141,7 +142,7 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       // Wrap ByteBuf in UnsafeBuffer — zero-copy, valid only within this channelRead scope.
       // Assertion documents the zero-copy assumption: BinaryWebSocketFrame from Netty's
       // WebSocketDecoder always wraps a single non-composite ByteBuf.
-      assert !(content instanceof io.netty.buffer.CompositeByteBuf)
+      assert !(content instanceof CompositeByteBuf)
           : "Composite ByteBuf not supported — nioBuffer() would copy";
       wrapBuffer.wrap(content.nioBuffer());
       headerDecoder.wrap(wrapBuffer, 0);

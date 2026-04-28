@@ -1,5 +1,6 @@
 package com.trading.engine.launcher;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.websocket.AeronEgressThread;
 import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.EgressEntry;
@@ -121,9 +122,7 @@ public final class WebSocketLauncher {
     // 8b. Auth dependencies
     final var jwtValidator =
         new JwtValidator(
-            config.issuerRegistry(),
-            config.jwtAudience(),
-            com.trading.engine.messages.clock.TradingClocks.epochNanoClock());
+            config.issuerRegistry(), config.jwtAudience(), TradingClocks.epochNanoClock());
     final var jtiCache =
         new JtiRevocationCache(
             config.maxRevokedJtis(), config.revocationTtlMinutes(), SystemNanoClock.INSTANCE);

@@ -18,6 +18,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
@@ -29,6 +30,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.util.ResourceLeakDetector;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
 import java.util.HashSet;
@@ -298,7 +300,7 @@ final class JwtAuthHandlerTest {
 
   private BinaryWebSocketFrame encodeAuthFrame(final SignedJWT jwt) {
     final var buf = new ExpandableArrayBuffer(8192);
-    final var tokenBytes = jwt.serialize().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    final var tokenBytes = jwt.serialize().getBytes(StandardCharsets.UTF_8);
     final int len = SbeTestEncoder.encodeWebSocketAuth(buf, 0, 1, tokenBytes);
     return new BinaryWebSocketFrame(toByteBuf(buf, len));
   }
@@ -351,9 +353,7 @@ final class JwtAuthHandlerTest {
       processor.setJWTClaimsSetVerifier(claimsVerifier);
 
       return JwtValidator.forTesting(
-          Map.of(ISSUER, processor),
-          AUDIENCE,
-          com.trading.engine.messages.clock.TradingClocks.epochNanoClock());
+          Map.of(ISSUER, processor), AUDIENCE, TradingClocks.epochNanoClock());
     } catch (final Exception e) {
       throw new RuntimeException("Failed to build test JwtValidator", e);
     }
