@@ -29,10 +29,13 @@ export default defineConfig({
     // tests; they're inputs to the lint-fixtures.test.ts spawner.
     exclude: ["node_modules", "dist", "e2e/**"],
     setupFiles: ["./test/setup.ts"],
-    typecheck: {
-      enabled: true,
-      tsconfig: "./tsconfig.json",
-    },
+    // Vitest's experimental in-suite typecheck is intentionally OFF —
+    // it emits a SemVer "experimental feature" warning at every run
+    // and duplicates work already done by `tsc --noEmit` (CI invokes
+    // it via :web-ui:webUiTypecheck → `npm run typecheck`). The
+    // `tsconfig.json` `include` covers `src/**/*` (incl. `*.test-d.ts`),
+    // so structural assignability assertions in WebSocketLike.test-d.ts
+    // are still verified — just by tsc, not Vitest.
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

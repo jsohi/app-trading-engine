@@ -17,7 +17,7 @@
  * Threading model: single-threaded CLI. No concurrency.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { createPrivateKey, createSign, createHash } from "node:crypto";
+import { createPrivateKey, createPublicKey, createSign, createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -36,31 +36,25 @@ const { values } = parseArgs({
   },
 });
 
-const privateKeyPath = resolve(
-  repoRoot,
-  "web-ui",
-  ".dev-certs",
-  "jwt-private.pem",
-);
-const publicKeyPath = resolve(
-  repoRoot,
-  "web-ui",
-  ".dev-certs",
-  "jwt-public.pem",
-);
+const privateKeyPath = resolve(repoRoot, "web-ui", ".dev-certs", "jwt-private.pem");
+const publicKeyPath = resolve(repoRoot, "web-ui", ".dev-certs", "jwt-public.pem");
 
 if (!existsSync(privateKeyPath) || !existsSync(publicKeyPath)) {
-  process.stderr.write(
-    `Missing keypair at ${privateKeyPath}. Run scripts/dev-key-gen.sh first.\n`,
-  );
+  process.stderr.write(`Missing keypair at ${privateKeyPath}. Run scripts/dev-key-gen.sh first.\n`);
   process.exit(1);
 }
 
 const privatePem = readFileSync(privateKeyPath, "utf8");
+// Read the public PEM purely to validate it parses; throws on malformed
+// keys (e.g., file-permissions-rotated state) so we surface the error at
+// token mint time rather than at first server use.
 const publicPem = readFileSync(publicKeyPath, "utf8");
+createPublicKey(publicPem); // throws on malformed PEM
 const privateKey = createPrivateKey(privatePem);
-const publicJwk = createPrivateKey(privatePem)
-  .export({ format: "jwk" });
+// `KeyObject.export({ format: 'jwk' })` on a private key emits the JWK
+// containing the public modulus + exponent — that's what we need for the
+// `kid` thumbprint. Avoids re-parsing the PEM a second time.
+const publicJwk = privateKey.export({ format: "jwk" });
 
 // Match the kid computed in dev-jwks-build.mjs (RFC 7638 thumbprint
 // over `e`, `kty`, `n`).
@@ -80,9 +74,10 @@ const payload = {
   sub: values.sub,
   iat: now,
   exp: now + ttl,
-  jti: createHash("sha256")
-    .update(`${values.sub}-${now}-${Math.random()}`)
-    .digest("base64url"),
+  // Dev-only randomness — `Math.random()` is fine for a unique-per-mint
+  // jti during local development. Production token issuers (real auth
+  // service) MUST use `crypto.randomBytes` and a real entropy source.
+  jti: createHash("sha256").update(`${values.sub}-${now}-${Math.random()}`).digest("base64url"),
 };
 
 function b64url(input) {
@@ -93,9 +88,7 @@ function b64url(input) {
     .replace(/\//gu, "_");
 }
 
-const signingInput = `${b64url(JSON.stringify(header))}.${b64url(
-  JSON.stringify(payload),
-)}`;
+const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
 const signer = createSign("RSA-SHA256");
 signer.update(signingInput);
 signer.end();
@@ -118,8 +111,3 @@ try {
 } catch {
   // intentional no-op — stdout is the canonical channel.
 }
-
-// Suppress unused warning while still demonstrating intent: we keep
-// publicPem read so any malformed public key (e.g., file permissions
-// gone wrong post-rotation) surfaces here, not at first server use.
-void publicPem;
