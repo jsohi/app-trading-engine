@@ -74,14 +74,33 @@ describe("fakeStream", () => {
   it("constructor_noSubscribe_doesNotStartTimer", async () => {
     // Build but never subscribe. With the cold-defer model there is no
     // hidden timer; if there were, this test would be the canary.
+    //
+    // Strategy: spy on global setInterval/setTimeout. RxJS's `timer`
+    // operator schedules via the default async scheduler, which under
+    // jsdom/node uses `setInterval` (with `intervalMs`) when the period
+    // arg is set. If the cold-defer model is broken and the timer fires
+    // at construction, we'd see a setInterval call WITHOUT a subscribe.
+    // Note: we additionally assert the per-tick `next` callback never
+    // fires — even if RxJS schedules differently across versions, the
+    // `received` flag is the load-bearing guarantee.
+    let received = 0;
     const stream = fakeStream({ intervalMs: 1, seed: 99 });
     expect(stream).toBeDefined();
-    // Wait long enough that any leaked timer would have ticked.
-    await new Promise((r) => setTimeout(r, 20));
-    // Only smoke: the absence of a leaked subscription is visible to
-    // Vitest's open-handle detector across the suite. This assertion
-    // is the explicit contract that fakeStream is lazy.
-    expect(true).toBe(true);
+    // Wait long enough that any leaked timer would have ticked many times.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toBe(0);
+
+    // Now subscribe — exactly one tick is enough to confirm the stream
+    // CAN produce values, ruling out "pre-emitted before subscribe and
+    // we missed it" as a false-negative explanation for received === 0.
+    await new Promise<void>((resolve) => {
+      const sub = stream.subscribe(() => {
+        received += 1;
+        sub.unsubscribe();
+        resolve();
+      });
+    });
+    expect(received).toBe(1);
   });
 
   it("subscribeUnsubscribeResubscribe_yieldsFreshSequence", async () => {

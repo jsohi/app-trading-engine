@@ -26,7 +26,37 @@ import { fileURLToPath } from "node:url";
 
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type ServerOptions } from "vite";
+import { defineConfig, loadEnv, type Plugin, type ServerOptions } from "vite";
+
+/**
+ * Strip the dev-only CSP block from index.html in production builds.
+ *
+ * The dev CSP meta is permissive (uses 'unsafe-inline') so HMR + React
+ * Refresh + AG Grid theme injection work without nonce wiring. We must
+ * NOT ship that policy to production. Strict prod CSP is APP-246's job
+ * and is delivered as an HTTP response header from the static-asset
+ * host (CDN config) — emitting nothing here is the right answer.
+ *
+ * Dev (mode === 'development'): leave markers + meta as-is.
+ * Build (mode === 'production'): strip the wrapped meta + its markers.
+ *
+ * Markers use the `@csp-dev-only-start` / `@csp-dev-only-end` tokens
+ * (in HTML comments) so the literal marker text never appears inside
+ * the wrapped block — eliminates the regex-eats-its-own-tail risk if
+ * a future maintainer puts a code-reference comment near the markers.
+ */
+function cspDevOnlyPlugin(): Plugin {
+  return {
+    name: "trading-engine:csp-dev-only",
+    apply: "build",
+    transformIndexHtml(html) {
+      return html.replace(
+        /<!--\s*@csp-dev-only-start\s*-->[\s\S]*?<!--\s*@csp-dev-only-end\s*-->/g,
+        "",
+      );
+    },
+  };
+}
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
@@ -61,6 +91,9 @@ export default defineConfig(({ mode }) => {
       // when VITE_FORCE_BASIC_SSL=1 is set. The plugin is a no-op when
       // server.https is already a concrete cert object.
       ...(useMkcertHttps ? [] : [basicSsl()]),
+      // Strip the dev CSP meta from production HTML (APP-246 owns the
+      // strict prod policy via response header — see plugin docstring).
+      cspDevOnlyPlugin(),
     ],
     resolve: {
       alias: {

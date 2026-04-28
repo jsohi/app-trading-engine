@@ -75,10 +75,31 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
         snapshot = value;
         for (const fn of listeners) fn();
       },
-      error: () => {
+      error: (err: unknown) => {
         // Errors are swallowed at the store boundary; APP-245 will
-        // wire this to a telemetry channel. We do NOT throw — that
-        // would crash every component subscribed.
+        // wire the telemetry channel for vendor-side ingestion. We
+        // do NOT throw — that would crash every component subscribed.
+        //
+        // Two things must happen here:
+        //   1) Record an error span (telemetry contract: span name
+        //      `web-ui.store.error` with `store.name` attribute) so
+        //      ops/RUM can detect upstream failure even before APP-245
+        //      ships a real exporter — the NoopSpanProcessor swallows
+        //      the span today, but the call site is wired correctly.
+        //   2) Null `subscription` so a fresh subscriber can re-attempt
+        //      via `ensureSubscribed()`. Without this the store stayed
+        //      permanently dead after a single upstream error — every
+        //      future subscribe found a non-null but broken subscription
+        //      and silently produced stale snapshots.
+        const errSpan = tracer.startSpan("web-ui.store.error", {
+          attributes: {
+            "store.name": options.name,
+            "error.type": err instanceof Error ? err.name : typeof err,
+            "error.message": err instanceof Error ? err.message : String(err),
+          },
+        });
+        errSpan.end();
+        subscription = null;
       },
     });
   }
