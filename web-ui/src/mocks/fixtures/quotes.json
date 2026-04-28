@@ -1,0 +1,18 @@
+[
+  {
+    "reqId": "RFQ-000001",
+    "symbol": "EUR/USD",
+    "state": "QUOTED",
+    "bid": "108500000",
+    "ask": "108520000",
+    "serverNanos": "1714400000000000000"
+  },
+  {
+    "reqId": "RFQ-000002",
+    "symbol": "GBP/USD",
+    "state": "FILLED",
+    "bid": "126400000",
+    "ask": "126420000",
+    "serverNanos": "1714400000100000000"
+  }
+]

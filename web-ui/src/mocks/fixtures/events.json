@@ -1,0 +1,23 @@
+[
+  {
+    "type": "event",
+    "seq": "1",
+    "eventType": "OrderAccepted",
+    "details": "EUR/USD BUY 1.0M @ 1.0850",
+    "serverNanos": "1714400000000000000"
+  },
+  {
+    "type": "event",
+    "seq": "2",
+    "eventType": "QuoteRequested",
+    "details": "GBP/USD RFQ 500k",
+    "serverNanos": "1714400000050000000"
+  },
+  {
+    "type": "event",
+    "seq": "3",
+    "eventType": "OrderFilled",
+    "details": "EUR/USD 1.0M @ 1.0851",
+    "serverNanos": "1714400000200000000"
+  }
+]

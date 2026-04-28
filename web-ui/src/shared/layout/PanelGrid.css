@@ -1,0 +1,121 @@
+/*
+ * Minimal layout styling for the panel shell. Phase 2 fan-out
+ * tickets are free to ship per-panel CSS modules; the shell only
+ * provides spatial structure.
+ */
+
+:root {
+  --panel-bg: #0c1117;
+  --panel-fg: #d6dde6;
+  --panel-border: #1f2a37;
+  --panel-accent: #5fc36b;
+  --panel-empty-fg: #4a5462;
+  --panel-header-bg: #11171f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background: var(--panel-header-bg);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.app-header h1 {
+  font-size: 1rem;
+  margin: 0;
+  font-weight: 500;
+}
+
+.app-mode {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--panel-empty-fg);
+  letter-spacing: 0.05em;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.panel-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.75rem;
+  background: var(--panel-header-bg);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.panel-header h2 {
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.panel-status {
+  font-size: 0.7rem;
+  color: var(--panel-empty-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 0.5rem;
+}
+
+.panel-empty-msg {
+  color: var(--panel-empty-fg);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+}

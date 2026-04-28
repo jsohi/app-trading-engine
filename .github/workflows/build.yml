@@ -17,8 +17,24 @@ jobs:
       - name: Set up JDK 25
         uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
-          java-version: '25'
-          distribution: 'temurin'
+          java-version: "25"
+          distribution: "temurin"
+
+      - name: Set up Node.js 22 (LTS)
+        # Pinned to the LTS line declared in `.nvmrc` and root
+        # `engines.node`. CI must match local dev so npm workspace
+        # peer-dep resolution reproduces what contributors see.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "package-lock.json"
+
+      - name: Install npm workspace dependencies
+        # `npm ci` runs from the repo root because npm workspaces lives
+        # there. Bootstrap script also runs (Husky init + SBE codec
+        # generation via Gradle) — see scripts/bootstrap-codecs.mjs.
+        run: npm ci
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -27,13 +43,38 @@ jobs:
         run: ./gradlew spotlessCheck
 
       - name: Build and coverage
+        env:
+          # AG Grid Enterprise license — fork PRs cannot read this
+          # secret, so the bundle ships with a watermark on forks
+          # (acceptable per the 1A acceptance criteria).
+          VITE_AG_GRID_LICENSE: ${{ secrets.AG_GRID_LICENSE }}
         run: ./gradlew build jacocoTestReport
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-reports
-          path: '**/build/reports/jacoco/'
+          path: "**/build/reports/jacoco/"
+
+      - name: Upload Storybook static
+        # Phase 2 fan-out tickets ship Storybook stories per panel;
+        # the static bundle is a useful preview artifact for PR review.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: storybook-static
+          path: web-ui/storybook-static
+          if-no-files-found: warn
+
+      - name: Upload web-ui SBOM
+        # CycloneDX SBOM covers `@trading/sbe-codecs` + `@trading/web-ui`
+        # workspace tree (hoisted dependency graph). Released as an
+        # artifact so supply-chain reviewers can audit the production
+        # bundle without re-running the build.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-ui-sbom
+          path: web-ui/build/sbom.cdx.json
+          if-no-files-found: warn
 
       # Allocation regression tripwires (gateway + orchestrator). Opt-in via
       # `-DrunAllocTests=true` because GC counts are inherently noisy on shared CI runners
@@ -50,6 +91,60 @@ jobs:
             --tests "*NoAllocationTest" \
             -DrunAllocTests=true
 
+  web-ui-e2e:
+    # Long-running Playwright smoke. Kept in a separate job so a flake
+    # here does not block the main build job's merge gate. Fork PRs
+    # run the @licensed-tagged tests as no-ops via test.skip() driven
+    # by VITE_AG_GRID_LICENSE presence (see playwright.config.ts).
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          java-version: "25"
+          distribution: "temurin"
+
+      - name: Set up Node.js 22 (LTS)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "package-lock.json"
+
+      - name: Install npm workspace dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        # Playwright browsers are ~150 MB; cache hits skip
+        # `playwright install --with-deps chromium` entirely. Cache key
+        # tracks package-lock.json so a Playwright bump invalidates it.
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Run web-ui Playwright smoke
+        env:
+          VITE_AG_GRID_LICENSE: ${{ secrets.AG_GRID_LICENSE }}
+        run: ./gradlew :web-ui:webUiE2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report
+          path: web-ui/playwright-report
+          if-no-files-found: warn
+
   security:
     runs-on: ubuntu-latest
 
@@ -59,8 +154,8 @@ jobs:
       - name: Set up JDK 25
         uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
-          java-version: '25'
-          distribution: 'temurin'
+          java-version: "25"
+          distribution: "temurin"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -80,4 +175,4 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: owasp-report
-          path: 'build/reports/dependency-check*'
+          path: "build/reports/dependency-check*"

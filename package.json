@@ -1,0 +1,32 @@
+{
+  "name": "trading-engine-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "npm workspace root for the Trading Engine browser UI and SBE TS codecs.",
+  "workspaces": [
+    "sbe-typescript-generator",
+    "web-ui"
+  ],
+  "engines": {
+    "node": ">=22.11 <23",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "prepare": "husky && node scripts/bootstrap-codecs.mjs",
+    "lint:staged": "lint-staged"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix --max-warnings 0"
+    ],
+    "*.{ts,tsx,json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@cyclonedx/cyclonedx-npm": "4.2.1",
+    "husky": "9.1.7",
+    "lint-staged": "16.4.0",
+    "prettier": "3.8.3"
+  }
+}

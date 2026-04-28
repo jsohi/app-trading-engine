@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env.local
+.dev-certs/
+playwright-report/
+test-results/
+storybook-static/
+coverage/
+*.log

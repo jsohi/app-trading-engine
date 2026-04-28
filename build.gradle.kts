@@ -1,4 +1,5 @@
 plugins {
+    base
     alias(libs.plugins.spotless)
     alias(libs.plugins.owasp)
 }
@@ -97,6 +98,22 @@ subprojects {
             "runtimeOnly"(rootProject.libs.disruptor)
         }
     }
+}
+
+// =============================================================================
+// web-ui aggregation — root `build` runs typecheck + test + bundle + storybook
+//                       + SBOM via the Node-plugin tasks in :web-ui. E2E is
+//                       opt-in (long-running) and tied to ./gradlew :web-ui:webUiE2e.
+// =============================================================================
+
+tasks.named("build") {
+    dependsOn(
+        ":web-ui:webUiTypecheck",
+        ":web-ui:webUiTest",
+        ":web-ui:webUiBuild",
+        ":web-ui:webUiStorybook",
+        ":web-ui:webUiSbom",
+    )
 }
 
 // =============================================================================
