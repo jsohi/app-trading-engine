@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.CommandAckStatus;
+import com.trading.engine.projections.SymbolPacker;
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.netty.channel.DefaultChannelId;
@@ -13,6 +14,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.util.ResourceLeakDetector;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
@@ -98,10 +100,8 @@ final class WebSocketDrainHandlerTest {
     // packedSymbol=0L covers no-symbol templates via globalEventBitMask.
     // "EURUSD" covers PriceResponse (template 51) tests.
     session.subscriptionFilter().addSubscription(0L, 0x1F);
-    session
-        .subscriptionFilter()
-        .addSubscription(com.trading.engine.projections.SymbolPacker.pack("EURUSD  "), 0x1F);
-    session.entitledAccounts(java.util.Set.of("TEST-ACCT"));
+    session.subscriptionFilter().addSubscription(SymbolPacker.pack("EURUSD  "), 0x1F);
+    session.entitledAccounts(Set.of("TEST-ACCT"));
     return ch;
   }
 

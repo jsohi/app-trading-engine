@@ -6,6 +6,7 @@ import com.trading.engine.messages.sbe.WebSocketAuthAckEncoder;
 import com.trading.engine.messages.sbe.WebSocketAuthDecoder;
 import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
+import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
@@ -196,7 +197,7 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       return;
     }
 
-    assert !(content instanceof io.netty.buffer.CompositeByteBuf)
+    assert !(content instanceof CompositeByteBuf)
         : "Composite ByteBuf not supported — nioBuffer() would copy";
     final var buf = new UnsafeBuffer(content.nioBuffer());
     headerDecoder.wrap(buf, 0);

@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -253,6 +254,6 @@ public final class WebSocketMetrics {
    * @param nanos elapsed nanoseconds from injected {@code NanoClock}
    */
   public void recordDrainCycleNanos(final long nanos) {
-    drainCycleLatency.record(nanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+    drainCycleLatency.record(nanos, TimeUnit.NANOSECONDS);
   }
 }
