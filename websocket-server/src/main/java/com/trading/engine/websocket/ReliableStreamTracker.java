@@ -29,9 +29,12 @@ import java.util.Objects;
  * call {@link #evict(long)} to clear the captured slot — otherwise replay would deliver a frame the
  * client never received in the live stream, producing a phantom-gap on next {@code ClientAck}.
  *
- * <p><b>Threading.</b> Not thread-safe. One instance per {@link WebSocketSession}, accessed only
- * from the Netty worker event loop hosting that session's drain calls. Capture and replay run on
- * the same loop, so there is no cross-thread visibility concern.
+ * <p><b>Threading.</b> Thread-safe via per-instance intrinsic monitor (synchronized methods). Two
+ * writers exist: the drain thread (cluster→browser live fan-out) and the channel thread (CommandAck
+ * emission from {@code CommandDispatcher}); these are different worker event loops so capture
+ * cannot be assumed single-threaded (Gemini PR #62 round 2). The monitor is uncontended in
+ * steady-state because each session has its own tracker; only the rare overlap of
+ * CommandAck-while-egress-draining contends.
  *
  * <p><b>Allocation.</b> Zero allocation after construction. The backing array is allocated once.
  * Replay re-uses the existing per-session ByteBuf allocator path (same as live writes).
@@ -95,7 +98,7 @@ public final class ReliableStreamTracker {
   /**
    * @return the highest seqNo successfully captured (0 if none yet)
    */
-  public long highestSeqNo() {
+  public synchronized long highestSeqNo() {
     return highestSeqNo;
   }
 
@@ -103,7 +106,7 @@ public final class ReliableStreamTracker {
    * @return the seqNo of the oldest still-present slot in the ring (1 if nothing has rolled over,
    *     {@code highestSeqNo - capacity + 1} otherwise; never less than 1)
    */
-  public long oldestSeqNo() {
+  public synchronized long oldestSeqNo() {
     if (highestSeqNo <= capacity) {
       return 1L;
     }
@@ -126,7 +129,7 @@ public final class ReliableStreamTracker {
    * @param length the number of payload bytes
    * @throws IllegalArgumentException if {@code seqNo <= 0}
    */
-  public void capture(
+  public synchronized void capture(
       final long seqNo,
       final int templateId,
       final byte[] payload,
@@ -166,7 +169,7 @@ public final class ReliableStreamTracker {
    *
    * @param seqNo the reliable sequence number to evict
    */
-  public void evict(final long seqNo) {
+  public synchronized void evict(final long seqNo) {
     if (seqNo <= 0) {
       return;
     }
@@ -184,7 +187,7 @@ public final class ReliableStreamTracker {
    * @param seqNo the reliable sequence number to look up
    * @return the payload length if found, or -1 otherwise
    */
-  public int lookupLength(final long seqNo) {
+  public synchronized int lookupLength(final long seqNo) {
     if (seqNo <= 0) {
       return -1;
     }
@@ -202,7 +205,7 @@ public final class ReliableStreamTracker {
    * @param seqNo the reliable sequence number
    * @return the templateId, or -1 if the slot does not hold this seqNo
    */
-  public int lookupTemplateId(final long seqNo) {
+  public synchronized int lookupTemplateId(final long seqNo) {
     if (seqNo <= 0) {
       return -1;
     }
@@ -223,13 +226,19 @@ public final class ReliableStreamTracker {
    * @param dstOffset start offset in {@code dst}
    * @return the number of bytes copied, or -1 if the slot does not hold this seqNo
    */
-  public int copyPayload(final long seqNo, final byte[] dst, final int dstOffset) {
-    final int len = lookupLength(seqNo);
-    if (len < 0) {
+  public synchronized int copyPayload(final long seqNo, final byte[] dst, final int dstOffset) {
+    if (seqNo <= 0) {
       return -1;
     }
     final int slot = (int) (seqNo & mask);
     final int slotOffset = slot * frameSize;
+    // Atomic re-check inside the lock — between an earlier lookupLength() call and this copy,
+    // a concurrent capture could have rewritten the slot. Re-read length under the lock so
+    // {@code copyPayload} is self-consistent regardless of caller pattern.
+    if (readLongLE(buffer, slotOffset) != seqNo) {
+      return -1;
+    }
+    final int len = readIntLE(buffer, slotOffset + 8);
     if (len > 0) {
       System.arraycopy(buffer, slotOffset + SLOT_HEADER_SIZE, dst, dstOffset, len);
     }

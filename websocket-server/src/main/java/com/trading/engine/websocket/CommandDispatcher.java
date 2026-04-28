@@ -103,12 +103,16 @@ public final class CommandDispatcher implements AutoCloseable {
   // --- Sweeper ---
   private final ScheduledExecutorService sweeper;
 
-  // --- Reusable per-instance encoders / scratch (Netty thread access only) ---
-  // The dispatcher is held by exactly one WebSocketFrameDispatcher instance (per channel), so
-  // these fields are accessed from a single event loop thread.
-  private final ExpandableArrayBuffer responseBuf = new ExpandableArrayBuffer(128);
-  private final byte[] clOrdIdScratch = new byte[MAX_CLORDID_LENGTH];
-  private final byte[] accountScratch = new byte[ACCOUNT_CODE_LENGTH];
+  // --- Reusable per-thread scratch (CommandDispatcher is a SINGLETON shared across Netty
+  //     workers — Gemini PR #62 round 2 flagged that instance fields here would race across
+  //     worker threads). ThreadLocal gives each worker its own scratch with no allocation per
+  //     dispatch. The Netty worker pool size is bounded so the ThreadLocal map stays small.
+  private final ThreadLocal<ExpandableArrayBuffer> responseBufTl =
+      ThreadLocal.withInitial(() -> new ExpandableArrayBuffer(128));
+  private final ThreadLocal<byte[]> clOrdIdScratchTl =
+      ThreadLocal.withInitial(() -> new byte[MAX_CLORDID_LENGTH]);
+  private final ThreadLocal<byte[]> accountScratchTl =
+      ThreadLocal.withInitial(() -> new byte[ACCOUNT_CODE_LENGTH]);
 
   /**
    * Allocate and release pooled {@link EgressEntry} objects. The pool is owned by {@link
@@ -290,6 +294,7 @@ public final class CommandDispatcher implements AutoCloseable {
     if (absOffset + ACCOUNT_CODE_LENGTH > totalLength) {
       return false; // truncated frame
     }
+    final var accountScratch = accountScratchTl.get();
     frameContent.getBytes(absOffset, accountScratch, 0, ACCOUNT_CODE_LENGTH);
     final long high = AccountPacker.packHigh(accountScratch, 0);
     final long low = AccountPacker.packLow(accountScratch, 0);
@@ -379,6 +384,7 @@ public final class CommandDispatcher implements AutoCloseable {
     if (clOrdOffsetAbs + clOrdLen > totalLength) {
       return DedupOutcome.ACCEPTED; // truncated — let downstream reject
     }
+    final var clOrdIdScratch = clOrdIdScratchTl.get();
     frameContent.getBytes(clOrdOffsetAbs, clOrdIdScratch, 0, clOrdLen);
 
     // Outer-map cap check + creation must be atomic against other threads racing the same user.
@@ -490,13 +496,14 @@ public final class CommandDispatcher implements AutoCloseable {
       final WebSocketSession session,
       final CommandAckStatus status) {
     final long ackSeqNo = session.lastClientCmdSeqNo();
+    final var responseBuf = responseBufTl.get();
     final var enc = new CommandAckEncoder();
     final var header = new MessageHeaderEncoder();
     enc.wrapAndApplyHeader(responseBuf, 0, header);
     enc.clientCmdSeqNo(ackSeqNo);
     enc.status(status);
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    writeReliableEnvelope(ctx, session, encodedLen);
+    writeReliableEnvelope(ctx, session, responseBuf, encodedLen);
   }
 
   private void sendError(final ChannelHandlerContext ctx, final WebSocketErrorCode code) {
@@ -504,6 +511,7 @@ public final class CommandDispatcher implements AutoCloseable {
       return;
     }
     final var errorText = ErrorTextRegistry.textFor(code);
+    final var responseBuf = responseBufTl.get();
     final var enc = new WebSocketErrorEncoder();
     final var header = new MessageHeaderEncoder();
     enc.wrapAndApplyHeader(responseBuf, 0, header);
@@ -524,12 +532,17 @@ public final class CommandDispatcher implements AutoCloseable {
   }
 
   /**
-   * Encode a reliable-stream envelope for the bytes already written into {@link #responseBuf} and
+   * Encode a reliable-stream envelope for the bytes already written into {@code responseBuf} and
    * write the frame to the channel. Uses {@link FrameParser#encodeReliable} so the ack is captured
-   * in the per-session replay ring.
+   * in the per-session replay ring. The caller passes the encoded buffer to avoid relying on {@link
+   * #responseBufTl} state across the call boundary (caller and callee always run on the same
+   * thread, but passing it makes the lifetime explicit).
    */
   private void writeReliableEnvelope(
-      final ChannelHandlerContext ctx, final WebSocketSession session, final int encodedLen) {
+      final ChannelHandlerContext ctx,
+      final WebSocketSession session,
+      final ExpandableArrayBuffer responseBuf,
+      final int encodedLen) {
     if (!ctx.channel().isActive()) {
       return;
     }
@@ -712,14 +725,23 @@ public final class CommandDispatcher implements AutoCloseable {
       this.probe = ByteArrayKey.emptyForLookup(MAX_CLORDID_LENGTH);
     }
 
-    /** Evict the entry with the oldest insertNs (LRU). */
+    /**
+     * Approximate-LRU eviction within a single user's inner dedup map. Samples at most {@link
+     * #EVICTION_SAMPLE_LIMIT} entries (default capacity is 10k); a full O(N) scan on the dispatch
+     * hot path inside the per-user lock would cause Netty event loop latency spikes (Gemini PR #62
+     * round 2). The 60s sweeper's TTL eviction backstops the long tail.
+     */
     void evictOldest() {
       ByteArrayKey oldestKey = null;
       long oldestNs = Long.MAX_VALUE;
+      int scanned = 0;
       for (final var entry : entries.entrySet()) {
         if (entry.getValue().insertNs < oldestNs) {
           oldestNs = entry.getValue().insertNs;
           oldestKey = entry.getKey();
+        }
+        if (++scanned >= EVICTION_SAMPLE_LIMIT) {
+          break;
         }
       }
       if (oldestKey != null) {
