@@ -11,7 +11,7 @@
  * Allocation: emits new objects per tick (acceptable in dev/mock
  * path; the real worker is the hot path that must avoid this).
  */
-import { Observable, Subject, timer } from "rxjs";
+import { type Observable, defer, timer } from "rxjs";
 import { map } from "rxjs/operators";
 
 import {
@@ -106,22 +106,33 @@ export interface FakeStreamOptions {
 }
 
 /**
- * Build a hot Observable of synthetic `WorkerMessage` values.
- * Each subscription drives the same upstream Subject.
+ * Build a cold Observable of synthetic `WorkerMessage` values.
+ * Each subscription gets its own independent timer and RNG state,
+ * starting fresh at element 0. This makes the stream:
+ *   - **Lazy**: no timer fires until someone subscribes — no leak if
+ *     the result is never consumed.
+ *   - **Restartable**: a unsubscribe + resubscribe cleanly restarts
+ *     the stream from element 0; no dead-after-last-unsubscribe state.
+ *   - **Test-friendly**: each test that subscribes gets a deterministic
+ *     sequence from the seed, independent of other subscriptions.
  *
  * @param options optional tick interval / RNG seed.
- * @return Observable<WorkerMessage> emitting roughly every
- *   `intervalMs` until the subject completes (never, in dev).
+ * @return cold Observable<WorkerMessage>; element 0 fires on subscribe,
+ *   then every `intervalMs` until unsubscribe.
  */
 export function fakeStream(options: FakeStreamOptions = {}): Observable<WorkerMessage> {
   const intervalMs = options.intervalMs ?? 250;
-  const rng = lcg(options.seed ?? 0xc0ffee);
-  const subject = new Subject<WorkerMessage>();
+  const seed = options.seed ?? 0xc0ffee;
 
-  let counter = 0;
-  let seq = 0n;
-  const ticker = timer(0, intervalMs)
-    .pipe(
+  return defer<Observable<WorkerMessage>>(() => {
+    // Per-subscription state: each subscriber gets a fresh RNG + counter
+    // so deterministic seeds produce identical sequences across runs and
+    // across multiple subscribers within a single run.
+    const rng = lcg(seed);
+    let counter = 0;
+    let seq = 0n;
+
+    return timer(0, intervalMs).pipe(
       map<number, WorkerMessage>(() => {
         counter += 1;
         seq += 1n;
@@ -141,28 +152,6 @@ export function fakeStream(options: FakeStreamOptions = {}): Observable<WorkerMe
             return makeEvent(rng, seq);
         }
       }),
-    )
-    .subscribe({
-      next: (msg) => {
-        subject.next(msg);
-      },
-      error: (err: unknown) => {
-        subject.error(err);
-      },
-      complete: () => {
-        subject.complete();
-      },
-    });
-
-  return new Observable<WorkerMessage>((observer) => {
-    const sub = subject.subscribe(observer);
-    return () => {
-      sub.unsubscribe();
-      // Last subscriber → also stop the underlying timer subscription
-      // to prevent leaks when the dev server hot-reloads.
-      if (!subject.observed) {
-        ticker.unsubscribe();
-      }
-    };
+    );
   });
 }
