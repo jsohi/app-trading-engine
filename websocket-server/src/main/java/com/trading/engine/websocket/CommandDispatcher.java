@@ -82,6 +82,15 @@ public final class CommandDispatcher implements AutoCloseable {
   private final ConcurrentHashMap<String, UserDedupState> dedupByUser = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, RateLimiterState> rateByUser = new ConcurrentHashMap<>();
 
+  // Dedicated lock object for top-level eviction coordination on dedupByUser. Held by:
+  //   (a) dispatch() while doing the size+containsKey gate + evictOldestUser + computeIfAbsent
+  //       (so two Netty workers can't both insert past the cap),
+  //   (b) sweep() when removing a top-level user entry (so its iter.remove() doesn't drop a
+  //       state object that dispatch() just observed under (a)).
+  // Synchronizing on the CHM itself would be misleading — its internal segment locks are not
+  // taken by `synchronized(map)`. A dedicated Object makes the intent explicit and verifiable.
+  private final Object userMapLock = new Object();
+
   // --- Sweeper ---
   private final ScheduledExecutorService sweeper;
 
@@ -364,15 +373,17 @@ public final class CommandDispatcher implements AutoCloseable {
     frameContent.getBytes(clOrdOffsetAbs, clOrdIdScratch, 0, clOrdLen);
 
     // Outer-map cap check + creation must be atomic against other threads racing the same user.
-    // Synchronizing on dedupByUser holds a single short-lived monitor across (a) iteration in
-    // evictOldestUser, (b) the size+containsKey gate, and (c) the computeIfAbsent insertion.
-    // Without
-    // this, two concurrent threads can both observe size < cap, both insert, and exceed the cap;
-    // worse, a concurrent computeIfAbsent racing evictOldestUser's iteration may corrupt the map
-    // (CHM iteration is weakly consistent, so won't throw, but may silently miss the evict-target).
-    // The lock is contended only on the cold path (new user OR map-at-cap), not per-command.
+    // Holding userMapLock (a dedicated Object) across (a) the size+containsKey gate, (b)
+    // evictOldestUser's iteration, and (c) the computeIfAbsent insertion ensures two Netty
+    // workers cannot both observe size < cap and both insert past it. The sweeper acquires the
+    // same lock when removing top-level entries (see sweep()), so the sweeper's iter.remove()
+    // never deletes a state object that a dispatch() call just observed under this monitor.
+    // Synchronizing on dedupByUser itself would be misleading — `synchronized(map)` does not
+    // take CHM's internal segment locks, and the sweeper's CHM operations would still race.
+    // The lock is contended only on the cold path (new user OR map-at-cap) and during the
+    // once-per-60s sweep — never per-command.
     final UserDedupState state;
-    synchronized (dedupByUser) {
+    synchronized (userMapLock) {
       if (dedupByUser.size() >= config.clOrdIdDedupMaxUsers() && !dedupByUser.containsKey(userId)) {
         evictOldestUser();
       }
@@ -560,9 +571,14 @@ public final class CommandDispatcher implements AutoCloseable {
               innerIter.remove();
             }
           }
-          // If user state is empty and stale, drop the user entry too.
+          // If user state is empty and stale, drop the user entry too. Coordinate with
+          // dispatch()'s outer-cap path via userMapLock: prevents the sweeper from removing
+          // a state object that a Netty thread just observed and is about to use under the
+          // userMapLock-protected size+containsKey+computeIfAbsent gate.
           if (state.entries.isEmpty() && nowNs - state.lastTouchedNs > ttlNs) {
-            iter.remove();
+            synchronized (userMapLock) {
+              iter.remove();
+            }
           }
         } finally {
           state.lock.unlock();
