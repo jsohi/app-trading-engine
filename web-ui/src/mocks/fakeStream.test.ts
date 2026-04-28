@@ -30,6 +30,8 @@ function isWorkerMessage(msg: unknown): msg is WorkerMessage {
       return (
         typeof m.clOrdId === "string" &&
         typeof m.execId === "string" &&
+        typeof m.symbol === "string" &&
+        (m.side === "BUY" || m.side === "SELL") &&
         typeof m.fillQty === "bigint" &&
         typeof m.fillPrice === "bigint"
       );
@@ -73,16 +75,14 @@ describe("fakeStream", () => {
 
   it("constructor_noSubscribe_doesNotStartTimer", async () => {
     // Build but never subscribe. With the cold-defer model there is no
-    // hidden timer; if there were, this test would be the canary.
+    // hidden timer; if there were, the `received` counter would tick.
     //
-    // Strategy: spy on global setInterval/setTimeout. RxJS's `timer`
-    // operator schedules via the default async scheduler, which under
-    // jsdom/node uses `setInterval` (with `intervalMs`) when the period
-    // arg is set. If the cold-defer model is broken and the timer fires
-    // at construction, we'd see a setInterval call WITHOUT a subscribe.
-    // Note: we additionally assert the per-tick `next` callback never
-    // fires — even if RxJS schedules differently across versions, the
-    // `received` flag is the load-bearing guarantee.
+    // We use a counter rather than a `setInterval` spy because RxJS's
+    // scheduler internals are not stable across versions — `received`
+    // is the load-bearing guarantee. After the no-subscribe phase, we
+    // perform exactly one subscribe to confirm the stream still works
+    // (ruling out "pre-emitted before subscribe and we missed it" as
+    // a false-negative explanation for received === 0).
     let received = 0;
     const stream = fakeStream({ intervalMs: 1, seed: 99 });
     expect(stream).toBeDefined();
@@ -90,9 +90,6 @@ describe("fakeStream", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(received).toBe(0);
 
-    // Now subscribe — exactly one tick is enough to confirm the stream
-    // CAN produce values, ruling out "pre-emitted before subscribe and
-    // we missed it" as a false-negative explanation for received === 0.
     await new Promise<void>((resolve) => {
       const sub = stream.subscribe(() => {
         received += 1;

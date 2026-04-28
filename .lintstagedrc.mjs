@@ -21,7 +21,14 @@ const webUiAbs = `${repoRoot}/web-ui`;
 function eslintWebUi(files) {
   const inWebUi = files
     .map((f) => relative(webUiAbs, f))
-    .filter((p) => p.length > 0 && !p.startsWith(".."));
+    .filter((p) => p.length > 0 && !p.startsWith(".."))
+    // lint-fixtures/** is intentionally ignored by web-ui's
+    // eslint.config.js so the negative fixtures don't break
+    // `npm run lint`. The fixtures are exercised separately via
+    // lint-fixtures.test.ts (which spawns ESLint with --no-ignore).
+    // Skip them here so lint-staged doesn't trip the
+    // "ignored file matched explicitly" warning.
+    .filter((p) => !p.startsWith("test/lint-fixtures/"));
   if (inWebUi.length === 0) {
     return [];
   }

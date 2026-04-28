@@ -87,6 +87,18 @@ describe("lint fixtures", () => {
     expect(hotPath).toBeDefined();
   }, 60_000);
 
+  it("spanAllowedInLifecycleFixture_isAcceptedByCustomRule", () => {
+    // Negative-space assertion: the rule must NOT flag startSpan calls
+    // outside `onmessage`/`next` handlers. Documents the exemption
+    // boundary so a future maintainer who tightens the rule sees this
+    // test fail and reconsiders.
+    const target = resolve(fixturesDir, "span-allowed-in-lifecycle.ts");
+    const { reports } = runEslintJson(target);
+    const allMessages = reports.flatMap((r) => r.messages);
+    const hotPath = allMessages.filter((m) => m.ruleId === "local/no-span-in-hot-path");
+    expect(hotPath).toHaveLength(0);
+  }, 60_000);
+
   it("repoRootIsResolvable", () => {
     // Sanity guard so the file is exercised by the suite even when
     // CI lacks ESLint (which would skip the spawn-based tests).
