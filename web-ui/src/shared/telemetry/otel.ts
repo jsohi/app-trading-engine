@@ -22,18 +22,25 @@
  *       store.name (string)      — on web-ui.store.subscribe AND
  *                                  web-ui.store.error
  *       error.type (string)      — on web-ui.store.error. Resolution
- *                                  order: any truthy `err.code`
- *                                  (coerced via String() to match
- *                                  DOMException / NodeJS ErrnoException
- *                                  including legacy numeric codes),
- *                                  then `err.name`, then `typeof err`
- *                                  for non-Error throws. Mirrors the
- *                                  OTel SDK's `recordException` which
- *                                  writes `exception.type` from
- *                                  `code.toString()` first, then `name`.
- *                                  Custom `error.type` and OTel-standard
- *                                  `exception.type` stay byte-stable
- *                                  lock-step for any error shape.
+ *                                  order: any truthy primitive
+ *                                  `err.code` (string non-empty, number
+ *                                  ≠ 0, bigint ≠ 0n, boolean true, or
+ *                                  symbol — all coerced via String() to
+ *                                  match DOMException / NodeJS
+ *                                  ErrnoException including legacy
+ *                                  numeric codes), then `err.name`,
+ *                                  then `typeof err` for non-Error
+ *                                  throws. Object/array `code` values
+ *                                  intentionally fall through to
+ *                                  `err.name` to avoid the OTel SDK's
+ *                                  `[object Object]` / comma-joined
+ *                                  stringification. Custom `error.type`
+ *                                  and OTel-standard `exception.type`
+ *                                  agree byte-for-byte for the documented
+ *                                  primitive-code shapes; for non-Error
+ *                                  throws the wrapped Error's `name` is
+ *                                  set to `typeof err` so the two paths
+ *                                  also agree there.
  *       error.message (string)   — on web-ui.store.error. For Errors,
  *                                  the original `err.message`. For
  *                                  non-Error throws (null/undefined/

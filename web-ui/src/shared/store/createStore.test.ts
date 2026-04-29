@@ -147,6 +147,10 @@ describe("createStore", () => {
     expect(errorSpans[0]?.attributes["error.message"]).toBe("non-Error throw: null");
     const exceptionEvents = (errorSpans[0]?.events ?? []).filter((e) => e.name === "exception");
     expect(exceptionEvents[0]?.attributes?.["exception.message"]).toBe("non-Error throw: null");
+    // exception.type also equals `typeof err` ("object" for null). The
+    // wrapper sets `.name = typeof err` so error.type and exception.type
+    // stay byte-stable lock-step even for non-Error throws.
+    expect(exceptionEvents[0]?.attributes?.["exception.type"]).toBe("object");
     unsub();
   });
 

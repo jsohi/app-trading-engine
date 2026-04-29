@@ -247,7 +247,7 @@ function errorType(err: unknown): string {
       return code.toString();
     }
     if (typeof code === "boolean" && code) {
-      return "true";
+      return String(code);
     }
     if (typeof code === "symbol") {
       return code.toString();
@@ -265,6 +265,11 @@ function errorType(err: unknown): string {
  * "literal null was thrown" apart from "code path stringified a
  * variable that happened to be null".
  *
+ * The wrapper's `.name` is set to `typeof err` so the OTel SDK's
+ * `recordException` writes `exception.type = typeof err` — agreeing
+ * byte-for-byte with the custom `error.type` attribute computed by
+ * `errorType(err)` for non-Error throws.
+ *
  * @param err the value an upstream Observable threw / errored with
  * @return a real Error (the original or a sentinel-prefixed wrapper)
  */
@@ -272,5 +277,14 @@ function toErrorForSpan(err: unknown): Error {
   if (err instanceof Error) {
     return err;
   }
-  return new Error(`non-Error throw: ${String(err)}`);
+  const wrapped = new Error(`non-Error throw: ${String(err)}`);
+  // Override the default Error name so exception.type lines up with
+  // error.type's `typeof err` for non-Error throws.
+  Object.defineProperty(wrapped, "name", {
+    value: typeof err,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return wrapped;
 }
