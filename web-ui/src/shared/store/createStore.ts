@@ -115,13 +115,42 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
           //      with one code change and have every existing consumer
           //      re-render automatically. Until then, the user-visible
           //      deliverable on error is the OTel span above.
+          // Telemetry contract:
+          //   - error.type / error.message are computed via the same
+          //     resolution order the OTel SDK uses inside
+          //     `Span.recordException`, so the custom `error.*`
+          //     attributes and the OTel-standard `exception.*` event
+          //     attributes stay in lock-step for ANY error shape (not
+          //     just plain Errors).
+          //   - error.type:  err.code (any non-null, coerced to String
+          //                  to match SDK behaviour for numeric codes
+          //                  in legacy NodeJS ErrnoException), then
+          //                  err.name, then typeof err for non-Error
+          //                  throws.
+          //   - error.message: err.message for Errors, otherwise the
+          //                    sentinel-wrapped form so the custom and
+          //                    OTel paths agree byte-for-byte. The
+          //                    sentinel ("non-Error throw: ...") lets
+          //                    log-greps distinguish "literal null was
+          //                    thrown" from "code path stringified a
+          //                    variable that happened to be null".
+          const wrappedErr = toErrorForSpan(err);
           const errSpan = tracer.startSpan("web-ui.store.error", {
             attributes: {
               "store.name": options.name,
-              "error.type": err instanceof Error ? err.name : typeof err,
-              "error.message": err instanceof Error ? err.message : String(err),
+              "error.type": errorType(err),
+              "error.message": wrappedErr.message,
             },
           });
+          // Record via the OTel-idiomatic API so RUM backends that
+          // read `exception.*` semantic-convention attributes also
+          // see it. `recordException` adds an `exception` event on
+          // the span populated with `exception.type` /
+          // `exception.message` / `exception.stacktrace`. Custom
+          // `error.*` attributes above are preserved for the
+          // documented telemetry contract — and computed from the
+          // same wrappedErr so they agree with the event byte-for-byte.
+          errSpan.recordException(wrappedErr);
           errSpan.end();
           subscription = null;
           for (const fn of listeners) fn();
@@ -181,4 +210,67 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
  */
 export function useStore<T>(store: ExternalStore<T>): T {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
+}
+
+/**
+ * Resolve the `error.type` attribute for the `web-ui.store.error`
+ * span. Order matches the OTel SDK's `Span.recordException()` which
+ * writes `exception.type` from `exception.code.toString()` first
+ * (any truthy code, including numeric legacy NodeJS errno values),
+ * then from `exception.name`. We coerce `err.code` via `String()`
+ * for byte-stable lock-step.
+ *
+ * For non-Error throws (`null`, `undefined`, primitives, plain
+ * objects), returns `typeof err` — these are abnormal Observable
+ * contract violations and the type-of label is enough for ops to
+ * spot them.
+ *
+ * @param err the value an upstream Observable threw / errored with
+ * @return code (stringified), name, or typeof — never throws
+ */
+function errorType(err: unknown): string {
+  if (err instanceof Error) {
+    const errWithCode = err as Error & { readonly code?: unknown };
+    const code = errWithCode.code;
+    // SDK uses `if (exception.code)` (truthy) — match it. We restrict
+    // the coercion to types whose String() form is information-bearing
+    // (string, number, bigint, boolean, symbol). Object/array codes
+    // are atypical and would stringify to "[object Object]" / a
+    // comma-joined list — fall through to `err.name` instead.
+    if (typeof code === "string" && code.length > 0) {
+      return code;
+    }
+    if (typeof code === "number" && code !== 0) {
+      return String(code);
+    }
+    if (typeof code === "bigint" && code !== 0n) {
+      return code.toString();
+    }
+    if (typeof code === "boolean" && code) {
+      return "true";
+    }
+    if (typeof code === "symbol") {
+      return code.toString();
+    }
+    return err.name;
+  }
+  return typeof err;
+}
+
+/**
+ * Wrap a thrown value into an `Error` suitable for
+ * `Span.recordException`. Real `Error` objects pass through; non-
+ * Error throws (`null`, `undefined`, primitives, plain objects) are
+ * wrapped with a sentinel-prefixed message so log greps can tell
+ * "literal null was thrown" apart from "code path stringified a
+ * variable that happened to be null".
+ *
+ * @param err the value an upstream Observable threw / errored with
+ * @return a real Error (the original or a sentinel-prefixed wrapper)
+ */
+function toErrorForSpan(err: unknown): Error {
+  if (err instanceof Error) {
+    return err;
+  }
+  return new Error(`non-Error throw: ${String(err)}`);
 }
