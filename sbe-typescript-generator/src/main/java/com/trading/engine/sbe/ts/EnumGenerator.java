@@ -248,10 +248,14 @@ final class EnumGenerator {
    */
   private static String emitNumericLiteral(
       final PrimitiveValue value, final PrimitiveType primitive) {
-    // Defensive: if a future schema adds uint64 enums, we'd need to emit `0n` bigint
-    // literals here. Until then, longValue() narrows safely.
+    // Defensive: this method is reached for both enum value literals (which
+    // requireUnsignedInteger() restricts to uint8/16/32) AND for the _NULL_VAL sentinel,
+    // which inherits the encoding type's nullValue. If a future schema introduces a uint64
+    // enum, the sentinel widens to a bigint and must be rendered as the unsigned canonical
+    // form. Use Long.toUnsignedString so the SBE default (-1L bit-pattern) renders as
+    // 18446744073709551615n rather than -1n.
     if (primitive == PrimitiveType.UINT64) {
-      return value.longValue() + "n";
+      return Long.toUnsignedString(value.longValue()) + "n";
     }
     return Long.toString(value.longValue());
   }
