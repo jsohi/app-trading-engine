@@ -15,12 +15,25 @@ import { Server, WebSocket as MockWebSocket } from "mock-socket";
  * Real protocol is defined by APP-40; this is a stable interim
  * shape that matches `docs/web-ui.md` §RFQ panel.
  */
+// TODO(APP-40): The RFQ JSON path uses JS `number` for `qty`/`bid`/`ask`
+// — a deliberate exception to the project-wide bigint discipline (CLAUDE.md
+// "Pricing: fixed-point only"). The exception is justified ONLY because:
+//   (a) this is the JSON-WebSocket path to fix-client-bridge :8444, which
+//       per `docs/web-ui.md` §RFQ panel is a separate transport from the
+//       binary SBE stream that ALL non-RFQ pricing flows through;
+//   (b) APP-40 will define the final RFQ wire schema and may revisit this
+//       decision (e.g., switch to a decimal-string representation that
+//       preserves precision). Until APP-40 lands, downstream consumers
+//       must NOT propagate these `number` values into any state where
+//       precision matters — convert at the boundary.
+// If APP-40 chooses bigint or decimal-string, this mock and its consumers
+// (RFQ panel) flip together.
 interface QuoteRequestMessage {
   readonly type: "QuoteRequest";
   readonly reqId: string;
   readonly symbol: string;
   readonly side: "BUY" | "SELL";
-  readonly qty: number; // RFQ JSON path is intentionally JS-number per APP-40 spec
+  readonly qty: number;
 }
 
 interface QuoteResponseMessage {

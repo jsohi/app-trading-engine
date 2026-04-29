@@ -35,10 +35,29 @@ const pem = readFileSync(values.public, "utf8");
 const key = createPublicKey(pem);
 const jwk = key.export({ format: "jwk" });
 
-// Compute a stable JWK thumbprint (RFC 7638) for the `kid` so
-// downstream verifiers can match by `kid` deterministically.
-const canonical = JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n });
-const kid = createHash("sha256").update(canonical).digest("base64url");
+// Compute a stable JWK thumbprint (RFC 7638 §3.1) for the `kid` so
+// downstream verifiers can match by `kid` deterministically. The spec
+// requires a JSON object containing the JWK's required members in
+// LEXICOGRAPHIC order with no whitespace, encoded UTF-8. For RSA keys
+// the required members are e, kty, n. We sort the keys explicitly
+// (rather than relying on JS object insertion order) so a future
+// maintainer reordering the literal can't silently change every kid.
+const canonical = canonicaliseJwk({ e: jwk.e, kty: jwk.kty, n: jwk.n });
+const kid = createHash("sha256").update(canonical, "utf8").digest("base64url");
+
+/**
+ * Build the RFC 7638 canonical JSON form: keys sorted lexicographically,
+ * no whitespace, no insignificant chars. Sort guarantees byte-stable
+ * output regardless of input object literal key order.
+ *
+ * @param {Record<string, string | undefined>} obj
+ * @returns {string}
+ */
+function canonicaliseJwk(obj) {
+  const sorted = Object.keys(obj).sort();
+  const parts = sorted.map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`);
+  return `{${parts.join(",")}}`;
+}
 
 const augmented = {
   ...jwk,

@@ -105,11 +105,16 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
           //      permanently dead after a single upstream error — every
           //      future subscribe found a non-null but broken subscription
           //      and silently produced stale snapshots.
-          //   3) Notify listeners — even if `snapshot` did not change, a
-          //      React component that subscribed to this store should
-          //      re-render so it can observe terminal state via any
-          //      downstream signal it consumes (e.g. an error overlay
-          //      that reads `store.getSnapshot()` or a hook companion).
+          //   3) Notify listeners — forward-compat scaffolding for
+          //      APP-245's terminal-state signal. NOTE: today this is
+          //      effectively a no-op: `useSyncExternalStore` checks
+          //      identity via `Object.is`; the snapshot reference is
+          //      unchanged on error, so React skips re-render. The
+          //      notify exists so APP-245 can layer a companion
+          //      overlay (e.g., `terminal: { kind: "error" } | null`)
+          //      with one code change and have every existing consumer
+          //      re-render automatically. Until then, the user-visible
+          //      deliverable on error is the OTel span above.
           const errSpan = tracer.startSpan("web-ui.store.error", {
             attributes: {
               "store.name": options.name,
@@ -125,8 +130,11 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
           // Symmetric with `error` — the upstream is now terminal.
           // Null `subscription` so a future subscriber can attach a
           // fresh stream (cold sources like `defer` rebuild on the
-          // next subscribe). Notify listeners so they can re-read the
-          // snapshot if any companion signal depends on completion.
+          // next subscribe). The listener notify is forward-compat
+          // scaffolding (same APP-245 caveat as the error path) —
+          // currently a no-op because `snapshot` identity is
+          // unchanged; ready to fire renders once a terminal-state
+          // companion signal lands.
           subscription = null;
           for (const fn of listeners) fn();
         },

@@ -62,14 +62,30 @@ const privateKey = createPrivateKey(privatePem);
 // `kid` thumbprint. Avoids re-parsing the PEM a second time.
 const publicJwk = privateKey.export({ format: "jwk" });
 
-// Match the kid computed in dev-jwks-build.mjs (RFC 7638 thumbprint
-// over `e`, `kty`, `n`).
-const canonical = JSON.stringify({
+// Match the kid computed in dev-jwks-build.mjs (RFC 7638 §3.1
+// thumbprint over `e`, `kty`, `n`). Both files MUST use the same
+// canonical form — keys sorted lexicographically, no whitespace,
+// UTF-8 encoded — or `kid` won't match across mint and verify and
+// JWKS lookup will fail. Explicit sort prevents silent kid drift if
+// a future maintainer reorders the input object literal.
+const canonical = canonicaliseJwk({
   e: publicJwk.e,
   kty: publicJwk.kty,
   n: publicJwk.n,
 });
-const kid = createHash("sha256").update(canonical).digest("base64url");
+const kid = createHash("sha256").update(canonical, "utf8").digest("base64url");
+
+/**
+ * RFC 7638 §3.1 canonical JSON: keys sorted lex, no whitespace.
+ *
+ * @param {Record<string, string | undefined>} obj
+ * @returns {string}
+ */
+function canonicaliseJwk(obj) {
+  const sorted = Object.keys(obj).sort();
+  const parts = sorted.map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`);
+  return `{${parts.join(",")}}`;
+}
 
 const now = Math.floor(Date.now() / 1000);
 const ttl = Number(values.ttl);
