@@ -264,10 +264,11 @@ final class EnumGenerator {
     }
 
     /**
-     * Escape a schema-side description string for safe inclusion in a JSDoc comment. The only
-     * sequence that would break a JSDoc is the close-comment delimiter; replace it with a
-     * Unicode-escape variant so the comment closes only at our explicit {@code " */"}. Other
-     * characters are preserved verbatim — TypeScript JSDoc accepts most printable ASCII.
+     * Escape a schema-side description string for safe inclusion in a JSDoc comment. A
+     * close-comment delimiter (asterisk-slash) appearing inside the description would terminate
+     * the JSDoc prematurely; replace each occurrence with an escaped variant so the comment
+     * closes only at the emitter's explicit terminator. Other characters are preserved
+     * verbatim — TypeScript JSDoc accepts most printable ASCII.
      */
     private static String escapeJsDoc(final String description) {
         if (description.indexOf("*/") < 0) {
