@@ -21,11 +21,44 @@
  *   - Required attributes:
  *       store.name (string)      — on web-ui.store.subscribe AND
  *                                  web-ui.store.error
- *       error.type (string)      — on web-ui.store.error (constructor
- *                                  name, e.g. "TypeError", or "string"
- *                                  for non-Error throws)
- *       error.message (string)   — on web-ui.store.error
+ *       error.type (string)      — on web-ui.store.error. Resolution
+ *                                  order: any truthy `err.code`
+ *                                  (coerced via String() to match
+ *                                  DOMException / NodeJS ErrnoException
+ *                                  including legacy numeric codes),
+ *                                  then `err.name`, then `typeof err`
+ *                                  for non-Error throws. Mirrors the
+ *                                  OTel SDK's `recordException` which
+ *                                  writes `exception.type` from
+ *                                  `code.toString()` first, then `name`.
+ *                                  Custom `error.type` and OTel-standard
+ *                                  `exception.type` stay byte-stable
+ *                                  lock-step for any error shape.
+ *       error.message (string)   — on web-ui.store.error. For Errors,
+ *                                  the original `err.message`. For
+ *                                  non-Error throws (null/undefined/
+ *                                  primitives/objects), the sentinel-
+ *                                  wrapped form `"non-Error throw: ..."`
+ *                                  so log greps can distinguish a
+ *                                  literal null throw from a stringified
+ *                                  null variable. Also lock-step with
+ *                                  `exception.message`.
+ *
+ *     Downstream consumers should read EITHER `error.*` (legacy custom
+ *     attribute path) OR `exception.*` (OTel semantic-conventions
+ *     event), not both — they carry the same payload.
  *       worker.id (string)       — on web-ui.worker.*
+ *   - Required events:
+ *       exception                — on web-ui.store.error, recorded via
+ *                                  Span.recordException(...) per OTel
+ *                                  semantic conventions; populated with
+ *                                  exception.type / exception.message /
+ *                                  exception.stacktrace. RUM backends
+ *                                  that read OTel-standard exception
+ *                                  attributes get them automatically;
+ *                                  the custom error.* attributes above
+ *                                  are kept for backends that read the
+ *                                  documented contract directly.
  *
  * Hot-path discipline:
  *   - NEVER call `tracer.startSpan` inside per-message handlers

@@ -73,8 +73,124 @@ describe("createStore", () => {
     expect(errorSpans[0]?.attributes["store.name"]).toBe("err-target");
     expect(errorSpans[0]?.attributes["error.type"]).toBe("TypeError");
     expect(errorSpans[0]?.attributes["error.message"]).toBe("boom");
+    // Telemetry-contract addition: the OTel-idiomatic exception event
+    // is recorded on the same span via Span.recordException(). RUM
+    // backends that read the OTel `exception.*` semantic conventions
+    // get the type/message/stacktrace from this event.
+    const exceptionEvents = (errorSpans[0]?.events ?? []).filter((e) => e.name === "exception");
+    expect(exceptionEvents).toHaveLength(1);
+    expect(exceptionEvents[0]?.attributes?.["exception.type"]).toBe("TypeError");
+    expect(exceptionEvents[0]?.attributes?.["exception.message"]).toBe("boom");
+    // The contract docstring lists `exception.stacktrace` as a recorded
+    // attribute. V8 populates `.stack` on every Error, so this should
+    // always be a non-empty string.
+    expect(typeof exceptionEvents[0]?.attributes?.["exception.stacktrace"]).toBe("string");
+    expect(String(exceptionEvents[0]?.attributes?.["exception.stacktrace"]).length).toBeGreaterThan(
+      0,
+    );
     // Cleanup is best-effort here — the upstream errored, and the
     // listener is still in `listeners`. unsub still works.
+    unsub();
+  });
+
+  it("upstreamError_withCodeProperty_prefersErrorCodeOverName", () => {
+    // Errors with a `code` property (NodeJS ErrnoException, DOMException)
+    // are common in production. The contract resolves error.type to
+    // err.code first, matching the OTel SDK's recordException which
+    // writes exception.type from code before name. This keeps the
+    // custom error.type attribute and the OTel-standard exception.type
+    // in lock-step.
+    class CodedError extends Error {
+      readonly code: string;
+      constructor(name: string, code: string, message: string) {
+        super(message);
+        this.name = name;
+        this.code = code;
+      }
+    }
+    const subject = new Subject<number>();
+    const store = createStore(subject, { name: "coded-target", initial: 0 });
+    const unsub = store.subscribe(() => undefined);
+    TEST_SPAN_EXPORTER.reset();
+    subject.error(new CodedError("DOMException", "NotAllowedError", "denied"));
+    const errorSpans = TEST_SPAN_EXPORTER.getFinishedSpans().filter(
+      (s) => s.name === "web-ui.store.error",
+    );
+    expect(errorSpans).toHaveLength(1);
+    // Custom attribute resolves to the code (not the name).
+    expect(errorSpans[0]?.attributes["error.type"]).toBe("NotAllowedError");
+    // OTel-standard event attribute also resolves to the code; the
+    // two MUST agree.
+    const exceptionEvents = (errorSpans[0]?.events ?? []).filter((e) => e.name === "exception");
+    expect(exceptionEvents[0]?.attributes?.["exception.type"]).toBe("NotAllowedError");
+    unsub();
+  });
+
+  it("upstreamError_withNonErrorThrow_wrapsWithSentinelPrefixedMessage", () => {
+    // RxJS observers may emit literal null/undefined/string. The
+    // wrapper for recordException uses a sentinel prefix so log greps
+    // can distinguish "literal null thrown" from "code path stringified
+    // a variable that happened to be null".
+    const subject = new Subject<number>();
+    const store = createStore(subject, { name: "nonerror-target", initial: 0 });
+    const unsub = store.subscribe(() => undefined);
+    TEST_SPAN_EXPORTER.reset();
+    subject.error(null);
+    const errorSpans = TEST_SPAN_EXPORTER.getFinishedSpans().filter(
+      (s) => s.name === "web-ui.store.error",
+    );
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]?.attributes["error.type"]).toBe("object");
+    // error.message and exception.message agree byte-for-byte on the
+    // sentinel-wrapped form. They MUST agree so downstream consumers
+    // reading either attribute see the same string.
+    expect(errorSpans[0]?.attributes["error.message"]).toBe("non-Error throw: null");
+    const exceptionEvents = (errorSpans[0]?.events ?? []).filter((e) => e.name === "exception");
+    expect(exceptionEvents[0]?.attributes?.["exception.message"]).toBe("non-Error throw: null");
+    unsub();
+  });
+
+  it("upstreamError_withNumericCode_stringifiesForLockStep", () => {
+    // Legacy NodeJS ErrnoException uses numeric `code` (e.g., -2 for
+    // ENOENT in some shapes). SDK does `code.toString()`; we match.
+    class NumericCodeError extends Error {
+      readonly code: number;
+      constructor(code: number, message: string) {
+        super(message);
+        this.name = "NumericCodeError";
+        this.code = code;
+      }
+    }
+    const subject = new Subject<number>();
+    const store = createStore(subject, { name: "numeric-code", initial: 0 });
+    const unsub = store.subscribe(() => undefined);
+    TEST_SPAN_EXPORTER.reset();
+    subject.error(new NumericCodeError(-2, "no such file"));
+    const errorSpans = TEST_SPAN_EXPORTER.getFinishedSpans().filter(
+      (s) => s.name === "web-ui.store.error",
+    );
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]?.attributes["error.type"]).toBe("-2");
+    const exceptionEvents = (errorSpans[0]?.events ?? []).filter((e) => e.name === "exception");
+    expect(exceptionEvents[0]?.attributes?.["exception.type"]).toBe("-2");
+    unsub();
+  });
+
+  it("upstreamError_withUndefinedThrow_wrapsWithSentinel", () => {
+    // Symmetric with the null case — RxJS observers may emit literal
+    // undefined. The wrapper applies and both error.message and
+    // exception.message use the sentinel form.
+    const subject = new Subject<number>();
+    const store = createStore(subject, { name: "undef-target", initial: 0 });
+    const unsub = store.subscribe(() => undefined);
+    TEST_SPAN_EXPORTER.reset();
+    subject.error(undefined);
+    const errorSpans = TEST_SPAN_EXPORTER.getFinishedSpans().filter(
+      (s) => s.name === "web-ui.store.error",
+    );
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]?.attributes["error.type"]).toBe("undefined");
+    expect(errorSpans[0]?.attributes["error.message"]).toBe("non-Error throw: undefined");
     unsub();
   });
 
