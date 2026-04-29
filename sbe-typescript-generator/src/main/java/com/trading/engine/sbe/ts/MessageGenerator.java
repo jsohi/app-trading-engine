@@ -16,7 +16,6 @@
 package com.trading.engine.sbe.ts;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -637,19 +636,14 @@ final class MessageGenerator {
   /**
    * Render a {@link PrimitiveValue} sentinel as the matching TypeScript numeric literal. Widths up
    * to 32 bits emit a JS {@code number}; 64-bit widths emit a {@code bigint} literal (suffix {@code
-   * n}). For {@code uint64} the SBE constant is stored as a signed Java {@code long} ({@code -1L});
-   * we widen via {@link BigInteger} so the emitted literal is the positive {@code
-   * 18446744073709551615n}.
+   * n}). For {@code uint64} the SBE constant is stored as a signed Java {@code long} ({@code -1L}
+   * for the default null bit-pattern); {@link Long#toUnsignedString(long)} renders it as the
+   * canonical positive form ({@code 18446744073709551615n}).
    */
   private static String numericLiteral(final PrimitiveType primitive, final PrimitiveValue value) {
     return switch (primitive) {
       case INT64 -> Long.toString(value.longValue()) + "n";
-      case UINT64 -> {
-        // PrimitiveValue stores uint64 as a signed long bit-pattern. Re-interpret as
-        // unsigned via BigInteger so the literal is the canonical positive form.
-        final var bi = new BigInteger(Long.toUnsignedString(value.longValue()));
-        yield bi.toString() + "n";
-      }
+      case UINT64 -> Long.toUnsignedString(value.longValue()) + "n";
       case INT8, UINT8, INT16, UINT16, INT32, UINT32 -> Long.toString(value.longValue());
       case FLOAT, DOUBLE -> Double.toString(value.doubleValue());
       default -> throw new IllegalStateException("No literal form for primitive " + primitive);
