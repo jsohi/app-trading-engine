@@ -1,0 +1,288 @@
+/*
+ * Copyright 2026 Jasandeep Singh
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.trading.engine.sbe.ts;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import uk.co.real_logic.sbe.ir.Ir;
+import uk.co.real_logic.sbe.ir.Signal;
+import uk.co.real_logic.sbe.ir.Token;
+
+/**
+ * Emits one TypeScript file per SBE enum: {@code <enumName>.ts}.
+ *
+ * <h2>Output shape</h2>
+ *
+ * Each emitted module exports
+ *
+ * <ul>
+ *   <li>An {@code as const} object literal whose keys are the SBE valid-value names and whose
+ *       values are the SBE numeric constants. Tree-shakeable in Vite/Rollup via named imports.
+ *   <li>A derived union type alias (same name as the const) — {@code typeof X[keyof typeof X]}.
+ *   <li>A {@code <enumName>_NULL_VAL} sentinel constant for SBE optional-presence handling. The
+ *       value comes from the schema's explicit {@code nullValue=...} attribute when present, or
+ *       the SBE-default null value for the underlying primitive type otherwise (e.g. 255 for
+ *       {@code uint8}, {@code Long.MIN_VALUE} for {@code int64}). Decoders read the raw bytes
+ *       and compare against this sentinel to surface absence as {@code null} on the consumer
+ *       side.
+ * </ul>
+ *
+ * <h2>Why {@code as const} object literal, not TypeScript {@code const enum}</h2>
+ *
+ * The web-ui's {@code tsconfig.json} sets {@code isolatedModules: true} (mandatory for Vite,
+ * esbuild, tsx, and Storybook's per-file transpilation pipelines). Under that flag, ambient
+ * {@code const enum} cannot be inlined across module boundaries (TS error TS1320), and esbuild
+ * silently strips the inlining benefit anyway. The {@code as const} object + derived union is
+ * the modern TS-idiomatic equivalent: tree-shakeable in Vite/Rollup, preserves compile-time
+ * type narrowing, and survives {@code verbatimModuleSyntax}.
+ *
+ * <h2>Threading model</h2>
+ *
+ * Not thread-safe. Build-time only.
+ *
+ * <h2>Allocation behavior</h2>
+ *
+ * Build-time only — allocates freely while constructing emitted source.
+ *
+ * @see TypeScriptTargetCodeGenerator
+ * @see HeaderGenerator
+ */
+final class EnumGenerator {
+
+    /** Newline used in emitted TypeScript. */
+    private static final String NL = "\n";
+
+    /**
+     * Walk all top-level types in {@code ir} and emit one {@code <enumName>.ts} file per enum.
+     *
+     * @param ir parsed SBE intermediate representation; must not be {@code null}
+     * @param outputDir absolute output directory, already created by the caller; must not be
+     *     {@code null}
+     * @return ordered list of enum names that were emitted (used by the index barrel)
+     * @throws IOException if any output file cannot be written
+     * @throws IllegalStateException if an enum's underlying primitive type is not an unsigned
+     *     integer (the only kind the project's schema declares — char- and signed-encoded enums
+     *     would need additional code paths)
+     */
+    List<String> generate(final Ir ir, final Path outputDir) throws IOException {
+        Objects.requireNonNull(ir, "ir");
+        Objects.requireNonNull(outputDir, "outputDir");
+
+        final var emitted = new ArrayList<String>();
+        for (final var typeTokens : ir.types()) {
+            if (typeTokens.isEmpty()) {
+                continue;
+            }
+            final var head = typeTokens.get(0);
+            if (head.signal() != Signal.BEGIN_ENUM) {
+                continue;
+            }
+            emitted.add(emitEnum(typeTokens, outputDir));
+        }
+        return List.copyOf(emitted);
+    }
+
+    /**
+     * Emit a single enum's {@code .ts} file.
+     *
+     * @return the enum name (matches the emitted filename without extension)
+     */
+    private static String emitEnum(final List<Token> tokens, final Path outputDir)
+            throws IOException {
+        final var begin = tokens.get(0);
+        final var enumName = begin.applicableTypeName();
+        final var primitive = begin.encoding().primitiveType();
+        requireUnsignedInteger(enumName, primitive);
+
+        final var values = collectValidValues(tokens);
+        final var nullVal = applicableNullValue(begin, primitive);
+
+        final var sb = new StringBuilder(2_048);
+        sb.append("// AUTO-GENERATED by :sbe-typescript-generator:generateTsCodecs (APP-34).")
+                .append(NL)
+                .append("// Source: SBE enum ")
+                .append(enumName)
+                .append(" (encodingType=")
+                .append(primitive.primitiveName())
+                .append("). Do not edit.")
+                .append(NL)
+                .append("//")
+                .append(NL)
+                .append("// SBE enum literals as a tree-shakeable as-const object plus derived")
+                .append(NL)
+                .append("// union type. Compatible with `isolatedModules: true` and")
+                .append(NL)
+                .append("// `verbatimModuleSyntax: true`. (TypeScript `const enum` is")
+                .append(NL)
+                .append("// incompatible with `isolatedModules`.)")
+                .append(NL)
+                .append(NL);
+
+        // as-const object literal
+        sb.append("export const ").append(enumName).append(" = {").append(NL);
+        for (final var v : values) {
+            if (v.description() != null && !v.description().isBlank()) {
+                sb.append("  /** ")
+                        .append(escapeJsDoc(v.description()))
+                        .append(" */")
+                        .append(NL);
+            }
+            sb.append("  ")
+                    .append(v.name())
+                    .append(": ")
+                    .append(emitNumericLiteral(v.value(), primitive))
+                    .append(",")
+                    .append(NL);
+        }
+        sb.append("} as const;").append(NL).append(NL);
+
+        // derived union type
+        sb.append("/** Union of {@link ")
+                .append(enumName)
+                .append("} literal values. */")
+                .append(NL);
+        sb.append("export type ")
+                .append(enumName)
+                .append(" = typeof ")
+                .append(enumName)
+                .append("[keyof typeof ")
+                .append(enumName)
+                .append("];")
+                .append(NL)
+                .append(NL);
+
+        // NULL_VAL sentinel for SBE optional-presence handling
+        sb.append("/**").append(NL);
+        sb.append(
+                        "* SBE optional-presence sentinel for ")
+                .append(enumName)
+                .append(" fields.")
+                .append(NL);
+        sb.append(
+                        "* Decoders return {@code null} when the raw value equals this sentinel.")
+                .append(NL);
+        sb.append("*/").append(NL);
+        sb.append("export const ")
+                .append(enumName)
+                .append("_NULL_VAL = ")
+                .append(emitNumericLiteral(nullVal, primitive))
+                .append(" as const;")
+                .append(NL);
+
+        Files.writeString(outputDir.resolve(enumName + ".ts"), sb, StandardCharsets.UTF_8);
+        return enumName;
+    }
+
+    /** Collect all {@link Signal#VALID_VALUE} tokens between {@code BEGIN_ENUM} and end. */
+    private static List<EnumValue> collectValidValues(final List<Token> tokens) {
+        final var values = new ArrayList<EnumValue>();
+        for (final var token : tokens) {
+            if (token.signal() != Signal.VALID_VALUE) {
+                continue;
+            }
+            final var name = token.name();
+            final var value = token.encoding().constValue();
+            final var description = token.description();
+            values.add(new EnumValue(name, value, description));
+        }
+        return List.copyOf(values);
+    }
+
+    /**
+     * Resolve the optional-presence null value for an enum: either the schema's explicit
+     * {@code nullValue=...} attribute (if present) or the SBE-default null value for the
+     * underlying primitive type. Both cases come from
+     * {@link uk.co.real_logic.sbe.ir.Encoding#applicableNullValue()}.
+     */
+    private static PrimitiveValue applicableNullValue(
+            final Token begin, final PrimitiveType primitive) {
+        final var explicit = begin.encoding().applicableNullValue();
+        if (explicit != null) {
+            return explicit;
+        }
+        return primitive.nullValue();
+    }
+
+    /**
+     * Reject enum encoding types we don't currently support. The project's schema declares only
+     * {@code uint8} for enums; {@code uint16}/{@code uint32}/{@code uint64} would also be safe
+     * to support but are unused, and signed/char encodings need additional emit logic (e.g.
+     * char-typed enums use single-character literals). Surface the unsupported case rather than
+     * emit silently broken output.
+     */
+    private static void requireUnsignedInteger(final String enumName, final PrimitiveType type) {
+        switch (type) {
+            case UINT8, UINT16, UINT32 -> {
+                // supported (uint64 deliberately omitted: enum values would be bigint, which
+                // breaks consumer ergonomics — flag if a future schema introduces a uint64 enum)
+            }
+            default ->
+                    throw new IllegalStateException(
+                            "Unsupported enum encoding type for '"
+                                    + enumName
+                                    + "': "
+                                    + type
+                                    + " (project schema declares only uint8 enums; uint16/uint32"
+                                    + " are also acceptable on demand)");
+        }
+    }
+
+    /**
+     * Render a {@link PrimitiveValue} as a TypeScript numeric literal. For {@code uint8} /
+     * {@code uint16} / {@code uint32} the value fits safely in JS {@code number}; widening to
+     * {@code uint64} would force {@code bigint} (currently unreachable, see
+     * {@link #requireUnsignedInteger(String, PrimitiveType)}).
+     */
+    private static String emitNumericLiteral(
+            final PrimitiveValue value, final PrimitiveType primitive) {
+        // Defensive: if a future schema adds uint64 enums, we'd need to emit `0n` bigint
+        // literals here. Until then, longValue() narrows safely.
+        if (primitive == PrimitiveType.UINT64) {
+            return value.longValue() + "n";
+        }
+        return Long.toString(value.longValue());
+    }
+
+    /**
+     * Escape a schema-side description string for safe inclusion in a JSDoc comment. The only
+     * sequence that would break a JSDoc is the close-comment delimiter; replace it with a
+     * Unicode-escape variant so the comment closes only at our explicit {@code " */"}. Other
+     * characters are preserved verbatim — TypeScript JSDoc accepts most printable ASCII.
+     */
+    private static String escapeJsDoc(final String description) {
+        if (description.indexOf("*/") < 0) {
+            return description;
+        }
+        return description.replace("*/", "*\\/");
+    }
+
+    /**
+     * One enum value parsed from the IR.
+     *
+     * @param name FIX-/schema-side identifier (e.g. {@code Buy}, {@code Sell})
+     * @param value SBE primitive value the wire byte equals when this name is selected
+     * @param description schema {@code description} attribute, used as the emitted JSDoc on the
+     *     value; may be {@code null} or blank
+     */
+    private record EnumValue(String name, PrimitiveValue value, String description) {}
+}
