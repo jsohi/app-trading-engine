@@ -100,21 +100,17 @@ final class PlaceholderTypeScriptCodeGenerator implements CodeGenerator {
     sb.append(NL);
     sb.append("export { MessageHeaderDecoder } from \"./messageHeader.js\";").append(NL);
     for (final var enumName : enumNames) {
-      // Re-export the value (the as-const object literal) and the NULL_VAL sentinel.
+      // Single value re-export covers BOTH the as-const object literal and the
+      // identically-named type alias from the source module. TypeScript treats values and
+      // types as separate namespaces under one name; `export { Foo }` re-exports both
+      // sides. Adding a parallel `export type { Foo }` triggers TS2300 (Duplicate
+      // identifier) under `verbatimModuleSyntax: true` because the type binding is then
+      // exported twice. Verified via strict tsc against the generated tree.
       sb.append("export { ")
           .append(enumName)
           .append(", ")
           .append(enumName)
           .append("_NULL_VAL } from \"./")
-          .append(enumName)
-          .append(".js\";")
-          .append(NL);
-      // Under `verbatimModuleSyntax: true`, the type alias (which shares the const's
-      // name) must be re-exported via `export type` separately. Consumers then import
-      // `SideEnum` and use it in both type and value position — TS resolves correctly.
-      sb.append("export type { ")
-          .append(enumName)
-          .append(" } from \"./")
           .append(enumName)
           .append(".js\";")
           .append(NL);

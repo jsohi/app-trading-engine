@@ -164,14 +164,17 @@ final class EnumGenerator {
         .append(NL)
         .append(NL);
 
-    // NULL_VAL sentinel for SBE optional-presence handling
+    // NULL_VAL sentinel for SBE optional-presence handling. JSDoc lines use the conventional
+    // ` * ` prefix (leading space) so IDEs render the block correctly; `null` is rendered via
+    // backtick-Markdown (TSDoc supports ``…`` but does not recognise the Java `{@code …}` tag,
+    // which would render verbatim in IDE hovers).
     sb.append("/**").append(NL);
-    sb.append("* SBE optional-presence sentinel for ")
+    sb.append(" * SBE optional-presence sentinel for ")
         .append(enumName)
         .append(" fields.")
         .append(NL);
-    sb.append("* Decoders return {@code null} when the raw value equals this sentinel.").append(NL);
-    sb.append("*/").append(NL);
+    sb.append(" * Decoders return `null` when the raw value equals this sentinel.").append(NL);
+    sb.append(" */").append(NL);
     sb.append("export const ")
         .append(enumName)
         .append("_NULL_VAL = ")
