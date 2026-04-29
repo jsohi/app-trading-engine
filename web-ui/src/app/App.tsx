@@ -14,27 +14,17 @@ import { collectPanels } from "@/app/panelRegistry";
 
 // Eager glob: every `./panels/<name>/register.ts` must call
 // `registerPanel(...)` at module scope so the registry is populated
-// by the time React mounts. Vite's `import.meta.glob({ eager: true })`
-// is statically transformed into actual `import` statements at build
-// time; the resulting modules' top-level side effects (registerPanel
-// calls) are NOT eliminated by tree-shaking under Rollup defaults.
+// by the time React mounts. `import.meta.glob({ eager: true })` is
+// statically transformed by Vite into top-level `import` statements;
+// the imported modules' side effects (the `registerPanel` calls) run
+// at module-load and are NOT eliminated by Rollup tree-shaking.
 //
-// We still keep an `Object.keys(...)` reference in `App()` below as a
-// readability anchor — it documents at the call site that the glob's
-// VALUE is intentionally unused (the registerPanel side effect is the
-// whole point) and discourages a "simplify" refactor that drops the
-// declaration.
-const panelRegistryGlob = import.meta.glob("../panels/*/register.ts", { eager: true });
+// We DON'T need to reference the glob value at runtime — the import
+// declaration alone is the load-bearing instruction. The `void` cast
+// only documents that the value is intentionally unused.
+void import.meta.glob("../panels/*/register.ts", { eager: true });
 
 export function App(): JSX.Element {
-  const panels = useMemo(() => {
-    // Read but discard the glob's keys — documents the side-effect-only
-    // contract of the glob declaration. The expression is cheap and
-    // improves the chance a future maintainer reading this code grasps
-    // why the glob exists.
-    Object.keys(panelRegistryGlob);
-    return collectPanels();
-  }, []);
-
+  const panels = useMemo(() => collectPanels(), []);
   return <PanelGrid panels={panels} />;
 }
