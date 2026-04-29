@@ -1,18 +1,63 @@
 /*
- * SBE TypeScript code generator (1A: stub task only).
+ * SBE TypeScript code generator (APP-34 / Phase 1B).
  *
- * APP-34 (1B) replaces the implementation with a Java program that
- * reads messages/src/main/resources/trading-schema.xml and emits ~60
- * .ts files plus constants.ts / helpers.ts / index.ts. The task name
- * (`generateTsCodecs`), output directory (`build/generated-ts/`), and
- * consumer contract (npm workspace `@trading/sbe-codecs` with `main`
- * pointing at `build/generated-ts/index.ts`) are intentionally stable
- * across the 1A→1B handoff so feature branches consume the workspace
- * without churn.
+ * Reads `messages/src/main/resources/trading-schema.xml` via SBE 1.37.1's
+ * standard `SbeTool` entry point and emits per-message TypeScript decoders
+ * into `build/generated-ts/`. The npm workspace `@trading/sbe-codecs` (see
+ * `package.json`) exposes the output to consumers (web-ui), with `main`
+ * pointing at `build/generated-ts/index.ts`.
+ *
+ * Design — extension point chosen
+ *   `uk.co.real_logic.sbe.generation.TargetCodeGeneratorLoader` is a closed
+ *   enum (`JAVA, C, CPP, GOLANG, RUST`) in SBE 1.37.x; it is NOT a
+ *   `ServiceLoader`-based SPI. However, `TargetCodeGeneratorLoader.get(name)`
+ *   falls back to `Class.forName(name).getConstructor().newInstance()` for
+ *   any FQCN passed via the `-Dsbe.target.language=...` system property. We
+ *   exploit that fallback: our `TypeScriptTargetCodeGenerator` (public
+ *   no-arg constructor, implements `TargetCodeGenerator`) is loaded by
+ *   FQCN. SBE parses the XML schema into an `Ir` for free; our generator
+ *   only emits TypeScript.
+ *
+ * Build wiring
+ *   `:sbe-typescript-generator:generateTsCodecs` runs `SbeTool` as a
+ *   `JavaExec` task with the generator's compiled classes + `sbe-all` on
+ *   the runtime classpath. Inputs include the schema XML AND the compiled
+ *   generator classes — without the latter, edits to `MessageGenerator.java`
+ *   would not invalidate Gradle's UP-TO-DATE cache, leading to silently
+ *   stale codecs.
+ *
+ * Stable contract across the 1A→1B handoff
+ *   - Task name `generateTsCodecs` preserved
+ *   - Output directory `build/generated-ts/` preserved
+ *   - npm workspace name `@trading/sbe-codecs` preserved
+ *   Consumers (`web-ui`) see only the contract change (more exports), not
+ *   a path or task-name change.
  */
 
+plugins {
+    application
+}
+
 dependencies {
-    implementation(project(":messages"))
+    // sbe-all provides:
+    //   uk.co.real_logic.sbe.SbeTool                       (entry point)
+    //   uk.co.real_logic.sbe.generation.TargetCodeGenerator (SPI we implement)
+    //   uk.co.real_logic.sbe.generation.CodeGenerator       (returned by our SPI)
+    //   uk.co.real_logic.sbe.ir.Ir                          (parsed schema we walk)
+    implementation(libs.sbe.all)
+
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
+    // RoundTripIT (chunk 13) will add `testImplementation(project(":messages"))` for its
+    // Java-encoded side. Deliberately deferred until that chunk lands so this chunk's task
+    // graph stays minimal and the per-chunk diff stays focused.
+}
+
+application {
+    // Not used by `generateTsCodecs` (which invokes `SbeTool` directly), but
+    // satisfies the `application` plugin's contract and lets contributors
+    // sanity-check the generator manually via `./gradlew :sbe-typescript-generator:run`.
+    mainClass.set("uk.co.real_logic.sbe.SbeTool")
 }
 
 val schemaXml =
@@ -21,33 +66,49 @@ val schemaXml =
     )
 val generatedTsDir = layout.buildDirectory.dir("generated-ts")
 
-val generateTsCodecs by tasks.registering {
-    group = "build"
-    description =
-        "Generate TypeScript decoders from trading-schema.xml (1A stub; APP-34 wires the real generator)."
+val generateTsCodecs =
+    tasks.register<JavaExec>("generateTsCodecs") {
+        group = "code generation"
+        description =
+            "Generate TypeScript decoders from trading-schema.xml " +
+                "via SBE Ir + the TypeScriptTargetCodeGenerator SPI implementation."
 
-    // Declared inputs/outputs make the task UP-TO-DATE on warm caches —
-    // bootstrap-codecs.mjs invokes the task unconditionally and relies
-    // on this caching for fast no-ops.
-    inputs.file(schemaXml)
-    outputs.dir(generatedTsDir)
+        mainClass.set("uk.co.real_logic.sbe.SbeTool")
+        // Runtime classpath includes the generator's own compiled classes
+        // (so `Class.forName(\"com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator\")`
+        // resolves) plus sbe-all (transitively pulled by `implementation`).
+        // Implicitly depends on `compileJava` and `processResources` because
+        // `runtimeClasspath` references `main` sourceSet output — Gradle adds
+        // those task dependencies automatically. This is intentional: emitter
+        // edits MUST invalidate the cached output, and the implicit task
+        // ordering also ensures the generator is compiled before invocation.
+        classpath = sourceSets["main"].runtimeClasspath
 
-    doLast {
-        val out = generatedTsDir.get().asFile
-        out.mkdirs()
-        out.resolve("index.ts").writeText(
-            buildString {
-                appendLine(
-                    "// AUTO-GENERATED by :sbe-typescript-generator:generateTsCodecs (1A stub).",
-                )
-                appendLine(
-                    "// TODO(APP-34): replace this stub with the real SBE → TypeScript generator.",
-                )
-                appendLine(
-                    "// Consumers: @trading/sbe-codecs npm workspace (see sbe-typescript-generator/package.json).",
-                )
-                appendLine("export {};")
-            },
+        // Inputs/outputs declared so Gradle's UP-TO-DATE cache is correct.
+        // The compiled generator classes are an explicit input — without
+        // this, editing an emitter would not invalidate the cache and the
+        // task would serve stale codecs.
+        inputs.file(schemaXml)
+        inputs.files(sourceSets["main"].output)
+        outputs.dir(generatedTsDir)
+
+        systemProperty(
+            "sbe.target.language",
+            "com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator",
         )
+        systemProperty(
+            "sbe.output.dir",
+            generatedTsDir.get().asFile.absolutePath,
+        )
+        systemProperty("sbe.validation.stop.on.error", "true")
+        systemProperty("sbe.validation.warnings.fatal", "true")
+
+        args(schemaXml.asFile.absolutePath)
+
+        // Defensive: skip cleanly if the schema is missing instead of
+        // exploding mid-build (matches `:messages:generateCodecs` idiom).
+        onlyIf { schemaXml.asFile.exists() }
     }
-}
+
+// `compileJava` does NOT depend on `generateTsCodecs` — TS output is consumed
+// by the npm workspace, not by Java compilation in this module.
