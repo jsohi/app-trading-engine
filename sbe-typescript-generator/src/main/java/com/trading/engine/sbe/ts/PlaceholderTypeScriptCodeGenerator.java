@@ -59,9 +59,27 @@ final class PlaceholderTypeScriptCodeGenerator implements CodeGenerator {
         this.outputDir = Path.of(outputDir);
     }
 
+    /**
+     * Create the output directory, delegate per-emitter file emission, then write the
+     * transitional {@code index.ts} barrel re-exporting the public symbols emitted so far.
+     *
+     * <p>Build-time, single-threaded; allocation freely permitted. The output directory is
+     * created if missing. As subsequent APP-34 chunks land their per-emitter classes
+     * (Enum/Message/VarData/Uuid/Router/Helpers/Constants), they are wired in here until
+     * chunk 11 replaces this method with the real {@code IndexBarrelGenerator}.
+     *
+     * @throws IOException if the output directory cannot be created or any emitted file cannot
+     *     be written
+     */
     @Override
     public void generate() throws IOException {
         Files.createDirectories(outputDir);
+
+        // Per-emitter classes wired in progressively (chunk 3+). Each emitter writes its own
+        // file(s); the placeholder is responsible for the index.ts barrel until chunk 11 lands
+        // the real IndexBarrelGenerator.
+        new HeaderGenerator().generate(ir, outputDir);
+
         final var indexTs = outputDir.resolve("index.ts");
         final var content =
                 """
@@ -73,7 +91,7 @@ final class PlaceholderTypeScriptCodeGenerator implements CodeGenerator {
                 // Schema version: %d
                 //
                 // TODO(APP-34): replaced incrementally as per-emitter classes land.
-                export {};
+                export { MessageHeaderDecoder } from "./messageHeader.js";
                 """
                         .formatted(
                                 ir.applicableNamespace() == null ? "" : ir.applicableNamespace(),
