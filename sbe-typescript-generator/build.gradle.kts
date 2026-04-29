@@ -71,7 +71,7 @@ val generateTsCodecs =
         group = "code generation"
         description =
             "Generate TypeScript decoders from trading-schema.xml " +
-                "via SBE Ir + the TypeScriptTargetCodeGenerator SPI implementation."
+            "via SBE Ir + the TypeScriptTargetCodeGenerator SPI implementation."
 
         mainClass.set("uk.co.real_logic.sbe.SbeTool")
         // Runtime classpath includes the generator's own compiled classes
