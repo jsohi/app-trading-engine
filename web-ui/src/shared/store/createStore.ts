@@ -120,8 +120,12 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
           //     resolution order the OTel SDK uses inside
           //     `Span.recordException`, so the custom `error.*`
           //     attributes and the OTel-standard `exception.*` event
-          //     attributes stay in lock-step for ANY error shape (not
-          //     just plain Errors).
+          //     attributes agree byte-for-byte for the documented
+          //     primitive-code shapes (string / number / bigint /
+          //     boolean / symbol). Object/array `err.code` shapes
+          //     intentionally fall through to `err.name` (see the
+          //     errorType helper) — the otel.ts contract docstring
+          //     calls this out as the one documented divergence.
           //   - error.type:  err.code (any non-null, coerced to String
           //                  to match SDK behaviour for numeric codes
           //                  in legacy NodeJS ErrnoException), then
@@ -279,7 +283,12 @@ function toErrorForSpan(err: unknown): Error {
   }
   const wrapped = new Error(`non-Error throw: ${String(err)}`);
   // Override the default Error name so exception.type lines up with
-  // error.type's `typeof err` for non-Error throws.
+  // error.type's `typeof err` for non-Error throws. NOTE: this also
+  // changes `wrapped.toString()` to `"<typeof>: non-Error throw: ..."`
+  // (Error.prototype.toString rebuilds from current name). The OTel
+  // SDK reads name/message/stack as separate fields so telemetry is
+  // unaffected; only an explicit `String(wrapped)` / interpolation
+  // would see the new prefix. We don't do either anywhere in web-ui.
   Object.defineProperty(wrapped, "name", {
     value: typeof err,
     writable: true,
