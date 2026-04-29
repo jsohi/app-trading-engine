@@ -26,7 +26,7 @@
  * value reference; no per-message allocation in the React layer.
  */
 import { useSyncExternalStore } from "react";
-import type { Observable, Subscription } from "rxjs";
+import { type Observable, Subscription } from "rxjs";
 
 import { tracer } from "@/shared/telemetry/otel";
 
@@ -70,38 +70,68 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
 
   function ensureSubscribed(): void {
     if (subscription !== null) return;
-    subscription = source.subscribe({
-      next: (value) => {
-        snapshot = value;
-        for (const fn of listeners) fn();
-      },
-      error: (err: unknown) => {
-        // Errors are swallowed at the store boundary; APP-245 will
-        // wire the telemetry channel for vendor-side ingestion. We
-        // do NOT throw — that would crash every component subscribed.
-        //
-        // Two things must happen here:
-        //   1) Record an error span (telemetry contract: span name
-        //      `web-ui.store.error` with `store.name` attribute) so
-        //      ops/RUM can detect upstream failure even before APP-245
-        //      ships a real exporter — the NoopSpanProcessor swallows
-        //      the span today, but the call site is wired correctly.
-        //   2) Null `subscription` so a fresh subscriber can re-attempt
-        //      via `ensureSubscribed()`. Without this the store stayed
-        //      permanently dead after a single upstream error — every
-        //      future subscribe found a non-null but broken subscription
-        //      and silently produced stale snapshots.
-        const errSpan = tracer.startSpan("web-ui.store.error", {
-          attributes: {
-            "store.name": options.name,
-            "error.type": err instanceof Error ? err.name : typeof err,
-            "error.message": err instanceof Error ? err.message : String(err),
-          },
-        });
-        errSpan.end();
-        subscription = null;
-      },
-    });
+    // Re-entrancy guard: if `source` emits synchronously during
+    // `source.subscribe(...)` (e.g. `BehaviorSubject`), the `next`
+    // handler will fire BEFORE the assignment to `subscription`
+    // completes. Without a parent Subscription pre-bound, listeners
+    // notified inside that synchronous emission see `subscription`
+    // as `null` — and a re-entrant `store.subscribe()` from one of
+    // them would call `ensureSubscribed()` again, attaching a SECOND
+    // upstream subscription. The fix: build a parent Subscription,
+    // assign it to `subscription` BEFORE wiring the inner subscribe,
+    // and `add()` the inner subscription to it. Now any re-entrant
+    // call sees `subscription !== null` and short-circuits.
+    const parent = new Subscription();
+    subscription = parent;
+    parent.add(
+      source.subscribe({
+        next: (value) => {
+          snapshot = value;
+          for (const fn of listeners) fn();
+        },
+        error: (err: unknown) => {
+          // Errors are swallowed at the store boundary; APP-245 will
+          // wire the telemetry channel for vendor-side ingestion. We
+          // do NOT throw — that would crash every component subscribed.
+          //
+          // Three things must happen here:
+          //   1) Record an error span (telemetry contract: span name
+          //      `web-ui.store.error` with `store.name` attribute) so
+          //      ops/RUM can detect upstream failure even before APP-245
+          //      ships a real exporter — the NoopSpanProcessor swallows
+          //      the span today, but the call site is wired correctly.
+          //   2) Null `subscription` so a fresh subscriber can re-attempt
+          //      via `ensureSubscribed()`. Without this the store stayed
+          //      permanently dead after a single upstream error — every
+          //      future subscribe found a non-null but broken subscription
+          //      and silently produced stale snapshots.
+          //   3) Notify listeners — even if `snapshot` did not change, a
+          //      React component that subscribed to this store should
+          //      re-render so it can observe terminal state via any
+          //      downstream signal it consumes (e.g. an error overlay
+          //      that reads `store.getSnapshot()` or a hook companion).
+          const errSpan = tracer.startSpan("web-ui.store.error", {
+            attributes: {
+              "store.name": options.name,
+              "error.type": err instanceof Error ? err.name : typeof err,
+              "error.message": err instanceof Error ? err.message : String(err),
+            },
+          });
+          errSpan.end();
+          subscription = null;
+          for (const fn of listeners) fn();
+        },
+        complete: () => {
+          // Symmetric with `error` — the upstream is now terminal.
+          // Null `subscription` so a future subscriber can attach a
+          // fresh stream (cold sources like `defer` rebuild on the
+          // next subscribe). Notify listeners so they can re-read the
+          // snapshot if any companion signal depends on completion.
+          subscription = null;
+          for (const fn of listeners) fn();
+        },
+      }),
+    );
   }
 
   function maybeUnsubscribe(): void {

@@ -9,7 +9,7 @@
  *     span per `subscribe` call, with `store.name` attribute.
  */
 import { describe, expect, it } from "vitest";
-import { Subject, type Observable } from "rxjs";
+import { BehaviorSubject, Subject, type Observable } from "rxjs";
 
 import { createStore } from "./createStore";
 import { TEST_SPAN_EXPORTER } from "../../../test/setup";
@@ -138,5 +138,63 @@ describe("createStore", () => {
     subjects[1]?.next(99);
     expect(received).toContain(99);
     unsub2();
+  });
+
+  it("synchronousEmissionDuringSubscribe_doesNotDoubleSubscribe", () => {
+    // BehaviorSubject emits its current value synchronously to every
+    // new subscriber inside the `subscribe(...)` call. Without the
+    // parent-Subscription guard, `subscription` is still null when the
+    // emission fires, so a re-entrant `store.subscribe(...)` from a
+    // listener can call `ensureSubscribed()` again and attach a SECOND
+    // upstream subscription. This test exercises that path: one outer
+    // `store.subscribe`, the listener re-enters `store.subscribe`
+    // during the synchronous emission, and we count upstream attaches.
+    let attachCount = 0;
+    const inner = new BehaviorSubject<number>(7);
+    // Wrap to count attaches at the outer-Observable level. The inner
+    // BehaviorSubject IS still synchronous, so the next handler fires
+    // before the outer `subscribe` returns.
+    const counted = new (class {
+      subscribe(observer: {
+        next: (v: number) => void;
+        error: (e: unknown) => void;
+        complete?: () => void;
+      }): { unsubscribe: () => void } {
+        attachCount += 1;
+        const sub = inner.subscribe({
+          next: (v) => {
+            observer.next(v);
+          },
+          error: (e) => {
+            observer.error(e);
+          },
+          complete: () => {
+            observer.complete?.();
+          },
+        });
+        return {
+          unsubscribe: () => {
+            sub.unsubscribe();
+          },
+        };
+      }
+    })();
+
+    const store = createStore<number>(counted as unknown as Observable<number>, {
+      name: "reentrancy",
+      initial: 0,
+    });
+    let reentrantSubs = 0;
+    const unsubOuter = store.subscribe(() => {
+      // Re-enter from inside the synchronous `next` handler.
+      // Without the parent-Subscription guard this would call
+      // `ensureSubscribed()` and bump `attachCount` to 2.
+      const unsubInner = store.subscribe(() => undefined);
+      reentrantSubs += 1;
+      unsubInner();
+    });
+    expect(attachCount).toBe(1);
+    expect(reentrantSubs).toBeGreaterThanOrEqual(1);
+    unsubOuter();
   });
 });

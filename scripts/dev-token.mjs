@@ -17,7 +17,13 @@
  * Threading model: single-threaded CLI. No concurrency.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { createPrivateKey, createPublicKey, createSign, createHash } from "node:crypto";
+import {
+  createPrivateKey,
+  createPublicKey,
+  createSign,
+  createHash,
+  randomUUID,
+} from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -74,10 +80,10 @@ const payload = {
   sub: values.sub,
   iat: now,
   exp: now + ttl,
-  // Dev-only randomness — `Math.random()` is fine for a unique-per-mint
-  // jti during local development. Production token issuers (real auth
-  // service) MUST use `crypto.randomBytes` and a real entropy source.
-  jti: createHash("sha256").update(`${values.sub}-${now}-${Math.random()}`).digest("base64url"),
+  // RFC 7519 `jti` (JWT ID): unique-per-mint identifier. `randomUUID()`
+  // is the standard Node idiom — backed by `crypto.randomBytes(16)`,
+  // RFC 4122 v4 format, no per-character entropy concerns.
+  jti: randomUUID(),
 };
 
 function b64url(input) {
