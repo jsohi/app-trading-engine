@@ -464,6 +464,25 @@ final class MessageGeneratorChunk6Test {
         "expected single-decoder union without dangling-semicolon line");
   }
 
+  @Test
+  void routerGenerator_emptyDecodersEmitsNeverFallback(@TempDir final Path tmp) throws Exception {
+    new RouterGenerator().generate(List.of(), tmp);
+    final var src =
+        Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
+
+    // Empty-decoders edge case: emit `never` (TS bottom type) so the file is syntactically valid
+    // and `decoder: Decoder | undefined` collapses to `undefined`, which is the correct contract
+    // for a router with no dispatchable templates. Guards against the `export type Decoder =\n
+    // ;`
+    // syntax-error pattern flagged by Gemini iter-5.
+    assertTrue(
+        src.contains("export type Decoder = never;"),
+        "expected `never` fallback when message decoder list is empty");
+    assertFalse(
+        src.contains("export type Decoder =\n    ;"),
+        "must not emit dangling-semicolon syntax error for empty decoders");
+  }
+
   // -----------------------------------------------------------------------------------------
   // Chunk 10 — ConstantsGenerator emission tests
   // -----------------------------------------------------------------------------------------

@@ -148,19 +148,34 @@ final class RouterGenerator {
 
     // Decoder union — generated from the alphabetised decoder list so consumers get type-narrow
     // support without manual casts. Chosen over `unknown` (Gemini medium-priority feedback) since
-    // the generator already knows the full set of message decoder types at codegen time. Built
-    // via String.join to avoid a non-final loop counter and to render the single-decoder edge
-    // case cleanly (e.g. `export type Decoder = X;` on one line, no dangling `;` line).
-    final var unionMembers = String.join(NL + "  | ", sortedNames);
+    // the generator already knows the full set of message decoder types at codegen time. The
+    // emission has three distinct shapes pinned by separate tests:
+    //   - empty (`Decoder = never;`)        — guarded explicitly below; covered by
+    //     `routerGenerator_emptyDecodersEmitsNeverFallback`
+    //   - single (`Decoder = X;`)           — `String.join` returns the lone element verbatim;
+    //     covered by `routerGenerator_singleDecoderEmitsCleanUnion`
+    //   - multi  (`Decoder = X\n  | Y…;`)   — `String.join` interpolates the `| ` separator;
+    //     covered by `routerGenerator_emitsTypedDecoderUnion`
+    // The empty case emits TS's `never` bottom type so the file remains syntactically valid and
+    // the `decoder: Decoder | undefined` field still typechecks (`never | undefined` collapses to
+    // `undefined`). With no decoders the runtime `decoders` map literal is also empty, so
+    // `route()` always throws "Unknown SBE templateId" — the `Decoder` union exists purely to
+    // keep downstream consumer typechecks well-formed. Without the empty guard, naive emission
+    // would produce `export type Decoder =\n    ;` which is a TS syntax error.
     sb.append("/** Union of every generated decoder type — consumers narrow via `templateId`. */")
-        .append(NL)
-        .append("export type Decoder =")
-        .append(NL)
-        .append("    ")
-        .append(unionMembers)
-        .append(";")
-        .append(NL)
         .append(NL);
+    if (sortedNames.isEmpty()) {
+      sb.append("export type Decoder = never;").append(NL).append(NL);
+    } else {
+      final var unionMembers = String.join(NL + "  | ", sortedNames);
+      sb.append("export type Decoder =")
+          .append(NL)
+          .append("    ")
+          .append(unionMembers)
+          .append(";")
+          .append(NL)
+          .append(NL);
+    }
 
     // DecodedFrame interface — the shared-flyweight contract is in the JSDoc; chunk-13 test
     // greps "MUST consume" to lock the documentation forwarding through the barrel re-export.
