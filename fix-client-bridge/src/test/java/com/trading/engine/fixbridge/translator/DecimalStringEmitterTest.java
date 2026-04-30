@@ -2,6 +2,7 @@ package com.trading.engine.fixbridge.translator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.gateway.FixedPoint;
 import io.netty.buffer.ByteBuf;
@@ -289,6 +290,44 @@ final class DecimalStringEmitterTest {
     df.scale(FIXED_POINT_SCALE);
     final ByteBuf dst = Unpooled.buffer(64);
     assertThrows(IllegalArgumentException.class, () -> emitter.emitDecimalFloat(df, dst));
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  void emitDecimalFloat_scaleAboveMaximum_throwsWithDescriptiveMessage() {
+    // Scale 27 would overflow pow10(scale - FIXED_POINT_SCALE) = pow10(19), which is outside the
+    // helper's [0, 18] range. The emitter rejects up front with a descriptive message rather than
+    // letting the caller see a cryptic "pow10 exponent out of range" diagnostic. Production
+    // callers cannot trigger this path because FixedPoint.toDecimalFloat constrains scale, but
+    // the deprecated raw value/scale setters can.
+    final DecimalFloat df = new DecimalFloat();
+    df.value(1L);
+    df.scale(27);
+    final ByteBuf dst = Unpooled.buffer(64);
+    final IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> emitter.emitDecimalFloat(df, dst));
+    assertTrue(
+        ex.getMessage().contains("scale exceeds maximum representable"),
+        "expected descriptive scale-bound message, got: " + ex.getMessage());
+    assertTrue(
+        ex.getMessage().contains("scale=27"),
+        "expected message to include offending scale, got: " + ex.getMessage());
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  void emitDecimalFloat_scaleAtMaximumBoundary_succeeds() {
+    // Boundary check: scale=26 must succeed (pow10(scale - 8) = pow10(18) is the helper's max).
+    // The arithmetic produces a heavily truncated value (only the most-significant digit survives
+    // the divide-down), but the operation itself must not throw — the production path tolerates
+    // truncation when the raw scale exceeds FIXED_POINT_SCALE.
+    final DecimalFloat df = new DecimalFloat();
+    df.value(123_456_789_000_000_000L);
+    df.scale(26);
+    final ByteBuf dst = Unpooled.buffer(64);
+    // Should not throw.
+    final int written = emitter.emitDecimalFloat(df, dst);
+    assertTrue(written > 0, "emitDecimalFloat should write at least one byte at boundary scale");
   }
 
   // ---------------------------------------------------------------------------
