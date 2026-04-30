@@ -534,6 +534,12 @@ public final class JsonToFixTranslator {
         }
         sawDot = true;
         p++;
+        // RFC 8259 §6: a JSON number containing a `.` MUST be followed by at least one digit.
+        // Mirrors the strictness contract of BrowserMessageReader.decodeFixedPoint — `5.` is
+        // rejected as MALFORMED so this utility cannot accept inputs the inbound parser refuses.
+        if (p >= end) {
+          throw JsonParseException.MALFORMED;
+        }
         continue;
       }
       if (b < '0' || b > '9') {
