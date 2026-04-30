@@ -65,8 +65,8 @@ import uk.co.real_logic.sbe.ir.Token;
  * Per the chunk-6 plan, every emitted iterator class carries a JSDoc warning that the iterator MUST
  * be drained exhaustively when the parent message has var-data after the group (otherwise the
  * trailing var-data getter reads from the wrong wire offset). The drain warning is conditionally
- * emitted via {@link #messageHasVarDataAfterGroups(List)} so iterator classes for messages without
- * trailing var-data (the common case) keep the JSDoc terse.
+ * emitted via {@link #messageHasVarData(List)} so iterator classes for messages without trailing
+ * var-data (the common case) keep the JSDoc terse.
  *
  * <h2>Threading model</h2>
  *
@@ -119,12 +119,30 @@ final class GroupGenerator {
     if (groups.isEmpty()) {
       return;
     }
+    // Default chunk-6 emit order: accessors after field getters, classes after parent's brace.
+    // Caller is expected to have already placed the cached-iterator field declarations via
+    // emitCachedFields(...) in the canonical field-declaration block at the top of the class.
+    emitAccessorsAndClasses(groups, ctx, hasTrailingVarData);
+  }
 
-    // Cached-iterator-instance fields go before the wrap() method's body in the parent class so
-    // they're declared above the methods that reference them — matches chunk-5 idiom for
-    // private fields. Emit one `private _<group>Group = new <Class>();` per top-level group.
+  /**
+   * Emit only the cached-iterator-instance field declarations (one {@code private _<group>Group =
+   * new <Class>();} per top-level group). MessageGenerator calls this from the canonical
+   * field-declaration block — co-located with the {@code buffer} / {@code bufferOffset} / {@code
+   * _limit} / var-data cache fields — so the parent class's field block stays contiguous instead of
+   * being interleaved with method bodies.
+   *
+   * @param groups parsed top-level group specs for this message
+   * @param messageBody StringBuilder for the parent class body's field-declaration region
+   */
+  void emitCachedFields(final List<GroupSpec> groups, final StringBuilder messageBody) {
+    Objects.requireNonNull(groups, "groups");
+    Objects.requireNonNull(messageBody, "messageBody");
+    if (groups.isEmpty()) {
+      return;
+    }
     for (final var group : groups) {
-      ctx.messageBody()
+      messageBody
           .append(NL)
           .append("  private ")
           .append(privateFieldName(group))
@@ -133,7 +151,15 @@ final class GroupGenerator {
           .append("();")
           .append(NL);
     }
+  }
 
+  /**
+   * Emit accessor methods on the parent class plus iterator class declarations after the parent's
+   * closing brace. Skips cached-field emission — caller is expected to have done that via {@link
+   * #emitCachedFields(List, StringBuilder)} earlier.
+   */
+  private void emitAccessorsAndClasses(
+      final List<GroupSpec> groups, final GroupEmitContext ctx, final boolean hasTrailingVarData) {
     // Group accessor methods follow the field getters in the parent class body.
     for (final var group : groups) {
       ctx.messageBody().append(NL);
@@ -207,12 +233,23 @@ final class GroupGenerator {
     sb.append(" * Field getters reference the current record (advanced by `next()`); do not")
         .append(NL);
     sb.append(" * retain return values past the next `next()` call.").append(NL);
+    sb.append(" *").append(NL);
+    sb.append(" * Cursor invariants — the iterator MUST be drained exhaustively before:")
+        .append(NL);
+    sb.append(" *   1. any var-data getter on the parent message decoder fires").append(NL);
+    sb.append(" *   2. another sibling group's accessor is called").append(NL);
+    sb.append(" *   3. a nested-group iterator's parent-level next() is called (when this is")
+        .append(NL);
+    sb.append(" *      itself a nested group inside another)").append(NL);
+    sb.append(" * Partial iteration leaves the shared `_limit` cursor mid-record and corrupts")
+        .append(NL);
+    sb.append(" * any subsequent read of the parent decoder.").append(NL);
     if (hasTrailingVarData) {
       sb.append(" *").append(NL);
-      sb.append(" * If the parent message has var-data fields after this group, the iterator")
+      sb.append(" * The parent message has var-data fields after this group — the drain rule")
           .append(NL);
-      sb.append(" * MUST be drained exhaustively before var-data getters fire; partial").append(NL);
-      sb.append(" * iteration corrupts the cursor.").append(NL);
+      sb.append(" * is enforced at the wire-layout level here, not just a recommendation.")
+          .append(NL);
     }
     sb.append(" */").append(NL);
     sb.append("export class ").append(className).append(" {").append(NL);
@@ -608,7 +645,7 @@ final class GroupGenerator {
    * real schema message has both groups AND var-data, but the chunk-6 synthetic test fixture
    * exercises this case.
    */
-  static boolean messageHasVarDataAfterGroups(final List<Token> messageTokens) {
+  static boolean messageHasVarData(final List<Token> messageTokens) {
     Objects.requireNonNull(messageTokens, "messageTokens");
     for (final var token : messageTokens) {
       if (token.signal() == Signal.BEGIN_VAR_DATA) {

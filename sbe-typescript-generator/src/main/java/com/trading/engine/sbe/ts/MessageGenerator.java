@@ -259,7 +259,7 @@ final class MessageGenerator {
     final var groups = GroupGenerator.parseGroups(tokens, messageName);
     final var varDataFields = VarDataGenerator.parseVarData(tokens);
     final var deferredComposites = collectDeferredComposites(tokens);
-    final boolean hasTrailingVarData = GroupGenerator.messageHasVarDataAfterGroups(tokens);
+    final boolean hasTrailingVarData = GroupGenerator.messageHasVarData(tokens);
 
     // Imports cover ALL features (root fields + group fields recursively). Var-data needs no
     // string/enum dependency — it returns Uint8Array. Char-array detection scans both the root
@@ -332,8 +332,11 @@ final class MessageGenerator {
     // following groups land at the right start because of this shared cursor.
     sb.append("  private _limit = 0;").append(NL);
 
-    // VarData private cache fields go right after _limit so the field-declaration block is
-    // contiguous in the emitted file (chunk-6 Canonical-call-order step 1).
+    // Cached-iterator and var-data cache fields go right after _limit so the
+    // field-declaration block is contiguous in the emitted file (chunk-6 canonical-call-order):
+    // group cache fields first (so they read above the accessor methods that reference them),
+    // then var-data cache fields.
+    groupGenerator.emitCachedFields(groups, sb);
     varDataGenerator.emitFields(varDataFields, sb);
 
     sb.append(NL);
@@ -350,6 +353,25 @@ final class MessageGenerator {
     // encodedLength() returns _limit - bufferOffset, which equals BLOCK_LENGTH for messages
     // with no groups/varData (preserving chunk-5 semantics) and the true end-of-message
     // position after groups/varData have been consumed.
+    sb.append("  /**")
+        .append(NL)
+        .append("   * Returns the byte length of the decoded message relative to the wrap offset.")
+        .append(NL)
+        .append("   *")
+        .append(NL)
+        .append("   * For messages with only root-block fields this equals `BLOCK_LENGTH`. For")
+        .append(NL)
+        .append("   * messages with groups and/or var-data, the true end-of-message position is")
+        .append(NL)
+        .append(
+            "   * known only AFTER all groups have been iterated to completion AND all var-data")
+        .append(NL)
+        .append("   * getters have fired — the cursor advances on `next()` and on each var-data")
+        .append(NL)
+        .append("   * getter call. Calling this before draining returns the partial position.")
+        .append(NL)
+        .append("   */")
+        .append(NL);
     sb.append("  encodedLength(): number {").append(NL);
     sb.append("    return this._limit - this.bufferOffset;").append(NL);
     sb.append("  }").append(NL);
@@ -504,17 +526,6 @@ final class MessageGenerator {
     return List.copyOf(composites);
   }
 
-  /** Distinct enum names referenced by the message's root fields, in stable insertion order. */
-  private static List<String> collectEnumImports(final List<BlockField> fields) {
-    final var enums = new LinkedHashSet<String>();
-    for (final var field : fields) {
-      if (field.kind() == BlockFieldKind.ENUM) {
-        enums.add(field.enumName());
-      }
-    }
-    return List.copyOf(enums);
-  }
-
   private static String emitFieldGetter(final BlockField field) {
     return switch (field.kind()) {
       case PRIMITIVE -> emitPrimitiveGetter(field);
@@ -642,8 +653,6 @@ final class MessageGenerator {
       default -> throw new IllegalStateException("No literal form for primitive " + primitive);
     };
   }
-
-  /** Names of group/var-data/composite features deferred to later APP-34 chunks. */
 
   /** A composite-typed root field deferred to chunk 7 (e.g. the {@code uuid} composite). */
   private record DeferredCompositeField(String fieldName, String compositeName) {}

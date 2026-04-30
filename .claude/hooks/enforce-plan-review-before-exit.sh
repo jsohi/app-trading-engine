@@ -16,7 +16,7 @@ if [ ! -f "$marker" ]; then
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: "BLOCKED: Cannot exit plan mode. Plan review loop not completed.\n\nYou MUST:\n1. Spawn 2 review agents IN PARALLEL on the ENTIRE plan file:\n   - Agent A (Industry Design Checker): CLAUDE.md conventions\n   - Agent B (Completeness + Quality): edge cases, error handling, test plan\n2. Fix ALL findings in the plan file\n3. Re-run BOTH agents until zero findings\n4. Print the compliance report (MEASURED)\n5. Run: mkdir -p /tmp/claude_gates && touch /tmp/claude_gates/plan_review_done\n6. Then retry ExitPlanMode"
+      permissionDecisionReason: "BLOCKED: Cannot exit plan mode. Plan review loop not completed.\n\nYou MUST:\n1. Spawn 2 review agents IN PARALLEL on the ENTIRE plan file:\n   - Agent A (Industry Design Checker): CLAUDE.md conventions\n   - Agent B (Completeness + Quality): edge cases, error handling, test plan\n2. Fix ALL findings in the plan file\n3. Re-run BOTH agents until zero findings\n4. Print the compliance report — every finding count must be MEASURED from agent output, NEVER guessed, estimated, summarized from memory, or inferred. Cite the exact agent IDs and finding lists. If you cannot cite, you have not measured.\n5. Run: mkdir -p /tmp/claude_gates && touch /tmp/claude_gates/plan_review_done\n6. Then retry ExitPlanMode"
     }
   }'
   exit 0

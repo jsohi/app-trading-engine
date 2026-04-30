@@ -167,11 +167,18 @@ final class VarDataGenerator {
         .append(NL);
     sb.append("   * without advancing the cursor.").append(NL);
     sb.append("   *").append(NL);
-    sb.append("   * DO NOT call out of declaration order in messages with multiple var-data")
+    sb.append("   * Cursor invariants:").append(NL);
+    sb.append("   *   - All preceding repeating groups (if any) MUST be drained exhaustively")
         .append(NL);
-    sb.append("   * fields — `_limit` advances on first call, and out-of-order reads silently")
+    sb.append("   *     before this getter fires. Calling it pre-drain reads the next group's")
         .append(NL);
-    sb.append("   * corrupt subsequent reads.").append(NL);
+    sb.append("   *     dimension bytes as the var-data length, producing garbage or RangeError.")
+        .append(NL);
+    sb.append("   *   - In messages with multiple var-data fields, getters MUST be called in")
+        .append(NL);
+    sb.append("   *     declaration order. `_limit` advances on first call; out-of-order reads")
+        .append(NL);
+    sb.append("   *     silently corrupt subsequent reads.").append(NL);
     sb.append("   */").append(NL);
     sb.append("  ").append(spec.fieldName()).append("(): Uint8Array {").append(NL);
     sb.append("    if (this.")
