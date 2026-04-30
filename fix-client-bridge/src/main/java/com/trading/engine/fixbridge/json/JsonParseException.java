@@ -2,9 +2,10 @@ package com.trading.engine.fixbridge.json;
 
 /**
  * Sentinel-singleton exception class thrown by {@link BrowserMessageReader} on inbound JSON parse
- * failures.
+ * failures, and by {@code JsonToFixTranslator} on inbound translation failures that share the same
+ * taxonomy (currently only {@link #PRICE_PRECISION} — locked §3).
  *
- * <p><b>Purpose.</b> Distinguishes the four failure classes the parser surfaces — {@link
+ * <p><b>Purpose.</b> Distinguishes the four failure classes the inbound side surfaces — {@link
  * #MALFORMED}, {@link #UNKNOWN_TYPE}, {@link #TOO_LARGE}, {@link #PRICE_PRECISION} — without
  * allocating a fresh exception per failed message. The caller switches on identity (e.g. {@code if
  * (e == JsonParseException.MALFORMED)}) to decide how to respond on the wire.
@@ -22,24 +23,28 @@ package com.trading.engine.fixbridge.json;
  *
  * <p><b>Dependencies.</b> JDK only.
  *
- * <p>Visibility is package-private — only {@link BrowserMessageReader} and the (eventually) {@code
- * BrowserSessionHandler} consume these.
+ * <p><b>Visibility.</b> Public so that both {@link BrowserMessageReader} (in this package) and
+ * {@code com.trading.engine.fixbridge.translator.JsonToFixTranslator} can throw the same singletons
+ * — the dispatcher (Phase 6) catches a single exception type and switches on identity for the
+ * wire-protocol response. The constructor remains private; the only valid instances are the four
+ * declared singletons.
  */
-final class JsonParseException extends RuntimeException {
+public final class JsonParseException extends RuntimeException {
 
   private static final long serialVersionUID = 1L;
 
   /** JSON could not be parsed (truncated brace, bad escape, non-UTF-8 byte, malformed number). */
-  static final JsonParseException MALFORMED = new JsonParseException("malformed");
+  public static final JsonParseException MALFORMED = new JsonParseException("malformed");
 
   /** Top-level {@code "type"} value did not match a known message kind. */
-  static final JsonParseException UNKNOWN_TYPE = new JsonParseException("unknown-type");
+  public static final JsonParseException UNKNOWN_TYPE = new JsonParseException("unknown-type");
 
   /** Frame size exceeds {@link BrowserMessageReader#MAX_BYTES} (64 KiB). */
-  static final JsonParseException TOO_LARGE = new JsonParseException("too-large");
+  public static final JsonParseException TOO_LARGE = new JsonParseException("too-large");
 
   /** Decimal-string field has more than 8 fractional digits (locked §3). */
-  static final JsonParseException PRICE_PRECISION = new JsonParseException("price-precision");
+  public static final JsonParseException PRICE_PRECISION =
+      new JsonParseException("price-precision");
 
   private JsonParseException(final String reason) {
     // writableStackTrace=false: skip Throwable.fillInStackTrace, which is the dominant
@@ -54,7 +59,7 @@ final class JsonParseException extends RuntimeException {
    *
    * @return reason tag suitable for inclusion in an outbound {@code Error{reason:"..."}} event
    */
-  String reason() {
+  public String reason() {
     return getMessage();
   }
 }
