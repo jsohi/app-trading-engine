@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 /**
  * Emits TypeScript getters for the SBE {@code uuid} composite (two-int64 halves) used by {@code
  * WebSocketAuthAck.sessionId}, {@code SessionResume.sessionId}, and {@code
@@ -69,9 +71,6 @@ package com.trading.engine.sbe.ts;
  * @see BlockField
  */
 final class UuidCompositeGenerator {
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /** Wire size of the {@code uuid} composite: 2 × int64 = 16 bytes. */
   static final int UUID_BYTES = 16;

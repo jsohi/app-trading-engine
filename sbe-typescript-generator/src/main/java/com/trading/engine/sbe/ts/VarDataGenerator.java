@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -79,9 +81,6 @@ import uk.co.real_logic.sbe.ir.Token;
  * @see GroupGenerator
  */
 final class VarDataGenerator {
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /**
    * Length-prefix size for the {@code varDataEncoding} composite ({@code uint32}, 4 bytes).

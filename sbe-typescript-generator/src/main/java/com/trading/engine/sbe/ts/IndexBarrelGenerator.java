@@ -15,13 +15,13 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -102,9 +102,6 @@ final class IndexBarrelGenerator {
 
   /** Filename for the workspace barrel. */
   static final String INDEX_FILENAME = "index.ts";
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /** Constructor — no state. */
   IndexBarrelGenerator() {
@@ -280,6 +277,11 @@ final class IndexBarrelGenerator {
    * Walk a single group's record-block fields plus any nested groups, recursively. {@code
    * groupBeginIndex} points at the {@code BEGIN_GROUP} token; the walk runs until the matching
    * {@code END_GROUP}.
+   *
+   * <p><b>Termination strategy (locked):</b> outer walks (block-level) skip whole groups via {@link
+   * Token#componentTokenCount()}; inner walks (this method + {@link #groupHasUuidComposite})
+   * descend into the group body and terminate on END_GROUP because {@code componentTokenCount} on
+   * BEGIN_GROUP would skip past the body entirely. Both strategies coexist by design.
    */
   private static void collectOptionalEnumsFromGroup(
       final List<Token> tokens, final int groupBeginIndex, final Set<String> sink) {
@@ -389,10 +391,12 @@ final class IndexBarrelGenerator {
     return false;
   }
 
-  /** Sort with {@link Comparator#naturalOrder()} into a fresh {@link ArrayList}. */
+  /**
+   * De-dupe and sort with {@link Comparator#naturalOrder()} (case-sensitive — all current schema
+   * names are PascalCase, so ASCII order matches semantic order). {@link TreeSet} dedupes and sorts
+   * in one pass.
+   */
   private static List<String> sorted(final List<String> input) {
-    final var copy = new ArrayList<>(new LinkedHashSet<>(input)); // de-dupe defensively
-    copy.sort(Comparator.naturalOrder());
-    return List.copyOf(copy);
+    return List.copyOf(new TreeSet<>(input));
   }
 }

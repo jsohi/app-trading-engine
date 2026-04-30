@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -133,8 +135,19 @@ final class MessageGenerator {
   /** Filename for the shared decoder runtime emitted alongside the per-message files. */
   static final String CODEC_RUNTIME_FILENAME = "_codecRuntime.ts";
 
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
+  /**
+   * TypeScript expression yielding the {@code DataView} field on the emitted message decoder class.
+   * Hoisted to a constant so {@link UuidCompositeGenerator#emitGetter} (and any future
+   * cross-emitter callsite) can reference it by name; a future rename of the emitted field stays
+   * single-source.
+   */
+  static final String ROOT_BUFFER_REF = "this.buffer";
+
+  /**
+   * TypeScript expression yielding the buffer-base offset field on the emitted message decoder
+   * class. Paired with {@link #ROOT_BUFFER_REF}.
+   */
+  static final String ROOT_OFFSET_EXPR = "this.bufferOffset";
 
   /**
    * Walk all messages in {@code ir} and emit one decoder per message plus the shared {@code
@@ -509,7 +522,7 @@ final class MessageGenerator {
       case ENUM -> emitEnumGetter(field);
       case CHAR_ARRAY -> emitCharArrayGetter(field);
       case UUID_COMPOSITE ->
-          UuidCompositeGenerator.emitGetter(field, "this.buffer", "this.bufferOffset");
+          UuidCompositeGenerator.emitGetter(field, ROOT_BUFFER_REF, ROOT_OFFSET_EXPR);
     };
   }
 

@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -60,9 +62,6 @@ final class ConstantsGenerator {
 
   /** Filename for the constants module emitted alongside per-message files. */
   static final String CONSTANTS_FILENAME = "constants.ts";
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /** Constructor — no state. */
   ConstantsGenerator() {
@@ -110,11 +109,14 @@ final class ConstantsGenerator {
         .append(NL)
         .append(" */")
         .append(NL)
-        .append("export const SCHEMA_ID: number = ")
+        // Type annotations omitted — TS infers `number` from the literal; `noImplicitAny`-clean
+        // and matches the @typescript-eslint/no-inferrable-types convention (also matches
+        // PRICE_SCALE above which omits the redundant `: bigint`).
+        .append("export const SCHEMA_ID = ")
         .append(ir.id())
         .append(";")
         .append(NL)
-        .append("export const SCHEMA_VERSION: number = ")
+        .append("export const SCHEMA_VERSION = ")
         .append(ir.version())
         .append(";")
         .append(NL);

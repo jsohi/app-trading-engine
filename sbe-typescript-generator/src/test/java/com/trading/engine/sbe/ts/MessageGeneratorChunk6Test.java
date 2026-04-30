@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.xml.IrGenerator;
-import uk.co.real_logic.sbe.xml.MessageSchema;
 import uk.co.real_logic.sbe.xml.ParserOptions;
 import uk.co.real_logic.sbe.xml.XmlSchemaParser;
 
@@ -70,7 +69,7 @@ final class MessageGeneratorChunk6Test {
   private static Ir loadIr() throws Exception {
     final var options = ParserOptions.builder().stopOnError(true).warningsFatal(true).build();
     try (final var stream = Files.newInputStream(SCHEMA_PATH)) {
-      final MessageSchema schema = XmlSchemaParser.parse(stream, options);
+      final var schema = XmlSchemaParser.parse(stream, options);
       return new IrGenerator().generate(schema);
     }
   }
@@ -445,10 +444,10 @@ final class MessageGeneratorChunk6Test {
         src.contains("export const PRICE_SCALE = 100_000_000n;"),
         "expected PRICE_SCALE bigint literal");
     assertTrue(
-        src.contains("export const SCHEMA_ID: number = " + ir.id() + ";"),
+        src.contains("export const SCHEMA_ID = " + ir.id() + ";"),
         "expected SCHEMA_ID literal matching IR");
     assertTrue(
-        src.contains("export const SCHEMA_VERSION: number = " + ir.version() + ";"),
+        src.contains("export const SCHEMA_VERSION = " + ir.version() + ";"),
         "expected SCHEMA_VERSION literal matching IR");
   }
 
