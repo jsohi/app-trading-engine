@@ -452,6 +452,92 @@ final class MessageGeneratorChunk6Test {
   }
 
   // -----------------------------------------------------------------------------------------
+  // Chunk 11 — IndexBarrelGenerator emission tests
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  void indexBarrel_reExportsAllWorkspaceSymbols(@TempDir final Path tmp) throws Exception {
+    final var ir = loadIr();
+    new IndexBarrelGenerator()
+        .generate(
+            ir,
+            java.util.List.of("WebSocketAuthDecoder", "QuoteDecoder"),
+            java.util.List.of("SettlTypeEnum", "SideEnum"),
+            tmp);
+    final var src =
+        Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
+
+    // Header / helpers / constants / router fixed-order re-exports.
+    assertTrue(
+        src.contains("export { MessageHeaderDecoder } from \"./messageHeader.js\";"),
+        "expected MessageHeaderDecoder re-export");
+    assertTrue(
+        src.contains("export { toFixed8, parseFixed8, nanosToDate } from \"./helpers.js\";"),
+        "expected helpers re-export");
+    assertTrue(
+        src.contains("export { PRICE_SCALE, SCHEMA_ID, SCHEMA_VERSION } from \"./constants.js\";"),
+        "expected constants re-export");
+    assertTrue(
+        src.contains("export { route, type DecodedFrame } from \"./MessageRouter.js\";"),
+        "expected router re-export");
+
+    // Decoders alphabetised: Quote before WebSocketAuth.
+    final int qIdx = src.indexOf("export { QuoteDecoder }");
+    final int wsIdx = src.indexOf("export { WebSocketAuthDecoder }");
+    assertTrue(
+        qIdx > 0 && qIdx < wsIdx, "expected alphabetical decoder order (Quote before WebSocket)");
+  }
+
+  @Test
+  void indexBarrel_emitsConditionalNullValForOptionalEnumsOnly(@TempDir final Path tmp)
+      throws Exception {
+    final var ir = loadIr();
+    new IndexBarrelGenerator()
+        .generate(ir, java.util.List.of(), java.util.List.of("SettlTypeEnum", "SideEnum"), tmp);
+    final var src =
+        Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
+
+    // SettlTypeEnum is optional in the schema (QuoteRequest.settlType) — NULL_VAL re-exported.
+    assertTrue(
+        src.contains(
+            "export { SettlTypeEnum, SettlTypeEnum_NULL_VAL } from \"./SettlTypeEnum.js\";"),
+        "expected SettlTypeEnum_NULL_VAL re-export (optional usage exists)");
+    // SideEnum is mandatory throughout — bare value re-export only.
+    assertTrue(
+        src.contains("export { SideEnum } from \"./SideEnum.js\";"),
+        "expected bare SideEnum re-export");
+    assertFalse(
+        src.contains("SideEnum_NULL_VAL"),
+        "must not re-export SideEnum_NULL_VAL (no optional usage)");
+  }
+
+  @Test
+  void indexBarrel_reExportsUuidValueWhenSchemaUsesUuid(@TempDir final Path tmp) throws Exception {
+    final var ir = loadIr();
+    new IndexBarrelGenerator().generate(ir, java.util.List.of(), java.util.List.of(), tmp);
+    final var src =
+        Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
+
+    // Today the schema has 3 uuid fields, so UuidValue MUST be re-exported.
+    assertTrue(
+        src.contains("export type { UuidValue } from \"./_codecRuntime.js\";"),
+        "expected UuidValue re-export (schema uses uuid)");
+  }
+
+  @Test
+  void indexBarrel_doesNotReExportInternalReadFixedString(@TempDir final Path tmp)
+      throws Exception {
+    final var ir = loadIr();
+    new IndexBarrelGenerator().generate(ir, java.util.List.of(), java.util.List.of(), tmp);
+    final var src =
+        Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
+
+    // readFixedString lives in _codecRuntime.ts and is intentionally NOT re-exported.
+    assertFalse(
+        src.contains("readFixedString"), "must not re-export internal readFixedString helper");
+  }
+
+  // -----------------------------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------------------------
 

@@ -117,11 +117,6 @@ public final class TypeScriptTargetCodeGenerator implements TargetCodeGenerator 
     if (outputDir.isBlank()) {
       throw new IllegalArgumentException("outputDir must not be blank");
     }
-    // TODO(APP-34): replace with the orchestrating generator that fans out to per-emitter
-    // classes (HeaderGenerator, EnumGenerator, MessageGenerator, VarDataGenerator,
-    // UuidCompositeGenerator, RouterGenerator, HelpersGenerator, ConstantsGenerator,
-    // IndexBarrelGenerator). Until those land, this placeholder produces a minimal valid
-    // index.ts so the task is runnable end-to-end and downstream consumers don't break.
-    return new PlaceholderTypeScriptCodeGenerator(ir, outputDir);
+    return new TypeScriptCodeGenerator(ir, outputDir);
   }
 }
