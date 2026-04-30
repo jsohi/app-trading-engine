@@ -209,6 +209,8 @@ public final class DecimalStringEmitter {
    */
   private int writeSignedDecimal(
       final boolean negative, final long whole, final long frac, final ByteBuf dst) {
+    // CLAUDE.md loop-accumulator carve-out: `written` accumulates byte counts across the digit
+    // emission loop; mutable by design.
     int written = 0;
     if (negative && (whole != 0L || frac != 0L)) {
       // Suppress sign on negative-zero: -0 emitted as "0.00000000" by convention.
@@ -258,6 +260,7 @@ public final class DecimalStringEmitter {
     if (exp < 0 || exp > 18) {
       throw new IllegalArgumentException("pow10 exponent out of range: " + exp);
     }
+    // CLAUDE.md loop-accumulator carve-out: `result` is multiplied across the loop body.
     long result = 1L;
     for (int i = 0; i < exp; i++) {
       result *= 10L;

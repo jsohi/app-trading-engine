@@ -557,14 +557,20 @@ final class BrowserMessageReaderTest {
   }
 
   @Test
-  void parse_decimalTrailingDot_decodesAsWhole() {
+  void parse_decimalTrailingDot_throwsMalformed() {
+    // RFC 8259 §6: a JSON number with `.` MUST be followed by at least one fractional digit. The
+    // class-level Javadoc commits to a strict parser, so "5." is rejected.
     final var out = new MutableParsedMessage();
-    BrowserMessageReader.parse(
-        wrap(
-            "{\"type\":\"QuoteRequest\",\"reqId\":\"R\",\"symbol\":\"E\",\"side\":\"Buy\","
-                + "\"qty\":\"5.\"}"),
-        out);
-    assertEquals(500_000_000L, out.qty);
+    assertSame(
+        JsonParseException.MALFORMED,
+        assertThrows(
+            JsonParseException.class,
+            () ->
+                BrowserMessageReader.parse(
+                    wrap(
+                        "{\"type\":\"QuoteRequest\",\"reqId\":\"R\",\"symbol\":\"E\","
+                            + "\"side\":\"Buy\",\"qty\":\"5.\"}"),
+                    out)));
   }
 
   @Test

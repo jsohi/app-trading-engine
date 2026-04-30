@@ -136,6 +136,8 @@ public final class BrowserMessageReader {
     src.getBytes(src.readerIndex(), out.scratch, 0, srcLen);
 
     final byte[] buf = out.scratch;
+    // CLAUDE.md loop-accumulator carve-out: `p` is a buffer scan pointer mutated across the
+    // top-level parse loop; refactoring to satisfy `final` would produce worse code.
     int p = skipWs(buf, 0, srcLen);
 
     if (p >= srcLen || buf[p] != '{') {
@@ -448,10 +450,16 @@ public final class BrowserMessageReader {
     }
 
     // --- optional fractional part ---
+    // CLAUDE.md loop-accumulator carve-out: fracDigits and frac mutate across the digit loop.
     int fracDigits = 0;
     long frac = 0L;
     if (p < end && buf[p] == '.') {
       p++;
+      // RFC 8259 §6: a JSON number with a `.` MUST be followed by at least one digit. Strictness
+      // contract from the class-level Javadoc — `5.` is rejected as MALFORMED.
+      if (p >= end) {
+        throw JsonParseException.MALFORMED;
+      }
       while (p < end) {
         final byte b = buf[p];
         if (b < '0' || b > '9') {
@@ -530,6 +538,11 @@ public final class BrowserMessageReader {
     int fracDigits = 0;
     if (p < end && buf[p] == '.') {
       p++;
+      // RFC 8259 §6: a `.` must be followed by ≥1 fractional digit. Reject "5." here too so the
+      // validate-only path stays consistent with decodeFixedPoint.
+      if (p >= end) {
+        throw JsonParseException.MALFORMED;
+      }
       while (p < end) {
         final byte b = buf[p];
         if (b < '0' || b > '9') {
