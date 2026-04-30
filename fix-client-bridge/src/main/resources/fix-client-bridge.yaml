@@ -1,0 +1,48 @@
+# =============================================================================
+# FIX Client Bridge — default development configuration.
+#
+# Operators must override at least gatewayHost, gatewayPort, targetCompId,
+# senderCompId, jwtIssuerRegistry, and expectedAudience for any non-loopback
+# deployment. Production overrides come via -Dbridge.<field> system properties
+# (forwarded by launcher/build.gradle.kts knownPrefixes).
+#
+# Configuration surface mirrors fix-client-bridge plan §"Configuration surface".
+# =============================================================================
+
+# --- WebSocket listener ---
+port: 8444
+bindAddress: "127.0.0.1" # APP-236 dev loopback. Production binds via system prop override.
+
+# --- FIX initiator (acceptor target) ---
+gatewayHost: "localhost"
+gatewayPort: 19880
+targetCompId: "EXCH"
+senderCompId: "BRIDGE"
+sessionsPath: "logs/bridge-sessions"
+forceSequenceReset: false
+
+# --- Capacity ---
+maxConcurrentBridgeSessions: 256
+maxJsonBytes: 65536
+quoteCacheCapacityPerSession: 64
+outboundQueueCapacityPerSession: 64
+
+# --- Idle / handshake timing ---
+idleReaderSeconds: 30
+idleWriterSeconds: 15
+handshakeTimeoutMillis: 5000
+authTimeoutSeconds: 5
+
+# --- JWT ---
+# Production override: pass jwtIssuerRegistry as a YAML map. For dev/e2e the
+# launcher uses bridge.jwksUri (single-issuer override) which is folded in at
+# runtime as {"trading-engine-dev-issuer": <uri>}.
+jwtIssuerRegistry: {}
+expectedAudience: "trading-engine-dev"
+
+# --- Misc ---
+bridgeDebug: false
+reconnectBackoffSecondsCap: 32
+fatalAfterFailures: 10
+fatalAfterSeconds: 600
+heartbeatSeconds: 10
