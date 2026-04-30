@@ -486,11 +486,11 @@ final class MessageGenerator {
       final var token = tokens.get(i);
       switch (token.signal()) {
         case BEGIN_FIELD -> {
+          // parseBlockField never returns null after chunk 7 — every supported field kind yields
+          // a record; unsupported schema constructs throw IllegalStateException. The non-null
+          // contract is documented on the method.
           final var inner = tokens.get(i + 1);
-          final var field = BlockField.parseBlockField(token, inner);
-          if (field != null) {
-            fields.add(field);
-          }
+          fields.add(BlockField.parseBlockField(token, inner));
           i += token.componentTokenCount();
         }
         case BEGIN_GROUP, BEGIN_VAR_DATA -> i += token.componentTokenCount();

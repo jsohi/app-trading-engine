@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import uk.co.real_logic.sbe.ir.Ir;
@@ -371,7 +372,7 @@ final class MessageGeneratorChunk6Test {
   @Test
   void routerGenerator_emitsRouteFunctionWithFlyweightContract(@TempDir final Path tmp)
       throws Exception {
-    new RouterGenerator().generate(java.util.List.of("WebSocketAuthDecoder", "QuoteDecoder"), tmp);
+    new RouterGenerator().generate(List.of("WebSocketAuthDecoder", "QuoteDecoder"), tmp);
     final var src =
         Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
 
@@ -417,7 +418,7 @@ final class MessageGeneratorChunk6Test {
 
   @Test
   void routerGenerator_dispatchesToHeaderEncodedLength(@TempDir final Path tmp) throws Exception {
-    new RouterGenerator().generate(java.util.List.of("QuoteDecoder"), tmp);
+    new RouterGenerator().generate(List.of("QuoteDecoder"), tmp);
     final var src =
         Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
 
@@ -461,8 +462,8 @@ final class MessageGeneratorChunk6Test {
     new IndexBarrelGenerator()
         .generate(
             ir,
-            java.util.List.of("WebSocketAuthDecoder", "QuoteDecoder"),
-            java.util.List.of("SettlTypeEnum", "SideEnum"),
+            List.of("WebSocketAuthDecoder", "QuoteDecoder"),
+            List.of("SettlTypeEnum", "SideEnum"),
             tmp);
     final var src =
         Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
@@ -489,11 +490,14 @@ final class MessageGeneratorChunk6Test {
   }
 
   @Test
-  void indexBarrel_emitsConditionalNullValForOptionalEnumsOnly(@TempDir final Path tmp)
+  void indexBarrel_reExportsNullValForCurrentlyOptionalEnumsOnly(@TempDir final Path tmp)
       throws Exception {
+    // Note: this test pins the CURRENT-schema state of optional-enum usage, not the conditional
+    // logic in isolation. SettlTypeEnum is optional today (QuoteRequest.settlType); SideEnum is
+    // mandatory throughout. If a future schema makes SideEnum optional, the assertion against
+    // SideEnum_NULL_VAL will need to flip — that's by design (pins schema-driven behaviour).
     final var ir = loadIr();
-    new IndexBarrelGenerator()
-        .generate(ir, java.util.List.of(), java.util.List.of("SettlTypeEnum", "SideEnum"), tmp);
+    new IndexBarrelGenerator().generate(ir, List.of(), List.of("SettlTypeEnum", "SideEnum"), tmp);
     final var src =
         Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
 
@@ -514,7 +518,7 @@ final class MessageGeneratorChunk6Test {
   @Test
   void indexBarrel_reExportsUuidValueWhenSchemaUsesUuid(@TempDir final Path tmp) throws Exception {
     final var ir = loadIr();
-    new IndexBarrelGenerator().generate(ir, java.util.List.of(), java.util.List.of(), tmp);
+    new IndexBarrelGenerator().generate(ir, List.of(), List.of(), tmp);
     final var src =
         Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
 
@@ -528,7 +532,7 @@ final class MessageGeneratorChunk6Test {
   void indexBarrel_doesNotReExportInternalReadFixedString(@TempDir final Path tmp)
       throws Exception {
     final var ir = loadIr();
-    new IndexBarrelGenerator().generate(ir, java.util.List.of(), java.util.List.of(), tmp);
+    new IndexBarrelGenerator().generate(ir, List.of(), List.of(), tmp);
     final var src =
         Files.readString(tmp.resolve(IndexBarrelGenerator.INDEX_FILENAME), StandardCharsets.UTF_8);
 

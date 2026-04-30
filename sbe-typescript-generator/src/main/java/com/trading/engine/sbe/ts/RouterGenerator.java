@@ -197,8 +197,9 @@ final class RouterGenerator {
         .append(NL)
         .append("  decoder: undefined,")
         .append(NL)
-        .append("  __generation: 0,")
-        .append(NL)
+        // Omit __generation from the literal so production builds (where the dev-only increment
+        // is dead-code-eliminated) ship NO __generation slot at all. The optional declaration on
+        // DecodedFrame + the `?? 0` fallback in the dev-mode increment branch handles first call.
         .append("};")
         .append(NL)
         .append(NL);
