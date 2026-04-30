@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Objects;
 import uk.co.real_logic.sbe.PrimitiveType;
 import uk.co.real_logic.sbe.PrimitiveValue;
+import uk.co.real_logic.sbe.ir.Encoding;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.Signal;
 import uk.co.real_logic.sbe.ir.Token;
@@ -204,8 +205,7 @@ final class EnumGenerator {
   /**
    * Resolve the optional-presence null value for an enum: either the schema's explicit {@code
    * nullValue=...} attribute (if present) or the SBE-default null value for the underlying
-   * primitive type. Both cases come from {@link
-   * uk.co.real_logic.sbe.ir.Encoding#applicableNullValue()}.
+   * primitive type. Both cases come from {@link Encoding#applicableNullValue()}.
    */
   private static PrimitiveValue applicableNullValue(
       final Token begin, final PrimitiveType primitive) {

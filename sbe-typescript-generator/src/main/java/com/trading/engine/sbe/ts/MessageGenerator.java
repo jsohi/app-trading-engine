@@ -405,6 +405,20 @@ final class MessageGenerator {
         fieldToken.isOptionalEncoding()
             || inner.encoding().presence() == Encoding.Presence.OPTIONAL;
 
+    // `presence="constant"` fields embed the value directly in the schema with no wire
+    // bytes; SBE marks the offset as -1 and consumers are expected to read the constant
+    // from the Encoding metadata. The chunk-5 emitter does not yet support this — emitting
+    // a regular DataView read at offset -1 would produce broken codecs. Schema declares no
+    // constant fields today; reject loudly if a future change introduces one so the gap is
+    // surfaced rather than silently miscompiled.
+    if (inner.signal() == Signal.ENCODING
+        && inner.encoding().presence() == Encoding.Presence.CONSTANT) {
+      throw new IllegalStateException(
+          "Constant-presence field not supported by chunk 5: "
+              + name
+              + " (schema declares none today; add explicit emitter support before introducing one)");
+    }
+
     return switch (inner.signal()) {
       case ENCODING -> {
         final var primitive = inner.encoding().primitiveType();
@@ -421,11 +435,14 @@ final class MessageGenerator {
               fieldLevelOptional);
         }
         if (primitive == PrimitiveType.CHAR) {
-          // Single-byte char (not used in trading-schema.xml today). Treat as
-          // uint8 for now — JS string semantics are not a great fit here and the
-          // schema does not exercise it.
+          // Single-byte char (length=1) is not exercised by trading-schema.xml today and
+          // has no clean JS string mapping — a one-character `String.fromCharCode` is
+          // wasteful and a `number` getter would silently break consumers expecting text.
+          // Reject so a future schema change forces a deliberate decision.
           throw new IllegalStateException(
-              "Single-byte char field not supported: " + name + " (use char[N] strings)");
+              "Single-byte char field not supported: "
+                  + name
+                  + " (use char[N>=2] for fixed-length strings, or uint8 for a single byte)");
         }
         yield new RootField(
             name,
