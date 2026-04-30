@@ -32,5 +32,12 @@ enum BlockFieldKind {
    * Fixed-length char array (e.g. {@code <type primitiveType="char" length="20"/>}). Returns {@code
    * string}.
    */
-  CHAR_ARRAY
+  CHAR_ARRAY,
+  /**
+   * SBE {@code uuid} composite — two {@code int64} halves ({@code mostSignificantBits} + {@code
+   * leastSignificantBits}). Returns the {@code UuidValue} interface ({@code { msb: bigint; lsb:
+   * bigint }}) exported from {@code _codecRuntime.ts}. Stringification is intentionally deferred to
+   * the consumer's render edge — see {@link UuidCompositeGenerator}.
+   */
+  UUID_COMPOSITE
 }

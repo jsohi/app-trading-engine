@@ -57,9 +57,10 @@ import uk.co.real_logic.sbe.ir.Token;
  *         <li>{@code Signal.BEGIN_ENUM} → {@code DataView.get<Width>} cast to the imported enum
  *             union type. Optional-presence enums return {@code <Enum> | null} with the schema's
  *             {@code nullValue=...} sentinel honoured (or the SBE-default sentinel otherwise).
- *         <li>{@code Signal.BEGIN_COMPOSITE} (e.g. the {@code uuid} two-int64 halves) → deferred to
- *             chunk 7's {@code UuidCompositeGenerator}; this chunk emits a stub-comment placeholder
- *             so the field's offset stays documented.
+ *         <li>{@code Signal.BEGIN_COMPOSITE} for the {@code uuid} composite (two-int64 halves) →
+ *             {@link UuidCompositeGenerator} emits a getter returning the {@code UuidValue}
+ *             interface ({@code { msb: bigint; lsb: bigint }}); other composite types throw {@code
+ *             IllegalStateException} per {@link BlockField#parseBlockField}.
  *       </ul>
  *   <li>For optional primitive fields, the getter wraps the raw read with a sentinel comparison:
  *       {@code int64} → {@code Long.MIN_VALUE} ({@code -9223372036854775808n}); {@code uint64} →
@@ -90,13 +91,14 @@ import uk.co.real_logic.sbe.ir.Token;
  * messages require getters to be called in declaration order; out-of-order calls are undefined
  * behavior. The returned view is invalidated by the next {@code wrap()} of the producing decoder.
  *
- * <h2>Composite (uuid) fields — deferred to chunk 7</h2>
+ * <h2>Composite (uuid) fields</h2>
  *
  * Composite-typed root fields (only the {@code uuid} composite today; used by {@code
  * WebSocketAuthAck.sessionId}, {@code SessionResume.sessionId}, {@code
- * WebSocketSnapshot.snapshotId}) are still skipped at chunk 6 and surfaced as a trailing TODO
- * comment on each affected decoder so the offset stays documented for chunk 7's {@code
- * UuidCompositeGenerator}.
+ * WebSocketSnapshot.snapshotId}) are emitted by {@link UuidCompositeGenerator} as getters returning
+ * the {@code UuidValue} interface exported from {@code _codecRuntime.ts}. Stringification is
+ * intentionally deferred to the consumer's render edge — the decoder returns the two {@code int64}
+ * halves as {@code bigint} so the full 128-bit identity round-trips without precision loss.
  *
  * <h2>Shared runtime</h2>
  *
@@ -238,6 +240,7 @@ final class MessageGenerator {
         .append(NL)
         .append("}")
         .append(NL);
+    UuidCompositeGenerator.emitUuidValueTypeAlias(sb);
     Files.writeString(outputDir.resolve(CODEC_RUNTIME_FILENAME), sb, StandardCharsets.UTF_8);
   }
 
@@ -258,15 +261,17 @@ final class MessageGenerator {
     final var fields = collectRootFields(tokens);
     final var groups = GroupGenerator.parseGroups(tokens, messageName);
     final var varDataFields = VarDataGenerator.parseVarData(tokens);
-    final var deferredComposites = collectDeferredComposites(tokens);
     final boolean hasTrailingVarData = GroupGenerator.messageHasVarData(tokens);
 
     // Imports cover ALL features (root fields + group fields recursively). Var-data needs no
-    // string/enum dependency — it returns Uint8Array. Char-array detection scans both the root
-    // block and the recursive group tree.
+    // string/enum dependency — it returns Uint8Array. Char-array and uuid-composite detection
+    // scans both the root block and the recursive group tree.
     final boolean usesFixedString =
         fields.stream().anyMatch(f -> f.kind() == BlockFieldKind.CHAR_ARRAY)
             || GroupGenerator.anyUsesFixedString(groups);
+    final boolean usesUuidValue =
+        fields.stream().anyMatch(f -> f.kind() == BlockFieldKind.UUID_COMPOSITE)
+            || GroupGenerator.anyUsesUuidComposite(groups);
     final var enumImports = mergedEnumImports(fields, groups);
 
     final var sb = new StringBuilder(16_384);
@@ -303,8 +308,18 @@ final class MessageGenerator {
     // unconditionally would produce unused-import warnings on the consumer side under strict
     // tsconfig (`noUnusedLocals` / `noUnusedImports`), since the sentinel is referenced only
     // in the optional getter's `v === <Enum>_NULL_VAL ? null : ...` check.
-    if (usesFixedString) {
-      sb.append("import { readFixedString } from \"./_codecRuntime.js\";").append(NL);
+    if (usesFixedString || usesUuidValue) {
+      sb.append("import {");
+      if (usesFixedString) {
+        sb.append(" readFixedString");
+        if (usesUuidValue) {
+          sb.append(",");
+        }
+      }
+      if (usesUuidValue) {
+        sb.append(" type UuidValue");
+      }
+      sb.append(" } from \"./_codecRuntime.js\";").append(NL);
     }
     for (final var enumName : enumImports) {
       final boolean needsNullSentinel = anyOptionalEnumUsage(enumName, fields, groups);
@@ -314,7 +329,7 @@ final class MessageGenerator {
       }
       sb.append(" } from \"./").append(enumName).append(".js\";").append(NL);
     }
-    if (usesFixedString || !enumImports.isEmpty()) {
+    if (usesFixedString || usesUuidValue || !enumImports.isEmpty()) {
       sb.append(NL);
     }
 
@@ -421,19 +436,6 @@ final class MessageGenerator {
     // ---- Var-data getters (positioned after groups per wire layout) -----------------
     varDataGenerator.emitGetters(varDataFields, sb);
 
-    // ---- Trailing TODO block for deferred features (chunk 7+ only) ------------------
-    if (!deferredComposites.isEmpty()) {
-      sb.append(NL).append("  // Deferred to subsequent APP-34 chunks:").append(NL);
-      for (final var compositeField : deferredComposites) {
-        sb.append("  //   - composite field `")
-            .append(compositeField.fieldName())
-            .append("` of type `")
-            .append(compositeField.compositeName())
-            .append("` (chunk 7 — UuidCompositeGenerator)")
-            .append(NL);
-      }
-    }
-
     sb.append("}").append(NL);
 
     // Iterator class declarations land AFTER the message decoder's closing brace.
@@ -501,40 +503,13 @@ final class MessageGenerator {
     return List.copyOf(fields);
   }
 
-  /**
-   * Collect composite-typed fields whose emitter lives in chunk 7 ({@code UuidCompositeGenerator}).
-   * After chunk 6 lands, groups and var-data are no longer "deferred" — only composite fields
-   * remain. Each entry surfaces as a trailing TODO comment on the emitted decoder so the field's
-   * offset stays documented for chunk 7.
-   */
-  private static List<DeferredCompositeField> collectDeferredComposites(final List<Token> tokens) {
-    final var composites = new ArrayList<DeferredCompositeField>();
-    int i = 1;
-    while (i < tokens.size()) {
-      final var token = tokens.get(i);
-      switch (token.signal()) {
-        case BEGIN_FIELD -> {
-          final var inner = tokens.get(i + 1);
-          if (inner.signal() == Signal.BEGIN_COMPOSITE) {
-            composites.add(new DeferredCompositeField(token.name(), inner.applicableTypeName()));
-          }
-          i += token.componentTokenCount();
-        }
-        case BEGIN_GROUP, BEGIN_VAR_DATA -> i += token.componentTokenCount();
-        case END_MESSAGE -> {
-          return List.copyOf(composites);
-        }
-        default -> i++;
-      }
-    }
-    return List.copyOf(composites);
-  }
-
   private static String emitFieldGetter(final BlockField field) {
     return switch (field.kind()) {
       case PRIMITIVE -> emitPrimitiveGetter(field);
       case ENUM -> emitEnumGetter(field);
       case CHAR_ARRAY -> emitCharArrayGetter(field);
+      case UUID_COMPOSITE ->
+          UuidCompositeGenerator.emitGetter(field, "this.buffer", "this.bufferOffset");
     };
   }
 
@@ -658,7 +633,4 @@ final class MessageGenerator {
       default -> throw new IllegalStateException("No literal form for primitive " + primitive);
     };
   }
-
-  /** A composite-typed root field deferred to chunk 7 (e.g. the {@code uuid} composite). */
-  private record DeferredCompositeField(String fieldName, String compositeName) {}
 }
