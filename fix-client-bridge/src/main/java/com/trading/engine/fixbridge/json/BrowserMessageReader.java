@@ -1,6 +1,7 @@
 package com.trading.engine.fixbridge.json;
 
 import io.netty.buffer.ByteBuf;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Strict, zero-allocation JSON parser for the six inbound browser-to-bridge message types.
@@ -26,9 +27,9 @@ import io.netty.buffer.ByteBuf;
  * <ul>
  *   <li>Total frame size must be {@code <=} {@link #MAX_BYTES}; oversize → {@link
  *       JsonParseException#TOO_LARGE}.
- *   <li>Top level must be a single JSON object whose first key is {@code "type"} with a string
- *       value naming a known message kind (locked §3 rationale: makes dispatch a single byte
- *       compare).
+ *   <li>Top level must be a single JSON object containing a {@code "type"} key whose value is a
+ *       JSON string naming a known message kind. Field order is not constrained — dispatch is
+ *       performed once {@code "type"} is observed, regardless of position.
  *   <li>Nesting depth is bounded at 2 (top-level object → primitive value); any deeper structure →
  *       {@link JsonParseException#MALFORMED}.
  *   <li>Unknown top-level keys are rejected (forward-compat is opt-in: any new field requires a
@@ -189,11 +190,9 @@ public final class BrowserMessageReader {
         throw JsonParseException.MALFORMED;
       }
       if (buf[p] == '{' || buf[p] == '[') {
-        // Nested objects/arrays are not allowed at depth 2.
-        if (depth >= MAX_DEPTH) {
-          throw JsonParseException.MALFORMED;
-        }
-        // No supported field is a nested structure — surface as malformed.
+        // No supported field is a nested structure — every field value is a JSON string. Nested
+        // objects/arrays exceed the wire-protocol contract (which enforces a max depth of 2 via
+        // top-level-object → primitive value) and are surfaced as malformed.
         throw JsonParseException.MALFORMED;
       }
       if (buf[p] != '"') {
@@ -597,6 +596,6 @@ public final class BrowserMessageReader {
   }
 
   private static byte[] bytes(final String s) {
-    return s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    return s.getBytes(StandardCharsets.US_ASCII);
   }
 }

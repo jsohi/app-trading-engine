@@ -7,6 +7,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
@@ -218,7 +219,7 @@ public record FixClientBridgeConfig(
    * @param properties property source (must not be null)
    * @return overlaid configuration
    */
-  public FixClientBridgeConfig withSystemPropertyOverrides(final java.util.Properties properties) {
+  public FixClientBridgeConfig withSystemPropertyOverrides(final Properties properties) {
     Objects.requireNonNull(properties, "properties");
     final var registry = new LinkedHashMap<>(jwtIssuerRegistry);
     final String singleJwks = properties.getProperty(SYSPROP_PREFIX + "jwksUri");
@@ -341,25 +342,23 @@ public record FixClientBridgeConfig(
   }
 
   private static String strProp(
-      final java.util.Properties properties, final String suffix, final String def) {
+      final Properties properties, final String suffix, final String def) {
     final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : v;
   }
 
-  private static int intProp(
-      final java.util.Properties properties, final String suffix, final int def) {
+  private static int intProp(final Properties properties, final String suffix, final int def) {
     final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Integer.parseInt(v);
   }
 
-  private static long longProp(
-      final java.util.Properties properties, final String suffix, final long def) {
+  private static long longProp(final Properties properties, final String suffix, final long def) {
     final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Long.parseLong(v);
   }
 
   private static boolean boolProp(
-      final java.util.Properties properties, final String suffix, final boolean def) {
+      final Properties properties, final String suffix, final boolean def) {
     final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Boolean.parseBoolean(v);
   }
