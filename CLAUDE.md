@@ -160,7 +160,7 @@ All production code must meet industry-level documentation standards consistent 
 
 ### Logging
 - **Hot-path modules** (`cluster`, `gateway`, `pricing-service`, `orchestrator`, `projections`): GFLog 3.0.7 — zero-allocation, builder API: `log.info().append("Order ").append(orderId).commit()`
-- **Infra modules** (`launcher`, `media-driver`, `websocket-server`, `reference-data`): Log4j2 2.25.3 Async + LMAX Disruptor — garbage-free mode with `AsyncLoggerContextSelector`
+- **Infra modules** (`launcher`, `media-driver`, `websocket-server`, `reference-data`, `fix-client-bridge`): Log4j2 2.25.3 Async + LMAX Disruptor — garbage-free mode with `AsyncLoggerContextSelector`. The `fix-client-bridge` is structurally identical to `:websocket-server` (Netty-fronted, JWT cold-path auth, browser-facing) and uses the same Log4j2 family; per-message zero-alloc invariants are enforced by `*AllocTest` regression tests on the dispatch pipeline rather than via GFLog.
 - **No SLF4J anywhere** — removed project-wide. Aeron/Artio use native error handling (CnC counters, `ErrorHandler`)
 - **Overflow strategy**: GFLog uses `DISCARD` (never block hot-path thread; log entries dropped under extreme load)
 - **Timestamps**: microsecond precision, UTC across all modules (GFLog `SSSSSS` + Log4j2 `DEFAULT_MICROS`)

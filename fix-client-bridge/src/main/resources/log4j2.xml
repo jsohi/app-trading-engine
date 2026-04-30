@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="error" monitorInterval="30">
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
+    </Console>
+    <RollingRandomAccessFile name="File"
+                             fileName="logs/fix-client-bridge.log"
+                             filePattern="logs/fix-client-bridge-%d{yyyy-MM-dd}-%i.log"
+                             immediateFlush="false">
+      <PatternLayout pattern="%d{DEFAULT_MICROS}{UTC} [%t] %-5level %logger{36} - %msg%n"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+        <SizeBasedTriggeringPolicy size="100MB"/>
+      </Policies>
+      <DefaultRolloverStrategy max="30"/>
+    </RollingRandomAccessFile>
+  </Appenders>
+  <Loggers>
+    <AsyncLogger name="com.trading" level="info" includeLocation="false"/>
+    <AsyncLogger name="io.aeron" level="warn" includeLocation="false"/>
+    <AsyncLogger name="uk.co.real_logic.artio" level="info" includeLocation="false"/>
+    <AsyncRoot level="info" includeLocation="false">
+      <AppenderRef ref="Console"/>
+      <AppenderRef ref="File"/>
+    </AsyncRoot>
+  </Loggers>
+</Configuration>
