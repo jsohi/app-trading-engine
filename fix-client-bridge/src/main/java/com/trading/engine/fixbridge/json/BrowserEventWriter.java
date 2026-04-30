@@ -65,6 +65,7 @@ public final class BrowserEventWriter {
   private static final byte[] K_FATAL = ascii(",\"fatal\":");
   private static final byte[] K_DIRECTION = ascii(",\"direction\":\"");
   private static final byte[] K_FIX = ascii(",\"fix\":\"");
+  private static final byte[] K_RECEIVED = ascii(",\"received\":\"");
 
   private static final byte[] V_TRUE = ascii("true");
   private static final byte[] V_FALSE = ascii("false");
@@ -76,8 +77,12 @@ public final class BrowserEventWriter {
 
   private final DecimalStringEmitter decimalEmitter;
   // Scratch wrapper exposed so internal helpers can leverage Agrona's putLongAscii on a
-  // byte[]. 24 bytes is enough for any signed long in decimal (max 20 chars including sign).
-  private final byte[] longScratch = new byte[24];
+  // byte[]. Sized to 32 bytes — aligned with DecimalStringEmitter.SCRATCH_CAPACITY — so the
+  // worst-case "-9223372036854775808" (20 chars) plus a 2-byte safety padding fits with room
+  // for cache-line alignment.
+  private static final int LONG_SCRATCH_CAPACITY = 32;
+
+  private final byte[] longScratch = new byte[LONG_SCRATCH_CAPACITY];
   private final UnsafeBuffer longView = new UnsafeBuffer(longScratch);
 
   /**
@@ -106,29 +111,37 @@ public final class BrowserEventWriter {
    */
   public int writeQuote(final BrowserEvent.Quote e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_QUOTE);
-    dst.writeBytes(K_REQ_ID);
-    writeJsonStringValue(e.reqId(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_QUOTE_ID);
-    writeJsonStringValue(e.quoteId(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_SYMBOL);
-    writeJsonStringValue(e.symbol(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_SIDE);
-    writeJsonStringValue(e.side(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_QTY);
-    decimalEmitter.emitInt64FixedPoint(e.qtyInt64(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_PRICE);
-    decimalEmitter.emitInt64FixedPoint(e.priceInt64(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_EXPIRY);
-    writeLong(e.expiryNs(), dst);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_QUOTE);
+      dst.writeBytes(K_REQ_ID);
+      writeJsonStringValue(e.reqId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_QUOTE_ID);
+      writeJsonStringValue(e.quoteId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SYMBOL);
+      writeJsonStringValue(e.symbol(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SIDE);
+      writeJsonStringValue(e.side(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.qtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_PRICE);
+      decimalEmitter.emitInt64FixedPoint(e.priceInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_EXPIRY);
+      writeLong(e.expiryNs(), dst);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      // Roll back any partial write so the caller observes an all-or-nothing buffer state.
+      // Without this, mid-write rejection (e.g. forbidden character on a later field) leaves the
+      // outbound buffer with an incomplete JSON object that the WS framer would emit downstream.
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
@@ -140,36 +153,41 @@ public final class BrowserEventWriter {
    */
   public int writeExecutionReport(final BrowserEvent.ExecutionReport e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_EXEC);
-    dst.writeBytes(K_CL_ORD_ID);
-    writeJsonStringValue(e.clOrdId(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_EXEC_ID);
-    writeJsonStringValue(e.execId(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_EXEC_TYPE);
-    writeJsonChar(e.execType(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_ORD_STATUS);
-    writeJsonChar(e.ordStatus(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_SYMBOL);
-    writeJsonStringValue(e.symbol(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_SIDE);
-    writeJsonStringValue(e.side(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_CUM_QTY);
-    decimalEmitter.emitInt64FixedPoint(e.cumQtyInt64(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_LEAVES_QTY);
-    decimalEmitter.emitInt64FixedPoint(e.leavesQtyInt64(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_AVG_PX);
-    decimalEmitter.emitInt64FixedPoint(e.avgPxInt64(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_EXEC);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringValue(e.clOrdId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_EXEC_ID);
+      writeJsonStringValue(e.execId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_EXEC_TYPE);
+      writeJsonChar(e.execType(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_ORD_STATUS);
+      writeJsonChar(e.ordStatus(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SYMBOL);
+      writeJsonStringValue(e.symbol(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SIDE);
+      writeJsonStringValue(e.side(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CUM_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.cumQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_LEAVES_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.leavesQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_AVG_PX);
+      decimalEmitter.emitInt64FixedPoint(e.avgPxInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
@@ -181,15 +199,20 @@ public final class BrowserEventWriter {
    */
   public int writeOrderReject(final BrowserEvent.OrderReject e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ORDER_REJECT);
-    dst.writeBytes(K_CL_ORD_ID);
-    writeJsonStringValue(e.clOrdId(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_REASON);
-    writeJsonStringValue(e.reason(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_ORDER_REJECT);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringValue(e.clOrdId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_REASON);
+      writeJsonStringValue(e.reason(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
@@ -201,16 +224,21 @@ public final class BrowserEventWriter {
    */
   public int writeBridgeStatus(final BrowserEvent.BridgeStatus e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_BRIDGE_STATUS);
-    dst.writeBytes(K_FIX_SESSION_UP);
-    dst.writeBytes(e.fixSessionUp() ? V_TRUE : V_FALSE);
-    dst.writeBytes(K_FATAL);
-    dst.writeBytes(e.fatal() ? V_TRUE : V_FALSE);
-    dst.writeBytes(K_REASON);
-    writeJsonStringValue(e.reason(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_BRIDGE_STATUS);
+      dst.writeBytes(K_FIX_SESSION_UP);
+      dst.writeBytes(e.fixSessionUp() ? V_TRUE : V_FALSE);
+      dst.writeBytes(K_FATAL);
+      dst.writeBytes(e.fatal() ? V_TRUE : V_FALSE);
+      dst.writeBytes(K_REASON);
+      writeJsonStringValue(e.reason(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
@@ -222,15 +250,20 @@ public final class BrowserEventWriter {
    */
   public int writeRawFix(final BrowserEvent.RawFix e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_RAW_FIX);
-    dst.writeBytes(K_DIRECTION);
-    writeJsonStringValue(e.direction(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeBytes(K_FIX);
-    writeJsonStringValue(e.fix(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_RAW_FIX);
+      dst.writeBytes(K_DIRECTION);
+      writeJsonStringValue(e.direction(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_FIX);
+      writeJsonStringValue(e.fix(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
@@ -241,12 +274,18 @@ public final class BrowserEventWriter {
    */
   public int writeAuthExpired(final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_AUTH_EXPIRED);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_AUTH_EXPIRED);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   /**
-   * Serialise a generic {@link BrowserEvent.Error}.
+   * Serialise a generic {@link BrowserEvent.Error}. Emits the optional {@code "received"} key only
+   * when {@link BrowserEvent.Error#received()} is non-null — taxonomy-only errors omit it.
    *
    * @param e event to serialise
    * @param dst destination buffer
@@ -254,12 +293,22 @@ public final class BrowserEventWriter {
    */
   public int writeError(final BrowserEvent.Error e, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ERROR);
-    dst.writeBytes(K_REASON);
-    writeJsonStringValue(e.reason(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+    try {
+      dst.writeBytes(HDR_ERROR);
+      dst.writeBytes(K_REASON);
+      writeJsonStringValue(e.reason(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      if (e.received() != null) {
+        dst.writeBytes(K_RECEIVED);
+        writeJsonStringValue(e.received(), dst);
+        dst.writeByte(CLOSE_QUOTE);
+      }
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -270,40 +319,12 @@ public final class BrowserEventWriter {
    * Write the contents of {@code s} as a UTF-8 byte sequence into {@code dst}, NOT including the
    * surrounding quotes (callers handle those). Rejects {@code "} (0x22), {@code \\} (0x5C), and any
    * code point in {@code 0x00..0x1F} — the wire protocol forbids them.
+   *
+   * <p>Delegates to {@link Utf8JsonStringEmitter#appendStringValue(String, ByteBuf)} — single
+   * implementation shared with {@code FixToJsonTranslator}.
    */
   private static void writeJsonStringValue(final String s, final ByteBuf dst) {
-    if (s == null) {
-      throw new IllegalArgumentException("null string value");
-    }
-    final int len = s.length();
-    for (int i = 0; i < len; i++) {
-      final char c = s.charAt(i);
-      if (c == '"' || c == '\\') {
-        throw new IllegalArgumentException(
-            "string value contains forbidden character at index " + i + ": " + (int) c);
-      }
-      if (c < 0x20) {
-        throw new IllegalArgumentException(
-            "string value contains control character at index " + i + ": " + (int) c);
-      }
-      // UTF-8 encode in place. ASCII fast path is the only one expected; the multi-byte
-      // branches are present for safety.
-      if (c < 0x80) {
-        dst.writeByte((byte) c);
-      } else if (c < 0x800) {
-        dst.writeByte((byte) (0xC0 | (c >>> 6)));
-        dst.writeByte((byte) (0x80 | (c & 0x3F)));
-      } else {
-        // Surrogate pairs intentionally NOT supported; the wire protocol is ASCII.
-        if (Character.isSurrogate(c)) {
-          throw new IllegalArgumentException(
-              "string value contains surrogate code unit at index " + i);
-        }
-        dst.writeByte((byte) (0xE0 | (c >>> 12)));
-        dst.writeByte((byte) (0x80 | ((c >>> 6) & 0x3F)));
-        dst.writeByte((byte) (0x80 | (c & 0x3F)));
-      }
-    }
+    Utf8JsonStringEmitter.appendStringValue(s, dst);
   }
 
   /**
