@@ -11,10 +11,8 @@ import com.trading.engine.fix.decoder.OrderCancelRejectDecoder;
 import com.trading.engine.fix.decoder.QuoteDecoder;
 import com.trading.engine.gateway.FixedPoint;
 import io.netty.buffer.Unpooled;
-import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -185,8 +183,8 @@ final class FixToJsonTranslatorAllocTest {
 
   private static long totalGcCount() {
     long total = 0L;
-    final List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();
-    for (final GarbageCollectorMXBean bean : beans) {
+    final var beans = ManagementFactory.getGarbageCollectorMXBeans();
+    for (final var bean : beans) {
       final long c = bean.getCollectionCount();
       if (c >= 0L) {
         total += c;

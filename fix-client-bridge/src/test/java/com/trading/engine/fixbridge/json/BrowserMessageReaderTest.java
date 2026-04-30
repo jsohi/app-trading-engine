@@ -164,7 +164,7 @@ final class BrowserMessageReaderTest {
       {"GTD", String.valueOf((char) MutableParsedMessage.TIF_GTD)},
     };
     final var out = new MutableParsedMessage();
-    for (final String[] c : cases) {
+    for (final var c : cases) {
       out.reset();
       BrowserMessageReader.parse(
           wrap(

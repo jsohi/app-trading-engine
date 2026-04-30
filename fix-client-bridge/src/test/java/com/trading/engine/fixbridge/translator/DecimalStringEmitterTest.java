@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.gateway.FixedPoint;
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -39,17 +38,17 @@ final class DecimalStringEmitterTest {
   // ---------------------------------------------------------------------------
 
   private String emit(final long int64Value) {
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     final int written = emitter.emitInt64FixedPoint(int64Value, dst);
-    final byte[] out = new byte[written];
+    final var out = new byte[written];
     dst.readBytes(out);
     return new String(out, StandardCharsets.US_ASCII);
   }
 
   private String emit(final DecimalFloat df) {
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     final int written = emitter.emitDecimalFloat(df, dst);
-    final byte[] out = new byte[written];
+    final var out = new byte[written];
     dst.readBytes(out);
     return new String(out, StandardCharsets.US_ASCII);
   }
@@ -134,7 +133,7 @@ final class DecimalStringEmitterTest {
 
   @Test
   void emitInt64_longMinValue_throwsIllegalArgument() {
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     assertThrows(
         IllegalArgumentException.class, () -> emitter.emitInt64FixedPoint(Long.MIN_VALUE, dst));
   }
@@ -145,7 +144,7 @@ final class DecimalStringEmitterTest {
 
   @Test
   void emitInt64_logDistributedMagnitudes_matchReferenceFormat() {
-    final Random rng = new Random(0xCAFEBABEL);
+    final var rng = new Random(0xCAFEBABEL);
     for (int k = 1; k <= 18; k++) {
       final long magnitude = pow10(k);
       // ±10^k * randomFraction in [0,1)
@@ -170,7 +169,7 @@ final class DecimalStringEmitterTest {
 
   @Test
   void emitInt64_thousandRandomSamples_matchReferenceFormat() {
-    final Random rng = new Random(0x42L);
+    final var rng = new Random(0x42L);
     for (int i = 0; i < 1000; i++) {
       long sample = rng.nextLong();
       if (sample == Long.MIN_VALUE) {
@@ -209,7 +208,7 @@ final class DecimalStringEmitterTest {
       ARTIO_DECIMAL_MAX,
       -ARTIO_DECIMAL_MAX,
     };
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     for (final long s : samples) {
       FixedPoint.toDecimalFloat(s, df);
       assertEquals(emit(s), emit(df), "sample=" + s);
@@ -218,8 +217,8 @@ final class DecimalStringEmitterTest {
 
   @Test
   void emitDecimalFloat_thousandRandomSamplesWithinArtioRange_roundTripExact() {
-    final Random rng = new Random(0xDEADBEEFL);
-    final DecimalFloat df = new DecimalFloat();
+    final var rng = new Random(0xDEADBEEFL);
+    final var df = new DecimalFloat();
     for (int i = 0; i < 1000; i++) {
       // Constrain to ±ARTIO_DECIMAL_MAX inclusive — matches the production constraint that
       // FixedPoint.toDecimalFloat is only ever called on values within Artio's DecimalFloat
@@ -237,21 +236,21 @@ final class DecimalStringEmitterTest {
   @Test
   void emitDecimalFloat_scaleZero_rendersWithEightZeroFracDigits() {
     // 5 with scale=0 → exactly 5 → "5.00000000"
-    final DecimalFloat df = new DecimalFloat(5L, 0);
+    final var df = new DecimalFloat(5L, 0);
     assertEquals("5.00000000", emit(df));
   }
 
   @Test
   void emitDecimalFloat_scaleTwo_rendersAlignedToEightDigits() {
     // 15025 * 10^-2 = 150.25 → "150.25000000"
-    final DecimalFloat df = new DecimalFloat(15025L, 2);
+    final var df = new DecimalFloat(15025L, 2);
     assertEquals("150.25000000", emit(df));
   }
 
   @Test
   void emitDecimalFloat_scaleEight_rendersIdenticallyToInt64() {
     // -150_000_000 fixed-point = -1.50000000
-    final DecimalFloat df = new DecimalFloat(-150_000_000L, 8);
+    final var df = new DecimalFloat(-150_000_000L, 8);
     assertEquals("-1.50000000", emit(df));
   }
 
@@ -261,7 +260,7 @@ final class DecimalStringEmitterTest {
     // Construct a DecimalFloat with scale > FIXED_POINT_SCALE using the raw setters, since
     // both DecimalFloat.set() and the constructor normalise the scale down. 1502500 * 10^-10 =
     // 0.0001502500 → fixed-point would be 15025 (last two zeros dropped). Output: "0.00015025".
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     df.value(1_502_500L);
     df.scale(10);
     assertEquals("0.00015025", emit(df));
@@ -273,10 +272,10 @@ final class DecimalStringEmitterTest {
     // Bypass DecimalFloat.set() normalisation (which silently flips negative scales) using the
     // raw value/scale setters — exercises the emitter's defensive path against a malformed DF
     // that nonetheless slipped through some upstream code path.
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     df.value(1L);
     df.scale(-1);
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     assertThrows(IllegalArgumentException.class, () -> emitter.emitDecimalFloat(df, dst));
   }
 
@@ -285,10 +284,10 @@ final class DecimalStringEmitterTest {
   void emitDecimalFloat_longMinValueValue_throwsIllegalArgument() {
     // DecimalFloat.set(MIN, _) throws via Artio's NaN check; the raw value() setter bypasses
     // it. The emitter still rejects MIN to avoid the asymmetric -Long.MIN_VALUE overflow case.
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     df.value(Long.MIN_VALUE);
     df.scale(FIXED_POINT_SCALE);
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     assertThrows(IllegalArgumentException.class, () -> emitter.emitDecimalFloat(df, dst));
   }
 
@@ -300,11 +299,11 @@ final class DecimalStringEmitterTest {
     // letting the caller see a cryptic "pow10 exponent out of range" diagnostic. Production
     // callers cannot trigger this path because FixedPoint.toDecimalFloat constrains scale, but
     // the deprecated raw value/scale setters can.
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     df.value(1L);
     df.scale(27);
-    final ByteBuf dst = Unpooled.buffer(64);
-    final IllegalArgumentException ex =
+    final var dst = Unpooled.buffer(64);
+    final var ex =
         assertThrows(IllegalArgumentException.class, () -> emitter.emitDecimalFloat(df, dst));
     assertTrue(
         ex.getMessage().contains("scale exceeds maximum representable"),
@@ -321,10 +320,10 @@ final class DecimalStringEmitterTest {
     // The arithmetic produces a heavily truncated value (only the most-significant digit survives
     // the divide-down), but the operation itself must not throw — the production path tolerates
     // truncation when the raw scale exceeds FIXED_POINT_SCALE.
-    final DecimalFloat df = new DecimalFloat();
+    final var df = new DecimalFloat();
     df.value(123_456_789_000_000_000L);
     df.scale(26);
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
     // Should not throw.
     final int written = emitter.emitDecimalFloat(df, dst);
     assertTrue(written > 0, "emitDecimalFloat should write at least one byte at boundary scale");

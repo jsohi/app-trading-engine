@@ -3,12 +3,9 @@ package com.trading.engine.fixbridge.json;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -56,7 +53,7 @@ final class BrowserMessageReaderAllocTest {
 
   private static void runLoop(final byte[] frame) {
     final var out = new MutableParsedMessage();
-    final ByteBuf src = Unpooled.wrappedBuffer(frame);
+    final var src = Unpooled.wrappedBuffer(frame);
 
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
       src.readerIndex(0);
@@ -78,8 +75,8 @@ final class BrowserMessageReaderAllocTest {
 
   private static long totalGcCount() {
     long total = 0L;
-    final List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();
-    for (final GarbageCollectorMXBean bean : beans) {
+    final var beans = ManagementFactory.getGarbageCollectorMXBeans();
+    for (final var bean : beans) {
       final long c = bean.getCollectionCount();
       if (c >= 0L) {
         total += c;
