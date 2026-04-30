@@ -171,13 +171,8 @@ public final class BrowserMessageReader {
         throw JsonParseException.MALFORMED;
       }
       final int keyStart = p + 1;
+      // scanStringEnd rejects backslash + control bytes in a single pass; no post-walk needed.
       final int keyEnd = scanStringEnd(buf, keyStart, srcLen);
-      // No escapes allowed in keys (they must be plain ASCII).
-      for (int i = keyStart; i < keyEnd; i++) {
-        if (buf[i] == '\\') {
-          throw JsonParseException.MALFORMED;
-        }
-      }
       p = keyEnd + 1; // past closing quote
       p = skipWs(buf, p, srcLen);
 
@@ -202,14 +197,8 @@ public final class BrowserMessageReader {
         throw JsonParseException.MALFORMED;
       }
       final int valStart = p + 1;
+      // scanStringEnd rejects backslash + control bytes in a single pass; no post-walk needed.
       final int valEnd = scanStringEnd(buf, valStart, srcLen);
-      // String literals must be free of un-escaped backslash; the wire protocol uses pure ASCII
-      // values (FIX symbols, decimals, JWTs) so any backslash is suspect.
-      for (int i = valStart; i < valEnd; i++) {
-        if (buf[i] == '\\') {
-          throw JsonParseException.MALFORMED;
-        }
-      }
       final int valLen = valEnd - valStart;
       p = valEnd + 1; // past closing quote
 
@@ -576,8 +565,11 @@ public final class BrowserMessageReader {
       if (b == '"') {
         return i;
       }
-      // Reject control bytes. JSON forbids unescaped 0x00..0x1F in strings.
-      if (b >= 0 && b < 0x20) {
+      // Reject backslash (escape sequences are not part of the wire-protocol's pure-ASCII
+      // contract for FIX symbols / decimals / JWTs) and control bytes (JSON forbids unescaped
+      // 0x00..0x1F in strings). Folding both checks into the single scan eliminates the previous
+      // post-scan re-walk over key/value byte ranges.
+      if (b == '\\' || (b >= 0 && b < 0x20)) {
         throw JsonParseException.MALFORMED;
       }
     }
