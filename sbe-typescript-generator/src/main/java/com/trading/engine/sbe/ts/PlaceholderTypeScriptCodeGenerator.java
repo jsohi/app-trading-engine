@@ -86,6 +86,7 @@ final class PlaceholderTypeScriptCodeGenerator implements CodeGenerator {
     final var messageDecoderNames = new MessageGenerator().generate(ir, outputDir);
     new HelpersGenerator().generate(outputDir);
     new RouterGenerator().generate(messageDecoderNames, outputDir);
+    new ConstantsGenerator().generate(ir, outputDir);
 
     final var indexTs = outputDir.resolve("index.ts");
     final var sb = new StringBuilder(8_192);
@@ -103,6 +104,8 @@ final class PlaceholderTypeScriptCodeGenerator implements CodeGenerator {
     sb.append("export { MessageHeaderDecoder } from \"./messageHeader.js\";").append(NL);
     sb.append("export { toFixed8, parseFixed8, nanosToDate } from \"./helpers.js\";").append(NL);
     sb.append("export { route, type DecodedFrame } from \"./MessageRouter.js\";").append(NL);
+    sb.append("export { PRICE_SCALE, SCHEMA_ID, SCHEMA_VERSION } from \"./constants.js\";")
+        .append(NL);
     for (final var enumName : enumNames) {
       // Single value re-export covers BOTH the as-const object literal and the
       // identically-named type alias from the source module. TypeScript treats values and
