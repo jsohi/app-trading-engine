@@ -47,10 +47,10 @@ import org.agrona.concurrent.UnsafeBuffer;
  *
  * <p><b>Threading.</b> Not thread-safe — single-threaded gateway duty-cycle thread only.
  *
- * <p><b>Test seam.</b> {@link #forTesting(IdleStrategy, NanoClock)} returns an instance whose
- * lifecycle methods and offer paths are no-ops that never touch {@link AeronCluster}. Egress is
- * driven separately by the test via {@link FixGateway#init(ClusterClient, ClusterEgressListener)}.
- * Production code MUST use the {@link #builder()} factory.
+ * <p><b>Test seam.</b> {@link #forTesting(NanoClock)} returns an instance whose lifecycle methods
+ * and offer paths are no-ops that never touch {@link AeronCluster}. Egress is driven separately by
+ * the test via {@link FixGateway#init(ClusterClient, ClusterEgressListener)}. Production code MUST
+ * use the {@link #builder()} factory.
  */
 public final class ClusterClient implements Agent, AutoCloseable {
 
@@ -83,8 +83,8 @@ public final class ClusterClient implements Agent, AutoCloseable {
   /**
    * Test seam flag: when {@code true}, all lifecycle methods ({@link #onStart()}, {@link
    * #onClose()}, {@link #doWork()}) and offer paths are no-ops that report success without touching
-   * {@link AeronCluster}. Set only by {@link #forTesting(IdleStrategy, NanoClock)}. Production code
-   * paths must keep this {@code false}.
+   * {@link AeronCluster}. Set only by {@link #forTesting(NanoClock)}. Production code paths must
+   * keep this {@code false}.
    */
   private final boolean testMode;
 
@@ -126,11 +126,11 @@ public final class ClusterClient implements Agent, AutoCloseable {
   }
 
   /**
-   * Private no-op-lifecycle constructor used by {@link #forTesting(IdleStrategy, NanoClock)}. All
-   * fields except {@code nanoClock} get harmless placeholder values; {@code testMode} is set so
-   * lifecycle methods short-circuit. Cluster collaborators that the bridge integration test
-   * supplies separately (e.g. via {@link FixGateway#init}) are intentionally not wired here — see
-   * the factory Javadoc for the egress-driving pattern the test must follow.
+   * Private no-op-lifecycle constructor used by {@link #forTesting(NanoClock)}. All fields except
+   * {@code nanoClock} get harmless placeholder values; {@code testMode} is set so lifecycle methods
+   * short-circuit. Cluster collaborators that the bridge integration test supplies separately (e.g.
+   * via {@link FixGateway#init}) are intentionally not wired here — see the factory Javadoc for the
+   * egress-driving pattern the test must follow.
    */
   private ClusterClient(final NanoClock nanoClock) {
     this.aeronDirectoryName = "test://no-op";
@@ -173,21 +173,18 @@ public final class ClusterClient implements Agent, AutoCloseable {
    *
    * <p><b>Allocation.</b> Constant — only the {@link InFlightTracker} backing arrays.
    *
-   * @param idleStrategy the agent runner idle strategy the caller intends to use; reserved for
-   *     symmetry with future test scenarios that expose backoff timing. Captured but unused today.
-   *     Must not be {@code null}.
+   * <p><b>Idle strategy.</b> Not exposed on this signature — the caller's {@link
+   * org.agrona.concurrent.AgentRunner} owns its own {@link IdleStrategy} at construction; it is
+   * never driven by the {@code ClusterClient} itself. Tests construct their own runner with the
+   * idle behavior they want.
+   *
    * @param nanoClock monotonic clock injected for any time-stamped log lines emitted by the no-op
    *     path (e.g. timeout sweep, even though no I/O happens). Must not be {@code null}.
    * @return a no-op-lifecycle ClusterClient instance suitable for FIX gateway integration tests
-   * @throws NullPointerException if either parameter is null
+   * @throws NullPointerException if {@code nanoClock} is null
    */
-  public static ClusterClient forTesting(
-      final IdleStrategy idleStrategy, final NanoClock nanoClock) {
-    Objects.requireNonNull(idleStrategy, "idleStrategy");
+  public static ClusterClient forTesting(final NanoClock nanoClock) {
     Objects.requireNonNull(nanoClock, "nanoClock");
-    // idleStrategy is captured by the caller's AgentRunner; ClusterClient itself doesn't drive
-    // the runner. The parameter is part of the seam's signature so callers think about runner
-    // composition explicitly when adopting forTesting.
     return new ClusterClient(nanoClock);
   }
 

@@ -187,7 +187,7 @@ public final class JwtValidator implements AutoCloseable {
     try {
       signedJwt = SignedJWT.parse(jwt);
     } catch (final ParseException e) {
-      throw new JwtValidationException("Malformed JWT: " + e.getMessage());
+      throw new JwtValidationException("Malformed JWT: " + e.getMessage(), e);
     }
 
     // Reject non-RS256 algorithms (alg:none, HS256, ES256, etc.)
@@ -207,7 +207,7 @@ public final class JwtValidator implements AutoCloseable {
     try {
       issuer = signedJwt.getJWTClaimsSet().getIssuer();
     } catch (final ParseException e) {
-      throw new JwtValidationException("Cannot parse JWT claims: " + e.getMessage());
+      throw new JwtValidationException("Cannot parse JWT claims: " + e.getMessage(), e);
     }
     if (issuer == null) {
       throw new JwtValidationException("Missing iss claim");
@@ -301,7 +301,7 @@ public final class JwtValidator implements AutoCloseable {
         entry.getValue().get(PREFLIGHT_SELECTOR, null);
       } catch (final Exception e) {
         throw new JwtValidationException(
-            "JWKS preflight failed for issuer '" + entry.getKey() + "': " + e.getMessage());
+            "JWKS preflight failed for issuer '" + entry.getKey() + "': " + e.getMessage(), e);
       }
     }
     LOG.info("JWKS preflight succeeded for {} issuer(s)", jwkSources.size());
@@ -333,12 +333,12 @@ public final class JwtValidator implements AutoCloseable {
         return processor.process(SignedJWT.parse(signedJwt.serialize()), null);
       } catch (final Exception retryEx) {
         throw new JwtValidationException(
-            "JWT verification failed after JWKS refresh: " + retryEx.getMessage());
+            "JWT verification failed after JWKS refresh: " + retryEx.getMessage(), retryEx);
       }
     } catch (final BadJOSEException e) {
-      throw new JwtValidationException("JWT verification failed: " + e.getMessage());
+      throw new JwtValidationException("JWT verification failed: " + e.getMessage(), e);
     } catch (final Exception e) {
-      throw new JwtValidationException("JWT processing error: " + e.getMessage());
+      throw new JwtValidationException("JWT processing error: " + e.getMessage(), e);
     }
   }
 
@@ -441,7 +441,10 @@ public final class JwtValidator implements AutoCloseable {
 
   /**
    * Thrown when JWT validation fails. The message contains only the failure reason — never the
-   * token content or user-identifiable claims (to prevent information leakage in logs).
+   * token content or user-identifiable claims (to prevent information leakage in logs). The
+   * underlying cause (e.g. {@link java.io.IOException} from JWKS fetch) is preserved via the
+   * standard {@link Throwable#getCause()} chain so operators can diagnose root failures without the
+   * cause appearing in user-facing log messages.
    */
   public static final class JwtValidationException extends RuntimeException {
 
@@ -452,6 +455,15 @@ public final class JwtValidator implements AutoCloseable {
      */
     public JwtValidationException(final String message) {
       super(message);
+    }
+
+    /**
+     * @param message the validation failure reason (safe for logging)
+     * @param cause the underlying exception (e.g. JWKS network error); preserved on the cause chain
+     *     for diagnostic purposes but never included in {@link #getMessage()}
+     */
+    public JwtValidationException(final String message, final Throwable cause) {
+      super(message, cause);
     }
   }
 }

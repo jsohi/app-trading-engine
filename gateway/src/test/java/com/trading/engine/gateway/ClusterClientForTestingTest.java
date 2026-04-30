@@ -5,13 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link ClusterClient#forTesting(org.agrona.concurrent.IdleStrategy, NanoClock)}.
+ * Unit tests for {@link ClusterClient#forTesting(NanoClock)}.
  *
  * <p>Verifies the no-op-lifecycle test seam:
  *
@@ -27,25 +26,19 @@ import org.junit.jupiter.api.Test;
 final class ClusterClientForTestingTest {
 
   private static final NanoClock STATIC_CLOCK = () -> 42L;
-  private static final BackoffIdleStrategy IDLE = new BackoffIdleStrategy();
 
   // --- Factory contract ---
 
   @Test
-  void forTesting_nullIdleStrategy_throws() {
-    assertThrows(NullPointerException.class, () -> ClusterClient.forTesting(null, STATIC_CLOCK));
-  }
-
-  @Test
   void forTesting_nullNanoClock_throws() {
-    assertThrows(NullPointerException.class, () -> ClusterClient.forTesting(IDLE, null));
+    assertThrows(NullPointerException.class, () -> ClusterClient.forTesting(null));
   }
 
   // --- Lifecycle no-op ---
 
   @Test
   void onStart_inTestMode_doesNotThrow() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
 
     // No real AeronCluster is wired — the call must not attempt to connect.
     client.onStart();
@@ -57,7 +50,7 @@ final class ClusterClientForTestingTest {
 
   @Test
   void doWork_inTestMode_returnsZero() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
 
     // doWork must not poll AeronCluster — returning 0 keeps the AgentRunner idle without errors.
     assertEquals(0, client.doWork());
@@ -66,7 +59,7 @@ final class ClusterClientForTestingTest {
 
   @Test
   void close_inTestMode_isIdempotent() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
 
     client.close();
     assertTrue(client.isClosed(), "first close should mark closed");
@@ -79,7 +72,7 @@ final class ClusterClientForTestingTest {
 
   @Test
   void offer_inTestMode_returnsSuccessWithoutTouchingAeronCluster() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
     final var buf = new UnsafeBuffer(new byte[64]);
 
     final long position = client.offer(buf, 0, 32);
@@ -92,7 +85,7 @@ final class ClusterClientForTestingTest {
 
   @Test
   void offerTracked_inTestMode_returnsSuccessAndTracksClOrdId() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
     final var buf = new UnsafeBuffer(new byte[64]);
     final byte[] clOrdId = "TEST-ORDER-001".getBytes();
 
@@ -106,7 +99,7 @@ final class ClusterClientForTestingTest {
 
   @Test
   void isClosed_beforeAndAfterClose_reflectsState() {
-    final var client = ClusterClient.forTesting(IDLE, STATIC_CLOCK);
+    final var client = ClusterClient.forTesting(STATIC_CLOCK);
 
     assertFalse(client.isClosed(), "freshly constructed test-mode client should not be closed");
     client.close();
