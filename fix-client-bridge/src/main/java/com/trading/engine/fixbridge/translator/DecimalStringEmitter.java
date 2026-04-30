@@ -50,6 +50,16 @@ public final class DecimalStringEmitter {
   private static final long PRICE_SCALE = 100_000_000L;
 
   /**
+   * Maximum {@link ReadOnlyDecimalFloat#scale()} value the emitter accepts. The internal {@code
+   * pow10} helper supports exponents up to 18; the over-scale path uses {@code pow10(scale -
+   * FIXED_POINT_SCALE)}, so {@code scale} is bounded at {@code 18 + FIXED_POINT_SCALE = 26}. Any
+   * larger scale can only originate from a {@link uk.co.real_logic.artio.fields.DecimalFloat}
+   * populated through the deprecated raw {@code value(long)}/{@code scale(int)} setters; production
+   * callers go through {@code FixedPoint.toDecimalFloat} which constrains scale.
+   */
+  private static final int MAX_DECIMAL_SCALE = 26;
+
+  /**
    * Scratch capacity. Must hold the worst-case ASCII rendering of a signed long: {@code -} + {@code
    * 19 digits} + {@code .} + {@code 8 frac digits} = 29 bytes; 32 buys headroom and aligns.
    */
@@ -128,6 +138,17 @@ public final class DecimalStringEmitter {
     final int scale = df.scale();
     if (scale < 0) {
       throw new IllegalArgumentException("DecimalFloat with negative scale: scale=" + scale);
+    }
+    if (scale > MAX_DECIMAL_SCALE) {
+      // Defensive: scale > MAX_DECIMAL_SCALE would overflow pow10(scale - FIXED_POINT_SCALE).
+      // Artio's ReadOnlyDecimalFloat caps practical scale at ~18 via VALUE_MAX_VAL=10^18-1, so a
+      // scale this large can only arrive via the deprecated raw value(long)/scale(int) setters.
+      throw new IllegalArgumentException(
+          "DecimalFloat scale exceeds maximum representable: scale="
+              + scale
+              + " (max="
+              + MAX_DECIMAL_SCALE
+              + "); was the DecimalFloat populated via deprecated raw setters?");
     }
     if (value == Long.MIN_VALUE) {
       throw new IllegalArgumentException("Long.MIN_VALUE is not representable in fixed-point");

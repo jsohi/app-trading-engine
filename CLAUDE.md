@@ -99,6 +99,11 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **Reference types**: `final var x = ...` — always use `var` for reference-type local variables
 - **Primitives**: `final long x = ...` — always use explicit type with `final` for readability and to prevent silent type drift
 - **No bare locals**: all local variables must be `final` (reference types via `final var`, primitives via `final <type>`)
+- **Carve-out for loop scan pointers and accumulators**: tight byte/integer loops that scan a buffer or accumulate a result inherently require mutable primitive locals (`int p = start; while (p < end) { ... p++; }`). Refactoring these to satisfy `final` produces worse code than the rule prevents. Acceptable forms:
+  - Buffer scan pointers: `int p = startOffset;` mutated by `p++` / `p += n` inside the loop
+  - Digit-accumulator state: `long whole = 0L;` / `int fracDigits = 0;` written inside the body before the final value is returned
+  - Loop-control counters in classic `for` headers: `for (int i = 0; i < size; i++)` (the `i` is implicitly mutable)
+  - Scope: limited to zero-alloc parsers, emitters, and decoders — NOT general business logic. The mutated local must be private to one method (no escape into a field).
 - **Rationale**: consistent with exchange-core and LMAX coding style; prevents accidental reassignment; `var` for references reduces verbosity while explicit type for primitives makes zero-allocation intent self-documenting and prevents silent type drift if a return type changes from primitive to wrapper (which would introduce autoboxing)
 
 ### SBE Schema
