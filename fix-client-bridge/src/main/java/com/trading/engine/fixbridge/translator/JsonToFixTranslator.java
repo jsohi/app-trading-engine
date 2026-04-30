@@ -74,7 +74,7 @@ public final class JsonToFixTranslator {
   /** Lower bound for a parseable browser-supplied ClOrdID — empty string is forbidden. */
   public static final int CLORDID_MIN_LENGTH = 1;
 
-  /** ASCII hex digit lookup. Public-safe via {@code .clone()} idiom not needed — read-only. */
+  /** ASCII hex digit lookup. Read-only — never mutated post class-init. */
   private static final byte[] HEX = {
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
   };
@@ -455,6 +455,15 @@ public final class JsonToFixTranslator {
       final long counter,
       final byte[] dst,
       final int dstOffset) {
+    if (dstOffset < 0) {
+      throw new IllegalArgumentException("dstOffset must be >= 0: " + dstOffset);
+    }
+    if (counter < 0L) {
+      // The locked §4 spec mandates a monotonic non-negative per-session counter; a negative value
+      // would silently produce a malformed ClOrdID via two's-complement modulo. Surface the
+      // contract violation as a fail-fast IllegalArgumentException.
+      throw new IllegalArgumentException("counter must be non-negative: " + counter);
+    }
     if (dst.length - dstOffset < CLORDID_LENGTH) {
       throw new IllegalArgumentException(
           "dst too small: need "
@@ -636,17 +645,14 @@ public final class JsonToFixTranslator {
 
   /**
    * Write {@code (counter % 100_000)} as a 5-digit zero-padded decimal into {@code dst} at {@code
-   * dstOff..dstOff+4}.
+   * dstOff..dstOff+4}. Caller MUST supply a non-negative {@code counter}; the public entry {@link
+   * #mintClOrdId} enforces this at the API boundary.
    */
   private static void writeFiveDigitDecimal(
       final long counter, final byte[] dst, final int dstOff) {
-    // `value` is a mutated loop accumulator (divided by 10 each iteration) — non-final by design.
+    // `value` is a mutated loop accumulator (divided by 10 each iteration) — non-final by design
+    // (CLAUDE.md loop-accumulator carve-out).
     long value = counter % 100_000L;
-    if (value < 0L) {
-      // counter is conceptually unsigned; if a negative was supplied (e.g. wrapped long) treat
-      // its absolute residue.
-      value += 100_000L;
-    }
     for (int i = 4; i >= 0; i--) {
       dst[dstOff + i] = (byte) ('0' + (value % 10L));
       value /= 10L;

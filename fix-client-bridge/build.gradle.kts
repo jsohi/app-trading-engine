@@ -95,8 +95,10 @@ val integrationTest =
         // under fast worker recycling (residual risk R1).
         forkEvery = 0
         jvmArgs("-Dio.netty.leakDetection.level=PARANOID")
-        // Distinct from unit tests in the build report
-        shouldRunAfter("test")
+        // Enforce ordering — integrationTest must wait for unit tests to finish so a parallel
+        // worker doesn't race the unit-test JVM on Aeron temp dirs / shared resources.
+        // shouldRunAfter is advisory; mustRunAfter is enforcing.
+        mustRunAfter(tasks.named("test"))
     }
 
 // --- Allocation tripwire (separate task — not coverage-counted, opt-in) ---

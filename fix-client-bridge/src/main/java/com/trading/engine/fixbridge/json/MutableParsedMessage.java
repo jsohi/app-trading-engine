@@ -92,9 +92,6 @@ public final class MutableParsedMessage {
    */
   public final byte[] scratch;
 
-  /** Number of bytes currently populated in {@link #scratch} ({@code <= scratch.length}). */
-  public int scratchLen;
-
   /**
    * One of the {@code TYPE_*} constants; {@link #TYPE_NONE} until {@link #reset()} has been called
    * and a parse has succeeded.
@@ -161,7 +158,6 @@ public final class MutableParsedMessage {
    * bytes are never read because every consumer respects the slice lengths.
    */
   public void reset() {
-    scratchLen = 0;
     type = TYPE_NONE;
 
     reqIdOff = -1;
@@ -198,7 +194,7 @@ public final class MutableParsedMessage {
    * @return decoded UTF-8 string
    * @throws IndexOutOfBoundsException if the slice falls outside {@link #scratch}
    */
-  public String sliceAsString(final int off, final int len) {
+  String sliceAsString(final int off, final int len) {
     if (off < 0) {
       return null;
     }
