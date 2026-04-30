@@ -415,7 +415,7 @@ public final class JwtValidator implements AutoCloseable {
     final var raw = claims.getClaim("accounts");
     if (raw instanceof List<?> list) {
       final var result = new ArrayList<String>(list.size());
-      for (final Object item : list) {
+      for (final var item : list) {
         if (item instanceof String s && !s.isEmpty()) {
           result.add(s);
         }

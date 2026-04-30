@@ -163,7 +163,7 @@ public record FixClientBridgeConfig(
     // bridge re-asserts here so misconfiguration surfaces during startup config parsing rather
     // than later inside Nimbus exception messages.
     for (final var entry : jwtIssuerRegistry.entrySet()) {
-      final String url = entry.getValue();
+      final var url = entry.getValue();
       if (url == null || !url.startsWith("https://")) {
         throw new IllegalArgumentException(
             "JWKS URL for issuer '" + entry.getKey() + "' must use https://, got: " + url);
@@ -187,7 +187,7 @@ public record FixClientBridgeConfig(
     try (var reader = Files.newBufferedReader(yaml)) {
       // SafeConstructor returns Map<String,Object> for top-level mappings.
       @SuppressWarnings("unchecked")
-      final Map<String, Object> parsed = (Map<String, Object>) parser.load(reader);
+      final var parsed = (Map<String, Object>) parser.load(reader);
       raw = parsed == null ? Map.of() : parsed;
     }
     return fromMap(raw);
@@ -222,7 +222,7 @@ public record FixClientBridgeConfig(
   public FixClientBridgeConfig withSystemPropertyOverrides(final Properties properties) {
     Objects.requireNonNull(properties, "properties");
     final var registry = new LinkedHashMap<>(jwtIssuerRegistry);
-    final String singleJwks = properties.getProperty(SYSPROP_PREFIX + "jwksUri");
+    final var singleJwks = properties.getProperty(SYSPROP_PREFIX + "jwksUri");
     if (singleJwks != null && !singleJwks.isEmpty()) {
       registry.clear();
       registry.put(DEV_ISSUER_KEY, singleJwks);
@@ -268,12 +268,12 @@ public record FixClientBridgeConfig(
   static FixClientBridgeConfig fromMap(final Map<String, Object> raw) {
     Objects.requireNonNull(raw, "raw");
 
-    final Map<String, String> registry = parseIssuerRegistry(raw);
+    final var registry = parseIssuerRegistry(raw);
 
     // sessionsPath default expands ${LOG_DIR} when set; falls back to a relative path so a missing
     // env var still resolves predictably against the JVM CWD (matches the plan's behaviour rule).
     final String sessionsDefault;
-    final String logDir = System.getenv("LOG_DIR");
+    final var logDir = System.getenv("LOG_DIR");
     if (logDir != null && !logDir.isEmpty()) {
       sessionsDefault = logDir + "/bridge-sessions";
     } else {
@@ -404,23 +404,23 @@ public record FixClientBridgeConfig(
 
   private static String strProp(
       final Properties properties, final String suffix, final String def) {
-    final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
+    final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : v;
   }
 
   private static int intProp(final Properties properties, final String suffix, final int def) {
-    final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
+    final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Integer.parseInt(v);
   }
 
   private static long longProp(final Properties properties, final String suffix, final long def) {
-    final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
+    final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Long.parseLong(v);
   }
 
   private static boolean boolProp(
       final Properties properties, final String suffix, final boolean def) {
-    final String v = properties.getProperty(SYSPROP_PREFIX + suffix);
+    final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : Boolean.parseBoolean(v);
   }
 }

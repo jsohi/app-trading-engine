@@ -28,7 +28,7 @@ final class BrowserEventWriterTest {
   private final BrowserEventWriter writer = new BrowserEventWriter(new DecimalStringEmitter());
 
   private static String drain(final ByteBuf buf, final int written) {
-    final byte[] arr = new byte[written];
+    final var arr = new byte[written];
     buf.readBytes(arr);
     return new String(arr, StandardCharsets.UTF_8);
   }
@@ -48,9 +48,9 @@ final class BrowserEventWriterTest {
             100_000_050_000_000L,
             110_000_000L,
             1_700_000_000_000_000_000L);
-    final ByteBuf buf = Unpooled.buffer(256);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeQuote(e, buf);
-    final String json = drain(buf, n);
+    final var json = drain(buf, n);
     assertEquals(
         "{\"type\":\"Quote\",\"reqId\":\"R-1\",\"quoteId\":\"Q-7\",\"symbol\":\"EURUSD\","
             + "\"side\":\"Buy\",\"qty\":\"1000000.50000000\",\"price\":\"1.10000000\","
@@ -61,7 +61,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeQuote_negativePrice_emitsSignPrefix() {
     final var e = new BrowserEvent.Quote("R", "Q", "X", "Sell", 100_000_000L, -100_000_000L, 0L);
-    final ByteBuf buf = Unpooled.buffer(256);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeQuote(e, buf);
     assertTrue(drain(buf, n).contains("\"price\":\"-1.00000000\""));
   }
@@ -75,7 +75,7 @@ final class BrowserEventWriterTest {
     final var e =
         new BrowserEvent.ExecutionReport(
             "C-1", "EX-1", 'F', '2', "EURUSD", "Buy", 100_000_000_000_000L, 0L, 110_000_000L);
-    final ByteBuf buf = Unpooled.buffer(256);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeExecutionReport(e, buf);
     assertEquals(
         "{\"type\":\"ExecutionReport\",\"clOrdId\":\"C-1\",\"execId\":\"EX-1\","
@@ -88,7 +88,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeExecutionReport_nonPrintableExecType_throwsIllegalArgument() {
     final var e = new BrowserEvent.ExecutionReport("C", "X", '\n', '0', "S", "Buy", 0L, 0L, 0L);
-    final ByteBuf buf = Unpooled.buffer(256);
+    final var buf = Unpooled.buffer(256);
     assertThrows(IllegalArgumentException.class, () -> writer.writeExecutionReport(e, buf));
   }
 
@@ -99,7 +99,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeOrderReject_typicalPayload_emitsByteExactJson() {
     final var e = new BrowserEvent.OrderReject("C-1", "bridge-down");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     final int n = writer.writeOrderReject(e, buf);
     assertEquals(
         "{\"type\":\"OrderReject\",\"clOrdId\":\"C-1\",\"reason\":\"bridge-down\"}", drain(buf, n));
@@ -108,21 +108,21 @@ final class BrowserEventWriterTest {
   @Test
   void writeOrderReject_reasonContainsForbiddenQuote_throwsIllegalArgument() {
     final var e = new BrowserEvent.OrderReject("C-1", "has\"quote");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     assertThrows(IllegalArgumentException.class, () -> writer.writeOrderReject(e, buf));
   }
 
   @Test
   void writeOrderReject_reasonContainsBackslash_throwsIllegalArgument() {
     final var e = new BrowserEvent.OrderReject("C-1", "has\\back");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     assertThrows(IllegalArgumentException.class, () -> writer.writeOrderReject(e, buf));
   }
 
   @Test
   void writeOrderReject_reasonContainsControlChar_throwsIllegalArgument() {
     final var e = new BrowserEvent.OrderReject("C-1", "x\nbad");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     assertThrows(IllegalArgumentException.class, () -> writer.writeOrderReject(e, buf));
   }
 
@@ -133,7 +133,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeBridgeStatus_fixUpAndNonFatal_emitsByteExactJson() {
     final var e = new BrowserEvent.BridgeStatus(true, false, "ready");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     final int n = writer.writeBridgeStatus(e, buf);
     assertEquals(
         "{\"type\":\"BridgeStatus\",\"fixSessionUp\":true,\"fatal\":false,"
@@ -144,7 +144,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeBridgeStatus_fatalShutdown_emitsByteExactJson() {
     final var e = new BrowserEvent.BridgeStatus(false, true, "shutdown");
-    final ByteBuf buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(128);
     final int n = writer.writeBridgeStatus(e, buf);
     assertEquals(
         "{\"type\":\"BridgeStatus\",\"fixSessionUp\":false,\"fatal\":true,"
@@ -159,7 +159,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeRawFix_inboundDirection_emitsByteExactJson() {
     final var e = new BrowserEvent.RawFix("in", "8=FIX.4.4|9=10|35=8|10=000|");
-    final ByteBuf buf = Unpooled.buffer(256);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeRawFix(e, buf);
     assertEquals(
         "{\"type\":\"RawFix\",\"direction\":\"in\"," + "\"fix\":\"8=FIX.4.4|9=10|35=8|10=000|\"}",
@@ -172,7 +172,7 @@ final class BrowserEventWriterTest {
 
   @Test
   void writeAuthExpired_emitsByteExactJson() {
-    final ByteBuf buf = Unpooled.buffer(64);
+    final var buf = Unpooled.buffer(64);
     final int n = writer.writeAuthExpired(buf);
     assertEquals("{\"type\":\"AuthExpired\"}", drain(buf, n));
   }
@@ -189,7 +189,7 @@ final class BrowserEventWriterTest {
   @Test
   void writeError_typicalPayload_emitsByteExactJson() {
     final var e = new BrowserEvent.Error("malformed");
-    final ByteBuf buf = Unpooled.buffer(64);
+    final var buf = Unpooled.buffer(64);
     final int n = writer.writeError(e, buf);
     assertEquals("{\"type\":\"Error\",\"reason\":\"malformed\"}", drain(buf, n));
   }
@@ -200,7 +200,7 @@ final class BrowserEventWriterTest {
 
   @Test
   void writeQuote_unpooledAllocatedBuffer_emitsExpectedLength() {
-    final ByteBuf buf = UnpooledByteBufAllocator.DEFAULT.buffer(256);
+    final var buf = UnpooledByteBufAllocator.DEFAULT.buffer(256);
     try {
       final var e = new BrowserEvent.Quote("R", "Q", "S", "Buy", 100_000_000L, 100_000_000L, 0L);
       final int n = writer.writeQuote(e, buf);

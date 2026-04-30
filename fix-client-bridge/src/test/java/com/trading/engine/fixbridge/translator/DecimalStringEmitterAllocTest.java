@@ -4,11 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.gateway.FixedPoint;
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import uk.co.real_logic.artio.fields.DecimalFloat;
@@ -29,7 +26,7 @@ final class DecimalStringEmitterAllocTest {
   @Test
   void emitInt64_steadyState_doesNotAdvanceGcCount() {
     final var emitter = new DecimalStringEmitter();
-    final ByteBuf dst = Unpooled.buffer(64);
+    final var dst = Unpooled.buffer(64);
 
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
       dst.clear();
@@ -54,8 +51,8 @@ final class DecimalStringEmitterAllocTest {
   @Test
   void emitDecimalFloat_steadyState_doesNotAdvanceGcCount() {
     final var emitter = new DecimalStringEmitter();
-    final ByteBuf dst = Unpooled.buffer(64);
-    final DecimalFloat df = new DecimalFloat();
+    final var dst = Unpooled.buffer(64);
+    final var df = new DecimalFloat();
     FixedPoint.toDecimalFloat(100_000_050_000_000L, df);
 
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
@@ -75,8 +72,8 @@ final class DecimalStringEmitterAllocTest {
 
   private static long totalGcCount() {
     long total = 0L;
-    final List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();
-    for (final GarbageCollectorMXBean bean : beans) {
+    final var beans = ManagementFactory.getGarbageCollectorMXBeans();
+    for (final var bean : beans) {
       final long c = bean.getCollectionCount();
       if (c >= 0L) {
         total += c;

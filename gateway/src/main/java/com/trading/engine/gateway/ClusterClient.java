@@ -137,10 +137,10 @@ public final class ClusterClient implements Agent, AutoCloseable {
    * testMode == true} — every read site (e.g. {@link #doWork()}, {@link #connect()}, the keep-alive
    * branch in {@code doWork}) has an upstream guard that returns early in test mode. Future
    * maintainers extending this class with new {@code egressListener.something()} call sites MUST
-   * add a corresponding {@code if (testMode) return} guard; the alternative would be a full
-   * no-op {@link ClusterEgressListener} instance, which requires real {@code SbeToFixTranslator} /
-   * {@code SessionLookup} / {@code InFlightTracker} / {@code EgressCallback} collaborators and is
-   * out of scope for this seam.
+   * add a corresponding {@code if (testMode) return} guard; the alternative would be a full no-op
+   * {@link ClusterEgressListener} instance, which requires real {@code SbeToFixTranslator} / {@code
+   * SessionLookup} / {@code InFlightTracker} / {@code EgressCallback} collaborators and is out of
+   * scope for this seam.
    */
   private ClusterClient(final NanoClock nanoClock) {
     this.aeronDirectoryName = "test://no-op";

@@ -4,11 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.fixbridge.translator.DecimalStringEmitter;
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -32,7 +29,7 @@ final class BrowserEventWriterAllocTest {
   @Test
   void writeQuote_steadyState_doesNotAdvanceGcCount() {
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
-    final ByteBuf dst = Unpooled.buffer(256);
+    final var dst = Unpooled.buffer(256);
     final var quote =
         new BrowserEvent.Quote(
             "R-1",
@@ -53,7 +50,7 @@ final class BrowserEventWriterAllocTest {
   @Test
   void writeExecutionReport_steadyState_doesNotAdvanceGcCount() {
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
-    final ByteBuf dst = Unpooled.buffer(256);
+    final var dst = Unpooled.buffer(256);
     final var er =
         new BrowserEvent.ExecutionReport(
             "C-1", "EX-1", 'F', '2', "EURUSD", "Buy", 100L, 0L, 110_000_000L);
@@ -67,7 +64,7 @@ final class BrowserEventWriterAllocTest {
   @Test
   void writeOrderReject_steadyState_doesNotAdvanceGcCount() {
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
-    final ByteBuf dst = Unpooled.buffer(128);
+    final var dst = Unpooled.buffer(128);
     final var rej = new BrowserEvent.OrderReject("C-1", "bridge-down");
     runLoop(
         () -> {
@@ -79,7 +76,7 @@ final class BrowserEventWriterAllocTest {
   @Test
   void writeBridgeStatus_steadyState_doesNotAdvanceGcCount() {
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
-    final ByteBuf dst = Unpooled.buffer(128);
+    final var dst = Unpooled.buffer(128);
     final var status = new BrowserEvent.BridgeStatus(true, false, "ready");
     runLoop(
         () -> {
@@ -102,8 +99,8 @@ final class BrowserEventWriterAllocTest {
 
   private static long totalGcCount() {
     long total = 0L;
-    final List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();
-    for (final GarbageCollectorMXBean bean : beans) {
+    final var beans = ManagementFactory.getGarbageCollectorMXBeans();
+    for (final var bean : beans) {
       final long c = bean.getCollectionCount();
       if (c >= 0L) {
         total += c;

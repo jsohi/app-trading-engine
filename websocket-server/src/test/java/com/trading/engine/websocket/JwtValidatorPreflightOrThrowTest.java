@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.jwk.JWKSet;
-import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
@@ -81,7 +80,7 @@ final class JwtValidatorPreflightOrThrowTest {
    * I/O during preflight. Used to exercise the success path without spinning up a real JWKS server.
    */
   private static JwtValidator buildValidatorWithImmutableJwkSet() throws Exception {
-    final RSAKey rsaKey = new RSAKeyGenerator(2048).keyID("preflight-key-1").generate();
+    final var rsaKey = new RSAKeyGenerator(2048).keyID("preflight-key-1").generate();
     final var jwkSet = new JWKSet(rsaKey.toPublicJWK());
     final var jwkSource = new ImmutableJWKSet<SecurityContext>(jwkSet);
     final var keySelector = new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, jwkSource);
