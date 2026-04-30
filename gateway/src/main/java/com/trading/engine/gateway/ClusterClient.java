@@ -5,11 +5,13 @@ import static io.aeron.Publication.NOT_CONNECTED;
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import io.aeron.cluster.client.AeronCluster;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import org.agrona.AsciiSequenceView;
 import org.agrona.DirectBuffer;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.SystemNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -44,6 +46,11 @@ import org.agrona.concurrent.UnsafeBuffer;
  * {@code doWork}) are zero-allocation.
  *
  * <p><b>Threading.</b> Not thread-safe — single-threaded gateway duty-cycle thread only.
+ *
+ * <p><b>Test seam.</b> {@link #forTesting(IdleStrategy, NanoClock)} returns an instance whose
+ * lifecycle methods and offer paths are no-ops that never touch {@link AeronCluster}. Egress is
+ * driven separately by the test via {@link FixGateway#init(ClusterClient, ClusterEgressListener)}.
+ * Production code MUST use the {@link #builder()} factory.
  */
 public final class ClusterClient implements Agent, AutoCloseable {
 
@@ -72,6 +79,14 @@ public final class ClusterClient implements Agent, AutoCloseable {
   private final NanoClock nanoClock;
   private final InFlightTracker inFlightTracker;
   private final boolean ownsAeronClient;
+
+  /**
+   * Test seam flag: when {@code true}, all lifecycle methods ({@link #onStart()}, {@link
+   * #onClose()}, {@link #doWork()}) and offer paths are no-ops that report success without touching
+   * {@link AeronCluster}. Set only by {@link #forTesting(IdleStrategy, NanoClock)}. Production code
+   * paths must keep this {@code false}.
+   */
+  private final boolean testMode;
 
   // --- Pre-allocated callback (zero-alloc on doWork hot path) ---
   private final InFlightTracker.TimeoutCallback timeoutCallback = this::onRequestTimeout;
@@ -107,11 +122,73 @@ public final class ClusterClient implements Agent, AutoCloseable {
     this.nanoClock = builder.nanoClock;
     this.inFlightTracker = requireNonNull(builder.inFlightTracker, "inFlightTracker");
     this.ownsAeronClient = builder.ownsAeronClient;
+    this.testMode = false;
+  }
+
+  /**
+   * Private no-op-lifecycle constructor used by {@link #forTesting(IdleStrategy, NanoClock)}. All
+   * fields except {@code nanoClock} get harmless placeholder values; {@code testMode} is set so
+   * lifecycle methods short-circuit. Cluster collaborators that the bridge integration test
+   * supplies separately (e.g. via {@link FixGateway#init}) are intentionally not wired here — see
+   * the factory Javadoc for the egress-driving pattern the test must follow.
+   */
+  private ClusterClient(final NanoClock nanoClock) {
+    this.aeronDirectoryName = "test://no-op";
+    this.ingressEndpoints = "test://no-op";
+    this.egressChannel = "aeron:ipc";
+    this.egressListener = null;
+    this.messageTimeoutNs = TimeUnit.SECONDS.toNanos(5);
+    this.keepAliveIntervalNs = TimeUnit.SECONDS.toNanos(1);
+    this.timeoutCheckIntervalNs = TimeUnit.MILLISECONDS.toNanos(100);
+    this.reconnectBaseDelayNs = TimeUnit.MILLISECONDS.toNanos(100);
+    this.reconnectMaxDelayNs = TimeUnit.SECONDS.toNanos(10);
+    this.maxReconnectAttempts = 0;
+    this.errorHandler = t -> {};
+    this.nanoClock = requireNonNull(nanoClock, "nanoClock");
+    this.inFlightTracker = new InFlightTracker(64, TimeUnit.SECONDS.toNanos(5), 20);
+    this.ownsAeronClient = false;
+    this.testMode = true;
+    this.state = State.CONNECTED;
   }
 
   /** Create a new builder for configuring a {@link ClusterClient}. */
   public static Builder builder() {
     return new Builder();
+  }
+
+  /**
+   * Test seam: returns a {@link ClusterClient} whose {@link #onStart()}, {@link #onClose()}, and
+   * {@link #doWork()} are no-ops and whose {@link #offer(DirectBuffer, int, int)} / {@link
+   * #offerTracked(DirectBuffer, int, int, byte[], int, int)} short-circuit with success without
+   * touching an {@link AeronCluster}. Production code MUST use {@link #builder()}.
+   *
+   * <p><b>Egress driving.</b> This factory does not register a {@link ClusterEgressListener} —
+   * tests that need to simulate egress events drive them at a different layer, e.g. by passing a
+   * test {@code ClusterEgressListener} to {@link FixGateway#init(ClusterClient,
+   * ClusterEgressListener)} and invoking the listener's callbacks directly from a test-controlled
+   * thread. This matches the existing {@code FixGatewayTest} pattern.
+   *
+   * <p><b>Threading.</b> Same threading contract as the production client (single-threaded gateway
+   * duty cycle); the no-op nature simply means no Aeron I/O occurs.
+   *
+   * <p><b>Allocation.</b> Constant — only the {@link InFlightTracker} backing arrays.
+   *
+   * @param idleStrategy the agent runner idle strategy the caller intends to use; reserved for
+   *     symmetry with future test scenarios that expose backoff timing. Captured but unused today.
+   *     Must not be {@code null}.
+   * @param nanoClock monotonic clock injected for any time-stamped log lines emitted by the no-op
+   *     path (e.g. timeout sweep, even though no I/O happens). Must not be {@code null}.
+   * @return a no-op-lifecycle ClusterClient instance suitable for FIX gateway integration tests
+   * @throws NullPointerException if either parameter is null
+   */
+  public static ClusterClient forTesting(
+      final IdleStrategy idleStrategy, final NanoClock nanoClock) {
+    Objects.requireNonNull(idleStrategy, "idleStrategy");
+    Objects.requireNonNull(nanoClock, "nanoClock");
+    // idleStrategy is captured by the caller's AgentRunner; ClusterClient itself doesn't drive
+    // the runner. The parameter is part of the seam's signature so callers think about runner
+    // composition explicitly when adopting forTesting.
+    return new ClusterClient(nanoClock);
   }
 
   // ===========================================================================
@@ -125,12 +202,16 @@ public final class ClusterClient implements Agent, AutoCloseable {
 
   @Override
   public void onStart() {
+    if (testMode) {
+      // Test-seam path: skip cluster connect — no MediaDriver / AeronCluster is wired.
+      return;
+    }
     connect();
   }
 
   @Override
   public int doWork() {
-    if (state == State.CLOSED) {
+    if (testMode || state == State.CLOSED) {
       return 0;
     }
 
@@ -203,6 +284,11 @@ public final class ClusterClient implements Agent, AutoCloseable {
    *     io.aeron.Publication#MAX_POSITION_EXCEEDED}.
    */
   public long offer(final DirectBuffer buffer, final int offset, final int length) {
+    if (testMode) {
+      // Test seam: pretend the offer succeeded so callers can exercise the success branch
+      // without a real AeronCluster. Position 1 is a valid "not back-pressured" stand-in.
+      return 1L;
+    }
     if (state != State.CONNECTED) {
       return NOT_CONNECTED;
     }
@@ -272,6 +358,11 @@ public final class ClusterClient implements Agent, AutoCloseable {
   /** Close the client and release all resources. Idempotent. */
   @Override
   public void close() {
+    if (testMode) {
+      // Test seam: nothing to release — we never connected.
+      state = State.CLOSED;
+      return;
+    }
     if (state != State.CLOSED) {
       state = State.CLOSED;
       closeAeronCluster();
@@ -285,7 +376,8 @@ public final class ClusterClient implements Agent, AutoCloseable {
   // ===========================================================================
 
   void connect() {
-    if (state == State.CLOSED) {
+    if (testMode || state == State.CLOSED) {
+      // Test seam: never attempt a real cluster connect.
       return;
     }
     final var ctx =

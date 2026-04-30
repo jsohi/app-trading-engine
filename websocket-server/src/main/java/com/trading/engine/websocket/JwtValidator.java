@@ -1,6 +1,9 @@
 package com.trading.engine.websocket;
 
 import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.jwk.JWKMatcher;
+import com.nimbusds.jose.jwk.JWKSelector;
+import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.RemoteJWKSet;
 import com.nimbusds.jose.proc.BadJOSEException;
 import com.nimbusds.jose.proc.BadJWSException;
@@ -70,6 +73,22 @@ public final class JwtValidator implements AutoCloseable {
    */
   private final Map<String, DefaultJWTProcessor<SecurityContext>> processors;
 
+  /**
+   * Per-issuer {@link JWKSource} references — used by {@link #preflightOrThrow()} to perform a
+   * direct reachability test against each configured issuer. Populated only for processors built by
+   * the public constructor (i.e., real {@link RemoteJWKSet} sources). Test-only processors inserted
+   * via {@link #forTesting} are absent here so {@link #preflightOrThrow()} treats them as trivially
+   * reachable.
+   */
+  private final Map<String, JWKSource<SecurityContext>> jwkSources;
+
+  /**
+   * Empty-matcher selector reused across {@link #preflightOrThrow()} calls so the preflight loop
+   * does not allocate per issuer.
+   */
+  private static final JWKSelector PREFLIGHT_SELECTOR =
+      new JWKSelector(new JWKMatcher.Builder().build());
+
   private final String expectedAudience;
   private final EpochNanoClock wallClock;
 
@@ -100,6 +119,7 @@ public final class JwtValidator implements AutoCloseable {
 
     this.expectedAudience = expectedAudience;
     this.processors = new ConcurrentHashMap<>();
+    this.jwkSources = new ConcurrentHashMap<>();
 
     for (final var entry : issuerRegistry.entrySet()) {
       final var issuer = entry.getKey();
@@ -111,8 +131,9 @@ public final class JwtValidator implements AutoCloseable {
       }
 
       try {
-        final var processor = buildProcessor(jwksUrl);
-        processors.put(issuer, processor);
+        final var built = buildProcessor(jwksUrl);
+        processors.put(issuer, built.processor);
+        jwkSources.put(issuer, built.jwkSource);
         LOG.info("Registered JWKS endpoint for issuer '{}': {}", issuer, jwksUrl);
       } catch (final MalformedURLException e) {
         throw new IllegalArgumentException(
@@ -120,12 +141,13 @@ public final class JwtValidator implements AutoCloseable {
       }
     }
 
-    // Preflight JWKS fetch: attempt to retrieve keys at startup to fail-fast on misconfigured
-    // endpoints. Failures are logged but do not prevent startup — the first auth attempt will
-    // retry the fetch. This catches DNS errors, unreachable hosts, and TLS issues early.
-    for (final var entry : processors.entrySet()) {
+    // Best-effort preflight at startup: attempt to fetch the JWKS for each issuer so DNS errors,
+    // unreachable hosts, and TLS misconfiguration surface as ERROR log lines rather than as
+    // first-auth failures. Failures are logged but do not prevent construction — operators that
+    // require fail-fast semantics call {@link #preflightOrThrow()} after the constructor.
+    for (final var entry : jwkSources.entrySet()) {
       try {
-        entry.getValue().getJWSKeySelector().selectJWSKeys(null, null);
+        entry.getValue().get(PREFLIGHT_SELECTOR, null);
       } catch (final Exception e) {
         LOG.error(
             "Preflight JWKS fetch failed for issuer '{}': {}", entry.getKey(), e.getMessage());
@@ -249,7 +271,40 @@ public final class JwtValidator implements AutoCloseable {
     // Nimbus JWK sources don't require explicit close, but this is here for future-proofing
     // if we switch to a custom HTTP-backed JWK source with connection pooling.
     processors.clear();
+    jwkSources.clear();
     LOG.info("JwtValidator closed — JWKS processors released");
+  }
+
+  /**
+   * Re-runs the JWKS preflight fetch performed by the constructor and throws on the first
+   * unreachable issuer. Unlike the constructor's preflight (which only logs failures so partial
+   * misconfiguration does not block startup), this method is fail-fast and intended for callers
+   * that require all configured issuers to be reachable before serving traffic (for example, the
+   * FIX client bridge starts its WebSocket listener only after this returns successfully).
+   *
+   * <p><b>Threading.</b> Safe to call from any thread; performs blocking JWKS HTTPS GETs. Should be
+   * invoked from a startup thread, never from a Netty event loop.
+   *
+   * <p><b>Allocation.</b> Allocates per HTTP request — startup-only, not a hot path.
+   *
+   * <p>Test-only processors registered via the package-private {@code forTesting} factory are not
+   * preflighted: in-memory {@link com.nimbusds.jose.jwk.source.ImmutableJWKSet} sources need no
+   * reachability check.
+   *
+   * @throws JwtValidationException on the first JWKS endpoint that is unreachable, returns a
+   *     malformed JWKS document, or fails TLS validation. The exception message names the issuer
+   *     and the underlying cause.
+   */
+  public void preflightOrThrow() {
+    for (final var entry : jwkSources.entrySet()) {
+      try {
+        entry.getValue().get(PREFLIGHT_SELECTOR, null);
+      } catch (final Exception e) {
+        throw new JwtValidationException(
+            "JWKS preflight failed for issuer '" + entry.getKey() + "': " + e.getMessage());
+      }
+    }
+    LOG.info("JWKS preflight succeeded for {} issuer(s)", jwkSources.size());
   }
 
   /**
@@ -291,11 +346,11 @@ public final class JwtValidator implements AutoCloseable {
    * Build a JWT processor for a specific JWKS endpoint URL.
    *
    * @param jwksUrl the JWKS endpoint URL (HTTPS)
-   * @return a configured JWT processor
+   * @return a configured JWT processor paired with the underlying remote JWK source (preserved for
+   *     direct preflight reachability checks)
    * @throws MalformedURLException if the URL is malformed
    */
-  private DefaultJWTProcessor<SecurityContext> buildProcessor(final String jwksUrl)
-      throws MalformedURLException {
+  private BuiltProcessor buildProcessor(final String jwksUrl) throws MalformedURLException {
 
     // Configure HTTP retriever with explicit timeouts and SSRF hardening per architecture doc
     // Section 4: 5s connect + 5s read prevents Netty event loop blocking if IdP is unresponsive.
@@ -338,8 +393,16 @@ public final class JwtValidator implements AutoCloseable {
     claimsVerifier.setMaxClockSkew(CLOCK_SKEW_SECONDS);
 
     processor.setJWTClaimsSetVerifier(claimsVerifier);
-    return processor;
+    return new BuiltProcessor(processor, jwkSource);
   }
+
+  /**
+   * Internal pairing of a configured {@link DefaultJWTProcessor} with the {@link JWKSource} that
+   * backs it. Used to preserve a direct reference to the JWK source so {@link #preflightOrThrow()}
+   * can call {@link JWKSource#get} without reflection.
+   */
+  private record BuiltProcessor(
+      DefaultJWTProcessor<SecurityContext> processor, JWKSource<SecurityContext> jwkSource) {}
 
   /**
    * Extract the {@code accounts} claim as a list of strings. Handles both {@code List<String>} and
