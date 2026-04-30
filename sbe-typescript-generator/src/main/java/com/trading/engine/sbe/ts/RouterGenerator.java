@@ -34,6 +34,9 @@ import java.util.TreeSet;
  * One module exporting:
  *
  * <ul>
+ *   <li>{@code type Decoder} — union of every generated decoder class type, alphabetised. Lets
+ *       consumers narrow {@code DecodedFrame.decoder} via templateId without manual {@code as}
+ *       casts in the common case.
  *   <li>{@code interface DecodedFrame} — header metadata + bound decoder. Returned instance is a
  *       SHARED flyweight; callers MUST consume {@code decoder} synchronously before the next call
  *       to the emitted TS {@code route()} function, otherwise the underlying flyweight is rebound
@@ -143,6 +146,22 @@ final class RouterGenerator {
     }
     sb.append("} as const;").append(NL).append(NL);
 
+    // Decoder union — generated from the alphabetised decoder list so consumers get type-narrow
+    // support without manual casts. Chosen over `unknown` (Gemini medium-priority feedback) since
+    // the generator already knows the full set of message decoder types at codegen time.
+    sb.append("/** Union of every generated decoder type — consumers narrow via `templateId`. */")
+        .append(NL)
+        .append("export type Decoder =")
+        .append(NL);
+    for (int i = 0; i < sortedNames.size(); i++) {
+      sb.append("  ").append(i == 0 ? "  " : "| ").append(sortedNames.get(i));
+      if (i == sortedNames.size() - 1) {
+        sb.append(";");
+      }
+      sb.append(NL);
+    }
+    sb.append(NL);
+
     // DecodedFrame interface — the shared-flyweight contract is in the JSDoc; chunk-13 test
     // greps "MUST consume" to lock the documentation forwarding through the barrel re-export.
     sb.append("/**")
@@ -169,9 +188,9 @@ final class RouterGenerator {
         .append(NL)
         .append("  /**")
         .append(NL)
-        .append("   * Bound decoder typed as `unknown` — consumers MUST narrow via the")
+        .append("   * Bound decoder — typed as the {@link Decoder} union. Consumers narrow via")
         .append(NL)
-        .append("   * `templateId` field BEFORE casting:")
+        .append("   * the `templateId` field before invoking decoder methods:")
         .append(NL)
         .append("   *")
         .append(NL)
@@ -185,15 +204,13 @@ final class RouterGenerator {
         .append(NL)
         .append("   *")
         .append(NL)
-        .append("   * A discriminated union over all 50+ decoder types would explode the")
+        .append("   * `undefined` permitted only as the pre-first-call placeholder on the")
         .append(NL)
-        .append("   * type-instantiation cost and break tree-shaking under verbatimModuleSyntax;")
-        .append(NL)
-        .append("   * `unknown` + templateId narrowing is the canonical Aeron/SBE consumer idiom.")
+        .append("   * shared flyweight; in practice `route` always populates it before return.")
         .append(NL)
         .append("   */")
         .append(NL)
-        .append("  decoder: unknown;")
+        .append("  decoder: Decoder | undefined;")
         .append(NL)
         .append("  /**")
         .append(NL)
@@ -301,7 +318,12 @@ final class RouterGenerator {
         .append(NL)
         .append("  frame.decoder = decoder;")
         .append(NL)
-        .append("  if (process.env.NODE_ENV === \"development\") {")
+        // `typeof process !== "undefined"` short-circuits BEFORE accessing `process.env`, so the
+        // raw browser load (no bundler `define` for process) does not throw ReferenceError. With
+        // a Vite/esbuild/webpack `define` in place, the typeof check resolves to a constant true
+        // and gets dead-code-eliminated alongside the rest of the dev-mode block in production.
+        .append(
+            "  if (typeof process !== \"undefined\" && process.env.NODE_ENV === \"development\") {")
         .append(NL)
         .append("    frame.__generation = (frame.__generation ?? 0) + 1;")
         .append(NL)

@@ -46,7 +46,8 @@ import uk.co.real_logic.sbe.ir.Token;
  *   <li>{@code MessageHeaderDecoder} from the header module.
  *   <li>{@code toFixed8 / parseFixed8 / nanosToDate} from {@code helpers.js}.
  *   <li>{@code PRICE_SCALE / SCHEMA_ID / SCHEMA_VERSION} from {@code constants.js}.
- *   <li>{@code route} + {@code type DecodedFrame} from {@code MessageRouter.js}.
+ *   <li>{@code route} + {@code type DecodedFrame} + {@code type Decoder} from {@code
+ *       MessageRouter.js}.
  *   <li>{@code type UuidValue} from {@code _codecRuntime.js} — emitted ONLY when at least one
  *       schema field has the uuid composite. Skipped otherwise (forward-proof for a future schema
  *       with no uuid fields).
@@ -205,7 +206,8 @@ final class IndexBarrelGenerator {
     sb.append("export { toFixed8, parseFixed8, nanosToDate } from \"./helpers.js\";").append(NL);
     sb.append("export { PRICE_SCALE, SCHEMA_ID, SCHEMA_VERSION } from \"./constants.js\";")
         .append(NL);
-    sb.append("export { route, type DecodedFrame } from \"./MessageRouter.js\";").append(NL);
+    sb.append("export { route, type DecodedFrame, type Decoder } from \"./MessageRouter.js\";")
+        .append(NL);
 
     // UuidValue re-export only when at least one schema field uses the uuid composite. The
     // interface is emitted into _codecRuntime.ts unconditionally today (it is a small static
