@@ -33,7 +33,7 @@ package com.trading.engine.fixbridge.json;
  *                     "reason":"..."}
  * RawFix           : {"type":"RawFix","direction":"in|out","fix":"..."}
  * AuthExpired      : {"type":"AuthExpired"}
- * Error            : {"type":"Error","reason":"..."}
+ * Error            : {"type":"Error","reason":"...","received":"..."}
  * </pre>
  *
  * <p>{@code expiryNs} on {@code Quote} is an unwrapped JSON integer (epoch nanoseconds) — clients
@@ -136,10 +136,27 @@ public sealed interface BrowserEvent
 
   /**
    * Generic protocol-level error. Used by the inbound dispatcher when a message is unparseable, has
-   * an unknown type, or the FIX gateway is unreachable for a non-order command (locked §7).
+   * an unknown type, or the FIX gateway is unreachable for a non-order command (locked §7). Also
+   * used to forward FIX {@code QuoteRequestReject} / {@code BusinessMessageReject} / session-level
+   * {@code Reject} (locked §17), in which case {@link #received} carries the inbound-message
+   * context (e.g. {@code "QuoteRequest:<reqId>"}) so the browser can correlate.
    *
    * @param reason short textual reason matching {@link JsonParseException#reason()} or one of the
    *     named bridge taxonomy strings ({@code "bridge-down"}, {@code "backpressure"}, etc.)
+   * @param received nullable correlation hint identifying the inbound message that triggered this
+   *     error (e.g. {@code "QuoteRequest:R-7"}). Present iff the writer needs to round-trip an
+   *     inbound id; absent ({@code null}) for taxonomy-only errors that do not reference a specific
+   *     prior inbound. The writer omits the JSON {@code "received"} key entirely when null.
    */
-  record Error(String reason) implements BrowserEvent {}
+  record Error(String reason, String received) implements BrowserEvent {
+
+    /**
+     * Convenience constructor for taxonomy-only errors with no {@code received} correlation hint.
+     *
+     * @param reason short textual reason
+     */
+    public Error(final String reason) {
+      this(reason, null);
+    }
+  }
 }

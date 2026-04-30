@@ -30,8 +30,9 @@ import java.nio.charset.StandardCharsets;
  *   <li>Top level must be a single JSON object containing a {@code "type"} key whose value is a
  *       JSON string naming a known message kind. Field order is not constrained — dispatch is
  *       performed once {@code "type"} is observed, regardless of position.
- *   <li>Nesting depth is bounded at 2 (top-level object → primitive value); any deeper structure →
- *       {@link JsonParseException#MALFORMED}.
+ *   <li>Nested objects/arrays are rejected as values; the parser reads exactly one top-level object
+ *       whose values must all be JSON strings (any deeper structure → {@link
+ *       JsonParseException#MALFORMED}).
  *   <li>Unknown top-level keys are rejected (forward-compat is opt-in: any new field requires a
  *       parser change).
  *   <li>Decimal-string fields with {@code >} 8 fractional digits → {@link

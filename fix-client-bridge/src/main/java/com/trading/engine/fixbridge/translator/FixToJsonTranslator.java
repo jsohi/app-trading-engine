@@ -6,6 +6,7 @@ import com.trading.engine.fix.decoder.OrderCancelRejectDecoder;
 import com.trading.engine.fix.decoder.QuoteDecoder;
 import com.trading.engine.fix.decoder.QuoteRequestRejectDecoder;
 import com.trading.engine.fix.decoder.RejectDecoder;
+import com.trading.engine.fixbridge.json.Utf8JsonStringEmitter;
 import com.trading.engine.gateway.FixedPoint;
 import io.netty.buffer.ByteBuf;
 import java.nio.charset.StandardCharsets;
@@ -124,10 +125,14 @@ public final class FixToJsonTranslator {
   private final DecimalFloat priceScratch = new DecimalFloat();
 
   /**
-   * 24-byte scratch buffer for long ASCII rendering. {@code expiryNs} (a signed long) takes at most
-   * 20 ASCII bytes; 24 is a comfortable round-up.
+   * 32-byte scratch buffer for long ASCII rendering. {@code expiryNs} (a signed long) takes at most
+   * 20 ASCII bytes; sized to 32 to match {@link DecimalStringEmitter#scratchCapacity()} so all
+   * three on-bridge scratch sizing constants align (worst-case {@code "-" + 19 digits + "." + 8
+   * frac digits = 29}; round up to 32 for cache-line alignment).
    */
-  private final byte[] longScratch = new byte[24];
+  private static final int LONG_SCRATCH_CAPACITY = 32;
+
+  private final byte[] longScratch = new byte[LONG_SCRATCH_CAPACITY];
 
   /**
    * Wraps {@link #longScratch} for Agrona's {@code putLongAscii}. Allocated once, reused on every
@@ -170,46 +175,52 @@ public final class FixToJsonTranslator {
    */
   public int translateExecutionReport(final ExecutionReportDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_EXEC);
+    try {
+      dst.writeBytes(HDR_EXEC);
 
-    dst.writeBytes(K_CL_ORD_ID);
-    writeJsonStringChars(in.clOrdID(), 0, in.clOrdIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringChars(in.clOrdID(), 0, in.clOrdIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_EXEC_ID);
-    writeJsonStringChars(in.execID(), 0, in.execIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_EXEC_ID);
+      writeJsonStringChars(in.execID(), 0, in.execIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_EXEC_TYPE);
-    writeJsonChar(in.execType(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_EXEC_TYPE);
+      writeJsonChar(in.execType(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_ORD_STATUS);
-    writeJsonChar(in.ordStatus(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_ORD_STATUS);
+      writeJsonChar(in.ordStatus(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_SYMBOL);
-    writeJsonStringChars(in.symbol(), 0, in.symbolLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SYMBOL);
+      writeJsonStringChars(in.symbol(), 0, in.symbolLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_SIDE);
-    writeSideBytes((byte) in.side(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_SIDE);
+      writeSideBytes((byte) in.side(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_CUM_QTY);
-    emitDecimalFloatRoundTripped(in.cumQty(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CUM_QTY);
+      emitDecimalFloatRoundTripped(in.cumQty(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_LEAVES_QTY);
-    emitDecimalFloatRoundTripped(in.leavesQty(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_LEAVES_QTY);
+      emitDecimalFloatRoundTripped(in.leavesQty(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_AVG_PX);
-    emitDecimalFloatRoundTripped(in.avgPx(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_AVG_PX);
+      emitDecimalFloatRoundTripped(in.avgPx(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      // Roll back any partial write — see {@link #translateQuote} for rationale.
+      dst.writerIndex(start);
+      throw ex;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -225,10 +236,13 @@ public final class FixToJsonTranslator {
    * fall back to {@code wallClock + DEFAULT_EXPIRY_NS}.
    *
    * <p>Side selection (locked: Quote.side maps to the dealer-quoted side from the perspective of
-   * the requester): if {@code in.hasSide()} we use it directly; otherwise we default to "Buy" so
-   * the wire format is always populated. The {@code price} field is the OFFER for a Buy-side quote
-   * and the BID for a Sell-side quote, matching the convention that an {@code AcceptQuote} pays the
-   * dealer's offer when buying and lifts the dealer's bid when selling.
+   * the requester): {@code Side (54)} is REQUIRED on the inbound FIX Quote — if it is absent, the
+   * translator throws {@link IllegalStateException} rather than silently fabricating a default
+   * (locked review LOW-MEDIUM-2). The Phase 6 dispatcher catches the exception, logs at WARN, and
+   * surfaces a fault-taxonomy {@code Error} event to the browser. The {@code price} field is the
+   * OFFER for a Buy-side quote and the BID for a Sell-side quote, matching the convention that an
+   * {@code AcceptQuote} pays the dealer's offer when buying and lifts the dealer's bid when
+   * selling.
    *
    * <p>The dealer's {@code OrderQty} carries the quoted size; if absent we default to {@code 0L}.
    * Locked §9: prices flow through {@code FixedPoint.toInt64} → {@code FixedPoint .toDecimalFloat}
@@ -240,57 +254,68 @@ public final class FixToJsonTranslator {
    */
   public int translateQuote(final QuoteDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_QUOTE);
+    try {
+      dst.writeBytes(HDR_QUOTE);
 
-    // reqId — echo of QuoteReqID.
-    dst.writeBytes(K_REQ_ID);
-    writeJsonStringChars(in.quoteReqID(), 0, in.quoteReqIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      // reqId — echo of QuoteReqID.
+      dst.writeBytes(K_REQ_ID);
+      writeJsonStringChars(in.quoteReqID(), 0, in.quoteReqIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    // quoteId.
-    dst.writeBytes(K_QUOTE_ID);
-    writeJsonStringChars(in.quoteID(), 0, in.quoteIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      // quoteId.
+      dst.writeBytes(K_QUOTE_ID);
+      writeJsonStringChars(in.quoteID(), 0, in.quoteIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    // symbol.
-    dst.writeBytes(K_SYMBOL);
-    writeJsonStringChars(in.symbol(), 0, in.symbolLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      // symbol.
+      dst.writeBytes(K_SYMBOL);
+      writeJsonStringChars(in.symbol(), 0, in.symbolLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    // side: default to Buy if absent (FIX Quote.side is optional in 4.4).
-    dst.writeBytes(K_SIDE);
-    final char sideChar = in.hasSide() ? in.side() : '1';
-    writeSideBytes((byte) sideChar, dst);
-    dst.writeByte(CLOSE_QUOTE);
+      // side: REQUIRED. Per locked review (MEDIUM-2) we do NOT fabricate a default — a Quote
+      // with no Side from the gateway is a wire-protocol bug worth surfacing to the dispatcher.
+      if (!in.hasSide()) {
+        throw new IllegalStateException("FIX Quote missing required Side field");
+      }
+      dst.writeBytes(K_SIDE);
+      final char sideChar = in.side();
+      writeSideBytes((byte) sideChar, dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    // qty: emit OrderQty if present, else "0.00000000".
-    dst.writeBytes(K_QTY);
-    if (in.hasOrderQty()) {
-      emitDecimalFloatRoundTripped(in.orderQty(), dst);
-    } else {
-      emitter.emitInt64FixedPoint(0L, dst);
+      // qty: emit OrderQty if present, else "0.00000000".
+      dst.writeBytes(K_QTY);
+      if (in.hasOrderQty()) {
+        emitDecimalFloatRoundTripped(in.orderQty(), dst);
+      } else {
+        emitter.emitInt64FixedPoint(0L, dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      // price: pick OfferPx for Buy, BidPx for Sell. Fall through to whichever side is
+      // populated when the requested-side counterpart is absent.
+      dst.writeBytes(K_PRICE);
+      final boolean wantOffer = sideChar == '1';
+      final var px = pickPrice(in, wantOffer);
+      if (px == null) {
+        emitter.emitInt64FixedPoint(0L, dst);
+      } else {
+        emitDecimalFloatRoundTripped(px, dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      // expiryNs: per locked §8 fallback rules.
+      dst.writeBytes(K_EXPIRY);
+      final long expiryNs = computeExpiryNs(in);
+      writeLong(expiryNs, dst);
+
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      // All-or-nothing: any mid-write rejection (forbidden chars, missing Side, etc.) leaves
+      // the buffer untouched so the dispatcher does not emit a half-formed object on the wire.
+      dst.writerIndex(start);
+      throw ex;
     }
-    dst.writeByte(CLOSE_QUOTE);
-
-    // price: pick OfferPx for Buy, BidPx for Sell. Fall through to whichever side is
-    // populated when the requested-side counterpart is absent.
-    dst.writeBytes(K_PRICE);
-    final boolean wantOffer = sideChar == '1';
-    final var px = pickPrice(in, wantOffer);
-    if (px == null) {
-      emitter.emitInt64FixedPoint(0L, dst);
-    } else {
-      emitDecimalFloatRoundTripped(px, dst);
-    }
-    dst.writeByte(CLOSE_QUOTE);
-
-    // expiryNs: per locked §8 fallback rules.
-    dst.writeBytes(K_EXPIRY);
-    final long expiryNs = computeExpiryNs(in);
-    writeLong(expiryNs, dst);
-
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
   }
 
   // ---------------------------------------------------------------------------
@@ -308,21 +333,26 @@ public final class FixToJsonTranslator {
    */
   public int translateOrderCancelReject(final OrderCancelRejectDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ORDER_REJECT);
+    try {
+      dst.writeBytes(HDR_ORDER_REJECT);
 
-    dst.writeBytes(K_CL_ORD_ID);
-    writeJsonStringChars(in.clOrdID(), 0, in.clOrdIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringChars(in.clOrdID(), 0, in.clOrdIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
 
-    dst.writeBytes(K_REASON);
-    dst.writeBytes(PFX_CANCEL_REJECT);
-    if (in.hasText()) {
-      writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      dst.writeBytes(K_REASON);
+      dst.writeBytes(PFX_CANCEL_REJECT);
+      if (in.hasText()) {
+        writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
     }
-    dst.writeByte(CLOSE_QUOTE);
-
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
   }
 
   // ---------------------------------------------------------------------------
@@ -340,22 +370,27 @@ public final class FixToJsonTranslator {
    */
   public int translateQuoteRequestReject(final QuoteRequestRejectDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ERROR);
+    try {
+      dst.writeBytes(HDR_ERROR);
 
-    dst.writeBytes(K_REASON);
-    dst.writeBytes(PFX_QUOTE_REJECTED);
-    if (in.hasText()) {
-      writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      dst.writeBytes(K_REASON);
+      dst.writeBytes(PFX_QUOTE_REJECTED);
+      if (in.hasText()) {
+        writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      dst.writeBytes(K_RECEIVED);
+      dst.writeBytes(PFX_RECEIVED_QR);
+      writeJsonStringChars(in.quoteReqID(), 0, in.quoteReqIDLength(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
     }
-    dst.writeByte(CLOSE_QUOTE);
-
-    dst.writeBytes(K_RECEIVED);
-    dst.writeBytes(PFX_RECEIVED_QR);
-    writeJsonStringChars(in.quoteReqID(), 0, in.quoteReqIDLength(), dst);
-    dst.writeByte(CLOSE_QUOTE);
-
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
   }
 
   // ---------------------------------------------------------------------------
@@ -373,17 +408,22 @@ public final class FixToJsonTranslator {
   public int translateBusinessMessageReject(
       final BusinessMessageRejectDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ERROR);
+    try {
+      dst.writeBytes(HDR_ERROR);
 
-    dst.writeBytes(K_REASON);
-    dst.writeBytes(PFX_FIX_REJECT);
-    if (in.hasText()) {
-      writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      dst.writeBytes(K_REASON);
+      dst.writeBytes(PFX_FIX_REJECT);
+      if (in.hasText()) {
+        writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
     }
-    dst.writeByte(CLOSE_QUOTE);
-
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
   }
 
   // ---------------------------------------------------------------------------
@@ -400,17 +440,22 @@ public final class FixToJsonTranslator {
    */
   public int translateReject(final RejectDecoder in, final ByteBuf dst) {
     final int start = dst.writerIndex();
-    dst.writeBytes(HDR_ERROR);
+    try {
+      dst.writeBytes(HDR_ERROR);
 
-    dst.writeBytes(K_REASON);
-    dst.writeBytes(PFX_FIX_REJECT);
-    if (in.hasText()) {
-      writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      dst.writeBytes(K_REASON);
+      dst.writeBytes(PFX_FIX_REJECT);
+      if (in.hasText()) {
+        writeJsonStringChars(in.text(), 0, in.textLength(), dst);
+      }
+      dst.writeByte(CLOSE_QUOTE);
+
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
     }
-    dst.writeByte(CLOSE_QUOTE);
-
-    dst.writeByte(CLOSE_BRACE);
-    return dst.writerIndex() - start;
   }
 
   // ---------------------------------------------------------------------------
@@ -447,6 +492,10 @@ public final class FixToJsonTranslator {
    * <p>Reads {@code ValidUntilTime (62)}; if present and parseable, returns it as nanoseconds.
    * Falls back to {@code wallClock.nanoTime() + DEFAULT_EXPIRY_NS} if the field is absent,
    * malformed, or earlier than {@code wallClock.nanoTime() + EXPIRY_SAFETY_MARGIN_NS}.
+   *
+   * @param in fully-populated quote decoder; the {@code ValidUntilTime (62)} field is consulted via
+   *     {@link QuoteDecoder#hasValidUntilTime()} / {@link QuoteDecoder#validUntilTime()}
+   * @return the outbound JSON {@code expiryNs} value (epoch nanoseconds)
    */
   long computeExpiryNs(final QuoteDecoder in) {
     final long now = wallClock.nanoTime();
@@ -461,10 +510,17 @@ public final class FixToJsonTranslator {
       // ValidUntilTime is millisecond, decodeNanos returns nanoseconds (zero-padded the
       // sub-millisecond digits).
       parsed = utcTs.decodeNanos(vt, vtLen);
-    } catch (final RuntimeException ex) {
-      // Malformed UTC timestamp from the FIX wire — fall back to the default TTL. The exception
-      // instance is intentionally dropped: logging is the caller's concern (the dispatcher layer
-      // wires Log4j2; the translator stays logging-agnostic to keep the alloc footprint flat).
+    } catch (final IllegalArgumentException ex) {
+      // Narrow catch: Artio's UtcTimestampDecoder throws IllegalArgumentException (out-of-range
+      // field) or NumberFormatException (non-digit char) on malformed input — both are caught
+      // here since NumberFormatException extends IllegalArgumentException. Other RuntimeExceptions
+      // would indicate a programming error and should propagate.
+      //
+      // The exception instance is intentionally dropped: logging is the caller's concern (the
+      // dispatcher layer wires Log4j2 and will emit a WARN at the next layer; the translator
+      // stays logging-agnostic to keep the alloc footprint flat).
+      // TODO(APP-39 Phase 6): emit metric for malformed ValidUntilTime so operators can detect
+      //   gateway misconfiguration without rummaging through logs.
       return now + DEFAULT_EXPIRY_NS;
     }
     if (parsed < now + EXPIRY_SAFETY_MARGIN_NS) {
@@ -525,34 +581,13 @@ public final class FixToJsonTranslator {
    * Write {@code chars[off..off+len)} into {@code dst} as UTF-8 / ASCII, validating each character
    * is JSON-safe (no embedded {@code "}, {@code \\}, or control bytes). Zero allocation: writes one
    * byte at a time directly into {@code dst}.
+   *
+   * <p>Delegates to {@link Utf8JsonStringEmitter#appendCharSlice(char[], int, int, ByteBuf)} —
+   * single implementation shared with {@code BrowserEventWriter}.
    */
   private static void writeJsonStringChars(
       final char[] chars, final int off, final int len, final ByteBuf dst) {
-    for (int i = 0; i < len; i++) {
-      final char c = chars[off + i];
-      if (c == '"' || c == '\\') {
-        throw new IllegalStateException(
-            "string value contains forbidden character at index " + i + ": " + (int) c);
-      }
-      if (c < 0x20) {
-        throw new IllegalStateException(
-            "string value contains control character at index " + i + ": " + (int) c);
-      }
-      if (c < 0x80) {
-        dst.writeByte((byte) c);
-      } else if (c < 0x800) {
-        dst.writeByte((byte) (0xC0 | (c >>> 6)));
-        dst.writeByte((byte) (0x80 | (c & 0x3F)));
-      } else {
-        if (Character.isSurrogate(c)) {
-          throw new IllegalStateException(
-              "string value contains surrogate code unit at index " + i);
-        }
-        dst.writeByte((byte) (0xE0 | (c >>> 12)));
-        dst.writeByte((byte) (0x80 | ((c >>> 6) & 0x3F)));
-        dst.writeByte((byte) (0x80 | (c & 0x3F)));
-      }
-    }
+    Utf8JsonStringEmitter.appendCharSlice(chars, off, len, dst);
   }
 
   /**
