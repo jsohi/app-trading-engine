@@ -66,49 +66,48 @@ val schemaXml =
     )
 val generatedTsDir = layout.buildDirectory.dir("generated-ts")
 
-val generateTsCodecs =
-    tasks.register<JavaExec>("generateTsCodecs") {
-        group = "code generation"
-        description =
-            "Generate TypeScript decoders from trading-schema.xml " +
-            "via SBE Ir + the TypeScriptTargetCodeGenerator SPI implementation."
+tasks.register<JavaExec>("generateTsCodecs") {
+    group = "code generation"
+    description =
+        "Generate TypeScript decoders from trading-schema.xml " +
+        "via SBE Ir + the TypeScriptTargetCodeGenerator SPI implementation."
 
-        mainClass.set("uk.co.real_logic.sbe.SbeTool")
-        // Runtime classpath includes the generator's own compiled classes
-        // (so `Class.forName(\"com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator\")`
-        // resolves) plus sbe-all (transitively pulled by `implementation`).
-        // Implicitly depends on `compileJava` and `processResources` because
-        // `runtimeClasspath` references `main` sourceSet output — Gradle adds
-        // those task dependencies automatically. This is intentional: emitter
-        // edits MUST invalidate the cached output, and the implicit task
-        // ordering also ensures the generator is compiled before invocation.
-        classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("uk.co.real_logic.sbe.SbeTool")
+    // Runtime classpath includes the generator's own compiled classes
+    // (so `Class.forName(\"com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator\")`
+    // resolves) plus sbe-all (transitively pulled by `implementation`).
+    // Implicitly depends on `compileJava` and `processResources` because
+    // `runtimeClasspath` references `main` sourceSet output — Gradle adds
+    // those task dependencies automatically. This is intentional: emitter
+    // edits MUST invalidate the cached output, and the implicit task
+    // ordering also ensures the generator is compiled before invocation.
+    classpath = sourceSets["main"].runtimeClasspath
 
-        // Inputs/outputs declared so Gradle's UP-TO-DATE cache is correct.
-        // The compiled generator classes are an explicit input — without
-        // this, editing an emitter would not invalidate the cache and the
-        // task would serve stale codecs.
-        inputs.file(schemaXml)
-        inputs.files(sourceSets["main"].output)
-        outputs.dir(generatedTsDir)
+    // Inputs/outputs declared so Gradle's UP-TO-DATE cache is correct.
+    // The compiled generator classes are an explicit input — without
+    // this, editing an emitter would not invalidate the cache and the
+    // task would serve stale codecs.
+    inputs.file(schemaXml)
+    inputs.files(sourceSets["main"].output)
+    outputs.dir(generatedTsDir)
 
-        systemProperty(
-            "sbe.target.language",
-            "com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator",
-        )
-        systemProperty(
-            "sbe.output.dir",
-            generatedTsDir.get().asFile.absolutePath,
-        )
-        systemProperty("sbe.validation.stop.on.error", "true")
-        systemProperty("sbe.validation.warnings.fatal", "true")
+    systemProperty(
+        "sbe.target.language",
+        "com.trading.engine.sbe.ts.TypeScriptTargetCodeGenerator",
+    )
+    systemProperty(
+        "sbe.output.dir",
+        generatedTsDir.get().asFile.absolutePath,
+    )
+    systemProperty("sbe.validation.stop.on.error", "true")
+    systemProperty("sbe.validation.warnings.fatal", "true")
 
-        args(schemaXml.asFile.absolutePath)
+    args(schemaXml.asFile.absolutePath)
 
-        // Defensive: skip cleanly if the schema is missing instead of
-        // exploding mid-build (matches `:messages:generateCodecs` idiom).
-        onlyIf { schemaXml.asFile.exists() }
-    }
+    // Defensive: skip cleanly if the schema is missing instead of
+    // exploding mid-build (matches `:messages:generateCodecs` idiom).
+    onlyIf { schemaXml.asFile.exists() }
+}
 
 // `compileJava` does NOT depend on `generateTsCodecs` — TS output is consumed
 // by the npm workspace, not by Java compilation in this module.
