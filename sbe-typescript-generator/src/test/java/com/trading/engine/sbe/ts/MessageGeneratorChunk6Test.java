@@ -364,6 +364,30 @@ final class MessageGeneratorChunk6Test {
         "expected nanosToDate to integer-divide bigint nanos before Number(...)");
   }
 
+  @Test
+  void helpersGenerator_parseFixed8StripsLeadingZerosBeforeBigInt(@TempDir final Path tmp)
+      throws Exception {
+    new HelpersGenerator().generate(tmp);
+    final var src =
+        Files.readString(tmp.resolve(HelpersGenerator.HELPERS_FILENAME), StandardCharsets.UTF_8);
+
+    // Defensive strip-leading-zeros guard before BigInt(). Even though current ES spec accepts
+    // BigInt("010") as decimal 10n in V8/SpiderMonkey/JSC, parsing inputs like "0.1" produces
+    // whole="0" + paddedFrac="10000000" → "010000000" with a leading zero. Stripping
+    // bulletproofs the helper against any future engine drift (Gemini iter-6 HIGH finding).
+    assertTrue(
+        src.contains("const concatenated = whole + paddedFrac;"),
+        "expected concatenated intermediate");
+    assertTrue(
+        src.contains("const trimmed = concatenated.replace(/^0+/, \"\") || \"0\";"),
+        "expected leading-zero strip with all-zero fallback");
+    assertTrue(src.contains("const magnitude = BigInt(trimmed);"), "expected BigInt(trimmed)");
+    // Negative regression: must not have the prior unprotected form.
+    assertFalse(
+        src.contains("const magnitude = BigInt(whole + paddedFrac);"),
+        "expected old direct-BigInt-of-concatenation form to be replaced");
+  }
+
   // -----------------------------------------------------------------------------------------
   // Chunk 9 — RouterGenerator emission tests
   // -----------------------------------------------------------------------------------------
