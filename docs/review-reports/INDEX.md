@@ -9,3 +9,4 @@ Auto-populated by `/orchestrate` after each convergence. Do not edit manually.
 | 2026-04-28 | APP-242              | 4 iterations + admin merge | 15       | 13/15 (2 → APP-243)   | 100% (12/13 measured) | [report](APP-242-session-2026-04-28.md)            |
 | 2026-04-30 | APP-34               | 1 iter + 2 Gemini rounds   | 13       | 9 fixed / 3 deferred  | 100% (8/8 applicable) | [report](APP-34-session-2026-04-30.md)             |
 | 2026-04-30 | APP-34 (chunks 7–11) | 8 iters + 6 Gemini rounds  | 47       | 47 fixed / 0 deferred | 100% (8/8 applicable) | [report](APP-34-session-2026-04-30-chunks-7-11.md) |
+| 2026-04-30 | APP-39               | 5 iters + 3 Gemini rounds  | 70       | 70 fixed / 4 deferred | ~98% (13/13 measured) | [report](APP-39-session-2026-04-30.md)             |
