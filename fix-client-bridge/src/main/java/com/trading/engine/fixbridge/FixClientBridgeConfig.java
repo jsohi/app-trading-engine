@@ -237,21 +237,21 @@ public record FixClientBridgeConfig(
         strProp(properties, "senderCompId", senderCompId),
         strProp(properties, "sessionsPath", sessionsPath),
         boolProp(properties, "forceSequenceReset", forceSequenceReset),
-        intProp(properties, "maxSessions", maxConcurrentBridgeSessions),
+        intProp(properties, "maxConcurrentBridgeSessions", maxConcurrentBridgeSessions),
         intProp(properties, "maxJsonBytes", maxJsonBytes),
-        intProp(properties, "quoteCachePerSession", quoteCacheCapacityPerSession),
-        intProp(properties, "outboundQueuePerSession", outboundQueueCapacityPerSession),
+        intProp(properties, "quoteCacheCapacityPerSession", quoteCacheCapacityPerSession),
+        intProp(properties, "outboundQueueCapacityPerSession", outboundQueueCapacityPerSession),
         intProp(properties, "idleReaderSeconds", idleReaderSeconds),
         intProp(properties, "idleWriterSeconds", idleWriterSeconds),
-        longProp(properties, "handshakeTimeoutMs", handshakeTimeoutMillis),
-        intProp(properties, "authTimeoutSec", authTimeoutSeconds),
+        longProp(properties, "handshakeTimeoutMillis", handshakeTimeoutMillis),
+        intProp(properties, "authTimeoutSeconds", authTimeoutSeconds),
         registry,
-        strProp(properties, "audience", expectedAudience),
-        boolProp(properties, "debug", bridgeDebug),
-        intProp(properties, "reconnectCap", reconnectBackoffSecondsCap),
+        strProp(properties, "expectedAudience", expectedAudience),
+        boolProp(properties, "bridgeDebug", bridgeDebug),
+        intProp(properties, "reconnectBackoffSecondsCap", reconnectBackoffSecondsCap),
         intProp(properties, "fatalAfterFailures", fatalAfterFailures),
-        intProp(properties, "fatalAfterSec", fatalAfterSeconds),
-        intProp(properties, "heartbeatSec", heartbeatSeconds));
+        intProp(properties, "fatalAfterSeconds", fatalAfterSeconds),
+        intProp(properties, "heartbeatSeconds", heartbeatSeconds));
   }
 
   // ===========================================================================

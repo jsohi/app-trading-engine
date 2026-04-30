@@ -132,8 +132,8 @@ final class BridgeBootstrapTest {
     props.setProperty("bridge.gatewayHost", "test-gateway.local");
     props.setProperty("bridge.gatewayPort", "29999");
     props.setProperty("bridge.jwksUri", "https://localhost:7100/jwks.json");
-    props.setProperty("bridge.audience", "wss://trading.test/ws");
-    props.setProperty("bridge.debug", "true");
+    props.setProperty("bridge.expectedAudience", "wss://trading.test/ws");
+    props.setProperty("bridge.bridgeDebug", "true");
 
     final var base = FixClientBridgeConfig.fromYaml(yaml);
     final var cfg = base.withSystemPropertyOverrides(props);
@@ -146,7 +146,7 @@ final class BridgeBootstrapTest {
         cfg.jwtIssuerRegistry().get(FixClientBridgeConfig.DEV_ISSUER_KEY));
     assertEquals(1, cfg.jwtIssuerRegistry().size(), "single-issuer override should clear registry");
     assertEquals("wss://trading.test/ws", cfg.expectedAudience());
-    assertTrue(cfg.bridgeDebug(), "bridge.debug=true should toggle bridgeDebug");
+    assertTrue(cfg.bridgeDebug(), "bridge.bridgeDebug=true should toggle bridgeDebug");
   }
 
   // --- Validation ---
