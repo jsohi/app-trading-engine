@@ -2,6 +2,7 @@ package com.trading.engine.fixbridge.json;
 
 import com.trading.engine.fixbridge.translator.DecimalStringEmitter;
 import io.netty.buffer.ByteBuf;
+import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -327,6 +328,6 @@ public final class BrowserEventWriter {
   }
 
   private static byte[] ascii(final String s) {
-    return s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    return s.getBytes(StandardCharsets.US_ASCII);
   }
 }

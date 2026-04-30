@@ -1,5 +1,7 @@
 package com.trading.engine.fixbridge.json;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * Hot-path flyweight that captures the parsed shape of a single inbound JSON frame WITHOUT
  * allocating any objects. The frame's bytes are copied once from the inbound Netty {@link
@@ -204,6 +206,6 @@ public final class MutableParsedMessage {
       throw new IndexOutOfBoundsException(
           "slice out of bounds: off=" + off + " len=" + len + " scratchLen=" + scratch.length);
     }
-    return new String(scratch, off, len, java.nio.charset.StandardCharsets.UTF_8);
+    return new String(scratch, off, len, StandardCharsets.UTF_8);
   }
 }

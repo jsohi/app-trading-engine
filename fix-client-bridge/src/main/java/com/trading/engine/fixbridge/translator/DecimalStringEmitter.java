@@ -197,16 +197,10 @@ public final class DecimalStringEmitter {
     dst.writeByte('.');
     written++;
 
-    // Frac part — emit the eight digits left-padded with '0'. We render frac via putLongAscii
-    // and then prefix-pad to FIXED_POINT_SCALE bytes.
-    final int fracDigits;
+    // Frac part — emit eight digits, left-padded with '0'.
     if (frac == 0L) {
-      fracDigits = 1; // putLongAscii(0,0) writes "0"
-    } else {
-      fracDigits = scratchView.putLongAscii(0, frac);
-    }
-    if (frac == 0L) {
-      // "0" rendered → we need 8 zeros. Skip the buffer and write directly.
+      // Fast path: skip the scratch buffer entirely and write FIXED_POINT_SCALE zero bytes
+      // directly.
       for (int i = 0; i < FIXED_POINT_SCALE; i++) {
         dst.writeByte('0');
       }
@@ -214,6 +208,9 @@ public final class DecimalStringEmitter {
       return written;
     }
 
+    // Render frac via putLongAscii (writes |frac| as the minimum-width digit run) then prefix-pad
+    // to FIXED_POINT_SCALE bytes.
+    final int fracDigits = scratchView.putLongAscii(0, frac);
     final int padZeros = FIXED_POINT_SCALE - fracDigits;
     for (int i = 0; i < padZeros; i++) {
       dst.writeByte('0');
