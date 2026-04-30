@@ -182,10 +182,16 @@ final class HelpersGenerator {
         .append(NL)
         .append("  const paddedFrac = frac.padEnd(8, \"0\");")
         .append(NL)
-        // BigInt() accepts leading zeros (e.g. BigInt("000000000") === 0n) — the regex above
-        // already rejected leading-zero whole parts, so any leading zeros here come from
-        // padEnd("0") on the fractional component, which is correct.
-        .append("  const magnitude = BigInt(whole + paddedFrac);")
+        // Strip leading zeros from the concat before BigInt() — defensive against any future
+        // engine that gets stricter on `BigInt("010")` style inputs (per ES spec they're
+        // accepted today as plain decimal in V8/SpiderMonkey/JSC, but stripping bulletproofs
+        // the helper against spec drift). The `|| "0"` collapses the all-zero case
+        // (e.g. parseFixed8("0.0") → whole="0" + paddedFrac="00000000" → strip→"" → "0").
+        .append("  const concatenated = whole + paddedFrac;")
+        .append(NL)
+        .append("  const trimmed = concatenated.replace(/^0+/, \"\") || \"0\";")
+        .append(NL)
+        .append("  const magnitude = BigInt(trimmed);")
         .append(NL)
         .append("  return negative ? -magnitude : magnitude;")
         .append(NL)
