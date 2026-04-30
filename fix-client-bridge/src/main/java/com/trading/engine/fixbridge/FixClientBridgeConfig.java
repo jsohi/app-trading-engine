@@ -268,9 +268,17 @@ public record FixClientBridgeConfig(
   static FixClientBridgeConfig fromMap(final Map<String, Object> raw) {
     Objects.requireNonNull(raw, "raw");
 
-    @SuppressWarnings("unchecked")
-    final Map<String, String> registry =
-        (Map<String, String>) raw.getOrDefault("jwtIssuerRegistry", Map.of());
+    final Map<String, String> registry = parseIssuerRegistry(raw);
+
+    // sessionsPath default expands ${LOG_DIR} when set; falls back to a relative path so a missing
+    // env var still resolves predictably against the JVM CWD (matches the plan's behaviour rule).
+    final String sessionsDefault;
+    final String logDir = System.getenv("LOG_DIR");
+    if (logDir != null && !logDir.isEmpty()) {
+      sessionsDefault = logDir + "/bridge-sessions";
+    } else {
+      sessionsDefault = "logs/bridge-sessions";
+    }
 
     return new FixClientBridgeConfig(
         intOr(raw, "port", 8444),
@@ -279,7 +287,7 @@ public record FixClientBridgeConfig(
         intOr(raw, "gatewayPort", 19880),
         strOr(raw, "targetCompId", "EXCH"),
         strOr(raw, "senderCompId", "BRIDGE"),
-        strOr(raw, "sessionsPath", "logs/bridge-sessions"),
+        strOr(raw, "sessionsPath", sessionsDefault),
         boolOr(raw, "forceSequenceReset", false),
         intOr(raw, "maxConcurrentBridgeSessions", 256),
         intOr(raw, "maxJsonBytes", 65536),
@@ -289,13 +297,66 @@ public record FixClientBridgeConfig(
         intOr(raw, "idleWriterSeconds", 15),
         longOr(raw, "handshakeTimeoutMillis", 5000L),
         intOr(raw, "authTimeoutSeconds", 5),
-        registry == null ? Map.of() : registry,
-        strOr(raw, "expectedAudience", "trading-engine-dev"),
+        registry,
+        // No default for expectedAudience — operator misconfig must fail-fast at the compact ctor's
+        // requireNonNull rather than silently boot with the dev value (locked: prod-ready policy).
+        strOrNull(raw, "expectedAudience"),
         boolOr(raw, "bridgeDebug", false),
         intOr(raw, "reconnectBackoffSecondsCap", 32),
         intOr(raw, "fatalAfterFailures", 10),
         intOr(raw, "fatalAfterSeconds", 600),
         intOr(raw, "heartbeatSeconds", 10));
+  }
+
+  /**
+   * Parse and validate the {@code jwtIssuerRegistry} entry from a raw YAML map. SnakeYAML decodes
+   * the value as a {@code Map<String, Object>}; this helper enforces that every value is a {@code
+   * String} and surfaces a clear {@link IllegalArgumentException} (rather than a {@link
+   * ClassCastException} at first iteration) when the YAML is malformed.
+   *
+   * @param raw parsed YAML map
+   * @return immutable {@code Map<String, String>} of issuer → JWKS URL
+   * @throws IllegalArgumentException if {@code jwtIssuerRegistry} is present but is not a map of
+   *     strings, or any value is not a {@code String}
+   */
+  private static Map<String, String> parseIssuerRegistry(final Map<String, Object> raw) {
+    final var rawRegistry = raw.get("jwtIssuerRegistry");
+    if (rawRegistry == null) {
+      return Map.of();
+    }
+    if (!(rawRegistry instanceof Map<?, ?> rawMap)) {
+      throw new IllegalArgumentException(
+          "jwtIssuerRegistry must be a YAML map, got: " + rawRegistry.getClass().getName());
+    }
+    final var typed = new LinkedHashMap<String, String>();
+    for (final var entry : rawMap.entrySet()) {
+      final var k = entry.getKey();
+      final var v = entry.getValue();
+      if (!(k instanceof String key)) {
+        throw new IllegalArgumentException(
+            "jwtIssuerRegistry key must be a string, got: "
+                + (k == null ? "null" : k.getClass().getName()));
+      }
+      if (!(v instanceof String value)) {
+        throw new IllegalArgumentException(
+            "jwtIssuerRegistry value for '"
+                + key
+                + "' must be a string, got: "
+                + (v == null ? "null" : v.getClass().getName()));
+      }
+      typed.put(key, value);
+    }
+    return typed;
+  }
+
+  /**
+   * Read a string value from the YAML map without applying a default. Returns {@code null} when the
+   * key is absent so the compact ctor's {@code requireNonNull} can surface the misconfiguration as
+   * a fail-fast error.
+   */
+  private static String strOrNull(final Map<String, Object> raw, final String key) {
+    final var v = raw.get(key);
+    return v == null ? null : v.toString();
   }
 
   // ===========================================================================

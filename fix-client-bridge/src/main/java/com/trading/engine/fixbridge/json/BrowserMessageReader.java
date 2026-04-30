@@ -1,5 +1,6 @@
 package com.trading.engine.fixbridge.json;
 
+import com.trading.engine.gateway.FixedPoint;
 import io.netty.buffer.ByteBuf;
 import java.nio.charset.StandardCharsets;
 
@@ -54,11 +55,11 @@ public final class BrowserMessageReader {
    */
   public static final int MAX_BYTES = 65536;
 
-  /** Maximum nesting depth (top-level object only — values are primitives). */
-  private static final int MAX_DEPTH = 2;
-
-  /** Per fixed-point convention; mirrors {@code FixedPoint.FIXED_POINT_SCALE}. */
-  private static final int FIXED_POINT_SCALE = 8;
+  /**
+   * Per fixed-point convention — sourced from {@link FixedPoint#FIXED_POINT_SCALE} so a future
+   * scale-factor change in the canonical location propagates here automatically (locked §9).
+   */
+  private static final int FIXED_POINT_SCALE = FixedPoint.FIXED_POINT_SCALE;
 
   // ---------------------------------------------------------------------------
   // Pre-computed keyword constants. Stored as byte[] so matching is a tight
@@ -133,7 +134,6 @@ public final class BrowserMessageReader {
     // Copy verbatim into the flyweight scratch so all downstream slices reference a single
     // heap byte[] (zero-alloc, simpler ownership).
     src.getBytes(src.readerIndex(), out.scratch, 0, srcLen);
-    out.scratchLen = srcLen;
 
     final byte[] buf = out.scratch;
     int p = skipWs(buf, 0, srcLen);

@@ -1,6 +1,8 @@
 package com.trading.engine.fixbridge.translator;
 
+import com.trading.engine.gateway.FixedPoint;
 import io.netty.buffer.ByteBuf;
+import java.math.BigDecimal;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import uk.co.real_logic.artio.fields.ReadOnlyDecimalFloat;
@@ -30,7 +32,7 @@ import uk.co.real_logic.artio.fields.ReadOnlyDecimalFloat;
  * <p><b>Dependencies.</b> Agrona ({@link MutableDirectBuffer}, {@link UnsafeBuffer}), Netty ({@link
  * ByteBuf}), and Artio ({@link ReadOnlyDecimalFloat}).
  *
- * <p><b>No floating point.</b> No {@code String.format}, no {@link java.math.BigDecimal}, no {@code
+ * <p><b>No floating point.</b> No {@code String.format}, no {@link BigDecimal}, no {@code
  * Double.toString}. Verified by {@code DecimalStringEmitterAllocTest}.
  *
  * <p><b>Range note for {@link #emitDecimalFloat}.</b> Artio's {@code DecimalFloat} caps the
@@ -43,11 +45,16 @@ import uk.co.real_logic.artio.fields.ReadOnlyDecimalFloat;
  */
 public final class DecimalStringEmitter {
 
-  /** Per fixed-point convention; mirrors {@code FixedPoint.FIXED_POINT_SCALE}. */
-  public static final int FIXED_POINT_SCALE = 8;
+  /**
+   * Per fixed-point convention — sourced from the canonical {@link FixedPoint#FIXED_POINT_SCALE}
+   * (locked §9: every JSON↔int64↔DecimalFloat chain MUST go through {@link FixedPoint}). Re-exposed
+   * as a {@code public} alias so existing test references continue to compile without coupling to
+   * {@code :gateway} via additional imports.
+   */
+  public static final int FIXED_POINT_SCALE = FixedPoint.FIXED_POINT_SCALE;
 
-  /** {@code 10^FIXED_POINT_SCALE} — the fixed-point unit divisor. */
-  private static final long PRICE_SCALE = 100_000_000L;
+  /** {@code 10^FIXED_POINT_SCALE} — sourced from {@link FixedPoint#PRICE_SCALE}. */
+  private static final long PRICE_SCALE = FixedPoint.PRICE_SCALE;
 
   /**
    * Maximum {@link ReadOnlyDecimalFloat#scale()} value the emitter accepts. The internal {@code
