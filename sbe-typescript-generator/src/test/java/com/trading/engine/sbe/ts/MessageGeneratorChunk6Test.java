@@ -428,6 +428,30 @@ final class MessageGeneratorChunk6Test {
   }
 
   // -----------------------------------------------------------------------------------------
+  // Chunk 10 — ConstantsGenerator emission tests
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  void constantsGenerator_emitsPriceScaleAndSchemaIdentity(@TempDir final Path tmp)
+      throws Exception {
+    final var ir = loadIr();
+    new ConstantsGenerator().generate(ir, tmp);
+    final var src =
+        Files.readString(
+            tmp.resolve(ConstantsGenerator.CONSTANTS_FILENAME), StandardCharsets.UTF_8);
+
+    assertTrue(
+        src.contains("export const PRICE_SCALE = 100_000_000n;"),
+        "expected PRICE_SCALE bigint literal");
+    assertTrue(
+        src.contains("export const SCHEMA_ID: number = " + ir.id() + ";"),
+        "expected SCHEMA_ID literal matching IR");
+    assertTrue(
+        src.contains("export const SCHEMA_VERSION: number = " + ir.version() + ";"),
+        "expected SCHEMA_VERSION literal matching IR");
+  }
+
+  // -----------------------------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------------------------
 
