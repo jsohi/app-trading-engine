@@ -221,6 +221,17 @@ record BlockField(
                   + "'; only the `uuid` composite is supported (extend the emitter before"
                   + " introducing a new one)");
         }
+        // `presence="constant"` on a composite-typed field embeds the value directly in schema
+        // metadata (offset = -1, no wire bytes). The chunk-7 emitter does not support this for
+        // composites — emitting a uuid getter that reads from offset -1 would produce broken
+        // codecs. Schema declares no constant composite fields today; reject loudly if a future
+        // change introduces one so the gap is surfaced rather than silently miscompiled.
+        if (fieldToken.encoding().presence() == Encoding.Presence.CONSTANT) {
+          throw new IllegalStateException(
+              "Constant-presence composite field not supported: "
+                  + name
+                  + " (uuid composite at offset -1 has no wire layout; schema declares none today)");
+        }
         // The uuid composite has no nullable encoding — decoders return a UuidValue object
         // directly. `presence="optional"` on a uuid field is not declared in the schema today;
         // reject loudly if a future schema change adds one so the gap is surfaced.

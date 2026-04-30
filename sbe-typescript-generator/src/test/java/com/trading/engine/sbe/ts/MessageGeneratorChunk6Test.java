@@ -409,7 +409,9 @@ final class MessageGeneratorChunk6Test {
         "expected blockLength in error message");
     // Dev-mode aliasing assertion — __generation increment dead-code-eliminated in production.
     assertTrue(
-        src.contains("if (process.env.NODE_ENV === \"development\") {"), "expected dev-mode guard");
+        src.contains(
+            "if (typeof process !== \"undefined\" && process.env.NODE_ENV === \"development\") {"),
+        "expected dev-mode guard with typeof-process browser-portability check");
     assertTrue(
         src.contains("frame.__generation = (frame.__generation ?? 0) + 1;"),
         "expected __generation increment");
@@ -478,7 +480,8 @@ final class MessageGeneratorChunk6Test {
         src.contains("export { PRICE_SCALE, SCHEMA_ID, SCHEMA_VERSION } from \"./constants.js\";"),
         "expected constants re-export");
     assertTrue(
-        src.contains("export { route, type DecodedFrame } from \"./MessageRouter.js\";"),
+        src.contains(
+            "export { route, type DecodedFrame, type Decoder } from \"./MessageRouter.js\";"),
         "expected router re-export");
 
     // Decoders alphabetised: Quote before WebSocketAuth.
