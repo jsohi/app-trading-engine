@@ -504,10 +504,7 @@ public final class JsonToFixTranslator {
     if (len <= 0) {
       throw JsonParseException.MALFORMED;
     }
-    // Loop accumulators below (p, mantissa, scale, sawDigit, sawDot) are deliberately non-final
-    // because they advance / accumulate inside the parse loop. Per CLAUDE.md, this is the
-    // documented exception to the all-locals-final convention; primitives keep explicit type for
-    // zero-allocation intent.
+    // p, mantissa, scale, sawDigit, sawDot accumulate across the parse loop.
     int p = off;
     final int end = off + len;
     final boolean negative;
@@ -640,8 +637,7 @@ public final class JsonToFixTranslator {
    */
   private static void writeHexLowercase(
       final long v, final int nibbles, final byte[] dst, final int dstOff) {
-    // `shifted` is a mutated loop accumulator (right-shifted on every iteration) — non-final by
-    // design, see CLAUDE.md's loop-accumulator exception.
+    // shifted is right-shifted each iteration.
     long shifted = v;
     for (int i = nibbles - 1; i >= 0; i--) {
       dst[dstOff + i] = HEX[(int) (shifted & 0xFL)];
@@ -656,8 +652,7 @@ public final class JsonToFixTranslator {
    */
   private static void writeFiveDigitDecimal(
       final long counter, final byte[] dst, final int dstOff) {
-    // `value` is a mutated loop accumulator (divided by 10 each iteration) — non-final by design
-    // (CLAUDE.md loop-accumulator carve-out).
+    // value is divided by 10 each iteration.
     long value = counter % 100_000L;
     for (int i = 4; i >= 0; i--) {
       dst[dstOff + i] = (byte) ('0' + (value % 10L));

@@ -136,8 +136,7 @@ public final class BrowserMessageReader {
     src.getBytes(src.readerIndex(), out.scratch, 0, srcLen);
 
     final byte[] buf = out.scratch;
-    // CLAUDE.md loop-accumulator carve-out: `p` is a buffer scan pointer mutated across the
-    // top-level parse loop; refactoring to satisfy `final` would produce worse code.
+    // Buffer scan pointer mutated across the parse loop.
     int p = skipWs(buf, 0, srcLen);
 
     if (p >= srcLen || buf[p] != '{') {
@@ -450,7 +449,7 @@ public final class BrowserMessageReader {
     }
 
     // --- optional fractional part ---
-    // CLAUDE.md loop-accumulator carve-out: fracDigits and frac mutate across the digit loop.
+    // fracDigits and frac mutate across the digit loop.
     int fracDigits = 0;
     long frac = 0L;
     if (p < end && buf[p] == '.') {
