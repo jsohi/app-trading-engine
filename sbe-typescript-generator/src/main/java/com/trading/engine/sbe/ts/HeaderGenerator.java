@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -66,8 +68,6 @@ final class HeaderGenerator {
   static final String OUTPUT_FILENAME = "messageHeader.ts";
 
   /** Newline used in emitted TypeScript. {@code \n} is the canonical TS source-file convention. */
-  private static final String NL = "\n";
-
   /**
    * Emit {@code messageHeader.ts} into {@code outputDir}.
    *

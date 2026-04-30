@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -68,9 +70,6 @@ import uk.co.real_logic.sbe.ir.Token;
  * @see HeaderGenerator
  */
 final class EnumGenerator {
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /**
    * Walk all top-level types in {@code ir} and emit one {@code <enumName>.ts} file per enum.

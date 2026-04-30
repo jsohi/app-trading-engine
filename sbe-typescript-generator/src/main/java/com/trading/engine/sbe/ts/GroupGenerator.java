@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -90,11 +92,22 @@ import uk.co.real_logic.sbe.ir.Token;
  */
 final class GroupGenerator {
 
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
-
   /** SBE group dimension header: 2-byte uint16 blockLength + 2-byte uint16 numInGroup. */
   private static final int GROUP_HEADER_SIZE = 4;
+
+  /**
+   * TypeScript expression yielding the parent decoder's {@code DataView} from inside an iterator
+   * record-block field getter. Hoisted to a constant so {@link UuidCompositeGenerator#emitGetter}
+   * (and any future cross-emitter callsite) references it by name; a future rename of the emitted
+   * accessor stays single-source.
+   */
+  static final String GROUP_BUFFER_REF = "this.parent._getBuffer()";
+
+  /**
+   * TypeScript expression yielding the current record's start offset from inside an iterator field
+   * getter. Paired with {@link #GROUP_BUFFER_REF}.
+   */
+  static final String GROUP_OFFSET_EXPR = "this.recordOffset";
 
   /** Constructor — no state. */
   GroupGenerator() {
@@ -395,7 +408,7 @@ final class GroupGenerator {
       case ENUM -> emitGroupEnumGetter(field);
       case CHAR_ARRAY -> emitGroupCharArrayGetter(field);
       case UUID_COMPOSITE ->
-          UuidCompositeGenerator.emitGetter(field, "this.parent._getBuffer()", "this.recordOffset");
+          UuidCompositeGenerator.emitGetter(field, GROUP_BUFFER_REF, GROUP_OFFSET_EXPR);
     };
   }
 
@@ -538,11 +551,19 @@ final class GroupGenerator {
     nestedAncestorPath.add(capitalize(name));
 
     int i = beginIndex + 1;
-    // First inner block is the dimension type (BEGIN_COMPOSITE for groupSizeEncoding). Skip it
-    // via componentTokenCount — SBE 1.37.x always emits this block first inside a group.
-    if (i < endExclusive && tokens.get(i).signal() == Signal.BEGIN_COMPOSITE) {
-      i += tokens.get(i).componentTokenCount();
+    // First inner block MUST be the dimension type (BEGIN_COMPOSITE for groupSizeEncoding) per
+    // SBE 1.37.x's IR contract. Throw loudly if a future SBE upgrade changes this — silently
+    // treating the next field as a missing dimension would produce malformed iterators.
+    if (i >= endExclusive || tokens.get(i).signal() != Signal.BEGIN_COMPOSITE) {
+      throw new IllegalStateException(
+          "Expected BEGIN_COMPOSITE dimension as first inner token of group `"
+              + name
+              + "` in message `"
+              + messageName
+              + "`, got "
+              + (i >= endExclusive ? "<end of group>" : tokens.get(i).signal()));
     }
+    i += tokens.get(i).componentTokenCount();
     while (i < endExclusive) {
       final var token = tokens.get(i);
       switch (token.signal()) {

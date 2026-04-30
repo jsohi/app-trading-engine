@@ -15,6 +15,8 @@
  */
 package com.trading.engine.sbe.ts;
 
+import static com.trading.engine.sbe.ts.EmitterConstants.NL;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -68,9 +70,6 @@ final class HelpersGenerator {
 
   /** Filename for the helpers module emitted alongside per-message files. */
   static final String HELPERS_FILENAME = "helpers.ts";
-
-  /** Newline used in emitted TypeScript. */
-  private static final String NL = "\n";
 
   /** Constructor — no state. */
   HelpersGenerator() {
@@ -183,6 +182,9 @@ final class HelpersGenerator {
         .append(NL)
         .append("  const paddedFrac = frac.padEnd(8, \"0\");")
         .append(NL)
+        // BigInt() accepts leading zeros (e.g. BigInt("000000000") === 0n) — the regex above
+        // already rejected leading-zero whole parts, so any leading zeros here come from
+        // padEnd("0") on the fractional component, which is correct.
         .append("  const magnitude = BigInt(whole + paddedFrac);")
         .append(NL)
         .append("  return negative ? -magnitude : magnitude;")
