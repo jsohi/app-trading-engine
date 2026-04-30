@@ -334,6 +334,37 @@ final class MessageGeneratorChunk6Test {
   }
 
   // -----------------------------------------------------------------------------------------
+  // Chunk 8 — HelpersGenerator emission tests
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  void helpersGenerator_emitsToFixed8ParseFixed8NanosToDate(@TempDir final Path tmp)
+      throws Exception {
+    new HelpersGenerator().generate(tmp);
+    final var src =
+        Files.readString(tmp.resolve(HelpersGenerator.HELPERS_FILENAME), StandardCharsets.UTF_8);
+
+    assertTrue(
+        src.contains("export function toFixed8(b: bigint): string {"),
+        "expected toFixed8 signature");
+    assertTrue(
+        src.contains("export function parseFixed8(decimalString: string): bigint {"),
+        "expected parseFixed8 signature");
+    assertTrue(
+        src.contains("export function nanosToDate(ns: bigint): Date {"),
+        "expected nanosToDate signature");
+    // Locked grammar regex — guards against accidental loosening.
+    assertTrue(
+        src.contains("/^-?(0|[1-9]\\d*)(\\.\\d{1,8})?$/"), "expected locked FIXED8 grammar regex");
+    // toFixed8 invariants: padStart(8, "0") preserves leading zeros that BigInt drops.
+    assertTrue(src.contains("padStart(8, \"0\")"), "expected fractional padStart for 8 digits");
+    // nanosToDate uses integer division at the ns→ms boundary, NOT Number(ns)/1_000_000.
+    assertTrue(
+        src.contains("ns / 1_000_000n"),
+        "expected nanosToDate to integer-divide bigint nanos before Number(...)");
+  }
+
+  // -----------------------------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------------------------
 
