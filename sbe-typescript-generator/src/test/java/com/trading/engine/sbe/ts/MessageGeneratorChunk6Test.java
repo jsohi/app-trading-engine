@@ -365,6 +365,69 @@ final class MessageGeneratorChunk6Test {
   }
 
   // -----------------------------------------------------------------------------------------
+  // Chunk 9 — RouterGenerator emission tests
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  void routerGenerator_emitsRouteFunctionWithFlyweightContract(@TempDir final Path tmp)
+      throws Exception {
+    new RouterGenerator().generate(java.util.List.of("WebSocketAuthDecoder", "QuoteDecoder"), tmp);
+    final var src =
+        Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
+
+    // Locked-format `route()` signature + DecodedFrame interface.
+    assertTrue(
+        src.contains("export function route(buffer: DataView, offset: number): DecodedFrame {"),
+        "expected route signature");
+    assertTrue(src.contains("export interface DecodedFrame {"), "expected DecodedFrame interface");
+    // Flyweight contract — JSDoc lock for chunk-13 tsdocPropagation test.
+    assertTrue(
+        src.contains("MUST consume `decoder` synchronously"),
+        "expected MUST-consume JSDoc on DecodedFrame");
+    // Module-init flyweights — one decoder instance per templateId (sorted alphabetically).
+    assertTrue(
+        src.contains("[QuoteDecoder.TEMPLATE_ID]: new QuoteDecoder(),"),
+        "expected QuoteDecoder map entry");
+    assertTrue(
+        src.contains("[WebSocketAuthDecoder.TEMPLATE_ID]: new WebSocketAuthDecoder(),"),
+        "expected WebSocketAuthDecoder map entry");
+    // Alphabetical import order — Quote before WebSocketAuth.
+    final int qIdx = src.indexOf("import { QuoteDecoder }");
+    final int wsIdx = src.indexOf("import { WebSocketAuthDecoder }");
+    assertTrue(
+        qIdx > 0 && qIdx < wsIdx, "expected alphabetical import order (Quote before WebSocket)");
+    // Rich error message — all four header fields + offset on the throw path.
+    assertTrue(src.contains("Unknown SBE templateId"), "expected throw with templateId");
+    assertTrue(
+        src.contains("`(schemaId=${headerDecoder.schemaId()}"),
+        "expected schemaId in error message");
+    assertTrue(
+        src.contains("schemaVersion=${headerDecoder.version()}"),
+        "expected schemaVersion in error message");
+    assertTrue(
+        src.contains("blockLength=${headerDecoder.blockLength()}"),
+        "expected blockLength in error message");
+    // Dev-mode aliasing assertion — __generation increment dead-code-eliminated in production.
+    assertTrue(
+        src.contains("if (process.env.NODE_ENV === \"development\") {"), "expected dev-mode guard");
+    assertTrue(
+        src.contains("frame.__generation = (frame.__generation ?? 0) + 1;"),
+        "expected __generation increment");
+  }
+
+  @Test
+  void routerGenerator_dispatchesToHeaderEncodedLength(@TempDir final Path tmp) throws Exception {
+    new RouterGenerator().generate(java.util.List.of("QuoteDecoder"), tmp);
+    final var src =
+        Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
+
+    // After templateId lookup, the matching decoder is wrapped past the header.
+    assertTrue(
+        src.contains("decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH);"),
+        "expected decoder.wrap past header");
+  }
+
+  // -----------------------------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------------------------
 
