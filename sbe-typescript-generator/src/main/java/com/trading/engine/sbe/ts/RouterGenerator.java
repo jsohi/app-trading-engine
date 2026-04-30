@@ -148,19 +148,19 @@ final class RouterGenerator {
 
     // Decoder union — generated from the alphabetised decoder list so consumers get type-narrow
     // support without manual casts. Chosen over `unknown` (Gemini medium-priority feedback) since
-    // the generator already knows the full set of message decoder types at codegen time.
+    // the generator already knows the full set of message decoder types at codegen time. Built
+    // via String.join to avoid a non-final loop counter and to render the single-decoder edge
+    // case cleanly (e.g. `export type Decoder = X;` on one line, no dangling `;` line).
+    final var unionMembers = String.join(NL + "  | ", sortedNames);
     sb.append("/** Union of every generated decoder type — consumers narrow via `templateId`. */")
         .append(NL)
         .append("export type Decoder =")
+        .append(NL)
+        .append("    ")
+        .append(unionMembers)
+        .append(";")
+        .append(NL)
         .append(NL);
-    for (int i = 0; i < sortedNames.size(); i++) {
-      sb.append("  ").append(i == 0 ? "  " : "| ").append(sortedNames.get(i));
-      if (i == sortedNames.size() - 1) {
-        sb.append(";");
-      }
-      sb.append(NL);
-    }
-    sb.append(NL);
 
     // DecodedFrame interface — the shared-flyweight contract is in the JSDoc; chunk-13 test
     // greps "MUST consume" to lock the documentation forwarding through the barrel re-export.
@@ -188,9 +188,18 @@ final class RouterGenerator {
         .append(NL)
         .append("  /**")
         .append(NL)
-        .append("   * Bound decoder — typed as the {@link Decoder} union. Consumers narrow via")
+        .append(
+            "   * Bound decoder — typed as the {@link Decoder} union. The union gives consumers")
         .append(NL)
-        .append("   * the `templateId` field before invoking decoder methods:")
+        .append("   * IDE autocomplete on shared decoder methods (`wrap`, `_getBuffer`, etc.) and")
+        .append(NL)
+        .append("   * blocks unrelated assignments at compile time, while still requiring a manual")
+        .append(NL)
+        .append("   * cast for message-specific getters since all decoder shapes are structurally")
+        .append(NL)
+        .append("   * identical (the union members are not discriminated by a literal templateId).")
+        .append(NL)
+        .append("   * Narrow via the `templateId` field before invoking message-specific methods:")
         .append(NL)
         .append("   *")
         .append(NL)
@@ -204,9 +213,14 @@ final class RouterGenerator {
         .append(NL)
         .append("   *")
         .append(NL)
-        .append("   * `undefined` permitted only as the pre-first-call placeholder on the")
+        .append(
+            "   * `undefined` is the pre-first-call placeholder on the shared flyweight literal;")
         .append(NL)
-        .append("   * shared flyweight; in practice `route` always populates it before return.")
+        .append(
+            "   * after `route` returns successfully, this field is always populated. Consumers")
+        .append(NL)
+        .append(
+            "   * who never see the pre-first-call state can treat it as `Decoder` in practice.")
         .append(NL)
         .append("   */")
         .append(NL)

@@ -429,6 +429,41 @@ final class MessageGeneratorChunk6Test {
         "expected decoder.wrap past header");
   }
 
+  @Test
+  void routerGenerator_emitsTypedDecoderUnion(@TempDir final Path tmp) throws Exception {
+    new RouterGenerator()
+        .generate(List.of("WebSocketAuthDecoder", "QuoteDecoder", "RfqStateSnapshotDecoder"), tmp);
+    final var src =
+        Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
+
+    // Decoder union — alphabetised, semicolon-terminated, leading 4-space indent on first member.
+    assertTrue(src.contains("export type Decoder ="), "expected Decoder union export");
+    assertTrue(src.contains("    QuoteDecoder"), "expected first member with 4-space indent");
+    assertTrue(
+        src.contains("  | RfqStateSnapshotDecoder"),
+        "expected `| ` separator on subsequent members");
+    assertTrue(src.contains("  | WebSocketAuthDecoder;"), "expected union terminated with `;`");
+    // DecodedFrame.decoder uses the union type, not `unknown`.
+    assertTrue(
+        src.contains("decoder: Decoder | undefined;"),
+        "expected DecodedFrame.decoder typed as Decoder | undefined");
+    assertFalse(
+        src.contains("decoder: unknown;"),
+        "expected `decoder: unknown` to be replaced by Decoder union (Gemini R3 fix)");
+  }
+
+  @Test
+  void routerGenerator_singleDecoderEmitsCleanUnion(@TempDir final Path tmp) throws Exception {
+    new RouterGenerator().generate(List.of("QuoteDecoder"), tmp);
+    final var src =
+        Files.readString(tmp.resolve(RouterGenerator.ROUTER_FILENAME), StandardCharsets.UTF_8);
+
+    // Single-decoder edge case: no `| ` separator, semicolon directly on the member line.
+    assertTrue(
+        src.contains("export type Decoder =\n    QuoteDecoder;"),
+        "expected single-decoder union without dangling-semicolon line");
+  }
+
   // -----------------------------------------------------------------------------------------
   // Chunk 10 — ConstantsGenerator emission tests
   // -----------------------------------------------------------------------------------------
