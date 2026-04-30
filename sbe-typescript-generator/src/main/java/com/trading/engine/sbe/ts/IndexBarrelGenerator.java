@@ -57,10 +57,13 @@ import uk.co.real_logic.sbe.ir.Token;
  *
  * The conditional NULL_VAL and {@code UuidValue} re-exports require knowing which optional-enum
  * names appear anywhere in the schema and whether any uuid composite is used. This emitter walks
- * {@link Ir#messages()} once, recursing through groups via the same {@link
- * BlockField#parseBlockField} machinery the message emitter uses. The scan is intentionally local
- * to this class — it does NOT call back into {@link MessageGenerator}'s per-message helpers, so a
- * future emitter refactor that removes those private helpers cannot silently break the barrel.
+ * {@link Ir#messages()} once, recursing through groups via {@link BlockField#parseBlockField} for
+ * non-composite fields. Composite fields are short-circuited via {@code inner.signal() !=
+ * BEGIN_COMPOSITE} because they cannot host optional-enum or uuid-composite usage that affects
+ * barrel re-exports — composites are detected separately by {@link #scanUsesUuidComposite}. The
+ * scan is intentionally local to this class — it does NOT call back into {@link MessageGenerator}'s
+ * per-message helpers, so a future emitter refactor that removes those private helpers cannot
+ * silently break the barrel.
  *
  * <h2>Internal-helper hiding</h2>
  *
