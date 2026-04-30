@@ -48,9 +48,18 @@ dependencies {
 
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
-    // RoundTripIT (chunk 13) will add `testImplementation(project(":messages"))` for its
-    // Java-encoded side. Deliberately deferred until that chunk lands so this chunk's task
-    // graph stays minimal and the per-chunk diff stays focused.
+    // chunk 6 lights up the first JVM tests in this module — needed for fixture-based
+    // assertions on the emitted decoder source. Chunk 13's RoundTripIT will later add the
+    // ProcessBuilder/tsx wiring and a `dependsOn(":web-ui:webUiInstall")` on the test task.
+    testImplementation(project(":messages"))
+}
+
+tasks.test {
+    // JUnit 6 (Jupiter) — without useJUnitPlatform() the legacy vintage runner discovers
+    // zero tests and the task reports green silently. Chunk 6's MessageGeneratorChunk6Test
+    // is the first JVM test in this module; chunk-1+2's deps were declared in anticipation
+    // but never exercised.
+    useJUnitPlatform()
 }
 
 application {
