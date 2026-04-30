@@ -84,7 +84,12 @@ server.on("error", (err) => {
 });
 
 server.listen(port, host, () => {
+  // Read the actual bound port from the server (not the requested `port` env var):
+  // when PORT=0 the OS auto-picks an ephemeral port, and the IT harness needs the
+  // real number to construct the issuerRegistry JWKS URL. Logging the requested
+  // port (e.g. "0") would leak straight through to a malformed URL at the caller.
+  const actual = server.address().port;
   process.stdout.write(
-    `dev JWKS server listening on https://${host}:${port}/jwks.json\n`,
+    `dev JWKS server listening on https://${host}:${actual}/jwks.json\n`,
   );
 });
