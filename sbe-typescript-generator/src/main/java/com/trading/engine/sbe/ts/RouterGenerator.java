@@ -278,6 +278,18 @@ final class RouterGenerator {
         .append(NL)
         .append(NL);
 
+    // Module-scope dev-mode flag — evaluated once at module load, then read in `route()`. With a
+    // bundler `define` for `process.env.NODE_ENV` this folds to a constant boolean and the
+    // entire downstream `if (__isDevelopment)` branch dead-code-eliminates. Without a bundler
+    // (raw browser load), the `typeof process` short-circuit + `?.` chain prevent ReferenceError
+    // and the flag resolves to `false`. Hoisting also addresses Gemini's iter-7 duplication
+    // feedback (one source of truth for the predicate; see chunk-9 plan §"Dev-mode aliasing").
+    sb.append("const __isDevelopment =")
+        .append(NL)
+        .append("  typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\";")
+        .append(NL)
+        .append(NL);
+
     sb.append("/**")
         .append(NL)
         .append(" * Read the SBE message header at `offset`, dispatch to the matching decoder,")
@@ -347,14 +359,12 @@ final class RouterGenerator {
         .append(NL)
         .append("  frame.decoder = decoder;")
         .append(NL)
-        // `typeof process !== "undefined"` short-circuits BEFORE accessing `process.env`, so the
-        // raw browser load (no bundler `define` for process) does not throw ReferenceError. The
-        // `?.` on `process.env` further guards against polyfills that expose `process` without
-        // `process.env` (rare but observed in some browser shims). With a Vite/esbuild/webpack
-        // `define` in place, both checks fold to constant true and get dead-code-eliminated
-        // alongside the rest of the dev-mode block in production.
-        .append(
-            "  if (typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\") {")
+        // Reference the module-scope `__isDevelopment` flag (computed once at module load, see
+        // declaration above). Bundler `define` substitutes the embedded `process.env.NODE_ENV` at
+        // build time so the constant folds to a boolean literal and the entire `if` block
+        // dead-code-eliminates in production builds. Without a bundler, the typeof + `?.` checks
+        // resolve to `false` at module load, suppressing the dev-mode increment.
+        .append("  if (__isDevelopment) {")
         .append(NL)
         .append("    frame.__generation = (frame.__generation ?? 0) + 1;")
         .append(NL)

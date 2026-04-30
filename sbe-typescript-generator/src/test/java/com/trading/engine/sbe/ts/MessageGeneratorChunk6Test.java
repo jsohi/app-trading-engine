@@ -432,10 +432,17 @@ final class MessageGeneratorChunk6Test {
         src.contains("blockLength=${headerDecoder.blockLength()}"),
         "expected blockLength in error message");
     // Dev-mode aliasing assertion — __generation increment dead-code-eliminated in production.
+    // Module-scope dev-mode flag declared once and referenced inside route() — addresses Gemini
+    // iter-7 MEDIUM (extract dev-mode predicate) and improves bundler-define DCE friendliness.
+    assertTrue(
+        src.contains("const __isDevelopment ="), "expected module-scope __isDevelopment flag");
     assertTrue(
         src.contains(
-            "if (typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\") {"),
-        "expected dev-mode guard with typeof process + optional-chained env access");
+            "  typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\";"),
+        "expected dev-mode predicate with typeof process + optional-chained env access");
+    assertTrue(
+        src.contains("if (__isDevelopment) {"),
+        "expected route() to reference module-scope __isDevelopment constant");
     assertTrue(
         src.contains("frame.__generation = (frame.__generation ?? 0) + 1;"),
         "expected __generation increment");
