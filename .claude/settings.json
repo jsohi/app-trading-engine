@@ -1,9 +1,7 @@
 {
   "effortLevel": "high",
   "permissions": {
-    "ask": [
-      "Bash(gh pr merge:*)"
-    ]
+    "ask": ["Bash(gh pr merge:*)"]
   },
   "hooks": {
     "PreToolUse": [
@@ -12,15 +10,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": ".claude/hooks/enforce-plan-design-before-exit.sh",
+            "timeout": 5,
+            "statusMessage": "Checking plan design gate (Plan-agent marker)..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/enforce-plan-review-before-exit.sh",
             "timeout": 5,
             "statusMessage": "Checking plan review gate (marker file)..."
-          },
-          {
-            "type": "prompt",
-            "prompt": "BEFORE exiting plan mode, you MUST complete a full plan review loop:\n\n1. Spawn 2 review agents IN PARALLEL on the ENTIRE plan file:\n   - Agent A (Industry Design Checker): CLAUDE.md conventions\n   - Agent B (Completeness + Quality): edge cases, error handling, test plan\n2. Fix ALL findings. Re-run until zero findings.\n3. Print compliance report (MEASURED, not guessed).\n4. Run: touch $TMPDIR/claude_plan_review_done\n5. Then proceed with ExitPlanMode.\n\nIf you have already completed the review loop and created the marker file, ALLOW the ExitPlanMode call.",
-            "timeout": 15,
-            "statusMessage": "Enforcing plan review gate (LLM)..."
           }
         ]
       },
@@ -51,6 +49,12 @@
             "statusMessage": "Checking review + E2E gate..."
           },
           {
+            "type": "command",
+            "command": ".claude/hooks/enforce-review-after-gemini.sh",
+            "timeout": 5,
+            "statusMessage": "Checking post-Gemini /review gate..."
+          },
+          {
             "type": "prompt",
             "prompt": "Check if this Bash command is: (1) a git push to main — if it pushes directly to main (e.g. 'git push origin main', or 'git push' while on main branch), BLOCK it with 'No direct pushes to main — all changes must go via PRs'. (2) a git commit — verify the FULL command text contains 'APP-{N}: ' where N is a number (Linear issue reference) — note the commit message may span multiple lines in a heredoc. (3) creates a new branch (git checkout -b, git branch <name>, git switch -c) — verify the branch name matches 'feat/app-{N}-*' pattern. If the command is not related to git push/commit/branch creation, ALLOW it. If it violates a convention, BLOCK it with an explanation. Command: $ARGUMENTS",
             "timeout": 10,
@@ -61,44 +65,60 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/record-plan-agent-done.sh",
+            "timeout": 5,
+            "statusMessage": "Recording Plan-agent invocation (if subagent_type=Plan)..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git commit:*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$EXIT_CODE\" -eq 0 ] && jq -nc '{decision:\"block\", reason:\"A git commit just completed. You MUST now run ALL three test suites before pushing or doing anything else:\\n\\n  1. ./gradlew test\\n  2. ./gradlew :integration-tests:test\\n  3. ./gradlew e2e\\n\\nDo NOT skip any suite. Do NOT claim they were already run. Execute each command and report results.\"}' || exit 0",
+            "timeout": 5,
+            "statusMessage": "Enforcing post-commit test gate..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git push:*)",
         "hooks": [
           {
             "type": "command",
             "command": "pr=$(gh pr view --json number -q .number 2>/dev/null); [ -n \"$pr\" ] && gh pr comment \"$pr\" --body \"@gemini review\" >/dev/null 2>&1; exit 0",
-            "if": "Bash(git push:*)",
             "async": true,
             "timeout": 30,
             "statusMessage": "Requesting Gemini review on PR..."
           },
           {
+            "type": "prompt",
+            "prompt": "A push just completed. You MUST now poll for Gemini review and fix all findings:\n\n1. Record PUSH_TIME=$(date -u -v-30S +%%Y-%%m-%%dT%%H:%%M:%%SZ) (30s clock-skew buffer)\n2. Wait for Gemini review: poll every 30s until gemini-code-assist[bot] review appears\n3. Fetch ALL Gemini line-level comments created after PUSH_TIME\n4. Fix ALL high, medium, and low severity findings\n5. If fixes made: run spotlessApply, commit, run all 3 test suites, push again (which triggers another Gemini round)\n6. Loop until Gemini has zero actionable comments\n\nDo NOT skip this. Do NOT say 'I already pushed'. Do NOT move on without polling Gemini. This is MANDATORY after every push.",
+            "timeout": 10,
+            "statusMessage": "Enforcing Gemini review poll after push..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(make push:*)",
+        "hooks": [
+          {
             "type": "command",
             "command": "pr=$(gh pr view --json number -q .number 2>/dev/null); [ -n \"$pr\" ] && gh pr comment \"$pr\" --body \"@gemini review\" >/dev/null 2>&1; exit 0",
-            "if": "Bash(make push:*)",
             "async": true,
             "timeout": 30,
             "statusMessage": "Requesting Gemini review on PR (via make push)..."
           },
           {
             "type": "prompt",
-            "if": "Bash(make push:*)",
             "prompt": "A push just completed via make push. You MUST now poll for Gemini review and fix all findings:\n\n1. Record PUSH_TIME=$(date -u -v-30S +%%Y-%%m-%%dT%%H:%%M:%%SZ) (30s clock-skew buffer)\n2. Wait for Gemini review: poll every 30s until gemini-code-assist[bot] review appears\n3. Fetch ALL Gemini line-level comments created after PUSH_TIME\n4. Fix ALL high, medium, and low severity findings\n5. If fixes made: run spotlessApply, commit, run all 3 test suites, push again (which triggers another Gemini round)\n6. Loop until Gemini has zero actionable comments\n\nDo NOT skip this. Do NOT say 'I already pushed'. Do NOT move on without polling Gemini. This is MANDATORY after every push.",
             "timeout": 10,
             "statusMessage": "Enforcing Gemini review poll after push..."
-          },
-          {
-            "type": "prompt",
-            "if": "Bash(git push:*)",
-            "prompt": "A push just completed. You MUST now poll for Gemini review and fix all findings:\n\n1. Record PUSH_TIME=$(date -u -v-30S +%%Y-%%m-%%dT%%H:%%M:%%SZ) (30s clock-skew buffer)\n2. Wait for Gemini review: poll every 30s until gemini-code-assist[bot] review appears\n3. Fetch ALL Gemini line-level comments created after PUSH_TIME\n4. Fix ALL high, medium, and low severity findings\n5. If fixes made: run spotlessApply, commit, run all 3 test suites, push again (which triggers another Gemini round)\n6. Loop until Gemini has zero actionable comments\n\nDo NOT skip this. Do NOT say 'I already pushed'. Do NOT move on without polling Gemini. This is MANDATORY after every push.",
-            "timeout": 10,
-            "statusMessage": "Enforcing Gemini review poll after push..."
-          },
-          {
-            "type": "command",
-            "command": "[ \"$EXIT_CODE\" -eq 0 ] && jq -nc '{decision:\"block\", reason:\"A git commit just completed. You MUST now run ALL three test suites before pushing or doing anything else:\\n\\n  1. ./gradlew test\\n  2. ./gradlew :integration-tests:test\\n  3. ./gradlew e2e\\n\\nDo NOT skip any suite. Do NOT claim they were already run. Execute each command and report results.\"}' || exit 0",
-            "if": "Bash(git commit:*)",
-            "timeout": 5,
-            "statusMessage": "Enforcing post-commit test gate..."
           }
         ]
       }

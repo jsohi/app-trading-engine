@@ -1,3 +1,49 @@
 {
-  "runs": []
+  "runs": [
+    {
+      "date": "2026-04-29",
+      "branch": "main",
+      "issue": "PLAN-3-1b-sprightly-falcon",
+      "scope": "plan-document scoring (not codebase) — pre-refinement",
+      "overall": 78.5,
+      "categories": {
+        "test_coverage": 60.0,
+        "zero_allocation": 100.0,
+        "documentation": 100.0,
+        "determinism": 100.0,
+        "collections": 100.0,
+        "autoboxing": 62.5,
+        "fix_protocol": 78.6,
+        "formatting": 60.0,
+        "logging": 100.0,
+        "clock_discipline": 60.0,
+        "final_var": 0.0,
+        "security": 25.0,
+        "thread_safety": 100.0
+      }
+    },
+    {
+      "date": "2026-04-29",
+      "branch": "main",
+      "issue": "PLAN-3-1b-sprightly-falcon",
+      "scope": "plan-document scoring — post-refinement (7 gaps closed + 4 round-N convergence fixes)",
+      "overall": 100.0,
+      "categories": {
+        "test_coverage": 100.0,
+        "zero_allocation": 100.0,
+        "documentation": 100.0,
+        "determinism": 100.0,
+        "collections": 100.0,
+        "autoboxing": 100.0,
+        "fix_protocol": 100.0,
+        "formatting": 100.0,
+        "logging": 100.0,
+        "clock_discipline": 100.0,
+        "final_var": 100.0,
+        "security": 100.0,
+        "thread_safety": 100.0
+      },
+      "convergence_notes": "Both review agents (industry-design + completeness) returned TOTAL FINDINGS: 0 on the round-N convergence pass. Both Plan agents (Worktree A scope + Worktree B scope) ran successfully and refined the design contracts. plan_design_done + plan_review_done markers armed."
+    }
+  ]
 }

@@ -140,6 +140,22 @@ record BlockField(
               + " (schema declares none today; add explicit emitter support before introducing one)");
     }
 
+    // Optional FLOAT/DOUBLE need NaN-aware sentinel comparison (`Number.isNaN(v)` since
+    // `v === NaN` is always false in JS). The chunk-6 emitter does not yet implement that
+    // branch — emitting a regular `v === <NaN-literal>` comparison would silently produce
+    // a getter that never returns null. Schema declares no float/double fields today;
+    // reject loudly if a future change introduces an optional one so the gap is surfaced
+    // rather than silently miscompiled.
+    if (inner.signal() == Signal.ENCODING && fieldLevelOptional) {
+      final var primitive = inner.encoding().primitiveType();
+      if (primitive == PrimitiveType.FLOAT || primitive == PrimitiveType.DOUBLE) {
+        throw new IllegalStateException(
+            "Optional FLOAT/DOUBLE field not supported by chunk 6: "
+                + name
+                + " (NaN sentinel requires Number.isNaN check; schema declares none today)");
+      }
+    }
+
     return switch (inner.signal()) {
       case ENCODING -> {
         final var primitive = inner.encoding().primitiveType();
