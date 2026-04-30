@@ -376,33 +376,38 @@ final class MessageGenerator {
     sb.append("    return this._limit - this.bufferOffset;").append(NL);
     sb.append("  }").append(NL);
 
-    sb.append(NL);
-    // Internal accessors used by group iterators in this file. Underscore-prefixed and tagged
-    // @internal to signal "not part of the public API contract" — TypeScript has no friend-class
-    // mechanism, so these are public methods, but consumers reaching in get undefined behavior.
-    sb.append("  /**")
-        .append(NL)
-        .append("   * @internal Used by group iterators in this file. NOT part of the public API")
-        .append(NL)
-        .append("   * contract — TypeScript has no friend-class mechanism, so these accessors are")
-        .append(NL)
-        .append("   * public. Consumer code MUST NOT call them.")
-        .append(NL)
-        .append("   */")
-        .append(NL);
-    sb.append("  _getBuffer(): DataView {").append(NL);
-    sb.append("    return this.buffer;").append(NL);
-    sb.append("  }").append(NL);
-    sb.append(NL);
-    sb.append("  /** @internal */").append(NL);
-    sb.append("  _getLimit(): number {").append(NL);
-    sb.append("    return this._limit;").append(NL);
-    sb.append("  }").append(NL);
-    sb.append(NL);
-    sb.append("  /** @internal */").append(NL);
-    sb.append("  _setLimit(limit: number): void {").append(NL);
-    sb.append("    this._limit = limit;").append(NL);
-    sb.append("  }").append(NL);
+    // Internal accessors emitted ONLY when at least one group iterator class needs to share
+    // the parent's cursor. Skipping them on no-group decoders eliminates dead public surface
+    // area (no consumer can call them legitimately, and tightening tsconfig to enable
+    // `noUnusedLocals` for class members would otherwise flag them). Var-data getters on the
+    // message class read `this._limit` / `this.buffer` directly without the public accessors.
+    if (!groups.isEmpty()) {
+      sb.append(NL);
+      sb.append("  /**")
+          .append(NL)
+          .append("   * @internal Used by group iterators in this file. NOT part of the public API")
+          .append(NL)
+          .append(
+              "   * contract — TypeScript has no friend-class mechanism, so these accessors are")
+          .append(NL)
+          .append("   * public. Consumer code MUST NOT call them.")
+          .append(NL)
+          .append("   */")
+          .append(NL);
+      sb.append("  _getBuffer(): DataView {").append(NL);
+      sb.append("    return this.buffer;").append(NL);
+      sb.append("  }").append(NL);
+      sb.append(NL);
+      sb.append("  /** @internal */").append(NL);
+      sb.append("  _getLimit(): number {").append(NL);
+      sb.append("    return this._limit;").append(NL);
+      sb.append("  }").append(NL);
+      sb.append(NL);
+      sb.append("  /** @internal */").append(NL);
+      sb.append("  _setLimit(limit: number): void {").append(NL);
+      sb.append("    this._limit = limit;").append(NL);
+      sb.append("  }").append(NL);
+    }
 
     // ---- Root-block field getters ---------------------------------------------------
     for (final var field : fields) {
@@ -410,8 +415,7 @@ final class MessageGenerator {
     }
 
     // ---- Group accessors + iterator classes -----------------------------------------
-    final var groupCtx =
-        new GroupGenerator.GroupEmitContext(messageName, className, sb, groupClassBodies);
+    final var groupCtx = new GroupGenerator.GroupEmitContext(className, sb, groupClassBodies);
     groupGenerator.emit(groups, groupCtx, hasTrailingVarData);
 
     // ---- Var-data getters (positioned after groups per wire layout) -----------------
@@ -642,8 +646,9 @@ final class MessageGenerator {
    * n}). For {@code uint64} the SBE constant is stored as a signed Java {@code long} ({@code -1L}
    * for the default null bit-pattern); {@link Long#toUnsignedString(long)} renders it as the
    * canonical positive form ({@code 18446744073709551615n}).
+   *
+   * <p>Package-private — also used by {@link GroupGenerator} for record-block field emission.
    */
-  /** Package-private — also used by {@link GroupGenerator} for record-block field emission. */
   static String numericLiteral(final PrimitiveType primitive, final PrimitiveValue value) {
     return switch (primitive) {
       case INT64 -> Long.toString(value.longValue()) + "n";

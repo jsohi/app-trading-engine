@@ -254,6 +254,14 @@ final class GroupGenerator {
     sb.append(" */").append(NL);
     sb.append("export class ").append(className).append(" {").append(NL);
     sb.append("  static readonly HEADER_SIZE = ").append(GROUP_HEADER_SIZE).append(";").append(NL);
+    // BLOCK_LENGTH is informational — schema-side per-record size for diagnostics. Runtime
+    // iteration uses `blockLengthRuntime` read from the wire dimension header (line below)
+    // instead, which is the SBE forward-compatibility contract: an older consumer reading
+    // newer-schema bytes honours the wire's blockLength even when it differs from the
+    // consumer's static.
+    sb.append(
+            "  /** Schema-side per-record block length, for diagnostics; runtime uses `blockLengthRuntime` (wire-side) for iteration. */")
+        .append(NL);
     sb.append("  static readonly BLOCK_LENGTH = ")
         .append(group.blockLength())
         .append(";")
@@ -705,26 +713,23 @@ final class GroupGenerator {
   // ---------------------------------------------------------------------------------------
 
   /**
-   * Emit context — the four state-and-config items {@link GroupGenerator#emit} needs. Single record
-   * collapses the prior 5-positional argument list. {@code rootMessageName} and {@code
-   * parentClassName} hold the same value today (chunk 6); they may diverge in chunk 7 if {@code
-   * UuidCompositeGenerator} introduces composite types that own nested fields, since the parent
-   * type for an inner iterator could then differ from the root message name.
+   * Emit context — the three state-and-config items {@link GroupGenerator#emit} needs. Single
+   * record collapses the prior 5-positional argument list.
    *
-   * @param rootMessageName the message name (e.g. {@code RfqStateSnapshot}); used to compose
-   *     qualified iterator class names
+   * <p>Chunk 7 (UuidCompositeGenerator) may need to add a separate {@code rootMessageName} field if
+   * composite types own nested groups whose iterator parent type differs from the root message
+   * decoder name. Today no such case exists — the parent type IS the root.
+   *
    * @param parentClassName the type referenced from emitted code as the iterator's {@code parent:
-   *     …} field (the root message decoder type today)
+   *     …} field; also used to compose qualified iterator class names via {@link
+   *     #qualifiedClassNameFor(String, List, String)}
    * @param messageBody StringBuilder for the parent class body (cached-instance fields and accessor
    *     methods get appended here)
    * @param fileBody StringBuilder for the post-class file body (iterator class declarations get
    *     appended here)
    */
   record GroupEmitContext(
-      String rootMessageName,
-      String parentClassName,
-      StringBuilder messageBody,
-      StringBuilder fileBody) {}
+      String parentClassName, StringBuilder messageBody, StringBuilder fileBody) {}
 
   /**
    * Parsed group metadata — name, schema id, fixed block length, fully-qualified emitted class

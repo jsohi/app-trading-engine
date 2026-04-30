@@ -155,7 +155,9 @@ final class VarDataGenerator {
     final var cacheField = cacheFieldName(spec);
     final var sb = new StringBuilder(640);
     sb.append("  /**").append(NL);
-    if (spec.description() != null && !spec.description().isBlank()) {
+    // description() is coalesced to "" in parseOneVarData when the schema declares none, so
+    // a null check here would be dead.
+    if (!spec.description().isBlank()) {
       sb.append("   * ").append(escapeJsDoc(spec.description())).append(NL);
       sb.append("   *").append(NL);
     }
