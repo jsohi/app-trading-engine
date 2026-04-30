@@ -240,7 +240,8 @@ final class MessageGenerator {
     final var fields = collectRootFields(tokens);
     final var deferred = collectDeferred(tokens);
     final var enumImports = collectEnumImports(fields);
-    final boolean usesFixedString = fields.stream().anyMatch(f -> f.kind() == FieldKind.CHAR_ARRAY);
+    final boolean usesFixedString =
+        fields.stream().anyMatch(f -> f.kind() == BlockFieldKind.CHAR_ARRAY);
 
     final var sb = new StringBuilder(8_192);
 
@@ -280,7 +281,10 @@ final class MessageGenerator {
       final boolean needsNullSentinel =
           fields.stream()
               .anyMatch(
-                  f -> f.kind() == FieldKind.ENUM && f.optional() && enumName.equals(f.enumName()));
+                  f ->
+                      f.kind() == BlockFieldKind.ENUM
+                          && f.optional()
+                          && enumName.equals(f.enumName()));
       sb.append("import { ").append(enumName);
       if (needsNullSentinel) {
         sb.append(", ").append(enumName).append("_NULL_VAL");
@@ -355,8 +359,8 @@ final class MessageGenerator {
    * Walk message tokens and collect root-block field metadata. Group/var-data tokens are skipped
    * via {@link Token#componentTokenCount()}, which spans the entire group or var-data sub-tree.
    */
-  private static List<RootField> collectRootFields(final List<Token> tokens) {
-    final var fields = new ArrayList<RootField>();
+  private static List<BlockField> collectRootFields(final List<Token> tokens) {
+    final var fields = new ArrayList<BlockField>();
     // Skip BEGIN_MESSAGE (i=0); END_MESSAGE is the last token. Everything between is
     // either a root field, a repeating group, or a var-data declaration.
     int i = 1;
@@ -365,7 +369,7 @@ final class MessageGenerator {
       switch (token.signal()) {
         case BEGIN_FIELD -> {
           final var inner = tokens.get(i + 1);
-          final var field = parseRootField(token, inner);
+          final var field = BlockField.parseBlockField(token, inner);
           if (field != null) {
             fields.add(field);
           }
@@ -379,107 +383,6 @@ final class MessageGenerator {
       }
     }
     return List.copyOf(fields);
-  }
-
-  /**
-   * Translate a (BEGIN_FIELD, inner-type) token pair into a {@link RootField}. Returns {@code null}
-   * for composite fields (e.g. {@code uuid}) — these are tracked separately by {@link
-   * #collectDeferred(List)} and surfaced as a trailing TODO comment so the offset stays documented
-   * for the chunk-7 emitter.
-   */
-  private static RootField parseRootField(final Token fieldToken, final Token inner) {
-    final var name = fieldToken.name();
-    final int offset = fieldToken.offset();
-
-    // SBE attaches the field-level `presence="optional"` attribute to different tokens
-    // depending on field kind:
-    //
-    //  - Primitive fields (e.g. `<field price type="int64" presence="optional"/>`): the
-    //    inner ENCODING token carries the optional presence on its encoding.
-    //  - Enum fields (e.g. `<field settlType type="SettlTypeEnum" presence="optional"/>`):
-    //    the BEGIN_ENUM token's encoding stays REQUIRED (since the underlying enum type
-    //    declaration is required); the optional flag is on the OUTER BEGIN_FIELD token.
-    //
-    // Honour either source so both field kinds detect optionality correctly.
-    final boolean fieldLevelOptional =
-        fieldToken.isOptionalEncoding()
-            || inner.encoding().presence() == Encoding.Presence.OPTIONAL;
-
-    // `presence="constant"` fields embed the value directly in the schema with no wire
-    // bytes; SBE marks the offset as -1 and consumers are expected to read the constant
-    // from the Encoding metadata. The chunk-5 emitter does not yet support this — emitting
-    // a regular DataView read at offset -1 would produce broken codecs. Schema declares no
-    // constant fields today; reject loudly if a future change introduces one so the gap is
-    // surfaced rather than silently miscompiled.
-    if (inner.signal() == Signal.ENCODING
-        && inner.encoding().presence() == Encoding.Presence.CONSTANT) {
-      throw new IllegalStateException(
-          "Constant-presence field not supported by chunk 5: "
-              + name
-              + " (schema declares none today; add explicit emitter support before introducing one)");
-    }
-
-    return switch (inner.signal()) {
-      case ENCODING -> {
-        final var primitive = inner.encoding().primitiveType();
-        final int arrayLength = inner.arrayLength();
-        if (primitive == PrimitiveType.CHAR && arrayLength > 1) {
-          yield new RootField(
-              name,
-              offset,
-              FieldKind.CHAR_ARRAY,
-              primitive,
-              arrayLength,
-              null,
-              inner.encoding(),
-              fieldLevelOptional);
-        }
-        if (primitive == PrimitiveType.CHAR) {
-          // Single-byte char (length=1) is not exercised by trading-schema.xml today and
-          // has no clean JS string mapping — a one-character `String.fromCharCode` is
-          // wasteful and a `number` getter would silently break consumers expecting text.
-          // Reject so a future schema change forces a deliberate decision.
-          throw new IllegalStateException(
-              "Single-byte char field not supported: "
-                  + name
-                  + " (use char[N>=2] for fixed-length strings, or uint8 for a single byte)");
-        }
-        yield new RootField(
-            name,
-            offset,
-            FieldKind.PRIMITIVE,
-            primitive,
-            1,
-            null,
-            inner.encoding(),
-            fieldLevelOptional);
-      }
-      case BEGIN_ENUM -> {
-        final var primitive = inner.encoding().primitiveType();
-        requireEnumPrimitive(name, primitive);
-        yield new RootField(
-            name,
-            offset,
-            FieldKind.ENUM,
-            primitive,
-            1,
-            inner.applicableTypeName(),
-            inner.encoding(),
-            fieldLevelOptional);
-      }
-      // BEGIN_COMPOSITE is observed only as the inner type of a BEGIN_FIELD wrapper
-      // (e.g. the `uuid` composite under `<field type="uuid"/>`); it is never a top-level
-      // signal. The deferred-features collector picks it up via the same field walk.
-      case BEGIN_COMPOSITE -> null;
-      case BEGIN_SET ->
-          throw new IllegalStateException(
-              "BEGIN_SET (bitset) field not supported by chunk 5: "
-                  + name
-                  + " (schema does not declare any today)");
-      default ->
-          throw new IllegalStateException(
-              "Unexpected inner token signal " + inner.signal() + " for field " + name);
-    };
   }
 
   /** Collect names of deferred features so the emitted file's trailing TODO block lists them. */
@@ -517,32 +420,17 @@ final class MessageGenerator {
   }
 
   /** Distinct enum names referenced by the message's root fields, in stable insertion order. */
-  private static List<String> collectEnumImports(final List<RootField> fields) {
+  private static List<String> collectEnumImports(final List<BlockField> fields) {
     final var enums = new LinkedHashSet<String>();
     for (final var field : fields) {
-      if (field.kind() == FieldKind.ENUM) {
+      if (field.kind() == BlockFieldKind.ENUM) {
         enums.add(field.enumName());
       }
     }
     return List.copyOf(enums);
   }
 
-  private static void requireEnumPrimitive(final String fieldName, final PrimitiveType primitive) {
-    switch (primitive) {
-      case UINT8, UINT16, UINT32 -> {
-        // supported — match the EnumGenerator's accepted set
-      }
-      default ->
-          throw new IllegalStateException(
-              "Enum field '"
-                  + fieldName
-                  + "' has unsupported encoding type "
-                  + primitive
-                  + "; EnumGenerator accepts only uint8/uint16/uint32");
-    }
-  }
-
-  private static String emitFieldGetter(final RootField field) {
+  private static String emitFieldGetter(final BlockField field) {
     return switch (field.kind()) {
       case PRIMITIVE -> emitPrimitiveGetter(field);
       case ENUM -> emitEnumGetter(field);
@@ -550,7 +438,7 @@ final class MessageGenerator {
     };
   }
 
-  private static String emitPrimitiveGetter(final RootField field) {
+  private static String emitPrimitiveGetter(final BlockField field) {
     final var dataViewMethod = dataViewMethodFor(field.primitive());
     final var returnType = primitiveReturnType(field.primitive());
     final boolean optional = field.optional();
@@ -583,7 +471,7 @@ final class MessageGenerator {
     return sb.toString();
   }
 
-  private static String emitEnumGetter(final RootField field) {
+  private static String emitEnumGetter(final BlockField field) {
     final var dataViewMethod = dataViewMethodFor(field.primitive());
     final var enumName = field.enumName();
     final boolean optional = field.optional();
@@ -613,7 +501,7 @@ final class MessageGenerator {
     return sb.toString();
   }
 
-  private static String emitCharArrayGetter(final RootField field) {
+  private static String emitCharArrayGetter(final BlockField field) {
     final var sb = new StringBuilder(192);
     sb.append("  ").append(field.fieldName()).append("(): string {").append(NL);
     sb.append("    return readFixedString(this.buffer, this.bufferOffset + ")
@@ -626,7 +514,8 @@ final class MessageGenerator {
     return sb.toString();
   }
 
-  private static String dataViewMethodFor(final PrimitiveType primitive) {
+  /** Package-private — also used by {@link GroupGenerator} for record-block field emission. */
+  static String dataViewMethodFor(final PrimitiveType primitive) {
     return switch (primitive) {
       case INT8 -> "getInt8";
       case UINT8 -> "getUint8";
@@ -642,7 +531,8 @@ final class MessageGenerator {
     };
   }
 
-  private static String primitiveReturnType(final PrimitiveType primitive) {
+  /** Package-private — also used by {@link GroupGenerator} for record-block field emission. */
+  static String primitiveReturnType(final PrimitiveType primitive) {
     return switch (primitive) {
       case INT8, UINT8, INT16, UINT16, INT32, UINT32, FLOAT, DOUBLE -> "number";
       case INT64, UINT64 -> "bigint";
@@ -657,7 +547,8 @@ final class MessageGenerator {
    * for the default null bit-pattern); {@link Long#toUnsignedString(long)} renders it as the
    * canonical positive form ({@code 18446744073709551615n}).
    */
-  private static String numericLiteral(final PrimitiveType primitive, final PrimitiveValue value) {
+  /** Package-private — also used by {@link GroupGenerator} for record-block field emission. */
+  static String numericLiteral(final PrimitiveType primitive, final PrimitiveValue value) {
     return switch (primitive) {
       case INT64 -> Long.toString(value.longValue()) + "n";
       case UINT64 -> Long.toUnsignedString(value.longValue()) + "n";
@@ -666,44 +557,6 @@ final class MessageGenerator {
       default -> throw new IllegalStateException("No literal form for primitive " + primitive);
     };
   }
-
-  /** Field-kind tag used to dispatch getter emission. */
-  private enum FieldKind {
-    PRIMITIVE,
-    ENUM,
-    CHAR_ARRAY
-  }
-
-  /**
-   * Parsed root field metadata, sufficient to emit the TS getter without re-walking tokens.
-   *
-   * @param fieldName schema field name (also the emitted TS getter name)
-   * @param offset byte offset within the message body, taken from the IR token's {@link
-   *     Token#offset()}
-   * @param kind dispatch tag — {@link FieldKind#PRIMITIVE}, {@link FieldKind#ENUM}, or {@link
-   *     FieldKind#CHAR_ARRAY}
-   * @param primitive underlying primitive (the enum's {@code encodingType} for enum kinds; {@code
-   *     CHAR} for char arrays)
-   * @param arrayLength array length for {@code CHAR_ARRAY}; always 1 for the other kinds
-   * @param enumName imported enum name (e.g. {@code SideEnum}) for {@link FieldKind#ENUM}; {@code
-   *     null} otherwise
-   * @param encoding raw IR encoding, kept for {@code applicableNullValue} queries during getter
-   *     emission (the optional sentinel)
-   * @param optional whether the field is declared {@code presence="optional"}. Computed at parse
-   *     time because SBE attaches the field-level optional flag to the {@link
-   *     Token#isOptionalEncoding() outer field token} for enum-typed fields and to the inner
-   *     ENCODING token for primitive-typed fields; deriving this once at parse time keeps the
-   *     getter emitters simple
-   */
-  private record RootField(
-      String fieldName,
-      int offset,
-      FieldKind kind,
-      PrimitiveType primitive,
-      int arrayLength,
-      String enumName,
-      Encoding encoding,
-      boolean optional) {}
 
   /** Names of group/var-data/composite features deferred to later APP-34 chunks. */
   private record DeferredFeatures(
