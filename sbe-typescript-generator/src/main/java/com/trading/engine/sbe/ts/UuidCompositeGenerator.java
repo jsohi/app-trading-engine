@@ -145,7 +145,7 @@ final class UuidCompositeGenerator {
         .append(NL)
         .append("   * Decode the SBE `uuid` composite at byte offset ")
         .append(field.offset())
-        .append(" — two `int64` halves (mostSignificantBits + leastSignificantBits, ")
+        .append(" — two `int64` halves (mostSignificantBits + leastSignificantBits,")
         .append(NL)
         .append("   * little-endian). Returns a fresh {@link UuidValue} object per call;")
         .append(NL)

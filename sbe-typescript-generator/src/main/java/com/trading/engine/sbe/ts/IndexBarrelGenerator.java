@@ -146,11 +146,15 @@ final class IndexBarrelGenerator {
         .append("// Workspace barrel — single import surface for @trading/sbe-codecs. Do not edit.")
         .append(NL)
         .append("//")
-        .append(NL)
-        .append("// Schema package: ")
-        .append(ir.applicableNamespace() == null ? "" : ir.applicableNamespace())
-        .append(NL)
-        .append("// Schema id     : ")
+        .append(NL);
+    // Skip the namespace line entirely when the schema declares no package=, rather than
+    // emitting "Schema package: " with a dangling empty value. Today's schema declares the
+    // attribute, so the line is always present; the conditional is forward-proofing.
+    final var namespace = ir.applicableNamespace();
+    if (namespace != null && !namespace.isBlank()) {
+      sb.append("// Schema package: ").append(namespace).append(NL);
+    }
+    sb.append("// Schema id     : ")
         .append(ir.id())
         .append(NL)
         .append("// Schema version: ")
@@ -209,9 +213,10 @@ final class IndexBarrelGenerator {
     // UuidValue re-export only when at least one schema field uses the uuid composite. The
     // interface is emitted into _codecRuntime.ts unconditionally today (it is a small static
     // shape) but the barrel-level re-export gates on usage so the consumer surface stays clean
-    // when a future schema has zero uuid fields.
+    // when a future schema has zero uuid fields. Blank-line separator visually segments this
+    // conditional block from the fixed-format re-exports above.
     if (usesUuidComposite) {
-      sb.append("export type { UuidValue } from \"./_codecRuntime.js\";").append(NL);
+      sb.append(NL).append("export type { UuidValue } from \"./_codecRuntime.js\";").append(NL);
     }
 
     Files.writeString(outputDir.resolve(INDEX_FILENAME), sb, StandardCharsets.UTF_8);
