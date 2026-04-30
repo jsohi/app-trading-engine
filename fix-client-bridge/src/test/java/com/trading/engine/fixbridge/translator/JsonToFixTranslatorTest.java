@@ -532,6 +532,32 @@ final class JsonToFixTranslatorTest {
     assertSame(JsonParseException.MALFORMED, thrown);
   }
 
+  @Test
+  void parseDecimalToDecimalFloat_trailingDecimalPoint_throwsMalformed() {
+    // RFC 8259 §6: `5.` is malformed — a `.` must be followed by at least one digit. The
+    // BrowserMessageReader already rejects this (see its decodeFixedPoint); this regression test
+    // pins the same strictness contract on parseDecimalToDecimalFloat so the bridge rejects
+    // identical inputs at every layer.
+    final var df = new DecimalFloat();
+    final var buf = "5.".getBytes(StandardCharsets.US_ASCII);
+    final var thrown =
+        assertThrows(
+            JsonParseException.class,
+            () -> JsonToFixTranslator.parseDecimalToDecimalFloat(buf, 0, buf.length, df));
+    assertSame(JsonParseException.MALFORMED, thrown);
+  }
+
+  @Test
+  void parseDecimalToDecimalFloat_negativeTrailingDecimalPoint_throwsMalformed() {
+    final var df = new DecimalFloat();
+    final var buf = "-5.".getBytes(StandardCharsets.US_ASCII);
+    final var thrown =
+        assertThrows(
+            JsonParseException.class,
+            () -> JsonToFixTranslator.parseDecimalToDecimalFloat(buf, 0, buf.length, df));
+    assertSame(JsonParseException.MALFORMED, thrown);
+  }
+
   // ===========================================================================
   // Constructor.
   // ===========================================================================
