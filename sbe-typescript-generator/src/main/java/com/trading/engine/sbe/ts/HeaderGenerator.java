@@ -67,7 +67,6 @@ final class HeaderGenerator {
   /** Filename emitted into the output directory. */
   static final String OUTPUT_FILENAME = "messageHeader.ts";
 
-  /** Newline used in emitted TypeScript. {@code \n} is the canonical TS source-file convention. */
   /**
    * Emit {@code messageHeader.ts} into {@code outputDir}.
    *

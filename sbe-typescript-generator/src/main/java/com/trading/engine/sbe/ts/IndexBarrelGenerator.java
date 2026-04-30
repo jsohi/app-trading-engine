@@ -292,10 +292,10 @@ final class IndexBarrelGenerator {
     i += dimension.componentTokenCount();
     while (i < tokens.size()) {
       final var token = tokens.get(i);
-      if (token.signal() == Signal.END_GROUP) {
-        return;
-      }
       switch (token.signal()) {
+        case END_GROUP -> {
+          return;
+        }
         case BEGIN_FIELD -> {
           final var inner = tokens.get(i + 1);
           if (inner.signal() != Signal.BEGIN_COMPOSITE) {
@@ -366,10 +366,10 @@ final class IndexBarrelGenerator {
     i += dimension.componentTokenCount();
     while (i < tokens.size()) {
       final var token = tokens.get(i);
-      if (token.signal() == Signal.END_GROUP) {
-        return false;
-      }
       switch (token.signal()) {
+        case END_GROUP -> {
+          return false;
+        }
         case BEGIN_FIELD -> {
           final var inner = tokens.get(i + 1);
           if (inner.signal() == Signal.BEGIN_COMPOSITE
