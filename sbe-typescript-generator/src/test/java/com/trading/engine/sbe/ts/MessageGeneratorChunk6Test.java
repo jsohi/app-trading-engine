@@ -32,17 +32,19 @@ import uk.co.real_logic.sbe.xml.ParserOptions;
 import uk.co.real_logic.sbe.xml.XmlSchemaParser;
 
 /**
- * Chunk-6 unit tests over the emitted-source surface of {@link MessageGenerator}, {@link
- * GroupGenerator}, and {@link VarDataGenerator}.
+ * Unit tests over the emitted-source surface of {@link MessageGenerator}, {@link GroupGenerator},
+ * {@link VarDataGenerator}, and {@link UuidCompositeGenerator}. The class name preserves chunk-6
+ * lineage for git-history continuity; coverage now spans chunks 6 + 7 (and is the append target for
+ * chunk-8/9/10/11 emission tests as those land).
  *
  * <h2>What's under test</h2>
  *
  * Each test re-runs the generator against {@code messages/src/main/resources/trading-schema.xml}
  * (the project's real schema; chunks 1–5 already validated against it) into a {@link TempDir}, then
  * asserts string-substring properties of the emitted {@code .ts} files. String-substring checks are
- * deliberate: they're fast, deterministic, and catch the most likely chunk-6 regressions (missing
- * wrap-resets, broken nested-class names, lost `_NULL_VAL` imports, forgotten group-accessor JSDoc
- * warnings) without needing a Node runtime.
+ * deliberate: they're fast, deterministic, and catch the most likely regressions (missing
+ * wrap-resets, broken nested-class names, lost {@code _NULL_VAL} imports, forgotten group-accessor
+ * JSDoc warnings, missing uuid getters) without needing a Node runtime.
  *
  * <h2>Test method naming</h2>
  *
@@ -261,6 +263,74 @@ final class MessageGeneratorChunk6Test {
     assertTrue(
         src.contains("Call at most once per `wrap()` of this decoder"),
         "expected call-once-per-wrap JSDoc warning on group accessor");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Chunk 7 — UuidCompositeGenerator emission tests
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  void webSocketAuthAck_emitsUuidGetter(@TempDir final Path tmp) throws Exception {
+    final var out = emitAll(tmp);
+    final var src = readDecoder(out, "WebSocketAuthAckDecoder");
+
+    assertTrue(src.contains("sessionId(): UuidValue {"), "expected sessionId(): UuidValue getter");
+    assertTrue(
+        src.contains("msb: this.buffer.getBigInt64(this.bufferOffset + 0, true),"),
+        "expected msb read at offset 0 (little-endian)");
+    assertTrue(
+        src.contains("lsb: this.buffer.getBigInt64(this.bufferOffset + 8, true),"),
+        "expected lsb read at offset 8 (little-endian)");
+  }
+
+  @Test
+  void sessionResume_emitsUuidGetter(@TempDir final Path tmp) throws Exception {
+    final var out = emitAll(tmp);
+    final var src = readDecoder(out, "SessionResumeDecoder");
+
+    assertTrue(src.contains("sessionId(): UuidValue {"), "expected sessionId(): UuidValue getter");
+  }
+
+  @Test
+  void webSocketSnapshot_emitsUuidGetter(@TempDir final Path tmp) throws Exception {
+    final var out = emitAll(tmp);
+    final var src = readDecoder(out, "WebSocketSnapshotDecoder");
+
+    assertTrue(
+        src.contains("snapshotId(): UuidValue {"), "expected snapshotId(): UuidValue getter");
+  }
+
+  @Test
+  void codecRuntime_emitsUuidValueInterface(@TempDir final Path tmp) throws Exception {
+    final var out = emitAll(tmp);
+    final var runtime =
+        Files.readString(
+            out.resolve(MessageGenerator.CODEC_RUNTIME_FILENAME), StandardCharsets.UTF_8);
+
+    assertTrue(
+        runtime.contains("export interface UuidValue {"),
+        "expected UuidValue interface exported from _codecRuntime.ts");
+    assertTrue(runtime.contains("readonly msb: bigint;"), "expected readonly msb: bigint field");
+    assertTrue(runtime.contains("readonly lsb: bigint;"), "expected readonly lsb: bigint field");
+  }
+
+  @Test
+  void messageWithUuid_importsUuidValueType(@TempDir final Path tmp) throws Exception {
+    final var out = emitAll(tmp);
+
+    final var withUuid = readDecoder(out, "WebSocketAuthAckDecoder");
+    assertTrue(
+        withUuid.contains("type UuidValue"),
+        "expected `type UuidValue` import in a uuid-using decoder");
+    assertTrue(
+        withUuid.contains("from \"./_codecRuntime.js\""),
+        "expected import to reference the runtime module");
+
+    // WebSocketHeartbeat has no uuid fields — must NOT import UuidValue.
+    final var withoutUuid = readDecoder(out, "WebSocketHeartbeatDecoder");
+    assertFalse(
+        withoutUuid.contains("type UuidValue"),
+        "expected no `type UuidValue` import in non-uuid decoder");
   }
 
   // -----------------------------------------------------------------------------------------

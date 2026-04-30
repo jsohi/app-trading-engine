@@ -394,6 +394,8 @@ final class GroupGenerator {
       case PRIMITIVE -> emitGroupPrimitiveGetter(field);
       case ENUM -> emitGroupEnumGetter(field);
       case CHAR_ARRAY -> emitGroupCharArrayGetter(field);
+      case UUID_COMPOSITE ->
+          UuidCompositeGenerator.emitGetter(field, "this.parent._getBuffer()", "this.recordOffset");
     };
   }
 
@@ -611,6 +613,39 @@ final class GroupGenerator {
     }
     for (final var nested : group.nestedGroups()) {
       if (anyUsesFixedStringRecursive(nested)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether any group in the tree declares a {@code uuid} composite field needing the {@code
+   * UuidValue} type alias from {@code _codecRuntime.ts}. Mirrors {@link #anyUsesFixedString}; used
+   * by {@link MessageGenerator} to drive the conditional {@code type UuidValue} import on messages
+   * whose uuid fields live only inside groups (no real schema group has a uuid field today, but the
+   * symmetric helper keeps the import-block logic consistent).
+   *
+   * @param groups parsed top-level groups for one message; nested groups are walked recursively
+   * @return {@code true} iff at least one field anywhere in the tree has kind UUID_COMPOSITE
+   */
+  static boolean anyUsesUuidComposite(final List<GroupSpec> groups) {
+    for (final var group : groups) {
+      if (anyUsesUuidCompositeRecursive(group)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean anyUsesUuidCompositeRecursive(final GroupSpec group) {
+    for (final var field : group.fields()) {
+      if (field.kind() == BlockFieldKind.UUID_COMPOSITE) {
+        return true;
+      }
+    }
+    for (final var nested : group.nestedGroups()) {
+      if (anyUsesUuidCompositeRecursive(nested)) {
         return true;
       }
     }

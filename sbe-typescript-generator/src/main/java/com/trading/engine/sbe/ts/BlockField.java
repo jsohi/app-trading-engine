@@ -91,21 +91,23 @@ record BlockField(
   /**
    * Translate a {@code (BEGIN_FIELD, inner-type)} token pair into a {@link BlockField}.
    *
-   * <p>Returns {@code null} for composite-typed fields (e.g. the {@code uuid} composite). These are
-   * tracked by the caller (via {@code MessageGenerator.collectDeferred}) and surfaced as a trailing
-   * TODO comment so the field's offset stays documented for the chunk-7 composite emitter.
+   * <p>Recognises the {@code uuid} composite (two {@code int64} halves) as {@link
+   * BlockFieldKind#UUID_COMPOSITE}; chunk 7's {@link UuidCompositeGenerator} handles getter
+   * emission. Any other composite type triggers {@link IllegalStateException} — the schema declares
+   * only the {@code uuid} composite today, and adding a new one (e.g. a future {@code decimal64})
+   * needs a deliberate emitter extension rather than a silent skip.
    *
-   * <p>Throws {@link IllegalStateException} for schema constructs the chunk-6 emitter does not
-   * support: {@code BEGIN_SET} (bitset), constant-presence ENCODING fields (offset = -1, value
-   * embedded in metadata), and single-byte {@code char} fields (length = 1, no clean JS string
-   * mapping). The schema declares none of these today; the guards force a deliberate decision if a
-   * future schema change introduces one.
+   * <p>Throws {@link IllegalStateException} for schema constructs the emitter does not support:
+   * {@code BEGIN_SET} (bitset), constant-presence ENCODING fields (offset = -1, value embedded in
+   * metadata), and single-byte {@code char} fields (length = 1, no clean JS string mapping). The
+   * schema declares none of these today; the guards force a deliberate decision if a future schema
+   * change introduces one.
    *
    * @param fieldToken the outer {@code BEGIN_FIELD} token
    * @param inner the immediately-following inner-type token (ENCODING, BEGIN_ENUM, or
    *     BEGIN_COMPOSITE)
-   * @return the parsed {@link BlockField}, or {@code null} for composite-typed fields (deferred to
-   *     chunk 7)
+   * @return the parsed {@link BlockField} (never {@code null} — every supported field kind yields a
+   *     record)
    * @throws IllegalStateException if the field uses an unsupported schema construct
    */
   static BlockField parseBlockField(final Token fieldToken, final Token inner) {
@@ -205,9 +207,43 @@ record BlockField(
             fieldLevelOptional);
       }
       // BEGIN_COMPOSITE is observed only as the inner type of a BEGIN_FIELD wrapper (e.g. the
-      // `uuid` composite under `<field type="uuid"/>`); it is never a top-level signal. The
-      // deferred-features collector picks it up via the same field walk.
-      case BEGIN_COMPOSITE -> null;
+      // `uuid` composite under `<field type="uuid"/>`). Chunk 7 lights up the `uuid` composite
+      // via UuidCompositeGenerator; any other composite type would silently miscompile, so it
+      // throws to surface the gap.
+      case BEGIN_COMPOSITE -> {
+        final var typeName = inner.applicableTypeName();
+        if (!UuidCompositeGenerator.UUID_TYPE_NAME.equals(typeName)) {
+          throw new IllegalStateException(
+              "Composite-typed field '"
+                  + name
+                  + "' uses composite '"
+                  + typeName
+                  + "'; only the `uuid` composite is supported (extend the emitter before"
+                  + " introducing a new one)");
+        }
+        // The uuid composite has no nullable encoding — decoders return a UuidValue object
+        // directly. `presence="optional"` on a uuid field is not declared in the schema today;
+        // reject loudly if a future schema change adds one so the gap is surfaced.
+        if (fieldLevelOptional) {
+          throw new IllegalStateException(
+              "Optional uuid field not supported: "
+                  + name
+                  + " (no UuidValue null sentinel today; schema declares none)");
+        }
+        yield new BlockField(
+            name,
+            offset,
+            BlockFieldKind.UUID_COMPOSITE,
+            // The `primitive`/`encoding` slots are unused for uuid getter emission — the
+            // emitter reads directly from the field offset using two getBigInt64 calls.
+            // Keep them populated with the inner composite token's encoding so callers that
+            // generically inspect `.encoding()` do not NPE.
+            PrimitiveType.INT64,
+            1,
+            null,
+            inner.encoding(),
+            false);
+      }
       case BEGIN_SET ->
           throw new IllegalStateException(
               "BEGIN_SET (bitset) field not supported by chunk 6: "
