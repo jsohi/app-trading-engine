@@ -410,8 +410,8 @@ final class MessageGeneratorChunk6Test {
     // Dev-mode aliasing assertion — __generation increment dead-code-eliminated in production.
     assertTrue(
         src.contains(
-            "if (typeof process !== \"undefined\" && process.env.NODE_ENV === \"development\") {"),
-        "expected dev-mode guard with typeof-process browser-portability check");
+            "if (typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\") {"),
+        "expected dev-mode guard with typeof process + optional-chained env access");
     assertTrue(
         src.contains("frame.__generation = (frame.__generation ?? 0) + 1;"),
         "expected __generation increment");

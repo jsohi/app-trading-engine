@@ -333,11 +333,13 @@ final class RouterGenerator {
         .append("  frame.decoder = decoder;")
         .append(NL)
         // `typeof process !== "undefined"` short-circuits BEFORE accessing `process.env`, so the
-        // raw browser load (no bundler `define` for process) does not throw ReferenceError. With
-        // a Vite/esbuild/webpack `define` in place, the typeof check resolves to a constant true
-        // and gets dead-code-eliminated alongside the rest of the dev-mode block in production.
+        // raw browser load (no bundler `define` for process) does not throw ReferenceError. The
+        // `?.` on `process.env` further guards against polyfills that expose `process` without
+        // `process.env` (rare but observed in some browser shims). With a Vite/esbuild/webpack
+        // `define` in place, both checks fold to constant true and get dead-code-eliminated
+        // alongside the rest of the dev-mode block in production.
         .append(
-            "  if (typeof process !== \"undefined\" && process.env.NODE_ENV === \"development\") {")
+            "  if (typeof process !== \"undefined\" && process.env?.NODE_ENV === \"development\") {")
         .append(NL)
         .append("    frame.__generation = (frame.__generation ?? 0) + 1;")
         .append(NL)
