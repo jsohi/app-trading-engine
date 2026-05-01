@@ -71,7 +71,17 @@ fi
 
 if printf '%s' "$last_subjects" | grep -qiE 'gemini'; then
   marker=/tmp/claude_gates/post_gemini_review_done
-  if [ ! -f "$marker" ]; then
+  # CWE-377 mitigation: a co-tenant on a multi-user host could plant this
+  # marker under /tmp to bypass the gate. Treat the marker as absent unless
+  # it both exists AND is owned by the current user. Belt-and-braces: the
+  # writer (the /review skill) creates the parent dir with mode 0700 and
+  # umask 077, but the writer lives in user-skill content that may drift —
+  # this owner check fails closed regardless.
+  marker_owner=""
+  if [ -f "$marker" ]; then
+    marker_owner=$(stat -f '%Su' "$marker" 2>/dev/null || stat -c '%U' "$marker" 2>/dev/null || echo "")
+  fi
+  if [ ! -f "$marker" ] || [ "$marker_owner" != "${USER:-$(id -un)}" ]; then
     jq -nc --arg msg "BLOCKED by post-Gemini /review gate (~/.claude/hooks/enforce-review-after-gemini.sh).
 
 The most recent commit(s) on this branch include Gemini-fix work but no /review run has produced zero findings since.

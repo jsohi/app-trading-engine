@@ -341,12 +341,14 @@ final class RoundTripTest {
 
     @BeforeEach
     void requireTsxAndTsc() {
+      final var tsxBin = rootDir().resolve("node_modules/.bin").resolve(nodeBinName("tsx"));
+      final var tscBin = rootDir().resolve("node_modules/.bin").resolve(nodeBinName("tsc"));
       assumeTrue(
-          Files.exists(rootDir().resolve("node_modules/.bin/tsx")),
-          "tsx not installed at <rootProject>/node_modules/.bin/tsx — run `:web-ui:webUiInstall`");
+          Files.exists(tsxBin),
+          () -> "tsx not installed at " + tsxBin + " — run `:web-ui:webUiInstall`");
       assumeTrue(
-          Files.exists(rootDir().resolve("node_modules/.bin/tsc")),
-          "tsc not installed at <rootProject>/node_modules/.bin/tsc — run `:web-ui:webUiInstall`");
+          Files.exists(tscBin),
+          () -> "tsc not installed at " + tscBin + " — run `:web-ui:webUiInstall`");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -614,7 +616,7 @@ final class RoundTripTest {
               + typeRoots
               + "\"],\"types\":[\"node\"]}}");
 
-      final var tscPath = rootDir().resolve("node_modules/.bin/tsc");
+      final var tscPath = rootDir().resolve("node_modules/.bin").resolve(nodeBinName("tsc"));
       final var pb =
           new ProcessBuilder(tscPath.toString(), "--project", "tsconfig.json")
               .directory(tmp.toFile())
@@ -898,7 +900,7 @@ final class RoundTripTest {
   private static JsonNode spawnDriver(final String... args)
       throws IOException, InterruptedException {
     final var rootDir = rootDir();
-    final var tsxPath = rootDir.resolve("node_modules/.bin/tsx");
+    final var tsxPath = rootDir.resolve("node_modules/.bin").resolve(nodeBinName("tsx"));
     final var driverPath = "sbe-typescript-generator/src/test/resources/roundtrip-driver.ts";
 
     final var cmd = new String[args.length + 2];
@@ -971,9 +973,24 @@ final class RoundTripTest {
       }
       // Process exited; pumps will see EOF imminently. Join with a small deadline so the
       // diagnostic byte-arrays are fully populated before any caller reads them — without this, a
-      // failing assertion's stderr message can be truncated mid-write.
+      // failing assertion's stderr message can be truncated mid-write. After join() returns we
+      // verify the pumps are no longer alive: if a pump is still running past the deadline, the
+      // byte buffers are partial and any caller that proceeds to MAPPER.readTree(...) will hit a
+      // confusing JSON parse failure. Failing loud here pins the diagnostic to the actual cause.
       stdoutPump.join(5_000);
       stderrPump.join(5_000);
+      if (stdoutPump.isAlive() || stderrPump.isAlive()) {
+        fail(
+            "drain pump still running after 5s join — output buffers are partial. "
+                + "stdoutPump.isAlive="
+                + stdoutPump.isAlive()
+                + ", stderrPump.isAlive="
+                + stderrPump.isAlive()
+                + "; partial stdout (utf-8):\n"
+                + stdoutBuf.toString(StandardCharsets.UTF_8)
+                + "\npartial stderr (utf-8):\n"
+                + stderrBuf.toString(StandardCharsets.UTF_8));
+      }
       return new ProcessOutputs(proc.exitValue(), stdoutBuf.toByteArray(), stderrBuf.toByteArray());
     } finally {
       // No-op if the process already exited normally above; idempotent destroy on any abnormal
@@ -1014,6 +1031,18 @@ final class RoundTripTest {
 
   private static Path rootDir() {
     return requireSystemPropPath("rootProjectDir");
+  }
+
+  /**
+   * Resolves a Node-installed binary's filename for the host OS. npm wraps tsx / tsc in shim
+   * scripts that ship as {@code <name>} on POSIX and {@code <name>.cmd} on Windows. Hard-coding the
+   * POSIX form would silently {@code Files.exists()=false} on Windows, which the @BeforeEach gate
+   * translates into a skip — fine, but masks the real reason. Returning the OS-specific filename
+   * keeps the diagnostic correct across platforms.
+   */
+  private static String nodeBinName(final String name) {
+    final var os = System.getProperty("os.name", "").toLowerCase();
+    return os.contains("win") ? name + ".cmd" : name;
   }
 
   private static String readDriverSource() throws IOException {
