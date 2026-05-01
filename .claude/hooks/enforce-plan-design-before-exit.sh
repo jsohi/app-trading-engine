@@ -7,8 +7,10 @@
 # when tool_input.subagent_type == "Plan"). Pairs with
 # enforce-plan-review-before-exit.sh — both gates must pass.
 #
-# Uses /tmp/claude_gates/ (NOT $TMPDIR) because Claude Code's hook runner
-# uses macOS system TMPDIR while Bash tool uses sandbox TMPDIR.
+# Marker shared between two PostToolUse / PreToolUse hooks both running
+# under the harness's hook runner. /tmp/claude_gates/ is a deliberate
+# fixed path so writer (record-plan-agent-done.sh) and reader (this file)
+# always agree, independent of any per-invocation TMPDIR variation.
 #
 # Stdin: Claude Code hook JSON
 # Stdout: empty (allow) or hookSpecificOutput JSON (deny)
