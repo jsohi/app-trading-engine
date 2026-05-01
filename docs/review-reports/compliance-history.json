@@ -4,7 +4,7 @@
       "date": "2026-04-29",
       "branch": "main",
       "issue": "PLAN-3-1b-sprightly-falcon",
-      "scope": "plan-document scoring (not codebase) — pre-refinement",
+      "scope": "plan-document scoring (not codebase) \u2014 pre-refinement",
       "overall": 78.5,
       "categories": {
         "test_coverage": 60.0,
@@ -26,7 +26,7 @@
       "date": "2026-04-29",
       "branch": "main",
       "issue": "PLAN-3-1b-sprightly-falcon",
-      "scope": "plan-document scoring — post-refinement (7 gaps closed + 4 round-N convergence fixes)",
+      "scope": "plan-document scoring \u2014 post-refinement (7 gaps closed + 4 round-N convergence fixes)",
       "overall": 100.0,
       "categories": {
         "test_coverage": 100.0,
@@ -49,7 +49,7 @@
       "date": "2026-04-30",
       "branch": "feat/app-34-sbe-typescript-generator",
       "issue": "APP-34",
-      "scope": "code review — chunks 1-6 of SBE TypeScript code generator (commits 9402459..3158ccc)",
+      "scope": "code review \u2014 chunks 1-6 of SBE TypeScript code generator (commits 9402459..3158ccc)",
       "overall": 100.0,
       "categories": {
         "test_coverage": 100.0,
@@ -66,7 +66,30 @@
         "security": 100.0,
         "thread_safety": 100.0
       },
-      "convergence_notes": "1 orchestrate iteration + 2 Gemini rounds. /review iter 1 found 13 LOW findings (de-dup) across both review agents — 9 unique fixed in commit 3158ccc; 3 explicit deferrals (rootMessageName forward-prop for chunk 7; TS forward-reference runtime test for chunk 13; test-path IDE-cwd fragility — Gradle is the canonical runner). All 3 test suites PASS (unit + integration + e2e); spotlessCheck clean; strict tsc against regenerated tree zero errors. Gemini round 2 returned 'I have no feedback to provide' — CONVERGED. 5 categories N/A because APP-34 is build-time CLI codegen (no JVM hot path; documented in CLAUDE.md project conventions)."
+      "convergence_notes": "1 orchestrate iteration + 2 Gemini rounds. /review iter 1 found 13 LOW findings (de-dup) across both review agents \u2014 9 unique fixed in commit 3158ccc; 3 explicit deferrals (rootMessageName forward-prop for chunk 7; TS forward-reference runtime test for chunk 13; test-path IDE-cwd fragility \u2014 Gradle is the canonical runner). All 3 test suites PASS (unit + integration + e2e); spotlessCheck clean; strict tsc against regenerated tree zero errors. Gemini round 2 returned 'I have no feedback to provide' \u2014 CONVERGED. 5 categories N/A because APP-34 is build-time CLI codegen (no JVM hot path; documented in CLAUDE.md project conventions)."
+    },
+    {
+      "date": "2026-04-30",
+      "branch": "feat/app-34-chunks-7-11-completion",
+      "issue": "APP-34",
+      "scope": "orchestrate full-codebase compliance \u2014 chunks 7-13 + review polish + spotless fix (PR #67)",
+      "overall": 88.3,
+      "categories": {
+        "test_coverage": 66.5,
+        "zero_allocation": 100.0,
+        "documentation": 86.7,
+        "determinism": 100.0,
+        "collections": 89.8,
+        "autoboxing": 99.1,
+        "fix_protocol": 100.0,
+        "formatting": 100.0,
+        "logging": 100.0,
+        "clock_discipline": 40.0,
+        "final_var": 83.7,
+        "security": 100.0,
+        "thread_safety": 80.4
+      },
+      "convergence_notes": "Orchestrate iter 1: 0 review findings, all 3 test suites PASS, e2e PASSED, spotlessCheck PASS. Gemini round 1: \"I have no feedback to provide\" \u2014 converged. Full-codebase compliance: 88.3% overall. SUBPAR categories (test coverage, docs, collections, autoboxing, clock, final var, thread-safety) are pre-existing on main; chunks 12-13 + spotless fix introduced zero new violations. Cat 12 NVD analysis ran clean (no CVE >= 7.0); npm-side OSS Index Analyzer failed due to network sandbox \u2014 Java-side dependency tree is the actual security gate and is clean."
     }
   ]
 }

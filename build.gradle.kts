@@ -13,6 +13,13 @@ dependencyCheck {
 spotless {
     kotlinGradle {
         target("**/*.gradle.kts")
+        // Exclude vendored / generated trees so Gradle 9's strict input-overlap
+        // validation does not treat outputs of `:web-ui:webUiInstall` (npm-installed
+        // node_modules tree) or the build/ outputs as undeclared inputs of
+        // :spotlessKotlinGradle. Without this, running any test that depends on
+        // webUiInstall (chunks 12-13's :sbe-typescript-generator:test) and then
+        // root :spotlessCheck fails with implicit_dependency.
+        targetExclude("**/node_modules/**", "**/build/**", ".gradle/**")
         ktlint()
     }
     format("misc") {

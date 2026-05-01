@@ -49,9 +49,18 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
     // chunk 6 lights up the first JVM tests in this module — needed for fixture-based
-    // assertions on the emitted decoder source. Chunk 13's RoundTripIT will later add the
-    // ProcessBuilder/tsx wiring and a `dependsOn(":web-ui:webUiInstall")` on the test task.
+    // assertions on the emitted decoder source. Chunk 13 will add the ProcessBuilder/tsx
+    // wiring and a `dependsOn(":web-ui:webUiInstall")` on the test task.
     testImplementation(project(":messages"))
+    // chunk 12 — Gradle TestKit drives SbeGeneratorIncrementalTest's @TempDir fixture
+    // builds. Tests construct a synthetic project that mirrors :generateTsCodecs's
+    // input/output declarations and asserts UP_TO_DATE / cache-miss behaviour through
+    // the same Gradle caching machinery the real task uses.
+    testImplementation(gradleTestKit())
+    // chunk 13 — Jackson parses the JSON the tsx round-trip driver writes to stdout.
+    // Test-only; not on any production hot path. bigints arrive as decimal strings
+    // (preserves int64 max precision) and Java parses them via new BigInteger(node.asText()).
+    testImplementation(libs.jackson.databind)
 }
 
 tasks.test {
@@ -60,6 +69,27 @@ tasks.test {
     // is the first JVM test in this module; chunk-1+2's deps were declared in anticipation
     // but never exercised.
     useJUnitPlatform()
+    // chunk 12 — pass module's projectDir so SbeGeneratorIncrementalTest can resolve the
+    // real `build.gradle.kts` (test #4 asserts the load-bearing input declarations are
+    // present) without depending on the test JVM's cwd, which Gradle does not formally
+    // guarantee. Also used by chunk 13's driverSource_* + barrelExportsHelpersAndRouter
+    // string-assertion tests.
+    systemProperty("moduleProjectDir", projectDir.absolutePath)
+
+    // chunk 13 — RoundTripTest's @Nested TsxRoundTripTests spawn `tsx` and `tsc` from the
+    // npm-workspace-hoisted bins at <rootProject>/node_modules/.bin/. dependsOn
+    // applies test-task-wide (even SbeGeneratorIncrementalTest pays the cost on a cold
+    // cache); acceptable because Gradle caches webUiInstall as UP-TO-DATE after the first
+    // run, and the strict-default path avoids the failure mode where a developer runs the
+    // round-trip tests against a checkout without `npm ci` having been performed. The
+    // dependency also transitively triggers :sbe-typescript-generator:generateTsCodecs
+    // (webUiInstall depends on it), which guarantees the test's tsdoc-propagation +
+    // string-assertion tests see fresh emitted output. Do NOT optimise away.
+    dependsOn(":web-ui:webUiInstall")
+    // chunk 13 — pass workspace root so RoundTripTest can resolve node_modules/.bin/tsx,
+    // node_modules/.bin/tsc, and the build/generated-ts/ tree. Same NPE-vs-skip rationale
+    // as moduleProjectDir above.
+    systemProperty("rootProjectDir", rootProject.projectDir.absolutePath)
 }
 
 application {
