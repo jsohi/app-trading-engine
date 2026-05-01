@@ -12,13 +12,24 @@
 # fixed path so writer (record-plan-agent-done.sh) and reader (this file)
 # always agree, independent of any per-invocation TMPDIR variation.
 #
+# CWE-377 mitigation: a co-tenant on a multi-user host could plant the
+# marker file ahead of us to bypass the gate. We mitigate by requiring
+# the marker to be owned by the current user — a planted file owned by
+# anyone else is treated as if absent.
+#
 # Stdin: Claude Code hook JSON
 # Stdout: empty (allow) or hookSpecificOutput JSON (deny)
 set -euo pipefail
 
 marker="/tmp/claude_gates/plan_design_done"
 
-if [ ! -f "$marker" ]; then
+# Resolve the marker's owner portably (BSD stat on macOS, GNU stat on Linux).
+marker_owner=""
+if [ -f "$marker" ]; then
+  marker_owner=$(stat -f '%Su' "$marker" 2>/dev/null || stat -c '%U' "$marker" 2>/dev/null || echo "")
+fi
+
+if [ ! -f "$marker" ] || [ "$marker_owner" != "${USER:-$(id -un)}" ]; then
   jq -nc '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
