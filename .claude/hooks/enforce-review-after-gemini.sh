@@ -49,9 +49,25 @@ fi
 # Gemini-fix commit; we only gate when the LATEST such commit exists
 # without a corresponding /review marker.
 #
-# We look at HEAD..main (commits ahead of main) so this is scoped to
-# the current branch's work.
-last_subjects=$(git log --pretty=%s main..HEAD 2>/dev/null | head -5 || true)
+# Resolve the base ref defensively — local "main" may not exist (forks
+# named "master", or freshly-cloned worktrees that only fetched the
+# default branch). Try in order: local main → origin/HEAD's symbolic
+# target → origin/main → origin/master. If none resolve, fall back to
+# the last 5 HEAD subjects so the gate fails closed (any Gemini commit
+# in the recent window still triggers).
+base_ref=""
+for candidate in main origin/HEAD origin/main origin/master; do
+  if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+    base_ref="$candidate"
+    break
+  fi
+done
+
+if [ -n "$base_ref" ]; then
+  last_subjects=$(git log --pretty=%s "${base_ref}..HEAD" 2>/dev/null | head -5 || true)
+else
+  last_subjects=$(git log --pretty=%s -5 HEAD 2>/dev/null || true)
+fi
 
 if printf '%s' "$last_subjects" | grep -qiE 'gemini'; then
   marker=/tmp/claude_gates/post_gemini_review_done

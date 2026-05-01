@@ -278,7 +278,13 @@ final class SbeGeneratorIncrementalTest {
   // Helpers
   // -----------------------------------------------------------------------------------------
 
-  /** Runs the fixture's {@code :generateTsCodecs} task in a fresh Gradle daemon-mode build. */
+  /**
+   * Runs the fixture's {@code :generateTsCodecs} task in a fresh Gradle daemon-mode build. TestKit
+   * defaults to the version of Gradle running the suite (i.e. the wrapper version), so CI and local
+   * runs match the project's pinned wrapper. Not calling {@code .withGradleVersion(...)} is
+   * intentional: pinning to a hard-coded version would silently mask a project-wide wrapper upgrade
+   * regression.
+   */
   private BuildResult runFixtureTask() {
     return GradleRunner.create()
         .withProjectDir(fixtureDir.toFile())

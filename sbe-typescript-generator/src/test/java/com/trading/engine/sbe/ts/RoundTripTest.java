@@ -39,6 +39,7 @@ import com.trading.engine.messages.sbe.WebSocketAuthEncoder;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -121,17 +122,37 @@ final class RoundTripTest {
   private static final HexFormat HEX = HexFormat.of();
 
   /**
+   * SBE optional-int64 null sentinel — applies uniformly to every {@code int64} field declared with
+   * {@code presence="optional"} in {@code trading-schema.xml}. Locked at {@link Long#MIN_VALUE} by
+   * the SBE specification. Using one named constant per call site makes the intent legible (vs.
+   * reusing an unrelated field's {@code *NullValue()} accessor, which would silently encode the
+   * wrong sentinel if that field's type ever changed to {@code uint64}).
+   */
+  private static final long INT64_OPTIONAL_NULL = Long.MIN_VALUE;
+
+  /**
+   * Resolves a project-directory system property set by {@code tasks.test}, asserting the property
+   * was injected (i.e. the test was launched via Gradle, not a direct IDE runner). Caller-supplied
+   * property name keeps the diagnostic specific while sharing the resolution / skip-on-missing
+   * logic between {@link #moduleDir()} and {@link #rootDir()}.
+   */
+  private static Path requireSystemPropPath(final String propName) {
+    final var prop = System.getProperty(propName);
+    assumeTrue(
+        prop != null,
+        propName
+            + " system property unset — run via `./gradlew :sbe-typescript-generator:test`, "
+            + "not the IDE direct test runner. Configure your IDE to delegate test execution to Gradle.");
+    return Path.of(prop);
+  }
+
+  /**
    * Resolves the module's project directory via the system property set by {@code tasks.test}. Used
    * by the outer Java-only tests to read the real {@code build.gradle.kts}, the driver source, and
    * the generated {@code MessageRouter.ts} / {@code index.ts}.
    */
   private static Path moduleDir() {
-    final var prop = System.getProperty("moduleProjectDir");
-    assumeTrue(
-        prop != null,
-        "moduleProjectDir system property unset — run via `./gradlew :sbe-typescript-generator:test`, "
-            + "not the IDE direct test runner. Configure your IDE to delegate test execution to Gradle.");
-    return Path.of(prop);
+    return requireSystemPropPath("moduleProjectDir");
   }
 
   // ===========================================================================================
@@ -272,12 +293,26 @@ final class RoundTripTest {
     final var src =
         Files.readString(
             moduleDir().resolve("src/test/java/com/trading/engine/sbe/ts/RoundTripTest.java"));
-    final var rfqBlockStart = src.indexOf("byte[] encodeRfqStateSnapshot(");
+    // Build the search needles at runtime via concatenation so this method's own string literals
+    // don't match — `src.indexOf("...")` would otherwise anchor to the literal inside this test
+    // body before reaching the actual method declaration, leaving the substring empty of the
+    // patterns we want to validate.
+    final var openBrace = "{";
+    final int rfqBlockStart =
+        src.indexOf("private static byte[] encodeRfqStateSnapshot() " + openBrace);
     assertTrue(
         rfqBlockStart > 0, "encodeRfqStateSnapshot helper missing — required by chunk-13 plan");
-    final var rfqBlock = src.substring(rfqBlockStart);
-    final var countIdx = rfqBlock.indexOf(".noRfqsCount(");
-    final var nextIdx = rfqBlock.indexOf(".next()");
+    // Upper bound at the next method's signature; without this bound the substring runs to EOF and
+    // a future unrelated helper that invokes the iterator before declaring the count would falsely
+    // fail this assertion.
+    final int rfqBlockEnd =
+        src.indexOf("private static byte[] sliceToByteArray(" + "final", rfqBlockStart);
+    assertTrue(
+        rfqBlockEnd > rfqBlockStart,
+        "sliceToByteArray helper missing — required as the upper bound of encodeRfqStateSnapshot's source");
+    final var rfqBlock = src.substring(rfqBlockStart, rfqBlockEnd);
+    final int countIdx = rfqBlock.indexOf(".noRfqsCount(");
+    final int nextIdx = rfqBlock.indexOf(".next()");
     assertTrue(countIdx > 0, "encodeRfqStateSnapshot MUST call noRfqsCount(...)");
     assertTrue(nextIdx > 0, "encodeRfqStateSnapshot MUST call .next() on the iterator");
     assertTrue(
@@ -389,7 +424,7 @@ final class RoundTripTest {
      */
     @Test
     void roundTrip_quote_optionalInt64ExplicitValueRoundTrips() throws Exception {
-      final var swapPoints = 250_000L;
+      final long swapPoints = 250_000L;
       final var bytes = encodeQuote(108_520_000L, swapPoints, null);
       final var json = runDriverSingle(bytes, QuoteEncoder.TEMPLATE_ID);
       assertEquals(
@@ -406,7 +441,7 @@ final class RoundTripTest {
     @Test
     void roundTrip_quote_bidPxThroughHelpersToFixed8RoundTrips() throws Exception {
       // 1.08520000 — a typical FX rate; chosen to exercise the helpers' fractional handling.
-      final var bidPx = 108_520_000L;
+      final long bidPx = 108_520_000L;
       final var bytes = encodeQuote(bidPx, QuoteEncoder.swapPointsNullValue(), null);
       final var json = runDriverSingle(bytes, QuoteEncoder.TEMPLATE_ID);
       final var fields = json.get("fields");
@@ -430,7 +465,7 @@ final class RoundTripTest {
      */
     @Test
     void roundTrip_quote_bidPxAtInt64MaxBoundaryRoundTripsWithoutTruncation() throws Exception {
-      final var bidPx = Long.MAX_VALUE;
+      final long bidPx = Long.MAX_VALUE;
       final var bytes = encodeQuote(bidPx, QuoteEncoder.swapPointsNullValue(), null);
       final var json = runDriverSingle(bytes, QuoteEncoder.TEMPLATE_ID);
       final var decoded = new BigInteger(json.get("fields").get("bidPx").asText());
@@ -549,16 +584,17 @@ final class RoundTripTest {
       try (final var stream = Files.walk(generatedSrc)) {
         stream.forEach(
             src -> {
+              // relativize/resolve don't throw; keep dst out of the try so the catch can cite it.
+              final var rel = generatedSrc.relativize(src);
+              final var dst = tmp.resolve(rel);
               try {
-                final var rel = generatedSrc.relativize(src);
-                final var dst = tmp.resolve(rel);
                 if (Files.isDirectory(src)) {
                   Files.createDirectories(dst);
                 } else {
                   Files.copy(src, dst);
                 }
               } catch (final IOException ex) {
-                throw new RuntimeException(ex);
+                throw new UncheckedIOException("copying " + src + " -> " + dst, ex);
               }
             });
       }
@@ -681,7 +717,7 @@ final class RoundTripTest {
         .validUntil(1_700_000_000_000_000_000L + 30_000_000_000L)
         .swapPoints(swapPoints)
         .noLegsCount(0);
-    final var totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    final int totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     return sliceToByteArray(buffer, totalLength);
   }
 
@@ -709,7 +745,7 @@ final class RoundTripTest {
         .settlCurrency("USD")
         .tenor(TenorEnum.ON)
         .noLegsCount(0);
-    final var totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    final int totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     return sliceToByteArray(buffer, totalLength);
   }
 
@@ -722,7 +758,7 @@ final class RoundTripTest {
         .wrapAndApplyHeader(buffer, 0, header)
         .protocolVersion(protocolVersion)
         .putToken(tokenBytes, 0, tokenBytes.length);
-    final var totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    final int totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     return sliceToByteArray(buffer, totalLength);
   }
 
@@ -737,7 +773,7 @@ final class RoundTripTest {
     encoder.wrapAndApplyHeader(buffer, 0, header);
     encoder.sessionId().mostSignificantBits(sessionMsb).leastSignificantBits(sessionLsb);
     encoder.protocolVersion(protocolVersion).maxSubscriptions(maxSubscriptions);
-    final var totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    final int totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     return sliceToByteArray(buffer, totalLength);
   }
 
@@ -768,8 +804,8 @@ final class RoundTripTest {
         .offerPx(108_530_000L)
         .bidSize(100_000_000L)
         .offerSize(100_000_000L)
-        .lastPx(QuoteEncoder.swapPointsNullValue())
-        .swapPoints(QuoteEncoder.swapPointsNullValue())
+        .lastPx(INT64_OPTIONAL_NULL)
+        .swapPoints(INT64_OPTIONAL_NULL)
         .validUntil(1_700_000_000_000_000_000L + 30_000_000_000L)
         .transactTime(1_700_000_000_000_000_000L)
         .productType(ProductTypeEnum.Spot)
@@ -788,11 +824,11 @@ final class RoundTripTest {
         .legCurrency("USD")
         .legTenor(TenorEnum.ON)
         .legOrderQty(100_000_000L)
-        .legPrice(QuoteEncoder.swapPointsNullValue())
-        .legBidPx(QuoteEncoder.swapPointsNullValue())
-        .legOfferPx(QuoteEncoder.swapPointsNullValue())
-        .legBidSize(QuoteEncoder.swapPointsNullValue())
-        .legOfferSize(QuoteEncoder.swapPointsNullValue());
+        .legPrice(INT64_OPTIONAL_NULL)
+        .legBidPx(INT64_OPTIONAL_NULL)
+        .legOfferPx(INT64_OPTIONAL_NULL)
+        .legBidSize(INT64_OPTIONAL_NULL)
+        .legOfferSize(INT64_OPTIONAL_NULL);
     noLegs.next();
     noLegs
         .legSide(SideEnum.Sell)
@@ -801,13 +837,13 @@ final class RoundTripTest {
         .legCurrency("EUR")
         .legTenor(TenorEnum.ON)
         .legOrderQty(200_000_000L)
-        .legPrice(QuoteEncoder.swapPointsNullValue())
-        .legBidPx(QuoteEncoder.swapPointsNullValue())
-        .legOfferPx(QuoteEncoder.swapPointsNullValue())
-        .legBidSize(QuoteEncoder.swapPointsNullValue())
-        .legOfferSize(QuoteEncoder.swapPointsNullValue());
+        .legPrice(INT64_OPTIONAL_NULL)
+        .legBidPx(INT64_OPTIONAL_NULL)
+        .legOfferPx(INT64_OPTIONAL_NULL)
+        .legBidSize(INT64_OPTIONAL_NULL)
+        .legOfferSize(INT64_OPTIONAL_NULL);
 
-    final var totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    final int totalLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     return sliceToByteArray(buffer, totalLength);
   }
 
@@ -977,12 +1013,7 @@ final class RoundTripTest {
   // ===========================================================================================
 
   private static Path rootDir() {
-    final var prop = System.getProperty("rootProjectDir");
-    assumeTrue(
-        prop != null,
-        "rootProjectDir system property unset — run via `./gradlew :sbe-typescript-generator:test`, "
-            + "not the IDE direct test runner. Configure your IDE to delegate test execution to Gradle.");
-    return Path.of(prop);
+    return requireSystemPropPath("rootProjectDir");
   }
 
   private static String readDriverSource() throws IOException {

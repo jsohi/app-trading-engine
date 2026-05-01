@@ -55,6 +55,33 @@ function hexToView(hex: string): DataView {
 }
 
 /**
+ * Parse a CLI-supplied byte offset, failing loud at the boundary instead of silently coercing
+ * to NaN. Mirrors {@link hexToView}'s validate-at-the-edge discipline so a future caller-side
+ * refactor that drops or reorders an arg surfaces immediately rather than producing
+ * unactionable DataView accessor errors deep in the decode path.
+ */
+function parseOffset(raw: string | undefined, name: string): number {
+    if (raw === undefined) {
+        throw new Error(
+            `${name} not supplied (expected a non-negative integer)`,
+        );
+    }
+    // Reject leading 0x / scientific notation / NaN — Number() accepts those, parseInt does not.
+    if (!/^\d+$/.test(raw)) {
+        throw new Error(
+            `${name} must be a non-negative decimal integer, got: ${raw}`,
+        );
+    }
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+        throw new Error(
+            `${name} must be a non-negative integer, got: ${raw} (parsed as ${value})`,
+        );
+    }
+    return value;
+}
+
+/**
  * Extract decoded message fields from a DecodedFrame's currently-bound decoder. Emits a
  * stable JSON shape per templateId. bigint fields are returned as bigints (the outer
  * JSON.stringify with bigintReplacer handles serialisation). null-sentinel fields are
@@ -216,9 +243,15 @@ if (mode === "single") {
     // Captures decoded fields BEFORE the second route() so the first capture's data
     // is not corrupted by the shared-flyweight rebind.
     const hex = process.argv[3];
-    const offsetA = Number(process.argv[4]);
-    const offsetB = Number(process.argv[5]);
+    const offsetA = parseOffset(process.argv[4], "offsetA");
+    const offsetB = parseOffset(process.argv[5], "offsetB");
     const view = hexToView(hex);
+    if (offsetA >= view.byteLength || offsetB >= view.byteLength) {
+        throw new Error(
+            `multi-mode offset out of bounds: offsetA=${offsetA}, offsetB=${offsetB}, ` +
+                `view.byteLength=${view.byteLength}`,
+        );
+    }
 
     const frameA = route(view, offsetA);
     const captureA = {
