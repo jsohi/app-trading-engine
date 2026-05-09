@@ -211,9 +211,11 @@ public final class QuoteRequestHandler implements CommandHandler {
       return;
     }
 
-    // 7. Per-session rate limit
-    final long sessionId = session != null ? session.id() : 0L;
-    if (!rfqStateMachine.rateLimitTryConsume(sessionId, clusterTimestamp)) {
+    // 7. Per-session rate limit. Skip the rate-limit check entirely when there is no
+    // originating session (test / log-replay path) — using sessionId=0L would allocate a
+    // bucket that is never reclaimed via onSessionClose, slowly leaking the bucket pool.
+    // The rateLimitTryConsume call only runs when we have a real session id.
+    if (session != null && !rfqStateMachine.rateLimitTryConsume(session.id(), clusterTimestamp)) {
       emitRejectByQuoteReqId(
           session,
           clusterTimestamp,
@@ -280,7 +282,10 @@ public final class QuoteRequestHandler implements CommandHandler {
     slot.tenor = (byte) tenor.value();
     slot.orderQty = orderQty;
     slot.accountId = account.accountId();
-    slot.sessionId = sessionId;
+    // sessionId 0L means "no originating session" (test / log-replay); the slot's session
+    // tracking is best-effort metadata for onSessionClose fast-fail and does not gate any
+    // correctness invariant.
+    slot.sessionId = session != null ? session.id() : 0L;
     slot.transactTime = clusterTimestamp;
 
     // Decode legs — bounds-check first to prevent ArrayIndexOutOfBoundsException (DoS vector).
