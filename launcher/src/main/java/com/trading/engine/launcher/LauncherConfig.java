@@ -200,4 +200,32 @@ public record LauncherConfig(
                 "rfq.acceptQtyToleranceBps",
                 Integer.toString(DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS))));
   }
+
+  /**
+   * Returns a {@link LauncherConfig} populated entirely from {@code DEFAULT_*} constants. Used by
+   * tests that don't go through {@link #fromSystemProperties()} and by the test-friendly {@code
+   * ClusterNodeLauncher.launch} overload that omits a config argument.
+   *
+   * @return a default-valued {@link LauncherConfig}
+   */
+  public static LauncherConfig defaults() {
+    return new LauncherConfig(
+        "localhost",
+        9880,
+        3,
+        "cluster-data",
+        "logs",
+        10L,
+        "accounts.yaml",
+        "currencies.yaml",
+        "risk-limits.yaml",
+        "",
+        DEFAULT_RFQ_POOL_CAPACITY,
+        DEFAULT_RFQ_DEFAULT_TTL_NANOS,
+        DEFAULT_RFQ_RATE_LIMIT_PER_SESSION,
+        DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
+        DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+        DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
+        DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS);
+  }
 }

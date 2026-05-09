@@ -410,7 +410,10 @@ public final class QuoteRequestHandler implements CommandHandler {
     rejectedEncoder.timestamp(0L);
     rejectedEncoder.putQuoteReqId(quoteReqIdScratch, 0);
     rejectedEncoder.putSymbol(symbolScratch, 0);
-    rejectedEncoder.side(qrDecoder.side());
+    // Use safeSide() (raw-byte switch-map) instead of qrDecoder.side() to avoid the
+    // IllegalArgumentException that the SBE-generated getter throws on an unrecognized
+    // wire byte. A malformed inbound side byte must NOT throw out of the reject path.
+    rejectedEncoder.side(safeSide());
     rejectedEncoder.putAccountCode(accountCodeScratch, 0);
     rejectedEncoder.quoteRejectReason(reason);
     rejectedEncoder.productType(productType);
