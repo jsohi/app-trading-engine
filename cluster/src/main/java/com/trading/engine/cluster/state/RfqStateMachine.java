@@ -13,7 +13,6 @@ import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RfqStateEnum;
 import com.trading.engine.messages.sbe.RfqStateSnapshotDecoder;
 import com.trading.engine.messages.sbe.RfqStateSnapshotEncoder;
-import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.util.ByteArrayKey;
 import io.aeron.cluster.service.Cluster;
 import java.util.Objects;
@@ -878,14 +877,7 @@ public final class RfqStateMachine {
       grp.transactTime(slot.transactTime);
       grp.productType(SafeEnumMappers.safeProductType(slot.productType));
       grp.putSettlDate(slot.settlDateBytes, 0);
-      // slot.settlType holds the raw enum byte (NULL_VAL=255 / signed -1) per the encoder
-      // contract — see QuoteRequestHandler:281. Compare against (byte) NULL_VAL to detect
-      // absence; mask & 0xFF before SettlTypeEnum.get to safely cover
-      // Regular(0)..FXSpotNextDay(11).
-      grp.settlType(
-          slot.settlType == (byte) SettlTypeEnum.NULL_VAL.value()
-              ? SettlTypeEnum.NULL_VAL
-              : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
+      grp.settlType(SafeEnumMappers.safeSettlType(slot.settlType));
       grp.putCurrency(slot.currencyBytes, 0);
       grp.putSettlCurrency(slot.settlCurrencyBytes, 0);
       grp.tenor(SafeEnumMappers.safeTenor(slot.tenor));

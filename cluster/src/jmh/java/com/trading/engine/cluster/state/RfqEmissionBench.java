@@ -6,6 +6,7 @@ import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import java.util.concurrent.TimeUnit;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -46,6 +47,13 @@ public class RfqEmissionBench {
   private EventSink eventSink;
   private long clusterTs;
   private final byte[] reqIdScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
+  /**
+   * Pre-allocated UnsafeBuffer view over {@link #reqIdScratch} for the recentlyTerminalLookup
+   * benchmark. Allocating a fresh wrapper per iteration would pollute results with allocation / GC
+   * overhead; the wrapper is created once and reused across measurements.
+   */
+  private final UnsafeBuffer reqIdScratchBuffer = new UnsafeBuffer(reqIdScratch);
 
   @Setup(Level.Trial)
   public void setUp() {
@@ -105,8 +113,7 @@ public class RfqEmissionBench {
   /** Benchmarks {@code recentlyTerminalReason} — Object2IntHashMap O(1) side-index lookup. */
   @Benchmark
   public byte recentlyTerminalLookup() {
-    return machine.recentlyTerminalReason(
-        new org.agrona.concurrent.UnsafeBuffer(reqIdScratch), 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+    return machine.recentlyTerminalReason(reqIdScratchBuffer, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
   }
 
   /** Benchmarks {@code rateLimitTryConsume} steady-state — no bucket-pool growth. */
