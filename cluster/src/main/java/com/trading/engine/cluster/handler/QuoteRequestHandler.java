@@ -46,6 +46,16 @@ public final class QuoteRequestHandler implements CommandHandler {
   private static final int HDR_LEN = MessageHeaderEncoder.ENCODED_LENGTH;
   private static final int EGRESS_BUFFER_SIZE = 8192;
 
+  /**
+   * Zero-filled scratch arrays used by {@link #emitMalformed} to overwrite the egress buffer's
+   * stale char-array fields when no decoder fields are valid. Read-only after class load — never
+   * mutated by any method, so it's safe to share across instances.
+   */
+  private static final byte[] ZERO_QUOTE_REQ_ID = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
+  private static final byte[] ZERO_SYMBOL = new byte[RfqSlot.SYMBOL_LENGTH];
+  private static final byte[] ZERO_ACCOUNT_CODE = new byte[RfqSlot.ACCOUNT_CODE_LENGTH];
+
   // ---- Pre-allocated SBE flyweights ----
   private final QuoteRequestDecoder qrDecoder = new QuoteRequestDecoder();
   private final QuoteRequestedEventEncoder requestedEncoder = new QuoteRequestedEventEncoder();
@@ -431,12 +441,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     metrics.rejectMalformed++;
     metrics.emitRejected++;
   }
-
-  /** Zero-filled scratch arrays for emitMalformed (no per-call allocation). */
-  private static final byte[] ZERO_QUOTE_REQ_ID = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
-
-  private static final byte[] ZERO_SYMBOL = new byte[RfqSlot.SYMBOL_LENGTH];
-  private static final byte[] ZERO_ACCOUNT_CODE = new byte[RfqSlot.ACCOUNT_CODE_LENGTH];
 
   /** Returns the actual length of the populated accountCode (trims trailing NULs). */
   private int accountCodeLen() {
