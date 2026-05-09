@@ -346,13 +346,21 @@ function handleFrame(frame: ParsedFrame): void {
   }
   // Reliable frames (FLAG_RELIABLE = 0x01) flow through GapTracker for
   // sequence-continuity + out-of-order buffering. The tracker invokes
-  // `onInOrderFrame` for each delivered seqNo; we route those through
-  // the dispatcher exactly once, in order.
+  // `onInOrderFrame` for each delivered seqNo (in arrival order or
+  // released after gap-fill); routing happens THERE — never inline
+  // here. Per Gemini review (HIGH): the prior boolean contract caused
+  // out-of-order frames to be double-routed.
   if (gapTracker !== null && (frame.flags & 0x01) !== 0) {
-    const accepted = gapTracker.onReliableFrame(frame.seqNo, frame.payload);
-    if (!accepted) return; // duplicate or buffered for later release.
+    gapTracker.onReliableFrame(frame.seqNo, frame.flags, frame.payload);
+    return;
   }
-  const result = router.route(frame.payload, frame.flags);
+  // Best-effort frames bypass GapTracker (no seqNo continuity).
+  routeFrame(frame.payload, frame.flags);
+}
+
+function routeFrame(payload: Uint8Array, flags: number): void {
+  if (router === null) return;
+  const result = router.route(payload, flags);
   if (!result.schemaIdMatch || !result.versionMatch) {
     transitionConnection("SCHEMA_MISMATCH");
     postError("SCHEMA", `schemaId/version mismatch: ${String(result.templateId)}`);
@@ -470,7 +478,12 @@ function activateSessionLayer(): void {
   heartbeat.start();
 
   gapTracker = new GapTracker(state, {
-    onInOrderFrame: (_seqNo, _payload) => {
+    onInOrderFrame: (_seqNo, flags, payload) => {
+      // Per Gemini review (HIGH): route here so reliable frames are
+      // dispatched exactly once and only after their seqNo is in-order.
+      // Buffered out-of-order frames flow through here when their gap
+      // fills; their original `flags` are preserved.
+      routeFrame(payload, flags);
       ackSender?.onReliableFrameDelivered();
     },
     onGapRequest: (_ev) => {
@@ -541,22 +554,14 @@ function activateSessionLayer(): void {
 function buildAuthCallbacks(): AuthClientCallbacks {
   return {
     sendBytes: (bytes) => {
-      // Per Gemini review (MEDIUM): `WebSocket.send()` accepts
-      // `ArrayBufferView` at runtime (Uint8Array IS a view), so the
-      // prior ArrayBuffer-copy allocation was redundant. TS's strict
-      // lib types `WebSocket.send` to `BufferSource` which excludes
-      // SharedArrayBuffer-backed views; SAB is forbidden by APP-36 §4.3
-      // ESLint rule, so the encoder never produces one. The cast is
-      // therefore safe and the copy is gone.
-      // `bytes.buffer` is `ArrayBufferLike`; SAB is banned by APP-36 §4.3
-      // ESLint rule so the runtime invariant is `ArrayBuffer`. Pass the
-      // ArrayBuffer slice directly (zero-copy view via byteOffset/length).
-      const ab = bytes.buffer as ArrayBuffer;
-      ws?.send(
-        bytes.byteOffset === 0 && bytes.byteLength === ab.byteLength
-          ? ab
-          : ab.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-      );
+      // Per Gemini review R5 (MEDIUM): `WebSocket.send()` accepts an
+      // `ArrayBufferView` at runtime (Uint8Array IS a view) — pass it
+      // directly with no copy. TS's strict lib types `BufferSource` to
+      // exclude SharedArrayBuffer-backed views; APP-36 §4.3 ESLint rule
+      // bans SAB so the runtime invariant is always `ArrayBuffer`. The
+      // narrow cast satisfies the type-checker without sacrificing the
+      // zero-copy contract.
+      ws?.send(bytes as Uint8Array<ArrayBuffer>);
     },
     encodeAuth: (_token, _protocolVersion) => {
       // Placeholder: a real encoder is wired in C8 (per the SBE TS

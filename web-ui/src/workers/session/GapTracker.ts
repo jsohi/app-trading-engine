@@ -32,12 +32,29 @@ export interface GapRequestEvent {
 }
 
 export interface GapTrackerCallbacks {
-  /** Invoked for each in-order reliable frame, including those released after gap-fill. */
-  onInOrderFrame: (seqNo: bigint, payload: Uint8Array) => void;
+  /**
+   * Invoked for each in-order reliable frame, including those released
+   * after a gap-fill replay. The `flags` byte is the original envelope
+   * `flags` (FLAG_RELIABLE + optional FLAG_REPLAY / FLAG_SNAPSHOT bits),
+   * preserved so the caller can route correctly post-buffer.
+   */
+  onInOrderFrame: (seqNo: bigint, flags: number, payload: Uint8Array) => void;
   /** Invoked when a gap is first detected; caller encodes a WebSocketGapRequest frame. */
   onGapRequest: (ev: GapRequestEvent) => void;
   /** Invoked once when the byte-bounded buffer would overflow; tracker enters dead state. */
   onBufferOverflow: (bufferedBytes: number) => void;
+}
+
+/**
+ * Result of `onReliableFrame`. Distinguishes delivered-now from
+ * buffered-for-later so the caller does not double-route an
+ * out-of-order frame (Gemini review HIGH).
+ */
+export type GapAcceptResult = "DELIVERED" | "BUFFERED" | "DROPPED";
+
+interface BufferedFrame {
+  readonly flags: number;
+  readonly payload: Uint8Array;
 }
 
 /**
@@ -47,7 +64,7 @@ export interface GapTrackerCallbacks {
  * a session-state cold-start.
  */
 export class GapTracker {
-  private readonly outOfOrder = new Map<bigint, Uint8Array>();
+  private readonly outOfOrder = new Map<bigint, BufferedFrame>();
   private bufferedBytes = 0;
   private dead = false;
   // Highest `toSeqNo` already requested. Suppresses GapRequest storms
@@ -65,26 +82,29 @@ export class GapTracker {
   }
 
   /**
-   * Process an inbound reliable frame. Returns true iff the frame was
-   * accepted (delivered in-order or buffered for later release); false
-   * iff the frame was dropped (duplicate / out-of-window) or the
-   * tracker is dead.
+   * Process an inbound reliable frame. Returns one of:
+   *   - `"DELIVERED"` — frame was emitted via `onInOrderFrame` immediately
+   *     (and any newly contiguous buffered frames were drained too).
+   *   - `"BUFFERED"` — frame was buffered for later release; the caller
+   *     MUST NOT route it (per Gemini review HIGH; the prior boolean
+   *     contract caused out-of-order frames to be double-routed).
+   *   - `"DROPPED"` — duplicate, out-of-window, or tracker is dead.
    */
-  onReliableFrame(seqNo: bigint, payload: Uint8Array): boolean {
-    if (this.dead) return false;
+  onReliableFrame(seqNo: bigint, flags: number, payload: Uint8Array): GapAcceptResult {
+    if (this.dead) return "DROPPED";
 
     const expected = this.state.lastReliableSeqNo + 1n;
     if (seqNo <= this.state.lastReliableSeqNo) {
       // Duplicate / out-of-window → drop.
-      return false;
+      return "DROPPED";
     }
 
     if (seqNo === expected) {
       // In-order delivery.
-      this.deliver(seqNo, payload);
+      this.deliver(seqNo, flags, payload);
       // Drain any buffered frames that are now in-order.
       this.drainBuffered();
-      return true;
+      return "DELIVERED";
     }
 
     // Gap detected (seqNo > expected). Buffer + emit a single GapRequest
@@ -98,10 +118,10 @@ export class GapTracker {
       if (newBufferedBytes > MAX_GAP_BUFFER_BYTES) {
         this.dead = true;
         this.cb.onBufferOverflow(newBufferedBytes);
-        return false;
+        return "DROPPED";
       }
 
-      this.outOfOrder.set(seqNo, copy);
+      this.outOfOrder.set(seqNo, { flags, payload: copy });
       this.bufferedBytes = newBufferedBytes;
     }
 
@@ -116,7 +136,7 @@ export class GapTracker {
       this.highestRequestedSeqNo = toSeqNo;
       this.cb.onGapRequest({ fromSeqNo: expected, toSeqNo });
     }
-    return true;
+    return "BUFFERED";
   }
 
   /** Reset state on session-state cold-start. */
@@ -142,9 +162,9 @@ export class GapTracker {
     return this.dead;
   }
 
-  private deliver(seqNo: bigint, payload: Uint8Array): void {
+  private deliver(seqNo: bigint, flags: number, payload: Uint8Array): void {
     this.state.lastReliableSeqNo = seqNo;
-    this.cb.onInOrderFrame(seqNo, payload);
+    this.cb.onInOrderFrame(seqNo, flags, payload);
   }
 
   private drainBuffered(): void {
@@ -154,8 +174,8 @@ export class GapTracker {
       const buffered = this.outOfOrder.get(next);
       if (buffered === undefined) return;
       this.outOfOrder.delete(next);
-      this.bufferedBytes -= buffered.length;
-      this.deliver(next, buffered);
+      this.bufferedBytes -= buffered.payload.length;
+      this.deliver(next, buffered.flags, buffered.payload);
     }
   }
 }
