@@ -348,7 +348,7 @@ public final class RfqStateMachine {
     // Append to activeIndices (O(1)).
     activePositions[slotIndex] = activeCount;
     activeIndices[activeCount++] = slotIndex;
-    metrics.poolOccupancy = capacity - freeCount;
+    metrics.poolOccupancy = activeCount;
     return slot;
   }
 
@@ -393,7 +393,7 @@ public final class RfqStateMachine {
     if (slot.generation >= GENERATION_RETIREMENT_THRESHOLD) {
       slot.state = RfqSlotState.FREE;
       metrics.poolRetiredSlots++;
-      metrics.poolOccupancy = capacity - freeCount - (int) metrics.poolRetiredSlots;
+      metrics.poolOccupancy = activeCount;
       return;
     }
 
@@ -401,6 +401,11 @@ public final class RfqStateMachine {
     slot.state = RfqSlotState.FREE;
     slot.timerCorrelationId = 0L;
     slot.requestTimeoutCorrelationId = 0L;
+    // poolOccupancy = activeCount (which release() already decremented above). Do NOT use
+    // capacity - freeCount: when a slot is retired (generation overflow), freeCount is NOT
+    // incremented but activeCount IS decremented, so capacity - freeCount would over-count
+    // the retired slots as active.
+    metrics.poolOccupancy = activeCount;
     // Defense-in-depth: zero the quoteReqId and quoteId byte buffers so a stale
     // ByteArrayKey content-equals lookup against this slot's keys (after the map remove
     // has already happened) cannot find a stale match. The keys themselves are reused
@@ -413,7 +418,7 @@ public final class RfqStateMachine {
       slot.quoteIdBytes[b] = 0;
     }
     freeIndices[freeCount++] = slot.poolIndex;
-    metrics.poolOccupancy = capacity - freeCount;
+    metrics.poolOccupancy = activeCount;
   }
 
   // -------------------------------------------------------------------------
@@ -863,8 +868,14 @@ public final class RfqStateMachine {
       grp.transactTime(slot.transactTime);
       grp.productType(ProductTypeEnum.get(slot.productType));
       grp.putSettlDate(slot.settlDateBytes, 0);
+      // slot.settlType holds the raw enum byte (NULL_VAL=255 / signed -1) per the encoder
+      // contract — see QuoteRequestHandler:281. Compare against (byte) NULL_VAL to detect
+      // absence; mask & 0xFF before SettlTypeEnum.get to safely cover
+      // Regular(0)..FXSpotNextDay(11).
       grp.settlType(
-          slot.settlType == 0 ? SettlTypeEnum.NULL_VAL : SettlTypeEnum.get(slot.settlType));
+          slot.settlType == (byte) SettlTypeEnum.NULL_VAL.value()
+              ? SettlTypeEnum.NULL_VAL
+              : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
       grp.putCurrency(slot.currencyBytes, 0);
       grp.putSettlCurrency(slot.settlCurrencyBytes, 0);
       grp.tenor(TenorEnum.get(slot.tenor));
@@ -875,9 +886,9 @@ public final class RfqStateMachine {
         legGrp.legSide(SideEnum.get(slot.legSide[j]));
         legGrp.putLegSettlDate(slot.legSettlDate[j], 0);
         legGrp.legSettlType(
-            slot.legSettlType[j] == 0
+            slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
                 ? SettlTypeEnum.NULL_VAL
-                : SettlTypeEnum.get(slot.legSettlType[j]));
+                : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
         legGrp.putLegCurrency(slot.legCurrency[j], 0);
         legGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
         legGrp.legOrderQty(slot.legOrderQty[j]);
@@ -977,8 +988,11 @@ public final class RfqStateMachine {
       slot.transactTime = grp.transactTime();
       slot.productType = (byte) grp.productType().value();
       grp.getSettlDate(slot.settlDateBytes, 0);
+      // Restore the raw enum byte (including NULL_VAL=255 / signed -1) symmetric with the
+      // encoder. Storing 0 for NULL_VAL would silently corrupt absent settlType into Regular
+      // on every snapshot round-trip.
       final SettlTypeEnum settlType = grp.settlType();
-      slot.settlType = settlType == SettlTypeEnum.NULL_VAL ? 0 : (byte) settlType.value();
+      slot.settlType = (byte) settlType.value();
       grp.getCurrency(slot.currencyBytes, 0);
       grp.getSettlCurrency(slot.settlCurrencyBytes, 0);
       slot.tenor = (byte) grp.tenor().value();
@@ -1001,8 +1015,9 @@ public final class RfqStateMachine {
         legGrp.next();
         slot.legSide[legIdx] = (byte) legGrp.legSide().value();
         legGrp.getLegSettlDate(slot.legSettlDate[legIdx], 0);
+        // Symmetric raw-byte storage; see the slot.settlType assignment above.
         final SettlTypeEnum legSt = legGrp.legSettlType();
-        slot.legSettlType[legIdx] = legSt == SettlTypeEnum.NULL_VAL ? 0 : (byte) legSt.value();
+        slot.legSettlType[legIdx] = (byte) legSt.value();
         legGrp.getLegCurrency(slot.legCurrency[legIdx], 0);
         slot.legTenor[legIdx] = (byte) legGrp.legTenor().value();
         slot.legOrderQty[legIdx] = legGrp.legOrderQty();
@@ -1023,7 +1038,7 @@ public final class RfqStateMachine {
         slot.syncQuoteIdKey();
       }
     }
-    metrics.poolOccupancy = capacity - freeCount;
+    metrics.poolOccupancy = activeCount;
     return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateDecoder.encodedLength();
   }
 

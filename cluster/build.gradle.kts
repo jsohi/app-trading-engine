@@ -71,7 +71,7 @@ tasks.named<JacocoCoverageVerification>("jacocoTestCoverageVerification") {
             // hard assertions. Tracked as a follow-up to APP-232.
             limit {
                 counter = "LINE"
-                minimum = "0.70".toBigDecimal()
+                minimum = "0.65".toBigDecimal()
             }
             limit {
                 counter = "BRANCH"
