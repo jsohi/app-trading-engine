@@ -22,7 +22,14 @@ class LauncherConfigTest {
         "accounts.yaml",
         "currencies.yaml",
         "risk-limits.yaml",
-        "");
+        "",
+        8192,
+        30_000_000_000L,
+        100L,
+        1_000_000_000L,
+        5_000_000_000L,
+        0,
+        0);
   }
 
   // ===== Valid construction =====
@@ -40,7 +47,14 @@ class LauncherConfigTest {
             "accounts.yaml",
             "currencies.yaml",
             "risk-limits.yaml",
-            "e2e");
+            "e2e",
+            8192,
+            30_000_000_000L,
+            100L,
+            1_000_000_000L,
+            5_000_000_000L,
+            0,
+            0);
 
     assertEquals("localhost", config.fixHost());
     assertEquals(9880, config.fixPort());
@@ -56,8 +70,42 @@ class LauncherConfigTest {
 
   @Test
   void constructor_boundaryPorts_accepted() {
-    new LauncherConfig("localhost", 1, 1, "data", "logs", 1, "a.yaml", "c.yaml", "r.yaml", "");
-    new LauncherConfig("localhost", 65535, 1, "data", "logs", 1, "a.yaml", "c.yaml", "r.yaml", "");
+    new LauncherConfig(
+        "localhost",
+        1,
+        1,
+        "data",
+        "logs",
+        1,
+        "a.yaml",
+        "c.yaml",
+        "r.yaml",
+        "",
+        8192,
+        30_000_000_000L,
+        100L,
+        1_000_000_000L,
+        5_000_000_000L,
+        0,
+        0);
+    new LauncherConfig(
+        "localhost",
+        65535,
+        1,
+        "data",
+        "logs",
+        1,
+        "a.yaml",
+        "c.yaml",
+        "r.yaml",
+        "",
+        8192,
+        30_000_000_000L,
+        100L,
+        1_000_000_000L,
+        5_000_000_000L,
+        0,
+        0);
   }
 
   @Test
@@ -75,7 +123,23 @@ class LauncherConfigTest {
             IllegalArgumentException.class,
             () ->
                 new LauncherConfig(
-                    null, 9880, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                    null,
+                    9880,
+                    3,
+                    "data",
+                    "logs",
+                    10,
+                    "a.yaml",
+                    "c.yaml",
+                    "r.yaml",
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
     assertEquals("fix.host must not be blank", ex.getMessage());
   }
 
@@ -85,7 +149,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "  ", 9880, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "  ",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== fixPort validation =====
@@ -97,7 +177,23 @@ class LauncherConfigTest {
             IllegalArgumentException.class,
             () ->
                 new LauncherConfig(
-                    "localhost", 0, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                    "localhost",
+                    0,
+                    3,
+                    "data",
+                    "logs",
+                    10,
+                    "a.yaml",
+                    "c.yaml",
+                    "r.yaml",
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
     assertEquals("fix.port must be in [1, 65535], got: 0", ex.getMessage());
   }
 
@@ -107,7 +203,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", -1, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                -1,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -117,7 +229,23 @@ class LauncherConfigTest {
             IllegalArgumentException.class,
             () ->
                 new LauncherConfig(
-                    "localhost", 65536, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                    "localhost",
+                    65536,
+                    3,
+                    "data",
+                    "logs",
+                    10,
+                    "a.yaml",
+                    "c.yaml",
+                    "r.yaml",
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
     assertEquals("fix.port must be in [1, 65535], got: 65536", ex.getMessage());
   }
 
@@ -129,7 +257,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 0, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                0,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -148,7 +292,14 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
-                    ""));
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
     assertEquals(
         "cluster.nodeCount must be in [1, " + ClusterConfig.MAX_NODES + "], got: 4",
         ex.getMessage());
@@ -162,7 +313,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, null, "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                null,
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -171,7 +338,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "", "logs", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== logDir validation =====
@@ -182,7 +365,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", null, 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                null,
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -191,7 +390,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "  ", 10, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "  ",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== driverShutdownTimeoutSeconds validation =====
@@ -203,7 +418,23 @@ class LauncherConfigTest {
             IllegalArgumentException.class,
             () ->
                 new LauncherConfig(
-                    "localhost", 9880, 3, "data", "logs", 0, "a.yaml", "c.yaml", "r.yaml", ""));
+                    "localhost",
+                    9880,
+                    3,
+                    "data",
+                    "logs",
+                    0,
+                    "a.yaml",
+                    "c.yaml",
+                    "r.yaml",
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
     assertEquals("driver.shutdown.timeout.seconds must be > 0, got: 0", ex.getMessage());
   }
 
@@ -213,7 +444,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", -5, "a.yaml", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                -5,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== accountsFile validation =====
@@ -224,7 +471,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, null, "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                null,
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -233,7 +496,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "  ", "c.yaml", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "  ",
+                "c.yaml",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== currenciesFile validation =====
@@ -244,7 +523,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "a.yaml", null, "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                null,
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -253,7 +548,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "a.yaml", "  ", "r.yaml", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "  ",
+                "r.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== riskLimitsFile validation =====
@@ -264,7 +575,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "a.yaml", "c.yaml", null, ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                null,
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   @Test
@@ -273,7 +600,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "a.yaml", "c.yaml", "  ", ""));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "  ",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== aeronDirPrefix validation =====
@@ -284,7 +627,23 @@ class LauncherConfigTest {
         IllegalArgumentException.class,
         () ->
             new LauncherConfig(
-                "localhost", 9880, 3, "data", "logs", 10, "a.yaml", "c.yaml", "r.yaml", null));
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
+                null,
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
   }
 
   // ===== System property parsing =====

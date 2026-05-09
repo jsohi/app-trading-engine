@@ -9,7 +9,10 @@ package com.trading.engine.launcher;
  * <p><b>Defaults.</b> fix.host=localhost, fix.port=9880, cluster.nodeCount=3,
  * cluster.baseDir=cluster-data, log.dir=logs, driver.shutdown.timeout.seconds=10,
  * accounts.file=accounts.yaml, currencies.file=currencies.yaml, risk-limits.file=risk-limits.yaml,
- * aeron.dir.prefix="" (empty).
+ * aeron.dir.prefix="" (empty), rfq.poolCapacity=8192, rfq.defaultTtlNanos=30_000_000_000L,
+ * rfq.rateLimitPerSession=100, rfq.rateLimitWindowNanos=1_000_000_000L,
+ * rfq.requestTimeoutNanos=5_000_000_000L, rfq.acceptPriceToleranceBps=0,
+ * rfq.acceptQtyToleranceBps=0.
  *
  * @param fixHost TCP bind address for FIX connections
  * @param fixPort TCP port for FIX connections; must be in [1, 65535]
@@ -23,6 +26,18 @@ package com.trading.engine.launcher;
  * @param aeronDirPrefix prefix for Aeron directory names; empty string means production defaults
  *     ({@code /tmp/aeron-node-{i}}), non-empty (e.g. "e2e") produces {@code
  *     /tmp/aeron-e2e-node-{i}} for process isolation
+ * @param rfqPoolCapacity RFQ slot pool capacity (power-of-two; range [256, 65536]); APP-232 §7.5
+ * @param rfqDefaultTtlNanos RFQ TTL fallback in nanos when productType unknown; range [1s, 5min] =
+ *     [1_000_000_000L, 300_000_000_000L]
+ * @param rfqRateLimitPerSession RFQ token-bucket capacity per cluster session; range [1, 10_000]
+ * @param rfqRateLimitWindowNanos RFQ token-bucket refill window in nanos; range [100ms, 60s] =
+ *     [100_000_000L, 60_000_000_000L]
+ * @param rfqRequestTimeoutNanos REQUESTED slot timeout in nanos (PriceResponse must arrive within
+ *     this); range [100ms, 60s]
+ * @param rfqAcceptPriceToleranceBps NOS-with-quoteId price-mismatch tolerance in bps; range [0,
+ *     100]; 0 = exact match
+ * @param rfqAcceptQtyToleranceBps NOS-with-quoteId qty-mismatch tolerance in bps; range [0, 1000];
+ *     0 = exact match
  */
 public record LauncherConfig(
     String fixHost,
@@ -34,7 +49,35 @@ public record LauncherConfig(
     String accountsFile,
     String currenciesFile,
     String riskLimitsFile,
-    String aeronDirPrefix) {
+    String aeronDirPrefix,
+    int rfqPoolCapacity,
+    long rfqDefaultTtlNanos,
+    long rfqRateLimitPerSession,
+    long rfqRateLimitWindowNanos,
+    long rfqRequestTimeoutNanos,
+    int rfqAcceptPriceToleranceBps,
+    int rfqAcceptQtyToleranceBps) {
+
+  /** Default RFQ slot pool capacity (power-of-two; covers 30s TTL × ~273 RFQs/sec peak). */
+  public static final int DEFAULT_RFQ_POOL_CAPACITY = 8192;
+
+  /** Default RFQ TTL fallback (30 s) when productType lookup misses. */
+  public static final long DEFAULT_RFQ_DEFAULT_TTL_NANOS = 30_000_000_000L;
+
+  /** Default per-session rate limit (100 RFQs/sec). */
+  public static final long DEFAULT_RFQ_RATE_LIMIT_PER_SESSION = 100L;
+
+  /** Default rate-limit refill window (1 s). */
+  public static final long DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS = 1_000_000_000L;
+
+  /** Default REQUESTED-slot request-timeout (5 s) — PriceResponse must arrive within this. */
+  public static final long DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS = 5_000_000_000L;
+
+  /** Default NOS-with-quoteId price tolerance (0 bps = exact match required). */
+  public static final int DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS = 0;
+
+  /** Default NOS-with-quoteId qty tolerance (0 bps = exact match required). */
+  public static final int DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS = 0;
 
   /**
    * Compact constructor — validates all fields at construction time.
@@ -82,6 +125,37 @@ public record LauncherConfig(
               + aeronDirPrefix
               + "'");
     }
+    // ---- APP-232 RFQ config validation ----
+    if (rfqPoolCapacity < 256
+        || rfqPoolCapacity > 65_536
+        || Integer.bitCount(rfqPoolCapacity) != 1) {
+      throw new IllegalArgumentException(
+          "rfq.poolCapacity must be a power-of-two in [256, 65536], got: " + rfqPoolCapacity);
+    }
+    if (rfqDefaultTtlNanos < 1_000_000_000L || rfqDefaultTtlNanos > 300_000_000_000L) {
+      throw new IllegalArgumentException(
+          "rfq.defaultTtlNanos must be in [1s, 5min], got: " + rfqDefaultTtlNanos);
+    }
+    if (rfqRateLimitPerSession < 1L || rfqRateLimitPerSession > 10_000L) {
+      throw new IllegalArgumentException(
+          "rfq.rateLimitPerSession must be in [1, 10000], got: " + rfqRateLimitPerSession);
+    }
+    if (rfqRateLimitWindowNanos < 100_000_000L || rfqRateLimitWindowNanos > 60_000_000_000L) {
+      throw new IllegalArgumentException(
+          "rfq.rateLimitWindowNanos must be in [100ms, 60s], got: " + rfqRateLimitWindowNanos);
+    }
+    if (rfqRequestTimeoutNanos < 100_000_000L || rfqRequestTimeoutNanos > 60_000_000_000L) {
+      throw new IllegalArgumentException(
+          "rfq.requestTimeoutNanos must be in [100ms, 60s], got: " + rfqRequestTimeoutNanos);
+    }
+    if (rfqAcceptPriceToleranceBps < 0 || rfqAcceptPriceToleranceBps > 100) {
+      throw new IllegalArgumentException(
+          "rfq.acceptPriceToleranceBps must be in [0, 100], got: " + rfqAcceptPriceToleranceBps);
+    }
+    if (rfqAcceptQtyToleranceBps < 0 || rfqAcceptQtyToleranceBps > 1000) {
+      throw new IllegalArgumentException(
+          "rfq.acceptQtyToleranceBps must be in [0, 1000], got: " + rfqAcceptQtyToleranceBps);
+    }
   }
 
   /**
@@ -102,6 +176,28 @@ public record LauncherConfig(
         System.getProperty("accounts.file", "accounts.yaml"),
         System.getProperty("currencies.file", "currencies.yaml"),
         System.getProperty("risk-limits.file", "risk-limits.yaml"),
-        System.getProperty("aeron.dir.prefix", ""));
+        System.getProperty("aeron.dir.prefix", ""),
+        Integer.parseInt(
+            System.getProperty("rfq.poolCapacity", Integer.toString(DEFAULT_RFQ_POOL_CAPACITY))),
+        Long.parseLong(
+            System.getProperty(
+                "rfq.defaultTtlNanos", Long.toString(DEFAULT_RFQ_DEFAULT_TTL_NANOS))),
+        Long.parseLong(
+            System.getProperty(
+                "rfq.rateLimitPerSession", Long.toString(DEFAULT_RFQ_RATE_LIMIT_PER_SESSION))),
+        Long.parseLong(
+            System.getProperty(
+                "rfq.rateLimitWindowNanos", Long.toString(DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS))),
+        Long.parseLong(
+            System.getProperty(
+                "rfq.requestTimeoutNanos", Long.toString(DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS))),
+        Integer.parseInt(
+            System.getProperty(
+                "rfq.acceptPriceToleranceBps",
+                Integer.toString(DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS))),
+        Integer.parseInt(
+            System.getProperty(
+                "rfq.acceptQtyToleranceBps",
+                Integer.toString(DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS))));
   }
 }
