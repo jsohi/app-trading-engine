@@ -85,6 +85,7 @@ export class WorkerClient implements WorkerClientStreams {
   private pongDeadlineTimer: number | null = null;
   private consecutiveMisses = 0;
   private respawnTimestamps: number[] = [];
+  private reconnectTimer: number | null = null;
   private dead = false;
 
   constructor(options: WorkerClientOptions) {
@@ -108,6 +109,10 @@ export class WorkerClient implements WorkerClientStreams {
 
   /** HMR / app-shutdown disposal. */
   dispose(): void {
+    if (this.reconnectTimer !== null) {
+      self.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopWatchdog();
     if (this.worker !== null) {
       this.worker.postMessage({ type: "CLOSE", protocolVersion: WORKER_PROTOCOL_VERSION });
@@ -174,9 +179,53 @@ export class WorkerClient implements WorkerClientStreams {
         this.clearPongDeadline();
         break;
       case "ERROR":
+        // Per Gemini review R7 (HIGH): the worker's onclose handler
+        // posts an INIT-coded ERROR with hint
+        // `reconnect_due_after_ms:<N>` after consulting Reconnect's
+        // backoff math. Parse the hint and schedule a respawn so
+        // automatic reconnection actually fires. The error is also
+        // forwarded to errors$ for observability.
         this.errors$.next(msg);
+        if (msg.code === "INIT" && msg.hint?.startsWith("reconnect_due_after_ms:") === true) {
+          const delayStr = msg.hint.slice("reconnect_due_after_ms:".length);
+          const delayMs = Number.parseInt(delayStr, 10);
+          if (Number.isFinite(delayMs) && delayMs >= 0) {
+            this.scheduleReconnect(delayMs);
+          }
+        }
         break;
     }
+  }
+
+  /**
+   * Schedule a worker respawn after `delayMs` (driven by Reconnect's
+   * full-jitter backoff). Cancels any prior scheduled respawn.
+   */
+  private scheduleReconnect(delayMs: number): void {
+    if (this.dead) return;
+    if (this.reconnectTimer !== null) {
+      self.clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = self.setTimeout(() => {
+      this.reconnectTimer = null;
+      // Tear down the current worker (it has already closed its WS)
+      // and respawn with a fresh tokenPort + watchdog channel.
+      if (this.worker !== null) {
+        this.worker.terminate();
+        this.worker = null;
+      }
+      this.stopWatchdog();
+      this.watchdogChannel?.port1.close();
+      this.watchdogChannel = null;
+      this.spawn().catch((err: unknown) => {
+        this.errors$.next({
+          type: "ERROR",
+          protocolVersion: WORKER_PROTOCOL_VERSION,
+          code: "WORKER",
+          hint: `scheduled reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+    }, delayMs);
   }
 
   private startWatchdog(): void {
