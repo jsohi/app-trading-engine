@@ -443,10 +443,9 @@ class RfqStateMachineTest {
   @Test
   void onTimerExpiry_quotedSlot_emits107WithNullSession() {
     final var slot = acquireRequested("QREQ-003", 0L);
-    // Ensure non-zero generation so ttlCorrelationFor returns a non-zero value:
-    // at generation=0 and poolIndex=0 the correlation is 0 and registerQuoted skips insertion.
-    // Bump generation to 1 so the TTL correlation is (1L << 31) | poolIndex which is non-zero.
-    slot.generation = 1;
+    // Slot constructor sets generation=1 by default (R3 fix) so the TTL correlation is
+    // (1L << 31) | poolIndex which is guaranteed non-zero. registerQuoted will insert into
+    // byCorrelationId and onTimerExpiry will resolve the slot correctly.
     final long timerCorrId = machine.ttlCorrelationFor(slot);
     transitionToQuoted(slot, "QUOTE-003", timerCorrId, TS + 30_000_000_000L);
 

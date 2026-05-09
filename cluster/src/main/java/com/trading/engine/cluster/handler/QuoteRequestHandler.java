@@ -405,13 +405,24 @@ public final class QuoteRequestHandler implements CommandHandler {
     eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
   }
 
-  /** Emits 106 for a malformed inbound message — no decoder fields are valid. */
+  /**
+   * Emits 106 for a malformed inbound message — no decoder fields are valid.
+   *
+   * <p>The egress buffer is reused across emits, so any field NOT explicitly written by an SBE
+   * setter retains stale bytes from the previous message at that body offset. Explicitly zero every
+   * char-array / enum field so a malformed-path 106 cannot ship the previous emit's QuoteReqID /
+   * Symbol / AccountCode / Side / SettlDate / Currency / SettlCurrency content to the wire.
+   */
   private void emitMalformed(
       final ClientSession session, final long clusterTimestamp, final EventSink eventSink) {
     rejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     rejectedEncoder.sequenceNumber(0L);
     rejectedEncoder.timestamp(0L);
-    // Leave fields at SBE defaults; only quoteRejectReason and text carry meaning.
+    // Zero every field that would otherwise carry over from the prior emit at the same offset.
+    rejectedEncoder.putQuoteReqId(ZERO_QUOTE_REQ_ID, 0);
+    rejectedEncoder.putSymbol(ZERO_SYMBOL, 0);
+    rejectedEncoder.side(SideEnum.NULL_VAL);
+    rejectedEncoder.putAccountCode(ZERO_ACCOUNT_CODE, 0);
     rejectedEncoder.quoteRejectReason(QuoteRejectReasonEnum.Other);
     rejectedEncoder.productType(ProductTypeEnum.NULL_VAL);
     rejectedEncoder.putText(RfqRejectMessages.MALFORMED, 0);
@@ -420,6 +431,12 @@ public final class QuoteRequestHandler implements CommandHandler {
     metrics.rejectMalformed++;
     metrics.emitRejected++;
   }
+
+  /** Zero-filled scratch arrays for emitMalformed (no per-call allocation). */
+  private static final byte[] ZERO_QUOTE_REQ_ID = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
+  private static final byte[] ZERO_SYMBOL = new byte[RfqSlot.SYMBOL_LENGTH];
+  private static final byte[] ZERO_ACCOUNT_CODE = new byte[RfqSlot.ACCOUNT_CODE_LENGTH];
 
   /** Returns the actual length of the populated accountCode (trims trailing NULs). */
   private int accountCodeLen() {
