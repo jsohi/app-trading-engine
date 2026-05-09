@@ -49,7 +49,11 @@ export const RELIABLE_HEADER_SIZE = 17 as const;
  * (0x05 / 0x0D); both combos are valid. SnapshotAssembler distinguishes
  * by the FLAG_RELIABLE bit on each fragment.
  */
-const VALID_FLAG_COMBOS = Object.freeze<readonly number[]>([
+// Per /review MEDIUM (Gemini): hot-path membership check uses a Set
+// for O(1) lookup instead of linear-scanning a frozen array. The set
+// is allocated once at module init; the check is called per inbound
+// frame so the constant-factor improvement matters at 5 k/s.
+const VALID_FLAG_COMBOS: ReadonlySet<number> = new Set<number>([
   0x00, 0x01, 0x03, 0x04, 0x05, 0x0c, 0x0d,
 ]);
 
@@ -61,10 +65,7 @@ const VALID_FLAG_COMBOS = Object.freeze<readonly number[]>([
  */
 export function isValidFlagCombo(flags: number): boolean {
   if ((flags & RESERVED_FLAG_MASK) !== 0) return false;
-  for (const combo of VALID_FLAG_COMBOS) {
-    if (combo === flags) return true;
-  }
-  return false;
+  return VALID_FLAG_COMBOS.has(flags);
 }
 
 /** Returns true iff the reliable bit is set. */
