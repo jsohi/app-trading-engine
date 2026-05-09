@@ -2,6 +2,9 @@ package com.trading.engine.launcher;
 
 import com.trading.engine.cluster.TradingClusteredService;
 import com.trading.engine.cluster.TradingClusteredServiceFactory;
+import com.trading.engine.cluster.refdata.AccountStore;
+import com.trading.engine.cluster.refdata.CurrencyStore;
+import com.trading.engine.cluster.refdata.RiskLimitStore;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
@@ -67,6 +70,22 @@ public final class ClusterNodeLauncher {
   private ClusterNodeLauncher() {}
 
   /**
+   * Test-friendly overload using {@link LauncherConfig#defaults()} for the RFQ tunables. Production
+   * callers should use the 5-arg form so operators can override RFQ parameters via system
+   * properties parsed by {@link LauncherConfig#fromSystemProperties()}.
+   *
+   * @param nodeId cluster member id (0-based)
+   * @param baseDir parent directory for per-node archive and cluster dirs
+   * @param aeronDir external Media Driver's {@code aeron.dir}
+   * @param clusterMembers member string in the format produced by {@link ClusterConfig}
+   * @return handle owning the launched Archive, ConsensusModule, and ClusteredServiceContainer
+   */
+  public static ClusterComponents launch(
+      final int nodeId, final String baseDir, final String aeronDir, final String clusterMembers) {
+    return launch(nodeId, baseDir, aeronDir, clusterMembers, LauncherConfig.defaults());
+  }
+
+  /**
    * Launch one cluster node. The caller is responsible for:
    *
    * <ul>
@@ -82,12 +101,19 @@ public final class ClusterNodeLauncher {
    * ClusterConfig#buildClusterMembers(int, String...)}) binds to the routable hostname the caller
    * supplied.
    *
+   * <p>The {@code launcherConfig} parameter threads the 7 APP-232 RFQ tunables (poolCapacity,
+   * defaultTtlNanos, rateLimit*, requestTimeoutNanos, accept*ToleranceBps) into the cluster's
+   * {@link com.trading.engine.cluster.state.RfqStateMachine} via {@link
+   * TradingClusteredServiceFactory.RfqConfig}.
+   *
    * @param nodeId cluster member id (0-based; must be in {@code [0, ClusterConfig.MAX_NODES)})
    * @param baseDir parent directory for per-node archive and cluster dirs (non-blank)
    * @param aeronDir external Media Driver's {@code aeron.dir} (non-blank)
    * @param clusterMembers member string in the format produced by {@link
    *     ClusterConfig#buildClusterMembers(int)} or {@link ClusterConfig#buildClusterMembers(int,
    *     String...)} (non-blank; must contain an entry for {@code nodeId})
+   * @param launcherConfig parsed launcher configuration, used to construct the RFQ runtime config
+   *     for the cluster service
    * @return handle owning the launched Archive, ConsensusModule, and ClusteredServiceContainer
    * @throws NullPointerException if any string argument is {@code null}
    * @throws IllegalArgumentException if {@code nodeId} is out of range or any string argument is
@@ -95,15 +121,6 @@ public final class ClusterNodeLauncher {
    * @throws IllegalStateException if the external Media Driver is not running ({@code cnc.dat}
    *     missing at {@code aeronDir}) or per-node directories cannot be created
    */
-  /**
-   * Test-friendly overload using {@link LauncherConfig#defaults()}. Production callers use the
-   * 5-arg form below to thread RFQ tunables from system properties.
-   */
-  public static ClusterComponents launch(
-      final int nodeId, final String baseDir, final String aeronDir, final String clusterMembers) {
-    return launch(nodeId, baseDir, aeronDir, clusterMembers, LauncherConfig.defaults());
-  }
-
   public static ClusterComponents launch(
       final int nodeId,
       final String baseDir,
@@ -206,7 +223,7 @@ public final class ClusterNodeLauncher {
       //    container launch and orphaning it on a subsequent failure is benign.
       final var rfqConfig =
           new TradingClusteredServiceFactory.RfqConfig(
-              (int) launcherConfig.rfqPoolCapacity(),
+              launcherConfig.rfqPoolCapacity(),
               launcherConfig.rfqDefaultTtlNanos(),
               launcherConfig.rfqDefaultTtlNanos(),
               launcherConfig.rfqDefaultTtlNanos(),
@@ -218,10 +235,7 @@ public final class ClusterNodeLauncher {
               launcherConfig.rfqAcceptQtyToleranceBps());
       final TradingClusteredService service =
           TradingClusteredServiceFactory.create(
-              new com.trading.engine.cluster.refdata.AccountStore(),
-              new com.trading.engine.cluster.refdata.CurrencyStore(),
-              new com.trading.engine.cluster.refdata.RiskLimitStore(),
-              rfqConfig);
+              new AccountStore(), new CurrencyStore(), new RiskLimitStore(), rfqConfig);
       final ClusteredServiceContainer.Context serviceCtx =
           new ClusteredServiceContainer.Context()
               .aeronDirectoryName(aeronDir)
