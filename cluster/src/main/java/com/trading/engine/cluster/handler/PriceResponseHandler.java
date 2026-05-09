@@ -59,6 +59,9 @@ public final class PriceResponseHandler implements CommandHandler {
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[EGRESS_BUFFER_SIZE]);
 
+  /** Pre-allocated scratch for decoded quoteReqId bytes (FIX tag 131, 20-byte fixed-length). */
+  private final byte[] reqIdScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
   // ---- Injected dependencies ----
   private final RfqStateMachine rfqStateMachine;
   private final IdGenerator quoteIdGen;
@@ -114,7 +117,6 @@ public final class PriceResponseHandler implements CommandHandler {
 
     // 2. Decode wrap
     prDecoder.wrap(buffer, offset + HDR_LEN, blockLength, version);
-    final byte[] reqIdScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
     prDecoder.getQuoteReqId(reqIdScratch, 0);
 
     // 3. Slot lookup

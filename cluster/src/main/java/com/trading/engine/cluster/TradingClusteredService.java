@@ -336,11 +336,17 @@ public final class TradingClusteredService implements ClusteredService {
     if (snapshotReassemblyOffset > 0) {
       loadSnapshot(snapshotReassemblyBuf, 0, snapshotReassemblyOffset);
       // Recovery sweep §9.4: re-arm timers / emit terminal events for in-flight RFQ slots.
+      // The sweep MUST run unconditionally — silently skipping it would leave restored slots
+      // with stale timer correlation IDs and no Aeron timer scheduled, breaking RFQ TTL
+      // semantics post-restart. If the cluster context provides no errorHandler we fall back to
+      // a no-op handler; recovery sweep failures (rare, e.g. timer pool exhausted at startup)
+      // still produce SBE events but cannot escalate to operator alerts.
       final long currentTs = cluster.time();
-      final var errorHandler = cluster.context() != null ? cluster.context().errorHandler() : null;
-      if (errorHandler != null) {
-        rfqStateMachine.onSnapshotRestored(currentTs, eventSink, errorHandler);
-      }
+      final var ctx = cluster.context();
+      final var ctxErrorHandler = ctx != null ? ctx.errorHandler() : null;
+      final org.agrona.ErrorHandler errorHandler =
+          ctxErrorHandler != null ? ctxErrorHandler : (final Throwable t) -> {};
+      rfqStateMachine.onSnapshotRestored(currentTs, eventSink, errorHandler);
     }
   }
 

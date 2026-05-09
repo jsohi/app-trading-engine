@@ -1,10 +1,13 @@
 package com.trading.engine.cluster.handler;
 
 import com.trading.engine.cluster.OrderState;
+import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.state.RfqSlot;
+import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
@@ -114,26 +117,24 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * Optional injection from {@link com.trading.engine.cluster.TradingClusteredService} for plan
    * §9.2a quote-acceptance integration. When set, NOS commands carrying {@code
    * ordType=PreviouslyQuoted} and a non-empty quoteId are matched against an active QUOTED RFQ
-   * slot via {@link com.trading.engine.cluster.state.RfqStateMachine#peekByQuoteId}, validated for
-   * side / price / qty match, and atomically committed via
-   * {@link com.trading.engine.cluster.state.RfqStateMachine#commitAccept} after all NOS
-   * validations pass. Null in tests that exercise the legacy single-leg flow.
+   * slot via {@link RfqStateMachine#peekByQuoteId}, validated for side / price / qty match, and
+   * atomically committed via {@link RfqStateMachine#commitAccept} after all NOS validations pass.
+   * Null in tests that exercise the legacy single-leg flow.
    */
-  private com.trading.engine.cluster.state.RfqStateMachine rfqStateMachine;
+  private RfqStateMachine rfqStateMachine;
 
   /**
    * Cached metrics from the RfqStateMachine for §9.2a reject-path counter increments. Null when
    * {@link #rfqStateMachine} is null.
    */
-  private com.trading.engine.cluster.metrics.RfqMetrics rfqMetrics;
+  private RfqMetrics rfqMetrics;
 
   /**
-   * Scratch field holding the QUOTED slot returned by {@link
-   * com.trading.engine.cluster.state.RfqStateMachine#peekByQuoteId} during the peek phase. Cleared
-   * after commit (or on any reject path). Single-threaded duty cycle invariant means this never
-   * races.
+   * Scratch field holding the QUOTED slot returned by {@link RfqStateMachine#peekByQuoteId}
+   * during the peek phase. Cleared after commit (or on any reject path). Single-threaded duty
+   * cycle invariant means this never races.
    */
-  private com.trading.engine.cluster.state.RfqSlot pendingQuoteAcceptSlot;
+  private RfqSlot pendingQuoteAcceptSlot;
 
   /**
    * Creates a NewOrderSingleHandler wired to the given cluster state and reference data stores.
@@ -162,8 +163,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * @param rfqMetrics observability counters for the RFQ path
    */
   public void wireRfqStateMachine(
-      final com.trading.engine.cluster.state.RfqStateMachine rfqStateMachine,
-      final com.trading.engine.cluster.metrics.RfqMetrics rfqMetrics) {
+      final RfqStateMachine rfqStateMachine, final RfqMetrics rfqMetrics) {
     this.rfqStateMachine = rfqStateMachine;
     this.rfqMetrics = rfqMetrics;
   }
