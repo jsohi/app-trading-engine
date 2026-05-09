@@ -17,10 +17,16 @@ nimbus-jose-jwt = "10.3"
 # Test-only — Jackson parses JSON output from chunk 13's roundtrip-driver.ts
 # (see :sbe-typescript-generator:RoundTripTest). Not on any production hot path.
 jackson = "2.20.0"
+# JMH micro-bench (APP-232) — :cluster:jmh task only, never bundled into the runtime.
+jmh = "1.37"
+jmh-gradle-plugin = "0.7.3"
+# HdrHistogram for RfqLatencyRegressionIT P50/P99/P999 budget assertions.
+hdr-histogram = "2.2.2"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 owasp = { id = "org.owasp.dependencycheck", version.ref = "owasp" }
+jmh = { id = "me.champeau.jmh", version.ref = "jmh-gradle-plugin" }
 
 [libraries]
 aeron-cluster = { module = "io.aeron:aeron-cluster", version.ref = "aeron" }
@@ -51,3 +57,6 @@ netty-tcnative-boringssl = { module = "io.netty:netty-tcnative-boringssl-static"
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus", version.ref = "micrometer" }
 nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "nimbus-jose-jwt" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-annotation-processor = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
+hdr-histogram = { module = "org.hdrhistogram:HdrHistogram", version.ref = "hdr-histogram" }

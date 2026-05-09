@@ -32,7 +32,7 @@ import org.agrona.concurrent.IdleStrategy;
  *
  * @see FakeClientSession
  */
-public final class FakeCluster implements Cluster {
+public class FakeCluster implements Cluster {
 
   private final long time;
   private final IdleStrategy idleStrategy;
