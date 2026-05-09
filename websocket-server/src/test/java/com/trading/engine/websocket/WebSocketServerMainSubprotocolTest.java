@@ -32,6 +32,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -88,8 +89,7 @@ final class WebSocketServerMainSubprotocolTest {
    * production handler configuration and returns the server's {@link FullHttpResponse}. Caller
    * releases the returned buffer.
    */
-  private static FullHttpResponse runUpgrade(
-      final java.util.function.Consumer<DefaultFullHttpRequest> mutator) {
+  private static FullHttpResponse runUpgrade(final Consumer<DefaultFullHttpRequest> mutator) {
     // Server channel: mirrors WebSocketServerMain.java:230.
     final var serverCh =
         new EmbeddedChannel(
@@ -121,23 +121,25 @@ final class WebSocketServerMainSubprotocolTest {
 
       // Encode → wire bytes.
       encoderCh.writeOutbound(request);
-      Object raw;
-      while ((raw = encoderCh.readOutbound()) != null) {
+      // Drain the encoded outbound queue into the server channel; each
+      // chunk is consumed once. `final var raw` per loop iteration so
+      // the variable is immutable inside its scope.
+      for (Object raw = encoderCh.readOutbound(); raw != null; raw = encoderCh.readOutbound()) {
         serverCh.writeInbound(raw);
       }
 
-      // Server has now produced its handshake response.
-      Object outRaw = serverCh.readOutbound();
-      // FullHttpResponse may or may not be aggregated; decode via paired
-      // client-codec channel.
+      // Server has now produced its handshake response. Decode via a
+      // paired client-codec channel so HTTP aggregation matches what
+      // a real browser would observe.
       final var decoderCh =
           new EmbeddedChannel(new HttpClientCodec(), new HttpObjectAggregator(MAX_FRAME_SIZE));
       try {
-        while (outRaw != null) {
+        for (Object outRaw = serverCh.readOutbound();
+            outRaw != null;
+            outRaw = serverCh.readOutbound()) {
           decoderCh.writeInbound(outRaw);
-          outRaw = serverCh.readOutbound();
         }
-        final FullHttpResponse aggregated = decoderCh.readInbound();
+        final var aggregated = (FullHttpResponse) decoderCh.readInbound();
         assertNotNull(aggregated, "no aggregated upgrade response");
         return aggregated;
       } finally {
