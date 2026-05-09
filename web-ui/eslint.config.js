@@ -111,6 +111,18 @@ export default [
     rules: {
       // ---- Custom hot-path discipline (CLAUDE.md / saved feedback) ----
       "local/no-span-in-hot-path": "error",
+      // APP-36 ESLint rule registrations (C1). Stubs return no diagnostics;
+      // each is promoted from `off` → `error` in the commit that lands the
+      // source they govern (no-bigint-to-number-coerce → C5; no-prototype
+      // -pollution-from-decoder → C6; etc). Registering at C1 keeps the
+      // rule namespace stable across the C1–C10 sequence.
+      "local/no-bigint-to-number-coerce": "off",
+      "local/no-banned-globals-in-worker": "off",
+      "local/no-otel-attribute-outside-allowlist": "off",
+      "local/no-prototype-pollution-from-decoder": "off",
+      "local/no-dev-token-provider-outside-dev": "off",
+      "local/no-crypto-with-storage-or-exfil": "off",
+      "local/require-threading-allocation-tags": "off",
 
       // ---- bigint discipline ----
       "no-restricted-syntax": [
