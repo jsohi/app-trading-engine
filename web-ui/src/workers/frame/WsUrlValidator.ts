@@ -68,14 +68,13 @@ export function validateWsUrl(raw: string, mode: "prod" | "dev" = "prod"): Valid
     }
   }
 
-  // Per Gemini review (MEDIUM): URL.host already contains "host:port" when the
-  // port is non-default, so concatenating parsed.port back onto parsed.host
-  // produced strings like "localhost:8443:8443" that broke the loopback regex
-  // tests. URL.host is the correct canonical form on its own.
-  const hostport = parsed.host;
+  // Per Gemini review (MEDIUM): URL.host already contains "host:port" when
+  // the port is non-default. The earlier double-test against `parsed.host`
+  // and a separately-built hostport string was redundant after the R2 fix
+  // unified them — collapse to a single test.
   if (mode === "prod") {
     for (const pat of LOCAL_HOST_PATTERNS) {
-      if (pat.test(parsed.host) || pat.test(hostport)) {
+      if (pat.test(parsed.host)) {
         throw new Error(
           `WsUrlValidator: production refuses loopback / link-local host: ${parsed.host}`,
         );
