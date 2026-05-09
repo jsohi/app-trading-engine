@@ -758,6 +758,12 @@ public final class RfqStateMachine {
    * @param clusterTs the cluster timestamp at close
    */
   public void onSessionClose(final long sessionId, final long clusterTs) {
+    // Always release the rate-limit bucket and bump the session-closed counter, even on the
+    // test path where {@code cluster == null}. Skipping these for the no-cluster branch leaks
+    // the per-session {@link TokenBucket} and breaks the rate-limit invariant under tests
+    // that open many sessions in one process.
+    metrics.sessionClosed++;
+    releaseRateLimitForSession(sessionId);
     if (cluster == null) {
       return;
     }
@@ -783,8 +789,6 @@ public final class RfqStateMachine {
         metrics.sessionCloseTimerRearmFailed++;
       }
     }
-    metrics.sessionClosed++;
-    releaseRateLimitForSession(sessionId);
   }
 
   // -------------------------------------------------------------------------
@@ -1108,8 +1112,15 @@ public final class RfqStateMachine {
           recoverQuoted(slot, currentClusterTs, eventSink, errorHandler);
           break;
         case ACCEPTED:
-          // Defensive — should never occur because commit is atomic with release.
+          // Defensive — should never occur because commit is atomic with release per the
+          // single-threaded duty cycle invariant. Escalate via the error handler with
+          // diagnostic context (poolIndex) so operators see the invariant violation, not
+          // just an opaque counter increment.
           metrics.recoveryAcceptedReleased++;
+          errorHandler.onError(
+              new IllegalStateException(
+                  "RFQ slot in ACCEPTED at snapshot — invariant violated. poolIndex="
+                      + slot.poolIndex));
           release(slot);
           break;
         case FREE:

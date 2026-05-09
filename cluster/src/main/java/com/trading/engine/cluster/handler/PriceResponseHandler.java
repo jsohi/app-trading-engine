@@ -135,7 +135,14 @@ public final class PriceResponseHandler implements CommandHandler {
       return;
     }
 
-    final BooleanType accepted = prDecoder.accepted();
+    // Read raw byte instead of {@code prDecoder.accepted()} to avoid the
+    // {@link IllegalArgumentException} that {@code BooleanType.get} throws on unrecognized
+    // wire values. A buggy or restarted pricing service must not be able to throw out of the
+    // cluster duty cycle. Treat any non-True byte (including malformed) as "not accepted" →
+    // 106 reject path.
+    final short acceptedRaw = prDecoder.acceptedRaw();
+    final BooleanType accepted =
+        acceptedRaw == BooleanType.True.value() ? BooleanType.True : BooleanType.False;
 
     // 4. Pricing rejected → emit 106 + release
     if (accepted != BooleanType.True) {

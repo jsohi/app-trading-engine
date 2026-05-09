@@ -59,6 +59,23 @@ public final class OrchestratorRfqForwarder {
   private final Long2LongHashMap quoteReqIdToSession;
 
   /**
+   * Counts hash collisions detected at {@code recordOriginatingSession} time — i.e., when a {@code
+   * put} would overwrite an existing entry that maps to a different session. Two distinct
+   * quoteReqIds collide with probability ~2^-64 per pair (FNV-1a 64-bit), but the failure mode is
+   * silent corruption (the prior session loses its routing entry), so operators must be able to
+   * monitor it. Read-only by callers; reset at {@link #resetCollisionCounter()} for tests.
+   */
+  private long routingCollisionDetected;
+
+  /**
+   * Pre-allocated scratch array used by {@link #evictSession} to record the keys to remove. Sized
+   * to {@code expectedCapacity} at construction; if the live entry count ever exceeds this we grow
+   * the scratch (cold path — only on session close). This keeps {@link #evictSession} effectively
+   * allocation-free under steady-state churn.
+   */
+  private long[] evictScratch;
+
+  /**
    * Constructs a forwarder with the given expected concurrent-RFQ capacity.
    *
    * @param expectedCapacity initial map size; map auto-grows beyond this but the initial alloc
@@ -69,6 +86,7 @@ public final class OrchestratorRfqForwarder {
       throw new IllegalArgumentException("expectedCapacity must be > 0, got " + expectedCapacity);
     }
     this.quoteReqIdToSession = new Long2LongHashMap(expectedCapacity, 0.55f, MISSING_SESSION);
+    this.evictScratch = new long[expectedCapacity];
   }
 
   /**
@@ -80,7 +98,25 @@ public final class OrchestratorRfqForwarder {
    * @param artioSessionId Artio FIX session id from the inbound FIX message
    */
   public void recordOriginatingSession(final long quoteReqIdHash, final long artioSessionId) {
+    final long existing = quoteReqIdToSession.get(quoteReqIdHash);
+    if (existing != MISSING_SESSION && existing != artioSessionId) {
+      // Two distinct quoteReqIds hashed to the same 64-bit FNV-1a value (probability ~2^-64
+      // per pair). The new session's egress will route correctly; the prior session loses
+      // its routing entry. Operators monitor {@link #routingCollisionDetected} to detect
+      // this corruption mode.
+      routingCollisionDetected++;
+    }
     quoteReqIdToSession.put(quoteReqIdHash, artioSessionId);
+  }
+
+  /**
+   * Returns the number of FNV-1a hash collisions detected since construction. For diagnostics /
+   * metrics export only.
+   *
+   * @return current collision count
+   */
+  public long routingCollisionDetected() {
+    return routingCollisionDetected;
   }
 
   /**
@@ -115,21 +151,25 @@ public final class OrchestratorRfqForwarder {
    * @return the number of routing entries evicted
    */
   public int evictSession(final long artioSessionId, final CloseReason closeReason) {
-    // Iterate the long key set primitive-iterator-style (no boxing). Build a removal list
-    // first because the map iterator does not support concurrent removal of the current entry
-    // safely across all Agrona versions. Removal pass runs on session close (cold path); the
-    // small array allocation is acceptable.
-    final long[] keysToEvict = new long[quoteReqIdToSession.size()];
+    // Iterate the long key set primitive-iterator-style (no boxing). Build the removal list
+    // into a pre-allocated scratch array because the map iterator does not support concurrent
+    // removal of the current entry safely across all Agrona versions. The scratch is grown
+    // (cold-path realloc) only if the live entry count has exceeded the construction-time
+    // capacity hint.
+    final int liveCount = quoteReqIdToSession.size();
+    if (liveCount > evictScratch.length) {
+      evictScratch = new long[liveCount];
+    }
     int idx = 0;
     final var keyIter = quoteReqIdToSession.keySet().iterator();
     while (keyIter.hasNext()) {
       final long key = keyIter.nextValue();
       if (quoteReqIdToSession.get(key) == artioSessionId) {
-        keysToEvict[idx++] = key;
+        evictScratch[idx++] = key;
       }
     }
     for (int i = 0; i < idx; i++) {
-      quoteReqIdToSession.remove(keysToEvict[i]);
+      quoteReqIdToSession.remove(evictScratch[i]);
     }
     return idx;
   }
