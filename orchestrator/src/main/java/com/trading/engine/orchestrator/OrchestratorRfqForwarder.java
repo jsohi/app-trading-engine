@@ -202,6 +202,12 @@ public final class OrchestratorRfqForwarder {
       hash ^= (src[offset + i] & 0xFFL);
       hash *= prime;
     }
-    return hash == MISSING_SESSION ? 1L : hash; // avoid sentinel collision on legitimate keys
+    // Sentinel-collision avoidance: a natural FNV-1a hash equal to MISSING_SESSION (Long.MIN_VALUE)
+    // would be indistinguishable from "no entry". Instead of remapping to a fixed value (which
+    // creates an artificial collision with whichever input naturally hashes to that fixed value),
+    // mix one extra round of the prime so the remapped hash is still pseudo-random over the
+    // 64-bit space. The remapping is deterministic and reversible only with full knowledge of
+    // the input, which is fine for a non-cryptographic dedup hash.
+    return hash == MISSING_SESSION ? hash * 0x100000001B3L : hash;
   }
 }
