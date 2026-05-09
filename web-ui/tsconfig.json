@@ -26,6 +26,7 @@
     "src/**/*",
     "test/**/*",
     "e2e/**/*",
+    "bench/**/*",
     ".storybook/**/*",
     "vite.config.ts",
     "vitest.config.ts",
