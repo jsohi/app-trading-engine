@@ -200,8 +200,13 @@ public final class PriceResponseHandler implements CommandHandler {
     createdEncoder.validUntil(slot.validUntil);
     createdEncoder.productType(ProductTypeEnum.get(slot.productType));
     createdEncoder.putSettlDate(slot.settlDateBytes, 0);
+    // slot.settlType holds the raw SBE enum byte including NULL_VAL (255 / signed -1).
+    // Mask to 0..255 before SettlTypeEnum.get to safely cover the NULL_VAL sentinel and
+    // preserve Regular (wire value 0). Per QuoteRequestHandler:281.
     createdEncoder.settlType(
-        slot.settlType == 0 ? SettlTypeEnum.NULL_VAL : SettlTypeEnum.get(slot.settlType));
+        slot.settlType == (byte) SettlTypeEnum.NULL_VAL.value()
+            ? SettlTypeEnum.NULL_VAL
+            : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
     createdEncoder.putCurrency(slot.currencyBytes, 0);
     createdEncoder.putSettlCurrency(slot.settlCurrencyBytes, 0);
     createdEncoder.tenor(TenorEnum.get(slot.tenor));
@@ -215,9 +220,9 @@ public final class PriceResponseHandler implements CommandHandler {
       outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
       outLegGrp.legSettlType(
-          slot.legSettlType[j] == 0
+          slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
               ? SettlTypeEnum.NULL_VAL
-              : SettlTypeEnum.get(slot.legSettlType[j]));
+              : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
       outLegGrp.legBidPx(slot.legBidPx[j]);
       outLegGrp.legOfferPx(slot.legOfferPx[j]);

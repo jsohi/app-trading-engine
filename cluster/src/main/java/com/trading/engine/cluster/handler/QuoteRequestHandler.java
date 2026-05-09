@@ -278,7 +278,10 @@ public final class QuoteRequestHandler implements CommandHandler {
         settlCurrencyScratch, 0, slot.settlCurrencyBytes, 0, RfqSlot.SETTL_CURRENCY_LENGTH);
     slot.side = (byte) sideEnum.value();
     slot.productType = (byte) productType.value();
-    slot.settlType = settlType == SettlTypeEnum.NULL_VAL ? 0 : (byte) settlType.value();
+    // Store the raw enum byte (including NULL_VAL=255 for absent). Cannot collapse
+    // NULL_VAL → 0 because Regular also has wire value 0; the encode side could not
+    // distinguish them and would emit Regular as NULL_VAL on the QuoteCreatedEvent.
+    slot.settlType = (byte) settlType.value();
     slot.tenor = (byte) tenor.value();
     slot.orderQty = orderQty;
     slot.accountId = account.accountId();
@@ -316,8 +319,12 @@ public final class QuoteRequestHandler implements CommandHandler {
       // simply stores the raw byte (0 if unrecognized) and downstream encode is bounded.
       slot.legSide[legIdx] = (byte) legGrp.legSideRaw();
       legGrp.getLegSettlDate(slot.legSettlDate[legIdx], 0);
+      // Store the raw enum byte (including NULL_VAL=255 sentinel for malformed). Cannot
+      // collapse to 0 because Regular also has wire value 0; Regular and "no settlType"
+      // must be distinguishable on the encode side.
       final short legStRaw = legGrp.legSettlTypeRaw();
-      slot.legSettlType[legIdx] = isValidSettlType(legStRaw) ? (byte) legStRaw : 0;
+      slot.legSettlType[legIdx] =
+          isValidSettlType(legStRaw) ? (byte) legStRaw : (byte) SettlTypeEnum.NULL_VAL.value();
       legGrp.getLegCurrency(slot.legCurrency[legIdx], 0);
       final short legTnRaw = legGrp.legTenorRaw();
       slot.legTenor[legIdx] = isValidTenor(legTnRaw) ? (byte) legTnRaw : 0;
@@ -379,9 +386,9 @@ public final class QuoteRequestHandler implements CommandHandler {
       outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
       outLegGrp.legSettlType(
-          slot.legSettlType[j] == 0
+          slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
               ? SettlTypeEnum.NULL_VAL
-              : SettlTypeEnum.get(slot.legSettlType[j]));
+              : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
       outLegGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
       outLegGrp.legOrderQty(slot.legOrderQty[j]);

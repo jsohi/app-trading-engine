@@ -836,8 +836,14 @@ public final class RfqStateMachine {
     // the snapshot bytes match regardless of pool-index vs insertion-order traversal.
     for (int idx = 0; idx < active; idx++) {
       final RfqSlot slot = slots[activeIndices[idx]];
+      // Hard invariant: activeIndices[0..active) must contain only non-FREE slots per the
+      // release()'s swap-with-last contract. A FREE slot here would corrupt the SBE group
+      // header (which was sized at `active` above) by either skipping a declared entry
+      // (decoder-side underflow) or — if we silently `continue` — emitting fewer entries
+      // than the count claims (CRC failure on decode).
       if (slot.state == RfqSlotState.FREE) {
-        continue;
+        throw new IllegalStateException(
+            "FREE slot in activeIndices at idx=" + idx + " poolIndex=" + slot.poolIndex);
       }
       grp.next();
       grp.putQuoteReqId(slot.quoteReqIdBytes, 0);
