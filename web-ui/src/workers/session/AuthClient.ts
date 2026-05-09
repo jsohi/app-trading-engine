@@ -141,7 +141,6 @@ export class AuthClient {
     if (this.reauthInFlight) {
       return Promise.reject(new Error("reauth already in flight"));
     }
-    this.reauthInFlight = true;
     return new Promise((resolve, reject) => {
       const onSuccess = (): void => {
         this.reauthInFlight = false;
@@ -154,13 +153,26 @@ export class AuthClient {
         this.reauthQueue.length = 0;
         reject(new Error(`reauth failed (${reason}): ${message}`));
       };
-      // Splice the resolution into the next callback invocations.
-      this.pendingReauthResolve = onSuccess;
-      this.pendingReauthReject = onFailure;
-
-      this.armDeadline();
-      const bytes = this.cb.encodeAuth(newToken, SENT_PROTOCOL_VERSION);
-      this.cb.sendBytes(bytes);
+      // Per /review HIGH (Agent B): set `reauthInFlight = true` and
+      // wire pendingReauth*  ONLY after we successfully encoded + sent
+      // the auth frame. Previously the flag was set BEFORE the
+      // encode/send pair; if either threw, the catch path below would
+      // NOT clear it (no resolver wired yet) and subsequent reauth()
+      // calls would be permanently rejected with "already in flight".
+      try {
+        this.reauthInFlight = true;
+        this.pendingReauthResolve = onSuccess;
+        this.pendingReauthReject = onFailure;
+        this.armDeadline();
+        const bytes = this.cb.encodeAuth(newToken, SENT_PROTOCOL_VERSION);
+        this.cb.sendBytes(bytes);
+      } catch (err) {
+        this.reauthInFlight = false;
+        this.pendingReauthResolve = null;
+        this.pendingReauthReject = null;
+        this.reauthQueue.length = 0;
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 

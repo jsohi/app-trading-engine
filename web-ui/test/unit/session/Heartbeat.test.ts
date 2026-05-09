@@ -77,7 +77,7 @@ describe("Heartbeat", () => {
   let outboundFired: bigint[];
   let deadlineExceeded: number[];
   let callbacks: HeartbeatCallbacks;
-  let nowMs: () => number;
+  let _nowMs: () => number; // retained for symmetry; unused after the bigint nowNs wiring
   let currentMs: number;
   let heartbeat: Heartbeat;
 
@@ -95,8 +95,13 @@ describe("Heartbeat", () => {
       },
     };
     currentMs = 1_000; // start at 1 s to avoid 0 edge cases
-    nowMs = (): number => currentMs;
-    heartbeat = new Heartbeat(state, callbacks, sched.scheduler, nowMs);
+    _nowMs = (): number => currentMs;
+    // Test injects nowNs as a precision-preserving derivative of nowMs;
+    // the integer-ms test fixture means there's no precision to lose,
+    // so the canonical formula and the lossy formula produce identical
+    // bigint values in this scope.
+    const nowNs = (): bigint => BigInt(currentMs) * 1_000_000n;
+    heartbeat = new Heartbeat(state, callbacks, sched.scheduler, nowNs);
   });
 
   it("outboundHeartbeat_firesEveryClientIntervalMs_respectingChainedSetTimeout", () => {
