@@ -5,7 +5,6 @@ import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.state.RfqSlot;
-import com.trading.engine.cluster.state.RfqSlotState;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
@@ -21,19 +20,17 @@ import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
-import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
- * Handler for {@code QuoteRequest} (template 1). Validates against {@link AccountStore} /
- * {@link CurrencyStore} / {@link RfqStateMachine} state, schedules a request-timeout timer FIRST
- * (so a journal-then-rollback hazard is impossible), then encodes and emits
- * {@code QuoteRequestedEvent} (104) via {@link EventSink}, finally committing the slot to the
- * lookup maps.
+ * Handler for {@code QuoteRequest} (template 1). Validates against {@link AccountStore} / {@link
+ * CurrencyStore} / {@link RfqStateMachine} state, schedules a request-timeout timer FIRST (so a
+ * journal-then-rollback hazard is impossible), then encodes and emits {@code QuoteRequestedEvent}
+ * (104) via {@link EventSink}, finally committing the slot to the lookup maps.
  *
  * <p>Reject ladder per plan §9.1 — every reachable state is explicitly handled with a typed reject
- * reason and a pre-allocated {@code text} constant from {@link RfqRejectMessages}. See the table
- * in plan §3.1 for the exhaustive list.
+ * reason and a pre-allocated {@code text} constant from {@link RfqRejectMessages}. See the table in
+ * plan §3.1 for the exhaustive list.
  *
  * <p><b>Threading:</b> single-threaded cluster duty cycle.
  *
@@ -59,9 +56,12 @@ public final class QuoteRequestHandler implements CommandHandler {
   // ---- Scratch byte arrays for char-array fields ----
   private final byte[] quoteReqIdScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
 
-  /** Pre-allocated UnsafeBuffer view over {@link #quoteReqIdScratch} for {@code DirectBuffer}-typed
-   * lookups (e.g., {@link RfqStateMachine#recentlyTerminalReason}). Re-wrapped on every onCommand. */
+  /**
+   * Pre-allocated UnsafeBuffer view over {@link #quoteReqIdScratch} for {@code DirectBuffer}-typed
+   * lookups (e.g., {@link RfqStateMachine#recentlyTerminalReason}). Re-wrapped on every onCommand.
+   */
   private final UnsafeBuffer quoteReqIdScratchBuffer = new UnsafeBuffer(quoteReqIdScratch);
+
   private final byte[] symbolScratch = new byte[RfqSlot.SYMBOL_LENGTH];
   private final byte[] accountCodeScratch = new byte[RfqSlot.ACCOUNT_CODE_LENGTH];
   private final byte[] settlDateScratch = new byte[RfqSlot.SETTL_DATE_LENGTH];
@@ -142,19 +142,28 @@ public final class QuoteRequestHandler implements CommandHandler {
     // 3. Symbol non-empty
     if (symbolScratch[0] == 0) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.UnknownSymbol,
-          RfqRejectMessages.SYMBOL_EMPTY, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.UnknownSymbol,
+          RfqRejectMessages.SYMBOL_EMPTY,
+          productType);
       metrics.rejectSymbolEmpty++;
       metrics.emitRejected++;
       return;
     }
 
     // 4. Account validation
-    final AccountState account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
+    final AccountState account =
+        accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
     if (account == null || account.status() != AccountStatusEnum.Active) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.Other,
-          RfqRejectMessages.ACCOUNT_INACTIVE, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.Other,
+          RfqRejectMessages.ACCOUNT_INACTIVE,
+          productType);
       metrics.rejectAccountInactive++;
       metrics.emitRejected++;
       return;
@@ -163,8 +172,12 @@ public final class QuoteRequestHandler implements CommandHandler {
     // 5. CAN_RFQ entitlement
     if ((account.capabilities() & AccountState.Capabilities.CAN_RFQ) == 0L) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.Other,
-          RfqRejectMessages.RFQ_NOT_PERMITTED, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.Other,
+          RfqRejectMessages.RFQ_NOT_PERMITTED,
+          productType);
       metrics.rejectRfqNotPermitted++;
       metrics.emitRejected++;
       return;
@@ -174,8 +187,12 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (!currencyStore.contains(packCurrency(currencyScratch))
         || !currencyStore.contains(packCurrency(settlCurrencyScratch))) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.Other,
-          RfqRejectMessages.CURRENCY_UNKNOWN, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.Other,
+          RfqRejectMessages.CURRENCY_UNKNOWN,
+          productType);
       metrics.rejectCurrencyUnknown++;
       metrics.emitRejected++;
       return;
@@ -185,8 +202,12 @@ public final class QuoteRequestHandler implements CommandHandler {
     final long sessionId = session != null ? session.id() : 0L;
     if (!rfqStateMachine.rateLimitTryConsume(sessionId, clusterTimestamp)) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.TooLateToEnter,
-          RfqRejectMessages.RATE_LIMIT, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.TooLateToEnter,
+          RfqRejectMessages.RATE_LIMIT,
+          productType);
       metrics.rejectRateLimit++;
       metrics.emitRejected++;
       return;
@@ -194,13 +215,16 @@ public final class QuoteRequestHandler implements CommandHandler {
 
     // 8. Duplicate / recently-terminal detection
     final RfqSlot existing =
-        rfqStateMachine.lookupByQuoteReqId(
-            quoteReqIdScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+        rfqStateMachine.lookupByQuoteReqId(quoteReqIdScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     if (existing != null) {
       // Duplicate quoteReqId in REQUESTED or QUOTED — emit 106 "duplicate".
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.Other,
-          RfqRejectMessages.DUPLICATE, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.Other,
+          RfqRejectMessages.DUPLICATE,
+          productType);
       metrics.rejectDuplicate++;
       metrics.emitRejected++;
       return;
@@ -218,8 +242,12 @@ public final class QuoteRequestHandler implements CommandHandler {
     final RfqSlot slot = rfqStateMachine.acquire();
     if (slot == null) {
       emitRejectByQuoteReqId(
-          session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.TooLateToEnter,
-          RfqRejectMessages.POOL_EXHAUSTED, productType);
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.TooLateToEnter,
+          RfqRejectMessages.POOL_EXHAUSTED,
+          productType);
       metrics.rejectPoolExhausted++;
       metrics.emitRejected++;
       return;
@@ -269,15 +297,20 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (cluster == null) {
       // Test path — skip timer; commit slot anyway.
     } else {
-      final boolean ok = cluster.scheduleTimer(
-          slot.requestTimeoutCorrelationId,
-          clusterTimestamp + rfqStateMachine.requestTimeoutNanos());
+      final boolean ok =
+          cluster.scheduleTimer(
+              slot.requestTimeoutCorrelationId,
+              clusterTimestamp + rfqStateMachine.requestTimeoutNanos());
       if (!ok) {
         // Rollback: release slot before any 104 emission.
         rfqStateMachine.release(slot);
         emitRejectByQuoteReqId(
-            session, clusterTimestamp, eventSink, QuoteRejectReasonEnum.TooLateToEnter,
-            RfqRejectMessages.TIMER_POOL_EXHAUSTED, productType);
+            session,
+            clusterTimestamp,
+            eventSink,
+            QuoteRejectReasonEnum.TooLateToEnter,
+            RfqRejectMessages.TIMER_POOL_EXHAUSTED,
+            productType);
         metrics.rejectTimerExhausted++;
         metrics.emitRejected++;
         return;
@@ -306,9 +339,10 @@ public final class QuoteRequestHandler implements CommandHandler {
       outLegGrp.next();
       outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
-      outLegGrp.legSettlType(slot.legSettlType[j] == 0
-          ? SettlTypeEnum.NULL_VAL
-          : SettlTypeEnum.get(slot.legSettlType[j]));
+      outLegGrp.legSettlType(
+          slot.legSettlType[j] == 0
+              ? SettlTypeEnum.NULL_VAL
+              : SettlTypeEnum.get(slot.legSettlType[j]));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
       outLegGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
       outLegGrp.legOrderQty(slot.legOrderQty[j]);
@@ -327,7 +361,9 @@ public final class QuoteRequestHandler implements CommandHandler {
     metrics.emitRequested++;
   }
 
-  /** Emits a 106 reject with quoteReqId+side+symbol+accountCode populated from the scratch arrays. */
+  /**
+   * Emits a 106 reject with quoteReqId+side+symbol+accountCode populated from the scratch arrays.
+   */
   private void emitRejectByQuoteReqId(
       final ClientSession session,
       final long clusterTimestamp,
@@ -381,5 +417,4 @@ public final class QuoteRequestHandler implements CommandHandler {
   private static int packCurrency(final byte[] ccy) {
     return ((ccy[0] & 0xFF) << 16) | ((ccy[1] & 0xFF) << 8) | (ccy[2] & 0xFF);
   }
-
 }

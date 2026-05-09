@@ -61,15 +61,13 @@ public final class TokenBucket {
    * Activates this bucket for a new session. Sets capacity and refill rate; fills to capacity.
    * Called when a rate-limit bucket is assigned to a session from the free list.
    *
-   * @param capacity the maximum number of tokens (= {@code rfqRateLimitPerSession}); must be
-   *     &gt; 0
-   * @param refillNanosPerToken nanos per token refill
-   *     ({@code rfqRateLimitWindowNanos / capacity}); must be &gt; 0
-   * @param clusterTs the current cluster timestamp in epoch nanos (used as the initial
-   *     {@code lastRefillTs})
+   * @param capacity the maximum number of tokens (= {@code rfqRateLimitPerSession}); must be &gt; 0
+   * @param refillNanosPerToken nanos per token refill ({@code rfqRateLimitWindowNanos / capacity});
+   *     must be &gt; 0
+   * @param clusterTs the current cluster timestamp in epoch nanos (used as the initial {@code
+   *     lastRefillTs})
    */
-  public void activate(
-      final long capacity, final long refillNanosPerToken, final long clusterTs) {
+  public void activate(final long capacity, final long refillNanosPerToken, final long clusterTs) {
     this.capacity = capacity;
     this.refillNanosPerToken = refillNanosPerToken;
     this.tokens = capacity; // Full at activation — first window free.

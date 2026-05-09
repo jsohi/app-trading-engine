@@ -26,7 +26,6 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -34,8 +33,6 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
-import org.agrona.ErrorHandler;
-import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,9 +53,9 @@ import org.junit.jupiter.api.Test;
  * documented on {@link RfqStateMachine}.
  *
  * <p><b>Coverage:</b> 25 tests covering acquire/release, correlation ID uniqueness, TTL timer
- * expiry, request-timeout expiry, stale-timer drop, peek/commitAccept, rate-limiting,
- * snapshot round-trip, capacity-shrink fault, and recovery sweep (expired, future, and
- * account-missing paths).
+ * expiry, request-timeout expiry, stale-timer drop, peek/commitAccept, rate-limiting, snapshot
+ * round-trip, capacity-shrink fault, and recovery sweep (expired, future, and account-missing
+ * paths).
  */
 class RfqStateMachineTest {
 
@@ -218,8 +215,8 @@ class RfqStateMachineTest {
   }
 
   /**
-   * Constructs an {@link RfqStateMachine} with the configured {@link #CAPACITY} and
-   * {@link #RATE_LIMIT}/{@link #RATE_WINDOW} for deterministic rate-limit tests.
+   * Constructs an {@link RfqStateMachine} with the configured {@link #CAPACITY} and {@link
+   * #RATE_LIMIT}/{@link #RATE_WINDOW} for deterministic rate-limit tests.
    */
   private static RfqStateMachine buildMachine(
       final AccountStore store, final RfqMetrics rfqMetrics) {
@@ -253,9 +250,7 @@ class RfqStateMachineTest {
     return result;
   }
 
-  /**
-   * Writes ASCII bytes for {@code text} into an 8-byte fixed-length array, NUL-padded.
-   */
+  /** Writes ASCII bytes for {@code text} into an 8-byte fixed-length array, NUL-padded. */
   private static byte[] fixedBytes8(final String text) {
     final byte[] result = new byte[RfqSlot.SYMBOL_LENGTH];
     final byte[] src = text.getBytes(StandardCharsets.US_ASCII);
@@ -264,15 +259,14 @@ class RfqStateMachineTest {
   }
 
   /**
-   * Acquires a slot, populates its {@code quoteReqIdBytes} with {@code id}, and sets required
-   * enum fields to valid non-zero defaults before calling
-   * {@link RfqSlot#syncQuoteReqIdKey()} then {@link RfqStateMachine#registerRequested(RfqSlot)}.
-   * Returns the ready-to-use REQUESTED slot.
+   * Acquires a slot, populates its {@code quoteReqIdBytes} with {@code id}, and sets required enum
+   * fields to valid non-zero defaults before calling {@link RfqSlot#syncQuoteReqIdKey()} then
+   * {@link RfqStateMachine#registerRequested(RfqSlot)}. Returns the ready-to-use REQUESTED slot.
    *
-   * <p>Sets {@code side=Buy}, {@code productType=Spot}, {@code tenor=ON (value=1)} so that
-   * {@code encodeInto} and {@code emit106}/{@code emit107} can call {@code SideEnum.get()},
-   * {@code ProductTypeEnum.get()}, and {@code TenorEnum.get()} without throwing
-   * {@code IllegalArgumentException} on value=0.
+   * <p>Sets {@code side=Buy}, {@code productType=Spot}, {@code tenor=ON (value=1)} so that {@code
+   * encodeInto} and {@code emit106}/{@code emit107} can call {@code SideEnum.get()}, {@code
+   * ProductTypeEnum.get()}, and {@code TenorEnum.get()} without throwing {@code
+   * IllegalArgumentException} on value=0.
    */
   private RfqSlot acquireRequested(final String quoteReqId, final long requestTimeoutCorrId) {
     final var slot = machine.acquire();
@@ -291,11 +285,11 @@ class RfqStateMachineTest {
   }
 
   /**
-   * Transitions a REQUESTED slot to QUOTED by populating quoteId and TTL fields, then calls
-   * {@link RfqStateMachine#registerQuoted(RfqSlot)}.
+   * Transitions a REQUESTED slot to QUOTED by populating quoteId and TTL fields, then calls {@link
+   * RfqStateMachine#registerQuoted(RfqSlot)}.
    */
-  private void transitionToQuoted(final RfqSlot slot, final String quoteId,
-      final long timerCorrId, final long validUntil) {
+  private void transitionToQuoted(
+      final RfqSlot slot, final String quoteId, final long timerCorrId, final long validUntil) {
     final byte[] bytes = fixedBytes20(quoteId);
     System.arraycopy(bytes, 0, slot.quoteIdBytes, 0, RfqSlot.QUOTE_ID_LENGTH);
     slot.timerCorrelationId = timerCorrId;
@@ -312,14 +306,13 @@ class RfqStateMachineTest {
    * Seeds an {@link AccountStore} with a minimal {@link AccountState} for the given numeric ID and
    * code string.
    */
-  private static void seedAccount(final AccountStore store, final long accountId,
-      final String code) {
+  private static void seedAccount(
+      final AccountStore store, final long accountId, final String code) {
     final var state = new AccountState();
     state.setAccountId(accountId);
     final byte[] codeBytes = code.getBytes(StandardCharsets.US_ASCII);
     state.setAccountCode(codeBytes, 0, codeBytes.length);
-    state.setCapabilities(
-        AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ);
+    state.setCapabilities(AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ);
     store.put(state);
   }
 
@@ -366,8 +359,8 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Releasing a REQUESTED slot must set it to FREE, increment its generation, clear its
-   * correlation IDs, and return it to the free list so the next acquire can reuse it.
+   * Releasing a REQUESTED slot must set it to FREE, increment its generation, clear its correlation
+   * IDs, and return it to the free list so the next acquire can reuse it.
    */
   @Test
   void release_resetsState_reusesSlotWithIncrementedGeneration() {
@@ -403,14 +396,14 @@ class RfqStateMachineTest {
     final var slot = acquireRequested("QREQ-002", 0L);
 
     // Confirm the slot is registered
-    final var found = machine.lookupByQuoteReqId(slot.quoteReqIdBytes, 0,
-        RfqSlot.QUOTE_REQ_ID_LENGTH);
+    final var found =
+        machine.lookupByQuoteReqId(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     assertNotNull(found, "pre-release lookup should succeed");
 
     machine.release(slot);
 
-    final var afterRelease = machine.lookupByQuoteReqId(slot.quoteReqIdBytes, 0,
-        RfqSlot.QUOTE_REQ_ID_LENGTH);
+    final var afterRelease =
+        machine.lookupByQuoteReqId(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     assertNull(afterRelease, "lookup after release must return null");
   }
 
@@ -435,8 +428,8 @@ class RfqStateMachineTest {
     assertEquals(first.poolIndex, second.poolIndex);
     final long corrSecond = machine.ttlCorrelationFor(second);
 
-    assertNotEquals(corrFirst, corrSecond,
-        "correlation IDs must differ after generation increment");
+    assertNotEquals(
+        corrFirst, corrSecond, "correlation IDs must differ after generation increment");
   }
 
   // -------------------------------------------------------------------------
@@ -469,8 +462,8 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Calling {@code onTimerExpiry} with a correlation ID that does not exist in
-   * {@code byCorrelationId} must silently increment {@code metrics.dropStaleTimer} and perform no
+   * Calling {@code onTimerExpiry} with a correlation ID that does not exist in {@code
+   * byCorrelationId} must silently increment {@code metrics.dropStaleTimer} and perform no
    * emission.
    */
   @Test
@@ -489,9 +482,9 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Firing the request-timeout correlation ID for a REQUESTED slot must emit
-   * {@code QuoteRejectedEvent} (106), increment {@code metrics.rejectRequestTimeout} and
-   * {@code metrics.emitRejected} to 1, and release the slot to FREE.
+   * Firing the request-timeout correlation ID for a REQUESTED slot must emit {@code
+   * QuoteRejectedEvent} (106), increment {@code metrics.rejectRequestTimeout} and {@code
+   * metrics.emitRejected} to 1, and release the slot to FREE.
    */
   @Test
   void onTimerExpiry_requestTimeoutOnRequested_emits106RequestTimeout() {
@@ -568,8 +561,7 @@ class RfqStateMachineTest {
     final long timerCorrId = machine.ttlCorrelationFor(slot);
     transitionToQuoted(slot, "QUOTE-PEEK-001", timerCorrId, TS + 30_000_000_000L);
 
-    final var peeked = machine.peekByQuoteId(
-        slot.quoteIdBytes, 0, RfqSlot.QUOTE_ID_LENGTH);
+    final var peeked = machine.peekByQuoteId(slot.quoteIdBytes, 0, RfqSlot.QUOTE_ID_LENGTH);
 
     assertNotNull(peeked);
     assertEquals(slot, peeked);
@@ -581,8 +573,8 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * A slot in REQUESTED state is not yet registered in {@code byQuoteId}; peeking by a quoteId
-   * that was never registered must return {@code null}.
+   * A slot in REQUESTED state is not yet registered in {@code byQuoteId}; peeking by a quoteId that
+   * was never registered must return {@code null}.
    */
   @Test
   void peekByQuoteId_requestedSlot_returnsNull() {
@@ -632,13 +624,12 @@ class RfqStateMachineTest {
     assertEquals(genBefore + 1, slot.generation);
 
     // byQuoteReqId — lookup must return null after release
-    final var byReqId = machine.lookupByQuoteReqId(
-        slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+    final var byReqId =
+        machine.lookupByQuoteReqId(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     assertNull(byReqId, "byQuoteReqId must not contain the released slot");
 
     // byQuoteId — peek must return null after release
-    final var byQuoteId = machine.peekByQuoteId(
-        slot.quoteIdBytes, 0, RfqSlot.QUOTE_ID_LENGTH);
+    final var byQuoteId = machine.peekByQuoteId(slot.quoteIdBytes, 0, RfqSlot.QUOTE_ID_LENGTH);
     assertNull(byQuoteId, "byQuoteId must not contain the released slot");
 
     // Pool must have reclaimed the slot
@@ -650,9 +641,9 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * After {@code commitAccept} the quoteReqId must be recorded in the LRU with reason
-   * {@link RfqStateMachine#TERMINAL_REASON_ACCEPTED} so that duplicate NOS-with-quoteId retransmits
-   * can be detected.
+   * After {@code commitAccept} the quoteReqId must be recorded in the LRU with reason {@link
+   * RfqStateMachine#TERMINAL_REASON_ACCEPTED} so that duplicate NOS-with-quoteId retransmits can be
+   * detected.
    */
   @Test
   void commitAccept_recordsAcceptedInRecentlyTerminal() {
@@ -693,8 +684,8 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * After exhausting all RATE_LIMIT tokens in a single window, the next call must return
-   * {@code false} (rate-limited).
+   * After exhausting all RATE_LIMIT tokens in a single window, the next call must return {@code
+   * false} (rate-limited).
    */
   @Test
   void rateLimitTryConsume_atLimit_rejects() {
@@ -736,8 +727,8 @@ class RfqStateMachineTest {
   // -------------------------------------------------------------------------
 
   /**
-   * After {@code releaseRateLimitForSession}, the session's bucket is returned to the free list.
-   * A subsequent call with the same session ID allocates a fresh bucket (starts full again).
+   * After {@code releaseRateLimitForSession}, the session's bucket is returned to the free list. A
+   * subsequent call with the same session ID allocates a fresh bucket (starts full again).
    */
   @Test
   void releaseRateLimitForSession_returnsBucketToFreeList() {
@@ -782,9 +773,9 @@ class RfqStateMachineTest {
    * and byte fields intact. The restored pool must contain exactly one non-FREE slot at the same
    * field values (quoteReqId, orderQty, side, transactTime).
    *
-   * <p>Note: {@code restoreFrom} populates slot arrays but does NOT populate the lookup maps;
-   * map population happens in {@code onSnapshotRestored}. This test verifies round-trip fidelity
-   * by scanning the slot array directly via the package-private {@code slotAt(poolIndex)} accessor.
+   * <p>Note: {@code restoreFrom} populates slot arrays but does NOT populate the lookup maps; map
+   * population happens in {@code onSnapshotRestored}. This test verifies round-trip fidelity by
+   * scanning the slot array directly via the package-private {@code slotAt(poolIndex)} accessor.
    */
   @Test
   void encodeInto_thenRestoreFrom_restoresAllFieldsExactly() {
@@ -809,7 +800,9 @@ class RfqStateMachineTest {
     // Clear and restore
     machine.clear();
     assertEquals(0, machine.activeSlotCount());
-    machine.restoreFrom(buf, MessageHeaderEncoder.ENCODED_LENGTH,
+    machine.restoreFrom(
+        buf,
+        MessageHeaderEncoder.ENCODED_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION);
 
@@ -875,31 +868,37 @@ class RfqStateMachineTest {
     // then add one synthetic extra slot to the snapshot by calling encodeInto on a machine with
     // CAPACITY+1 real slots — impossible with CAPACITY=256 minimum. Use a larger machine.
 
-    final var bigMachine = new RfqStateMachine(
-        256, // capacity — same minimum
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
-        RATE_LIMIT,
-        RATE_WINDOW,
-        0, 0,
-        accountStore, new RfqMetrics());
+    final var bigMachine =
+        new RfqStateMachine(
+            256, // capacity — same minimum
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            RATE_LIMIT,
+            RATE_WINDOW,
+            0,
+            0,
+            accountStore,
+            new RfqMetrics());
 
     // We cannot exceed 256 slots without a larger capacity (minimum is 256). Build a 512-slot
     // machine, fill 257 slots, encode, then attempt to restore into the 256-capacity machine.
-    final var largeMachine = new RfqStateMachine(
-        512,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
-        RATE_LIMIT,
-        RATE_WINDOW,
-        0, 0,
-        accountStore, new RfqMetrics());
+    final var largeMachine =
+        new RfqStateMachine(
+            512,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            RATE_LIMIT,
+            RATE_WINDOW,
+            0,
+            0,
+            accountStore,
+            new RfqMetrics());
 
     for (int i = 0; i < 257; i++) {
       final var s = largeMachine.acquire();
@@ -916,22 +915,29 @@ class RfqStateMachineTest {
     largeMachine.encodeInto(largeBuf, 0, largeHdr);
 
     // Restore 257-slot snapshot into 256-slot machine — must throw
-    final var smallMachine = new RfqStateMachine(
-        256,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
-        RATE_LIMIT,
-        RATE_WINDOW,
-        0, 0,
-        accountStore, new RfqMetrics());
+    final var smallMachine =
+        new RfqStateMachine(
+            256,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            RATE_LIMIT,
+            RATE_WINDOW,
+            0,
+            0,
+            accountStore,
+            new RfqMetrics());
 
-    assertThrows(IllegalStateException.class, () ->
-        smallMachine.restoreFrom(largeBuf, MessageHeaderEncoder.ENCODED_LENGTH,
-            com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
-            com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION));
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            smallMachine.restoreFrom(
+                largeBuf,
+                MessageHeaderEncoder.ENCODED_LENGTH,
+                com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
+                com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION));
   }
 
   // -------------------------------------------------------------------------
@@ -969,7 +975,9 @@ class RfqStateMachineTest {
     final var hdr = new MessageHeaderEncoder();
     machine.encodeInto(buf, 0, hdr);
     machine.clear();
-    machine.restoreFrom(buf, MessageHeaderEncoder.ENCODED_LENGTH,
+    machine.restoreFrom(
+        buf,
+        MessageHeaderEncoder.ENCODED_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION);
 
@@ -1015,7 +1023,9 @@ class RfqStateMachineTest {
     final var hdr = new MessageHeaderEncoder();
     machine.encodeInto(buf, 0, hdr);
     machine.clear();
-    machine.restoreFrom(buf, MessageHeaderEncoder.ENCODED_LENGTH,
+    machine.restoreFrom(
+        buf,
+        MessageHeaderEncoder.ENCODED_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION);
 
@@ -1027,13 +1037,13 @@ class RfqStateMachineTest {
     assertEquals(1, machine.activeSlotCount());
 
     // Timer must have been scheduled for the future deadline
-    assertFalse(capturingCluster.scheduledTimers.isEmpty(),
+    assertFalse(
+        capturingCluster.scheduledTimers.isEmpty(),
         "scheduleTimer must have been called for re-arm");
     // Verify the deadline value matches
-    final boolean anyMatchDeadline = capturingCluster.scheduledTimers.values().stream()
-        .anyMatch(d -> d == futureDeadline);
-    assertTrue(anyMatchDeadline,
-        "a timer must be scheduled at futureDeadline=" + futureDeadline);
+    final boolean anyMatchDeadline =
+        capturingCluster.scheduledTimers.values().stream().anyMatch(d -> d == futureDeadline);
+    assertTrue(anyMatchDeadline, "a timer must be scheduled at futureDeadline=" + futureDeadline);
   }
 
   // Helper assertion: assertFalse not available as static import under all JUnit versions
@@ -1050,8 +1060,8 @@ class RfqStateMachineTest {
   /**
    * When a REQUESTED slot's request-timeout deadline ({@code transactTime + requestTimeoutNanos})
    * has already elapsed relative to the recovery timestamp, {@code onSnapshotRestored} must emit
-   * {@code QuoteRejectedEvent} (106), increment {@code metrics.recoveryRequestTimedOut} and
-   * {@code metrics.emitRejected} to 1, and release the slot.
+   * {@code QuoteRejectedEvent} (106), increment {@code metrics.recoveryRequestTimedOut} and {@code
+   * metrics.emitRejected} to 1, and release the slot.
    */
   @Test
   void onSnapshotRestored_requestedExpired_emits106RequestTimeout() {
@@ -1078,7 +1088,9 @@ class RfqStateMachineTest {
     final var hdr = new MessageHeaderEncoder();
     machine.encodeInto(buf, 0, hdr);
     machine.clear();
-    machine.restoreFrom(buf, MessageHeaderEncoder.ENCODED_LENGTH,
+    machine.restoreFrom(
+        buf,
+        MessageHeaderEncoder.ENCODED_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION);
 
@@ -1120,7 +1132,9 @@ class RfqStateMachineTest {
     final var hdr = new MessageHeaderEncoder();
     machine.encodeInto(buf, 0, hdr);
     machine.clear();
-    machine.restoreFrom(buf, MessageHeaderEncoder.ENCODED_LENGTH,
+    machine.restoreFrom(
+        buf,
+        MessageHeaderEncoder.ENCODED_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.BLOCK_LENGTH,
         com.trading.engine.messages.sbe.RfqStateSnapshotDecoder.SCHEMA_VERSION);
 

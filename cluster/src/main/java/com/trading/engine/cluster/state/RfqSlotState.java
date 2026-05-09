@@ -40,8 +40,8 @@ public enum RfqSlotState {
 
   /**
    * A {@code QuoteRequest} (template 1) has been accepted and a {@code QuoteRequestedEvent} (104)
-   * emitted. The pricing service has been contacted but has not yet responded. Awaiting
-   * {@code PriceResponse} (template 51) from the pricing service.
+   * emitted. The pricing service has been contacted but has not yet responded. Awaiting {@code
+   * PriceResponse} (template 51) from the pricing service.
    */
   REQUESTED(1),
 
@@ -55,8 +55,8 @@ public enum RfqSlotState {
   /**
    * A {@code NewOrderSingle} with {@code ordType=PreviouslyQuoted} and a matching {@code quoteId}
    * has been validated and accepted. {@link RfqStateMachine#commitAccept} transitions QUOTED →
-   * ACCEPTED and immediately releases the slot back to FREE. This state is therefore transient —
-   * it exists only in the brief window inside {@code commitAccept} before release. Snapshot encode
+   * ACCEPTED and immediately releases the slot back to FREE. This state is therefore transient — it
+   * exists only in the brief window inside {@code commitAccept} before release. Snapshot encode
    * never observes it (single-threaded duty cycle; {@link RfqStateMachine#encodeInto} is never
    * called between peek and commit).
    */

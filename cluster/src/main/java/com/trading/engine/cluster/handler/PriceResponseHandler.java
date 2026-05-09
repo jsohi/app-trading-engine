@@ -23,9 +23,9 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 /**
  * Handler for {@code PriceResponse} (template 51). Looks up the in-flight RFQ slot by quoteReqId
- * and, depending on slot state and the {@code accepted} field, either emits {@code QuoteCreatedEvent}
- * (105) with a freshly-minted quoteId and an armed TTL timer, or emits {@code QuoteRejectedEvent}
- * (106) with reason {@code InvalidPrice} and releases the slot.
+ * and, depending on slot state and the {@code accepted} field, either emits {@code
+ * QuoteCreatedEvent} (105) with a freshly-minted quoteId and an armed TTL timer, or emits {@code
+ * QuoteRejectedEvent} (106) with reason {@code InvalidPrice} and releases the slot.
  *
  * <p>State table per plan §9.2:
  *
@@ -193,23 +193,24 @@ public final class PriceResponseHandler implements CommandHandler {
     createdEncoder.validUntil(slot.validUntil);
     createdEncoder.productType(ProductTypeEnum.get(slot.productType));
     createdEncoder.putSettlDate(slot.settlDateBytes, 0);
-    createdEncoder.settlType(slot.settlType == 0
-        ? SettlTypeEnum.NULL_VAL
-        : SettlTypeEnum.get(slot.settlType));
+    createdEncoder.settlType(
+        slot.settlType == 0 ? SettlTypeEnum.NULL_VAL : SettlTypeEnum.get(slot.settlType));
     createdEncoder.putCurrency(slot.currencyBytes, 0);
     createdEncoder.putSettlCurrency(slot.settlCurrencyBytes, 0);
     createdEncoder.tenor(TenorEnum.get(slot.tenor));
     createdEncoder.swapPoints(swapPoints);
 
     // Legs (PriceResponse may carry leg-level prices we propagate to the event)
-    final QuoteCreatedEventEncoder.NoLegsEncoder outLegGrp = createdEncoder.noLegsCount(slot.noLegs);
+    final QuoteCreatedEventEncoder.NoLegsEncoder outLegGrp =
+        createdEncoder.noLegsCount(slot.noLegs);
     for (int j = 0; j < slot.noLegs; j++) {
       outLegGrp.next();
       outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
-      outLegGrp.legSettlType(slot.legSettlType[j] == 0
-          ? SettlTypeEnum.NULL_VAL
-          : SettlTypeEnum.get(slot.legSettlType[j]));
+      outLegGrp.legSettlType(
+          slot.legSettlType[j] == 0
+              ? SettlTypeEnum.NULL_VAL
+              : SettlTypeEnum.get(slot.legSettlType[j]));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
       outLegGrp.legBidPx(slot.legBidPx[j]);
       outLegGrp.legOfferPx(slot.legOfferPx[j]);

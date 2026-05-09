@@ -13,8 +13,8 @@ import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RfqStateEnum;
 import com.trading.engine.messages.sbe.RfqStateSnapshotDecoder;
 import com.trading.engine.messages.sbe.RfqStateSnapshotEncoder;
-import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
+import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.util.ByteArrayKey;
 import io.aeron.cluster.service.Cluster;
@@ -46,17 +46,17 @@ import org.agrona.concurrent.UnsafeBuffer;
  * <p><b>Lookup maps (Agrona, pre-sized, zero-alloc):</b>
  *
  * <ul>
- *   <li>{@code byCorrelationId} — for {@link #onTimerExpiry}. Both TTL and request-timeout namespace
- *       share one map (high-bit on the correlation ID disambiguates).
+ *   <li>{@code byCorrelationId} — for {@link #onTimerExpiry}. Both TTL and request-timeout
+ *       namespace share one map (high-bit on the correlation ID disambiguates).
  *   <li>{@code byQuoteReqId} — for PriceResponse correlation and duplicate detection.
  *   <li>{@code byQuoteId} — for §9.2a NOS-with-quoteId acceptance via {@link #peekByQuoteId} +
  *       {@link #commitAccept}.
  * </ul>
  *
  * <p><b>Determinism:</b> all clock reads are cluster timestamps from {@code onSessionMessage} /
- * {@code onTimerEvent}; all arithmetic is integer; all collections are Agrona (no
- * {@code java.util.*}). The snapshot encoder iterates slots in ascending pool-index order to
- * guarantee byte-identical snapshots across replicas (Raft consistency invariant).
+ * {@code onTimerEvent}; all arithmetic is integer; all collections are Agrona (no {@code
+ * java.util.*}). The snapshot encoder iterates slots in ascending pool-index order to guarantee
+ * byte-identical snapshots across replicas (Raft consistency invariant).
  *
  * <p><b>Threading:</b> not thread-safe — single-threaded cluster duty cycle only.
  *
@@ -412,11 +412,10 @@ public final class RfqStateMachine {
    * @param slot the slot to accept (must be in QUOTED state)
    * @param clusterTs the cluster timestamp in epoch nanos (currently unused — reserved for future
    *     accept-time recording)
-   * @param eventSink the event sink (currently unused — no event is emitted by the cluster RFQ
-   *     path on accept; the calling NewOrderSingleHandler emits OrderCreatedEvent on its own)
+   * @param eventSink the event sink (currently unused — no event is emitted by the cluster RFQ path
+   *     on accept; the calling NewOrderSingleHandler emits OrderCreatedEvent on its own)
    */
-  public void commitAccept(
-      final RfqSlot slot, final long clusterTs, final EventSink eventSink) {
+  public void commitAccept(final RfqSlot slot, final long clusterTs, final EventSink eventSink) {
     if (slot.state != RfqSlotState.QUOTED) {
       throw new IllegalStateException(
           "commitAccept called on slot in state " + slot.state + " (expected QUOTED)");
@@ -435,8 +434,7 @@ public final class RfqStateMachine {
   /** Records a slot's quoteReqId in the LRU for post-terminal duplicate detection. */
   private void rememberTerminal(final RfqSlot slot, final byte reason) {
     final int idx = recentlyTerminalRingHead;
-    recentlyTerminalRing[idx].overwrite(
-        slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+    recentlyTerminalRing[idx].overwrite(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     recentlyTerminalReason[idx] = reason;
     recentlyTerminalRingHead = (idx + 1) % RECENTLY_TERMINAL_CAPACITY;
   }
@@ -488,8 +486,8 @@ public final class RfqStateMachine {
   }
 
   /**
-   * Releases the rate-limit bucket for a session that just closed. Called from
-   * {@code TradingClusteredService.onSessionClose}.
+   * Releases the rate-limit bucket for a session that just closed. Called from {@code
+   * TradingClusteredService.onSessionClose}.
    *
    * @param sessionId the closing session ID
    */
@@ -568,8 +566,8 @@ public final class RfqStateMachine {
 
   /**
    * Inserts the slot into {@code byQuoteId} and replaces the byCorrelationId entry from
-   * request-timeout to TTL. Caller must have populated {@code quoteIdBytes} and called
-   * {@link RfqSlot#syncQuoteIdKey} before invoking.
+   * request-timeout to TTL. Caller must have populated {@code quoteIdBytes} and called {@link
+   * RfqSlot#syncQuoteIdKey} before invoking.
    *
    * @param slot the slot transitioning REQUESTED→QUOTED
    */
@@ -635,7 +633,9 @@ public final class RfqStateMachine {
     }
   }
 
-  /** Emits a {@code QuoteExpiredEvent} (107) for the given slot using the dedicated egress buffer. */
+  /**
+   * Emits a {@code QuoteExpiredEvent} (107) for the given slot using the dedicated egress buffer.
+   */
   private void emit107(final RfqSlot slot, final long timestamp, final EventSink eventSink) {
     quoteExpiredEncoder.wrapAndApplyHeader(expiredEgressBuffer, 0, headerEncoder);
     quoteExpiredEncoder.sequenceNumber(0L);
@@ -736,9 +736,9 @@ public final class RfqStateMachine {
   }
 
   /**
-   * Encodes the active slot pool into the destination buffer using SBE template 203
-   * ({@code RfqStateSnapshot}). Iterates slots in ascending pool-index order to guarantee
-   * byte-identical snapshots across replicas.
+   * Encodes the active slot pool into the destination buffer using SBE template 203 ({@code
+   * RfqStateSnapshot}). Iterates slots in ascending pool-index order to guarantee byte-identical
+   * snapshots across replicas.
    *
    * @param dst the destination buffer
    * @param offset the start offset
@@ -773,7 +773,8 @@ public final class RfqStateMachine {
       grp.transactTime(slot.transactTime);
       grp.productType(ProductTypeEnum.get(slot.productType));
       grp.putSettlDate(slot.settlDateBytes, 0);
-      grp.settlType(slot.settlType == 0 ? SettlTypeEnum.NULL_VAL : SettlTypeEnum.get(slot.settlType));
+      grp.settlType(
+          slot.settlType == 0 ? SettlTypeEnum.NULL_VAL : SettlTypeEnum.get(slot.settlType));
       grp.putCurrency(slot.currencyBytes, 0);
       grp.putSettlCurrency(slot.settlCurrencyBytes, 0);
       grp.tenor(TenorEnum.get(slot.tenor));
@@ -783,9 +784,10 @@ public final class RfqStateMachine {
         legGrp.next();
         legGrp.legSide(SideEnum.get(slot.legSide[j]));
         legGrp.putLegSettlDate(slot.legSettlDate[j], 0);
-        legGrp.legSettlType(slot.legSettlType[j] == 0
-            ? SettlTypeEnum.NULL_VAL
-            : SettlTypeEnum.get(slot.legSettlType[j]));
+        legGrp.legSettlType(
+            slot.legSettlType[j] == 0
+                ? SettlTypeEnum.NULL_VAL
+                : SettlTypeEnum.get(slot.legSettlType[j]));
         legGrp.putLegCurrency(slot.legCurrency[j], 0);
         legGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
         legGrp.legOrderQty(slot.legOrderQty[j]);
@@ -845,10 +847,7 @@ public final class RfqStateMachine {
    * @throws IllegalStateException if the snapshot has more slots than configured capacity
    */
   public int restoreFrom(
-      final DirectBuffer src,
-      final int offset,
-      final int blockLength,
-      final int schemaVersion) {
+      final DirectBuffer src, final int offset, final int blockLength, final int schemaVersion) {
     // Reset state.
     clear();
     rfqStateDecoder.wrap(src, offset, blockLength, schemaVersion);
@@ -859,8 +858,7 @@ public final class RfqStateMachine {
       restoredCount++;
       if (restoredCount > capacity) {
         throw new IllegalStateException(
-            "snapshot has more RFQs than rfqPoolCapacity=" + capacity
-                + "; increase capacity");
+            "snapshot has more RFQs than rfqPoolCapacity=" + capacity + "; increase capacity");
       }
       // Pop the next free slot for this restore entry.
       final int slotIndex = freeIndices[--freeCount];
@@ -947,19 +945,16 @@ public final class RfqStateMachine {
   // -------------------------------------------------------------------------
 
   /**
-   * Re-arms timers and rehydrates {@code accountCode} for every restored non-FREE slot. For
-   * {@code REQUESTED} slots: schedules a request-timeout timer at the original deadline; if past,
-   * emits 106. For {@code QUOTED} slots: schedules a TTL timer at {@code validUntil}; if past,
-   * emits 107.
+   * Re-arms timers and rehydrates {@code accountCode} for every restored non-FREE slot. For {@code
+   * REQUESTED} slots: schedules a request-timeout timer at the original deadline; if past, emits
+   * 106. For {@code QUOTED} slots: schedules a TTL timer at {@code validUntil}; if past, emits 107.
    *
    * @param currentClusterTs the cluster timestamp at restore time
    * @param eventSink event sink for emissions
    * @param errorHandler error handler for timer-rearm failures
    */
   public void onSnapshotRestored(
-      final long currentClusterTs,
-      final EventSink eventSink,
-      final ErrorHandler errorHandler) {
+      final long currentClusterTs, final EventSink eventSink, final ErrorHandler errorHandler) {
     Objects.requireNonNull(eventSink, "eventSink");
     Objects.requireNonNull(errorHandler, "errorHandler");
     if (cluster == null) {

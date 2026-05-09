@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 class TokenBucketTest {
 
   private static final long CAPACITY = 5L;
+
   /** 1s window / 5 tokens = 200ms (200_000_000 ns) per token. */
   private static final long REFILL_NANOS_PER_TOKEN = 200_000_000L;
 
@@ -152,20 +153,23 @@ class TokenBucketTest {
     // Re-activate with a different capacity — must reset to new capacity.
     final long newCapacity = 7L;
     bucket.activate(newCapacity, REFILL_NANOS_PER_TOKEN, T0 + 1_000_000_000L);
-    assertEquals(newCapacity, bucket.tokens(),
-        "re-activate must fill to the new capacity");
+    assertEquals(newCapacity, bucket.tokens(), "re-activate must fill to the new capacity");
   }
 
   // ---------------------------------------------------------------------------
   // poolIndex accessor is immutable after construction
   // ---------------------------------------------------------------------------
 
-  /** The pool index provided at construction is returned unchanged by {@link TokenBucket#poolIndex}. */
+  /**
+   * The pool index provided at construction is returned unchanged by {@link TokenBucket#poolIndex}.
+   */
   @Test
   void poolIndex_reflectsConstructorArgument() {
     final int expectedIndex = 99;
     final var bucket = new TokenBucket(expectedIndex);
-    assertEquals(expectedIndex, bucket.poolIndex(),
+    assertEquals(
+        expectedIndex,
+        bucket.poolIndex(),
         "poolIndex() must return the value supplied at construction");
   }
 }

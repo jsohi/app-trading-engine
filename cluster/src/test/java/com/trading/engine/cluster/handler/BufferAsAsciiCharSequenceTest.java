@@ -11,11 +11,11 @@ import org.junit.jupiter.api.Test;
  * Unit tests for {@link BufferAsAsciiCharSequence}.
  *
  * <p>Exercises {@link CharSequence} contract implementation over an Agrona {@link
- * org.agrona.DirectBuffer} byte slice: length reporting, per-index char access, range checks,
- * and the zero-allocation wrap contract.
+ * org.agrona.DirectBuffer} byte slice: length reporting, per-index char access, range checks, and
+ * the zero-allocation wrap contract.
  *
- * <p><b>Threading:</b> single-threaded tests — {@link BufferAsAsciiCharSequence} is not
- * thread-safe by design.
+ * <p><b>Threading:</b> single-threaded tests — {@link BufferAsAsciiCharSequence} is not thread-safe
+ * by design.
  */
 class BufferAsAsciiCharSequenceTest {
 
@@ -36,9 +36,7 @@ class BufferAsAsciiCharSequenceTest {
     assertEquals(6, seq.length(), "length() must equal the wrapped slice length");
   }
 
-  /**
-   * Wrapping a sub-slice with {@code offset > 0} must report only the sub-slice length.
-   */
+  /** Wrapping a sub-slice with {@code offset > 0} must report only the sub-slice length. */
   @Test
   void length_withNonZeroOffset_returnsSliceLengthNotBufferLength() {
     final var backing = new UnsafeBuffer("ABCDEFGH".getBytes(StandardCharsets.US_ASCII));
@@ -53,8 +51,8 @@ class BufferAsAsciiCharSequenceTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * {@link BufferAsAsciiCharSequence#charAt(int)} must return each byte in the slice, converted
-   * to {@code char} via unsigned byte masking ({@code & 0xFF}).
+   * {@link BufferAsAsciiCharSequence#charAt(int)} must return each byte in the slice, converted to
+   * {@code char} via unsigned byte masking ({@code & 0xFF}).
    */
   @Test
   void charAt_returnsAsciiByte() {
@@ -71,9 +69,7 @@ class BufferAsAsciiCharSequenceTest {
     assertEquals('D', seq.charAt(5));
   }
 
-  /**
-   * Wrapping with a non-zero offset: charAt(i) must read from {@code buffer[offset + i]}.
-   */
+  /** Wrapping with a non-zero offset: charAt(i) must read from {@code buffer[offset + i]}. */
   @Test
   void charAt_withOffset_readsFromCorrectPosition() {
     final byte[] data = "ABCDE".getBytes(StandardCharsets.US_ASCII);
@@ -91,8 +87,8 @@ class BufferAsAsciiCharSequenceTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Calling {@link BufferAsAsciiCharSequence#charAt(int)} with a negative index must throw
-   * {@link IndexOutOfBoundsException}.
+   * Calling {@link BufferAsAsciiCharSequence#charAt(int)} with a negative index must throw {@link
+   * IndexOutOfBoundsException}.
    */
   @Test
   void charAt_outOfRange_throwsIndexOutOfBoundsException() {
@@ -100,13 +96,19 @@ class BufferAsAsciiCharSequenceTest {
     final var seq = new BufferAsAsciiCharSequence();
     seq.wrap(buf, 0, 3);
 
-    assertThrows(IndexOutOfBoundsException.class, () -> seq.charAt(-1),
+    assertThrows(
+        IndexOutOfBoundsException.class,
+        () -> seq.charAt(-1),
         "negative index must throw IndexOutOfBoundsException");
 
-    assertThrows(IndexOutOfBoundsException.class, () -> seq.charAt(3),
+    assertThrows(
+        IndexOutOfBoundsException.class,
+        () -> seq.charAt(3),
         "index == length must throw IndexOutOfBoundsException");
 
-    assertThrows(IndexOutOfBoundsException.class, () -> seq.charAt(100),
+    assertThrows(
+        IndexOutOfBoundsException.class,
+        () -> seq.charAt(100),
         "index far beyond length must throw IndexOutOfBoundsException");
   }
 
@@ -116,8 +118,8 @@ class BufferAsAsciiCharSequenceTest {
 
   /**
    * Calls {@link BufferAsAsciiCharSequence#wrap} 100k times in a tight loop after warmup. No
-   * exception must be raised. This guards against any accidental allocation that would cause OOM
-   * on tightly-looped GFLog usage.
+   * exception must be raised. This guards against any accidental allocation that would cause OOM on
+   * tightly-looped GFLog usage.
    *
    * <p>This is a smoke test only — it does not instrument the GC.
    */

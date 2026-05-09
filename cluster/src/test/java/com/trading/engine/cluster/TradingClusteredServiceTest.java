@@ -1113,7 +1113,8 @@ class TradingClusteredServiceTest {
     final var freshBook = new OrderBook(2048);
     final var freshSeq = new EventSequencer();
     final var freshJournal = new EventJournal(2048);
-    final var freshState = new TradingState(freshBook, freshOrdGen, freshExeGen, new IdGenerator("QTE"));
+    final var freshState =
+        new TradingState(freshBook, freshOrdGen, freshExeGen, new IdGenerator("QTE"));
     final var freshSink = new EventSink(freshSeq, freshJournal);
     final var freshAccounts = new AccountStore();
     final var freshCurrencies = new CurrencyStore();
