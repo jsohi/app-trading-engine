@@ -321,7 +321,7 @@ class RfqLifecycleEventsIT {
    */
   @Test
   void acceptedFlow_observes104Then105Then107WithGaplessSequence() {
-    final String quoteReqId = "QR-ACCEPTED-0001";
+    final var quoteReqId = "QR-ACCEPTED-0001";
 
     // Step 1 — dispatch QuoteRequest; expect template 104.
     final var qrBuf = new ExpandableArrayBuffer(512);
@@ -388,7 +388,7 @@ class RfqLifecycleEventsIT {
    */
   @Test
   void validationRejectedFlow_observesOnly106NoPrior104() {
-    final String quoteReqId = "QR-BADSYMBOL-001";
+    final var quoteReqId = "QR-BADSYMBOL-001";
 
     // Encode a QuoteRequest with an empty symbol — triggers symbol-empty validation reject.
     final var buf = new ExpandableArrayBuffer(512);
@@ -422,7 +422,7 @@ class RfqLifecycleEventsIT {
    */
   @Test
   void pricingRejectedFlow_observes104Then106WithInvalidPrice() {
-    final String quoteReqId = "QR-DECLINED-0001";
+    final var quoteReqId = "QR-DECLINED-0001";
 
     // Step 1 — emit 104.
     final var qrBuf = new ExpandableArrayBuffer(512);
@@ -482,7 +482,7 @@ class RfqLifecycleEventsIT {
    */
   @Test
   void duplicateQuoteReqId_emitsTemplate106Duplicate() {
-    final String quoteReqId = "QR-DUPLICATE-001";
+    final var quoteReqId = "QR-DUPLICATE-001";
 
     // First request — valid, expect 104.
     final var qrFirst = new ExpandableArrayBuffer(512);

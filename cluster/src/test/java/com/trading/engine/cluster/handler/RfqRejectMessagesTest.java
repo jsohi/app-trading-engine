@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -168,7 +169,7 @@ class RfqRejectMessagesTest {
    */
   @Test
   void rateLimit_startsWithExpectedAscii() {
-    final byte[] expected = "rate limit".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    final byte[] expected = "rate limit".getBytes(StandardCharsets.US_ASCII);
     for (int i = 0; i < expected.length; i++) {
       assertEquals(
           expected[i], RfqRejectMessages.RATE_LIMIT[i], "RATE_LIMIT byte mismatch at index " + i);
@@ -185,7 +186,7 @@ class RfqRejectMessagesTest {
   /** {@link RfqRejectMessages#POOL_EXHAUSTED} must start with "pool exhausted". */
   @Test
   void poolExhausted_startsWithExpectedAscii() {
-    final byte[] expected = "pool exhausted".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    final byte[] expected = "pool exhausted".getBytes(StandardCharsets.US_ASCII);
     for (int i = 0; i < expected.length; i++) {
       assertEquals(
           expected[i],

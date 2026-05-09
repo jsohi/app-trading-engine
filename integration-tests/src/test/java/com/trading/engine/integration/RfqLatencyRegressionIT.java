@@ -288,14 +288,14 @@ class RfqLatencyRegressionIT {
    */
   @Test
   void steadyStateRfqs_p99LatencyUnderBudget() {
-    final Object[] components = buildService();
+    final var components = buildService();
     final var service = (TradingClusteredService) components[0];
     final var session = (FakeClientSession) components[1];
     final var harness = (RfqClusterTestHarness) components[2];
 
     // Pre-allocate encode buffers — reused across all iterations.
-    final MutableDirectBuffer qrBuf = new ExpandableArrayBuffer(512);
-    final MutableDirectBuffer prBuf = new ExpandableArrayBuffer(512);
+    final var qrBuf = new ExpandableArrayBuffer(512);
+    final var prBuf = new ExpandableArrayBuffer(512);
 
     // HdrHistogram: autoResize=true; lowest=1 ns; max=10 s; 3 significant figures.
     final var histogram = new Histogram(1L, 10_000_000_000L, 3);
@@ -379,7 +379,7 @@ class RfqLatencyRegressionIT {
       final Histogram histogram) {
 
     // 16-char zero-padded decimal → unique quoteReqId within 10^16 iterations.
-    final String quoteReqId = String.format("%016d", counter);
+    final var quoteReqId = String.format("%016d", counter);
 
     final int qrLen =
         SbeTestEncoder.encodeQuoteRequest(

@@ -411,8 +411,8 @@ class RfqSnapshotRecoveryIT {
         "Second message on A must be 105 (QuoteCreatedEvent)");
 
     // ---- Snapshot Service A ----
-    final Object[] snap = takeSnapshot(bundleA);
-    final MutableDirectBuffer snapBuf = (MutableDirectBuffer) snap[0];
+    final var snap = takeSnapshot(bundleA);
+    final var snapBuf = (MutableDirectBuffer) snap[0];
     final int snapLen = (int) snap[1];
 
     // ---- Service B: load snapshot at ts > validUntil ----
@@ -457,8 +457,8 @@ class RfqSnapshotRecoveryIT {
     driveToQuotedState(bundleA, "QR-RECOVERY-REARM");
 
     // ---- Snapshot Service A ----
-    final Object[] snap = takeSnapshot(bundleA);
-    final MutableDirectBuffer snapBuf = (MutableDirectBuffer) snap[0];
+    final var snap = takeSnapshot(bundleA);
+    final var snapBuf = (MutableDirectBuffer) snap[0];
     final int snapLen = (int) snap[1];
 
     // ---- Service B: load snapshot at ts 10 s BEFORE validUntil ----
@@ -515,7 +515,7 @@ class RfqSnapshotRecoveryIT {
    */
   @Test
   void snapshotDuringRequested_restart_priceResponseStillFlowsTo105() {
-    final String quoteReqId = "QR-RECOVERY-REQ";
+    final var quoteReqId = "QR-RECOVERY-REQ";
 
     // ---- Service A: drive to REQUESTED state ----
     final var bundleA = buildBundle(TIMESTAMP, 42L);
@@ -528,8 +528,8 @@ class RfqSnapshotRecoveryIT {
         "Service A message must be 104 (QuoteRequestedEvent)");
 
     // ---- Snapshot Service A ----
-    final Object[] snap = takeSnapshot(bundleA);
-    final MutableDirectBuffer snapBuf = (MutableDirectBuffer) snap[0];
+    final var snap = takeSnapshot(bundleA);
+    final var snapBuf = (MutableDirectBuffer) snap[0];
     final int snapLen = (int) snap[1];
 
     // ---- Service B: load snapshot at ts 2 s after TIMESTAMP (before 5-s request timeout) ----

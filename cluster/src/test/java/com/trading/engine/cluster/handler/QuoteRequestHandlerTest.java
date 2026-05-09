@@ -154,7 +154,7 @@ class QuoteRequestHandlerTest {
     // quoteReqId round-trip
     final byte[] qrIdBytes = new byte[QuoteRequestedEventDecoder.quoteReqIdLength()];
     dec.getQuoteReqId(qrIdBytes, 0);
-    final String qrId = new String(qrIdBytes, StandardCharsets.US_ASCII).trim();
+    final var qrId = new String(qrIdBytes, StandardCharsets.US_ASCII).trim();
     assertEquals("REQ-001", qrId.replace("\0", ""));
 
     assertEquals(1L, metrics.emitRequested, "emitRequested counter must be 1");
@@ -190,7 +190,7 @@ class QuoteRequestHandlerTest {
   void onCommand_lengthBelowBlockLength_emitsTemplate106Malformed() {
     // Supply a buffer with length = HDR_LEN - 1 (clearly below the minimum).
     final var buf = new UnsafeBuffer(new byte[HDR_LEN]);
-    final MessageHeaderEncoder hdr = new MessageHeaderEncoder();
+    final var hdr = new MessageHeaderEncoder();
     hdr.wrap(buf, 0)
         .blockLength(QuoteRequestDecoder.BLOCK_LENGTH)
         .templateId(QuoteRequestDecoder.TEMPLATE_ID)
@@ -236,7 +236,7 @@ class QuoteRequestHandlerTest {
 
     // Second: dispatch a malformed message (length below block length).
     final var secondBuf = new UnsafeBuffer(new byte[HDR_LEN]);
-    final MessageHeaderEncoder hdr2 = new MessageHeaderEncoder();
+    final var hdr2 = new MessageHeaderEncoder();
     hdr2.wrap(secondBuf, 0)
         .blockLength(QuoteRequestDecoder.BLOCK_LENGTH)
         .templateId(QuoteRequestDecoder.TEMPLATE_ID)

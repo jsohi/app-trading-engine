@@ -1331,6 +1331,17 @@
                 <field name="legOfferSize"  id="10007" type="int64" presence="optional" description="Leg offer size in Quoted state, fixed-point 10^-8"/>
             </group>
         </group>
+        <!-- recentlyTerminal LRU ring contents — bounded list of recently-terminated quoteReqIds
+             with the terminal reason byte. Persisting this in the snapshot eliminates the
+             cross-replica determinism gap on node restart: a freshly-recovered node would
+             otherwise have an empty LRU while long-running peers carry pre-snapshot entries,
+             so a duplicate-quoteReqId arriving in that window would be processed differently
+             on the recovered node vs the others. Bounded by RECENTLY_TERMINAL_CAPACITY (1024). -->
+        <group name="noRecentlyTerminal" id="10100" dimensionType="groupSizeEncoding"
+               description="Recently-terminal quoteReqIds + reason byte for cross-replica dedup determinism">
+            <field name="quoteReqId" id="131"   type="QuoteReqID"/>
+            <field name="reason"     id="10101" type="uint8"     description="Terminal reason byte: 1=Expired, 2=Rejected, 3=Accepted"/>
+        </group>
     </sbe:message>
 
     <!-- PositionSnapshot (204) — net positions per (account, symbol) pair -->

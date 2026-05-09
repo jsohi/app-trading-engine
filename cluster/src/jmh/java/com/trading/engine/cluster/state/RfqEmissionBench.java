@@ -50,7 +50,7 @@ public class RfqEmissionBench {
   @Setup(Level.Trial)
   public void setUp() {
     metrics = new RfqMetrics();
-    final AccountStore accounts = new AccountStore();
+    final var accounts = new AccountStore();
     machine =
         new RfqStateMachine(
             8192,
@@ -68,7 +68,7 @@ public class RfqEmissionBench {
     eventSink = new EventSink(new EventSequencer(), new EventJournal(256));
     clusterTs = 1_700_000_000_000_000_000L;
     // Pre-populate the byQuoteReqId map with a known slot for lookupByQuoteReqId bench.
-    final RfqSlot slot = machine.acquire();
+    final var slot = machine.acquire();
     if (slot != null) {
       slot.quoteReqIdBytes[0] = 'B';
       slot.quoteReqIdBytes[1] = 'E';
@@ -91,7 +91,7 @@ public class RfqEmissionBench {
    */
   @Benchmark
   public void acquireRelease(final Blackhole bh) {
-    final RfqSlot slot = machine.acquire();
+    final var slot = machine.acquire();
     bh.consume(slot);
     machine.release(slot);
   }

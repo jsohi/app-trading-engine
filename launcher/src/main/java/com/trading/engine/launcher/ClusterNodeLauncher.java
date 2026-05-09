@@ -1,6 +1,5 @@
 package com.trading.engine.launcher;
 
-import com.trading.engine.cluster.TradingClusteredService;
 import com.trading.engine.cluster.TradingClusteredServiceFactory;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
@@ -14,7 +13,6 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Objects;
 import org.agrona.CloseHelper;
@@ -140,8 +138,8 @@ public final class ClusterNodeLauncher {
     //   2. The ConsensusModule's replication channel (peer-to-peer snapshot transfer)
     // The AeronArchive client context uses IPC instead since it runs in-process. Using
     // ephemeral port 0 on UDP endpoints lets the OS pick a free port.
-    final String localHost = ClusterConfig.hostForMember(clusterMembers, nodeId);
-    final String replicationChannel = udpEndpoint(localHost, 0);
+    final var localHost = ClusterConfig.hostForMember(clusterMembers, nodeId);
+    final var replicationChannel = udpEndpoint(localHost, 0);
 
     final File archiveDir;
     final File clusterDir;
@@ -165,7 +163,7 @@ public final class ClusterNodeLauncher {
     ClusteredServiceContainer serviceContainer = null;
     try {
       // 1. Archive — per-node embedded archive that records the cluster log and snapshots.
-      final Archive.Context archiveCtx =
+      final var archiveCtx =
           new Archive.Context()
               .aeronDirectoryName(aeronDir)
               .archiveDir(archiveDir)
@@ -194,7 +192,7 @@ public final class ClusterNodeLauncher {
       //    ClusteredServiceContainer to talk to the embedded Archive above. Both components
       //    live in this same JVM, so we use IPC (localControlChannel) instead of UDP — faster
       //    and bypasses the kernel network stack entirely.
-      final AeronArchive.Context aeronArchiveCtx =
+      final var aeronArchiveCtx =
           new AeronArchive.Context()
               .aeronDirectoryName(aeronDir)
               .controlRequestChannel(archiveCtx.localControlChannel())
@@ -203,7 +201,7 @@ public final class ClusterNodeLauncher {
               .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID + nodeId);
 
       // 3. ConsensusModule — the Raft state machine + log replication.
-      final ConsensusModule.Context consensusCtx =
+      final var consensusCtx =
           new ConsensusModule.Context()
               .aeronDirectoryName(aeronDir)
               .archiveContext(aeronArchiveCtx.clone())
@@ -233,10 +231,10 @@ public final class ClusterNodeLauncher {
               launcherConfig.rfqRateLimitWindowNanos(),
               launcherConfig.rfqAcceptPriceToleranceBps(),
               launcherConfig.rfqAcceptQtyToleranceBps());
-      final TradingClusteredService service =
+      final var service =
           TradingClusteredServiceFactory.create(
               new AccountStore(), new CurrencyStore(), new RiskLimitStore(), rfqConfig);
-      final ClusteredServiceContainer.Context serviceCtx =
+      final var serviceCtx =
           new ClusteredServiceContainer.Context()
               .aeronDirectoryName(aeronDir)
               .archiveContext(aeronArchiveCtx.clone())
@@ -259,7 +257,7 @@ public final class ClusterNodeLauncher {
   }
 
   private static void requireRunningMediaDriver(final String aeronDir) {
-    final Path cnc = Paths.get(aeronDir, CNC_FILENAME);
+    final var cnc = Paths.get(aeronDir, CNC_FILENAME);
     if (!Files.isReadable(cnc)) {
       throw new IllegalStateException(
           "media driver not running at " + aeronDir + ": cnc.dat missing");
@@ -280,7 +278,7 @@ public final class ClusterNodeLauncher {
    * host=2001} + garbage port.
    */
   private static String udpEndpoint(final String host, final int port) {
-    final String hostPart = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+    final var hostPart = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
     return "aeron:udp?endpoint=" + hostPart + ":" + port;
   }
 }

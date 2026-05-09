@@ -4,7 +4,6 @@ import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.handler.RfqRejectMessages;
 import com.trading.engine.cluster.handler.SafeEnumMappers;
 import com.trading.engine.cluster.metrics.RfqMetrics;
-import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
@@ -185,6 +184,13 @@ public final class RfqStateMachine {
   /** Probe key for recently-terminal lookups (zero-alloc). */
   private final ByteArrayKey recentlyTerminalProbe;
 
+  /**
+   * Pre-allocated scratch used by {@link #restoreFrom} to decode each {@code recentlyTerminal}
+   * entry's quoteReqId bytes before {@link ByteArrayKey#overwrite}'ing the ring key. Sized to
+   * {@link RfqSlot#QUOTE_REQ_ID_LENGTH}; reused across restores.
+   */
+  private final byte[] restoreTermScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
   /** Probe key for byQuoteReqId lookups (zero-alloc). */
   private final ByteArrayKey byQuoteReqIdProbe;
 
@@ -342,7 +348,7 @@ public final class RfqStateMachine {
       return null;
     }
     final int slotIndex = freeIndices[--freeCount];
-    final RfqSlot slot = slots[slotIndex];
+    final var slot = slots[slotIndex];
     slot.state = RfqSlotState.REQUESTED;
     // Append to activeIndices (O(1)).
     activePositions[slotIndex] = activeCount;
@@ -465,7 +471,7 @@ public final class RfqStateMachine {
    */
   public RfqSlot peekByQuoteId(final byte[] src, final int offset, final int length) {
     byQuoteIdProbe.wrapForProbe(src, offset, length);
-    final RfqSlot slot = byQuoteId.get(byQuoteIdProbe);
+    final var slot = byQuoteId.get(byQuoteIdProbe);
     if (slot == null || slot.state != RfqSlotState.QUOTED) {
       return null;
     }
@@ -513,7 +519,7 @@ public final class RfqStateMachine {
    */
   private void rememberTerminal(final RfqSlot slot, final byte reason) {
     final int idx = recentlyTerminalRingHead;
-    final ByteArrayKey ringEntry = recentlyTerminalRing[idx];
+    final var ringEntry = recentlyTerminalRing[idx];
     if (ringEntry.length() > 0) {
       // Evict prior occupant from the side-index BEFORE mutating the bytes.
       recentlyTerminalIndex.removeKey(ringEntry);
@@ -573,7 +579,7 @@ public final class RfqStateMachine {
    * @param sessionId the closing session ID
    */
   public void releaseRateLimitForSession(final long sessionId) {
-    final TokenBucket bucket = rateLimitBuckets.remove(sessionId);
+    final var bucket = rateLimitBuckets.remove(sessionId);
     if (bucket != null) {
       // Defensive bound check — pool corruption (double-release or misaligned counter) would
       // otherwise overflow the free-index array and silently corrupt subsequent allocations.
@@ -684,7 +690,7 @@ public final class RfqStateMachine {
    */
   public void onTimerExpiry(
       final long correlationId, final long timestamp, final EventSink eventSink) {
-    final RfqSlot slot = byCorrelationId.get(correlationId);
+    final var slot = byCorrelationId.get(correlationId);
     if (slot == null) {
       metrics.dropStaleTimer++;
       return;
@@ -784,7 +790,7 @@ public final class RfqStateMachine {
     }
     // Iterate only active slots (O(activeCount)) — avoids scanning the full pool.
     for (int i = 0; i < activeCount; i++) {
-      final RfqSlot slot = slots[activeIndices[i]];
+      final var slot = slots[activeIndices[i]];
       if (slot.sessionId != sessionId) {
         continue;
       }
@@ -834,12 +840,12 @@ public final class RfqStateMachine {
       final MutableDirectBuffer dst, final int offset, final MessageHeaderEncoder hdr) {
     final int active = activeSlotCount();
     rfqStateEncoder.wrapAndApplyHeader(dst, offset, hdr);
-    final RfqStateSnapshotEncoder.NoRfqsEncoder grp = rfqStateEncoder.noRfqsCount(active);
+    final var grp = rfqStateEncoder.noRfqsCount(active);
     // Iterate only active slots (O(activeCount)) — replicas process the same event history
     // deterministically, so activeIndices is byte-identical across replicas at any point and
     // the snapshot bytes match regardless of pool-index vs insertion-order traversal.
     for (int idx = 0; idx < active; idx++) {
-      final RfqSlot slot = slots[activeIndices[idx]];
+      final var slot = slots[activeIndices[idx]];
       // Hard invariant: activeIndices[0..active) must contain only non-FREE slots per the
       // release()'s swap-with-last contract. A FREE slot here would corrupt the SBE group
       // header (which was sized at `active` above) by either skipping a declared entry
@@ -878,8 +884,7 @@ public final class RfqStateMachine {
       grp.putCurrency(slot.currencyBytes, 0);
       grp.putSettlCurrency(slot.settlCurrencyBytes, 0);
       grp.tenor(SafeEnumMappers.safeTenor(slot.tenor));
-      final RfqStateSnapshotEncoder.NoRfqsEncoder.NoLegsEncoder legGrp =
-          grp.noLegsCount(slot.noLegs);
+      final var legGrp = grp.noLegsCount(slot.noLegs);
       for (int j = 0; j < slot.noLegs; j++) {
         legGrp.next();
         // Use SafeEnumMappers for raw-byte → enum conversion to avoid the
@@ -897,6 +902,26 @@ public final class RfqStateMachine {
         legGrp.legBidSize(slot.legBidSize[j]);
         legGrp.legOfferSize(slot.legOfferSize[j]);
       }
+    }
+    // Encode the recentlyTerminal LRU ring. Walking the side-index gives us only the live
+    // entries (empty ring slots are excluded). This is the cross-replica determinism fix
+    // for Gemini round-3 CRITICAL #2: a fresh-recovered node would otherwise have an empty
+    // LRU while long-running peers carry pre-snapshot entries, breaking duplicate-quoteReqId
+    // dedup determinism across the snapshot boundary.
+    final int liveTerminalCount = recentlyTerminalIndex.size();
+    final var termGrp = rfqStateEncoder.noRecentlyTerminalCount(liveTerminalCount);
+    // Iterate the ring in head-relative order (oldest → newest) so the snapshot bytes are
+    // deterministic across replicas with identical command history. Skip empty slots
+    // (where the key bytes have been zeroed via clear() but the side-index has the entry).
+    for (int i = 0; i < RECENTLY_TERMINAL_CAPACITY; i++) {
+      final var key = recentlyTerminalRing[i];
+      // A slot is "live" if the side-index points at this ring position (canonical mapping).
+      if (recentlyTerminalIndex.getValue(key) != i) {
+        continue;
+      }
+      termGrp.next();
+      termGrp.putQuoteReqId(key.backingArray(), key.offset());
+      termGrp.reason((short) (recentlyTerminalReason[i] & 0xFF));
     }
     return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateEncoder.encodedLength();
   }
@@ -954,7 +979,7 @@ public final class RfqStateMachine {
     // Reset state.
     clear();
     rfqStateDecoder.wrap(src, offset, blockLength, schemaVersion);
-    final RfqStateSnapshotDecoder.NoRfqsDecoder grp = rfqStateDecoder.noRfqs();
+    final var grp = rfqStateDecoder.noRfqs();
     int restoredCount = 0;
     while (grp.hasNext()) {
       grp.next();
@@ -968,7 +993,7 @@ public final class RfqStateMachine {
       final int slotIndex = freeIndices[--freeCount];
       activePositions[slotIndex] = activeCount;
       activeIndices[activeCount++] = slotIndex;
-      final RfqSlot slot = slots[slotIndex];
+      final var slot = slots[slotIndex];
 
       grp.getQuoteReqId(slot.quoteReqIdBytes, 0);
       slot.accountId = grp.accountId();
@@ -990,13 +1015,13 @@ public final class RfqStateMachine {
       // Restore the raw enum byte (including NULL_VAL=255 / signed -1) symmetric with the
       // encoder. Storing 0 for NULL_VAL would silently corrupt absent settlType into Regular
       // on every snapshot round-trip.
-      final SettlTypeEnum settlType = grp.settlType();
+      final var settlType = grp.settlType();
       slot.settlType = (byte) settlType.value();
       grp.getCurrency(slot.currencyBytes, 0);
       grp.getSettlCurrency(slot.settlCurrencyBytes, 0);
       slot.tenor = (byte) grp.tenor().value();
 
-      final RfqStateSnapshotDecoder.NoRfqsDecoder.NoLegsDecoder legGrp = grp.noLegs();
+      final var legGrp = grp.noLegs();
       // Bounds-check legs from the snapshot — a corrupted or version-mismatched snapshot
       // could carry a leg count > MAX_LEGS and crash the loop with AIOOBE, preventing recovery.
       final int legCount = legGrp.count();
@@ -1015,7 +1040,7 @@ public final class RfqStateMachine {
         slot.legSide[legIdx] = (byte) legGrp.legSide().value();
         legGrp.getLegSettlDate(slot.legSettlDate[legIdx], 0);
         // Symmetric raw-byte storage; see the slot.settlType assignment above.
-        final SettlTypeEnum legSt = legGrp.legSettlType();
+        final var legSt = legGrp.legSettlType();
         slot.legSettlType[legIdx] = (byte) legSt.value();
         legGrp.getLegCurrency(slot.legCurrency[legIdx], 0);
         slot.legTenor[legIdx] = (byte) legGrp.legTenor().value();
@@ -1038,6 +1063,33 @@ public final class RfqStateMachine {
       }
     }
     metrics.poolOccupancy = activeCount;
+    // Restore the recentlyTerminal LRU ring contents. clear() above zeroed the ring + side
+    // index; we rebuild them deterministically from the snapshot bytes so all replicas
+    // converge to byte-identical post-restore LRU state. Cap at RECENTLY_TERMINAL_CAPACITY
+    // — a corrupted snapshot with more entries is rejected as a fatal recovery error.
+    final var termGrp = rfqStateDecoder.noRecentlyTerminal();
+    final int termCount = termGrp.count();
+    if (termCount > RECENTLY_TERMINAL_CAPACITY) {
+      throw new IllegalStateException(
+          "RfqStateSnapshot recentlyTerminal count "
+              + termCount
+              + " exceeds RECENTLY_TERMINAL_CAPACITY="
+              + RECENTLY_TERMINAL_CAPACITY
+              + " — corrupted snapshot or version mismatch");
+    }
+    int termIdx = 0;
+    while (termGrp.hasNext()) {
+      termGrp.next();
+      final var ringKey = recentlyTerminalRing[termIdx];
+      termGrp.getQuoteReqId(restoreTermScratch, 0);
+      ringKey.overwrite(restoreTermScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+      recentlyTerminalReason[termIdx] = (byte) termGrp.reason();
+      recentlyTerminalIndex.put(ringKey, termIdx);
+      termIdx++;
+    }
+    // Position the ring head at the next free slot so subsequent inserts append after the
+    // restored entries (overwriting the oldest once the ring fills).
+    recentlyTerminalRingHead = termIdx % RECENTLY_TERMINAL_CAPACITY;
     return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateDecoder.encodedLength();
   }
 
@@ -1103,12 +1155,12 @@ public final class RfqStateMachine {
     final int sweepCount = activeCount;
     System.arraycopy(activeIndices, 0, sweepSnapshot, 0, sweepCount);
     for (int s = 0; s < sweepCount; s++) {
-      final RfqSlot slot = slots[sweepSnapshot[s]];
+      final var slot = slots[sweepSnapshot[s]];
       if (slot.state == RfqSlotState.FREE) {
         continue; // already released by an earlier iteration
       }
       // Rehydrate accountCode from AccountStore; fail-safe if account was deleted.
-      final AccountState account = accountStore.get(slot.accountId);
+      final var account = accountStore.get(slot.accountId);
       if (account == null) {
         metrics.recoveryAccountMissing++;
         // Clear accountCodeBytes BEFORE emit. Snapshot template 203 does not persist
@@ -1164,7 +1216,7 @@ public final class RfqStateMachine {
     // contains the surviving slots after the sweep — no slot is skipped, no stale slot is
     // visited. Iterating up to (post-sweep) activeCount is therefore the canonical idiom.
     for (int i = 0; i < activeCount; i++) {
-      final RfqSlot slot = slots[activeIndices[i]];
+      final var slot = slots[activeIndices[i]];
       // Defensive — every slot in activeIndices[0..activeCount) MUST be non-FREE per the
       // release() contract. If this fires, release()'s swap-with-last invariant is broken.
       if (slot.state == RfqSlotState.FREE) {

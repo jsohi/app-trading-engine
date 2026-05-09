@@ -13,7 +13,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
-import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.LoadAccountHandler;
@@ -146,7 +145,7 @@ class TradingClusteredServiceTest {
 
   @Test
   void validNewOrderSingleEmitsOrderCreatedEvent() {
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     final int len =
         SbeTestEncoder.encodeNewOrderSingle(
             buf,
@@ -166,7 +165,7 @@ class TradingClusteredServiceTest {
     assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(0));
 
     // Decode the OrderCreatedEvent.
-    final OrderCreatedEventDecoder created = decodeOrderCreated(session.messages.get(0));
+    final var created = decodeOrderCreated(session.messages.get(0));
     assertEquals(1L, created.sequenceNumber());
     assertEquals(TIMESTAMP, created.timestamp());
     assertEquals(SideEnum.Buy, created.side());
@@ -189,7 +188,7 @@ class TradingClusteredServiceTest {
     // Regression for the egressBuffer currency-leak: emit a happy-path order with USD, then
     // submit a reject-triggering order with EUR — the OrderRejectedEvent must carry EUR,
     // not the stale USD bytes left in the handler's egress buffer.
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     int len =
         SbeTestEncoder.encodeNewOrderSingle(
             buf,
@@ -222,7 +221,7 @@ class TradingClusteredServiceTest {
     dispatch(buf, len);
 
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rejected = decodeOrderRejected(session.messages.get(0));
+    final var rejected = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.InvalidQuantity, rejected.rejectReason());
     assertEquals((byte) 'E', rejected.currency(0));
     assertEquals((byte) 'U', rejected.currency(1));
@@ -231,7 +230,7 @@ class TradingClusteredServiceTest {
 
   @Test
   void monotonicOrderAndExecIdsAcrossMultipleOrders() {
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -322,9 +321,9 @@ class TradingClusteredServiceTest {
   @Test
   void emptySymbolRejected() {
     // Build an order with an all-zero symbol — SBE allows empty by padding.
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final NewOrderSingleEncoder enc = new NewOrderSingleEncoder();
+    final var buf = new ExpandableArrayBuffer(256);
+    final var header = new MessageHeaderEncoder();
+    final var enc = new NewOrderSingleEncoder();
     enc.wrapAndApplyHeader(buf, 0, header);
     enc.clOrdId("CL-1");
     enc.symbol("");
@@ -339,7 +338,7 @@ class TradingClusteredServiceTest {
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
 
     dispatch(buf, len);
-    final OrderRejectedEventDecoder dec = decodeOrderRejected(session.messages.get(0));
+    final var dec = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.UnknownSymbol, dec.rejectReason());
   }
 
@@ -358,7 +357,7 @@ class TradingClusteredServiceTest {
     dispatch(new UnsafeBuffer(overflow), overflow.length);
     // Verify rejection.
     final var lastMsg = session.messages.get(session.messages.size() - 1);
-    final OrderRejectedEventDecoder dec = decodeOrderRejected(lastMsg);
+    final var dec = decodeOrderRejected(lastMsg);
     assertEquals(RejectReasonEnum.BookFull, dec.rejectReason());
     // Verify no ID counter space was wasted (guard fires before generateOrderId).
     assertEquals(orderCounterBefore, orderIdGen.currentCounter());
@@ -372,7 +371,7 @@ class TradingClusteredServiceTest {
       final long qtyWhole,
       final String accountCode,
       final String currency) {
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     final int len =
         SbeTestEncoder.encodeNewOrderSingle(
             buf,
@@ -391,14 +390,14 @@ class TradingClusteredServiceTest {
   }
 
   private void assertRejected(final byte[] commandBytes, final RejectReasonEnum expected) {
-    final UnsafeBuffer wrapper = new UnsafeBuffer(commandBytes);
+    final var wrapper = new UnsafeBuffer(commandBytes);
     dispatch(wrapper, commandBytes.length);
 
     // One reply: OrderRejectedEvent (gateway handles ER now).
     assertEquals(1, session.messages.size());
     assertTemplateId(OrderRejectedEventDecoder.TEMPLATE_ID, session.messages.get(0));
 
-    final OrderRejectedEventDecoder rejected = decodeOrderRejected(session.messages.get(0));
+    final var rejected = decodeOrderRejected(session.messages.get(0));
     assertEquals(expected, rejected.rejectReason());
 
     // No order should have been admitted to the book.
@@ -413,9 +412,9 @@ class TradingClusteredServiceTest {
 
   @Test
   void loadCurrencyCommandDispatchedToRegistry() {
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
-    final LoadCurrencyEncoder enc = new LoadCurrencyEncoder();
+    final var buf = new ExpandableArrayBuffer(256);
+    final var header = new MessageHeaderEncoder();
+    final var enc = new LoadCurrencyEncoder();
     enc.wrapAndApplyHeader(buf, 0, header);
     enc.putCcyCode((byte) 'J', (byte) 'P', (byte) 'Y');
     enc.isoNumeric(392);
@@ -443,8 +442,8 @@ class TradingClusteredServiceTest {
   void unknownTemplateIdIsSilentlyDropped() {
     // Build a message with an arbitrary (unused) templateId so both the registry and the order
     // dispatch ignore it.
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(16);
-    final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    final var buf = new ExpandableArrayBuffer(16);
+    final var header = new MessageHeaderEncoder();
     header.wrap(buf, 0).blockLength(0).templateId(9999).schemaId(1).version(1);
     dispatch(buf, MessageHeaderEncoder.ENCODED_LENGTH);
     assertEquals(0, session.messages.size());
@@ -458,7 +457,7 @@ class TradingClusteredServiceTest {
   @Test
   void snapshotRoundTripRestoresFullState() {
     // Populate some order book state by dispatching valid NewOrderSingles.
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 2; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -479,11 +478,11 @@ class TradingClusteredServiceTest {
     assertEquals(2L, orderIdGen.currentCounter());
 
     // Encode the snapshot into a single contiguous buffer (header + 6 body fragments).
-    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final var concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Now rebuild a fresh service with empty stores and load the snapshot.
-    final ServiceBundle fresh = createServiceBundle(false);
+    final var fresh = createServiceBundle(false);
     fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // Counters restored.
@@ -511,7 +510,7 @@ class TradingClusteredServiceTest {
   void snapshotPlusReplayMatchesFullReplay() {
     // -- Path B: snapshot after 3 commands, then replay 2 more on restored service -----------
 
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -530,14 +529,14 @@ class TradingClusteredServiceTest {
     assertEquals(3, orderBook.size());
 
     // Take snapshot at position 3.
-    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final var concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Build restored service, load snapshot, replay commands 4-5.
-    final ServiceBundle res = createServiceBundle(false);
+    final var res = createServiceBundle(false);
     res.service().loadSnapshot(concatenated, 0, totalLength);
 
-    final FakeClientSession resSession = new FakeClientSession();
+    final var resSession = new FakeClientSession();
     for (int i = 4; i <= 5; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -556,9 +555,9 @@ class TradingClusteredServiceTest {
 
     // -- Path A: full replay of all 5 commands from genesis --------------------------------
 
-    final ServiceBundle full = createServiceBundle(true);
+    final var full = createServiceBundle(true);
 
-    final FakeClientSession fullSession = new FakeClientSession();
+    final var fullSession = new FakeClientSession();
     for (int i = 1; i <= 5; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -593,8 +592,8 @@ class TradingClusteredServiceTest {
     assertEquals(full.riskLimitStore().size(), res.riskLimitStore().size());
 
     // Ref-data field-level fidelity — sizes alone could mask corrupted contents.
-    final AccountState fullAcct = full.accountStore().get(1L);
-    final AccountState resAcct = res.accountStore().get(1L);
+    final var fullAcct = full.accountStore().get(1L);
+    final var resAcct = res.accountStore().get(1L);
     assertNotNull(resAcct, "ACME account missing after snapshot+replay");
     assertEquals(fullAcct.accountId(), resAcct.accountId());
     assertEquals(fullAcct.status(), resAcct.status());
@@ -604,8 +603,8 @@ class TradingClusteredServiceTest {
     assertTrue(full.currencyStore().contains(usdKey));
     assertTrue(res.currencyStore().contains(usdKey));
 
-    final RiskLimitState fullRl = full.riskLimitStore().get(1L);
-    final RiskLimitState resRl = res.riskLimitStore().get(1L);
+    final var fullRl = full.riskLimitStore().get(1L);
+    final var resRl = res.riskLimitStore().get(1L);
     assertNotNull(resRl, "risk limit for account 1 missing after snapshot+replay");
     assertEquals(fullRl.maxOrderSize(), resRl.maxOrderSize());
     assertEquals(fullRl.status(), resRl.status());
@@ -615,8 +614,8 @@ class TradingClusteredServiceTest {
     // events (2) while the full journal contains all 5. This divergence is by design.
 
     for (long ordKey = 1; ordKey <= 5; ordKey++) {
-      final OrderState fullOrd = full.orderBook().get(ordKey);
-      final OrderState resOrd = res.orderBook().get(ordKey);
+      final var fullOrd = full.orderBook().get(ordKey);
+      final var resOrd = res.orderBook().get(ordKey);
       assertNotNull(fullOrd, "full-replay order " + ordKey);
       assertNotNull(resOrd, "snapshot+replay order " + ordKey);
       assertEquals(fullOrd.accountId(), resOrd.accountId());
@@ -632,42 +631,41 @@ class TradingClusteredServiceTest {
   @Test
   void accountStoreSecondaryIndexRebuiltAfterSnapshot() {
     // Snapshot the service from setUp (3 accounts already seeded).
-    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final var concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Restore into fresh service.
-    final ServiceBundle fresh = createServiceBundle(false);
+    final var fresh = createServiceBundle(false);
     fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // Primary index works (sanity).
-    final AccountStore accts = fresh.accountStore();
+    final var accts = fresh.accountStore();
     assertNotNull(accts.get(1L));
     assertNotNull(accts.get(2L));
     assertNotNull(accts.get(3L));
 
     // Secondary index (getByCode) rebuilt correctly for all 3 accounts.
-    final UnsafeBuffer acmeBuf = new UnsafeBuffer("ACME".getBytes(StandardCharsets.US_ASCII));
+    final var acmeBuf = new UnsafeBuffer("ACME".getBytes(StandardCharsets.US_ASCII));
     assertEquals(1L, accts.getByCode(acmeBuf, 0, 4).accountId());
 
-    final UnsafeBuffer lockedBuf = new UnsafeBuffer("LOCKED".getBytes(StandardCharsets.US_ASCII));
+    final var lockedBuf = new UnsafeBuffer("LOCKED".getBytes(StandardCharsets.US_ASCII));
     assertEquals(2L, accts.getByCode(lockedBuf, 0, 6).accountId());
 
-    final UnsafeBuffer quoteOnlyBuf =
-        new UnsafeBuffer("QUOTEONLY".getBytes(StandardCharsets.US_ASCII));
+    final var quoteOnlyBuf = new UnsafeBuffer("QUOTEONLY".getBytes(StandardCharsets.US_ASCII));
     assertEquals(3L, accts.getByCode(quoteOnlyBuf, 0, 9).accountId());
 
     // Unknown code returns null.
-    final UnsafeBuffer unknownBuf = new UnsafeBuffer("NOPE".getBytes(StandardCharsets.US_ASCII));
+    final var unknownBuf = new UnsafeBuffer("NOPE".getBytes(StandardCharsets.US_ASCII));
     assertNull(accts.getByCode(unknownBuf, 0, 4));
   }
 
   @Test
   void snapshotRoundTripEmptyState() {
     // Take a snapshot of an initial (empty) service and restore into a fresh one.
-    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final var concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
-    final ServiceBundle fresh = createServiceBundle(false);
+    final var fresh = createServiceBundle(false);
     fresh.service().loadSnapshot(concatenated, 0, totalLength);
 
     // The source service (setUp) has 3 accounts, 2 currencies, 1 risk limit, and no orders;
@@ -683,7 +681,7 @@ class TradingClusteredServiceTest {
 
   @Test
   void snapshotCorruptedChecksumDetected() {
-    final MutableDirectBuffer concatenated = new ExpandableArrayBuffer(65_536);
+    final var concatenated = new ExpandableArrayBuffer(65_536);
     final int totalLength = encodeAndConcatenateSnapshot(service, concatenated);
 
     // Flip a byte in the body (somewhere in the eventSeq fragment which is just after the
@@ -695,8 +693,8 @@ class TradingClusteredServiceTest {
     final byte original = concatenated.getByte(flipOffset);
     concatenated.putByte(flipOffset, (byte) (original ^ 0xFF));
 
-    final TradingClusteredService restored = freshService();
-    final IllegalStateException ise =
+    final var restored = freshService();
+    final var ise =
         assertThrows(
             IllegalStateException.class, () -> restored.loadSnapshot(concatenated, 0, totalLength));
     assertTrue(ise.getMessage().toLowerCase().contains("crc"));
@@ -793,10 +791,10 @@ class TradingClusteredServiceTest {
 
   @Test
   void sessionOfferBackpressureRetriedUntilSuccess() {
-    final FakeClientSession bpSession = new FakeClientSession();
+    final var bpSession = new FakeClientSession();
     bpSession.pendingBackpressures = 2;
 
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     final int len =
         SbeTestEncoder.encodeNewOrderSingle(
             buf,
@@ -830,7 +828,7 @@ class TradingClusteredServiceTest {
     // Pass a different AccountStore instance than the one registered in the registry. The
     // constructor must fail fast rather than let the service validate orders against one graph
     // while ref-data commands mutate another.
-    final AccountStore differentAccountStore = new AccountStore();
+    final var differentAccountStore = new AccountStore();
     final var rfqMetrics = new RfqMetrics();
     final var rfqStateMachine = newRfqStateMachine(differentAccountStore, rfqMetrics);
     assertThrows(
@@ -853,10 +851,10 @@ class TradingClusteredServiceTest {
     // Persistent BACK_PRESSURED → after MAX_BACKPRESSURE_RETRY attempts the session must be
     // closed so the cluster framework tears it down. Silent drop would leave the client
     // without ACK / NACK and free it to replay the command.
-    final FakeClientSession stuckSession = new FakeClientSession();
+    final var stuckSession = new FakeClientSession();
     stuckSession.alwaysBackpressured = true;
 
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     final int len =
         SbeTestEncoder.encodeNewOrderSingle(
             buf,
@@ -904,7 +902,7 @@ class TradingClusteredServiceTest {
   @Test
   void onTakeSnapshot_null_roundTripRestoresState() {
     // Seed some orders so the OrderBook fragment is non-trivial.
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
+    final var buf = new ExpandableArrayBuffer(256);
     for (int i = 1; i <= 3; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -926,7 +924,7 @@ class TradingClusteredServiceTest {
     service.onTakeSnapshot(null);
 
     // Read the assembled buffer via the package-private accessor.
-    final MutableDirectBuffer assembled = service.snapshotReassemblyBuffer();
+    final var assembled = service.snapshotReassemblyBuffer();
     final int totalLen =
         service.snapshotHeaderLength()
             + service.eventSeqSnapLength()
@@ -938,7 +936,7 @@ class TradingClusteredServiceTest {
             + service.rfqStateSnapLength();
 
     // Load onto a fresh service and verify full state restoration.
-    final ServiceBundle fresh = createServiceBundle(false);
+    final var fresh = createServiceBundle(false);
     fresh.service().loadSnapshot(assembled, 0, totalLen);
 
     assertEquals(3L, fresh.eventSequencer().currentSequence());
@@ -972,7 +970,7 @@ class TradingClusteredServiceTest {
     assertEquals(expectedLen, assembledLen);
 
     // Verify the assembled buffer is a valid snapshot.
-    final ServiceBundle fresh = createServiceBundle(false);
+    final var fresh = createServiceBundle(false);
     fresh.service().loadSnapshot(service.snapshotReassemblyBuffer(), 0, assembledLen);
     assertEquals(3, fresh.accountStore().size());
     assertEquals(2, fresh.currencyStore().size());
@@ -1008,10 +1006,10 @@ class TradingClusteredServiceTest {
   void assembleSnapshot_warningThresholdSurfacedViaErrorHandler() {
     // Wire a FakeCluster with a real context + error handler.
     final AtomicReference<Throwable> capturedWarning = new AtomicReference<>();
-    final FakeCluster warningCluster = new FakeCluster(TIMESTAMP);
+    final var warningCluster = new FakeCluster(TIMESTAMP);
     warningCluster.setErrorHandler(capturedWarning::set);
 
-    final ServiceBundle bundle = createServiceBundle(true);
+    final var bundle = createServiceBundle(true);
     bundle.service().onStart(warningCluster, null);
 
     // First pass: learn the actual assembled size.
@@ -1074,8 +1072,8 @@ class TradingClusteredServiceTest {
 
     // Place 1000 orders.
     final int orderCount = 1000;
-    final MutableDirectBuffer buf = new ExpandableArrayBuffer(256);
-    final FakeClientSession bigSession = new FakeClientSession();
+    final var buf = new ExpandableArrayBuffer(256);
+    final var bigSession = new FakeClientSession();
     for (int i = 1; i <= orderCount; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -1096,7 +1094,7 @@ class TradingClusteredServiceTest {
     // Take atomic snapshot via null publication.
     svc.onTakeSnapshot(null);
 
-    final MutableDirectBuffer assembled = svc.snapshotReassemblyBuffer();
+    final var assembled = svc.snapshotReassemblyBuffer();
     final int totalLen =
         svc.snapshotHeaderLength()
             + svc.eventSeqSnapLength()

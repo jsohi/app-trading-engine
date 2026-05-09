@@ -1,7 +1,6 @@
 package com.trading.engine.testsupport.aeron;
 
 import io.aeron.cluster.ClusterControl;
-import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 
 /**
@@ -40,7 +39,7 @@ public final class ClusterTestSnapshotTrigger {
    *     indicates the cluster is not running or counters are not yet published
    */
   public static boolean trigger(final CountersReader countersReader, final int clusterId) {
-    final AtomicCounter toggle = ClusterControl.findControlToggle(countersReader, clusterId);
+    final var toggle = ClusterControl.findControlToggle(countersReader, clusterId);
     if (toggle == null) {
       throw new IllegalStateException(
           "no cluster control-toggle counter found — is the cluster running?");
