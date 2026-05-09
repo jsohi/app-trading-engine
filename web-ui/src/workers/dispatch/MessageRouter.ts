@@ -49,8 +49,13 @@ export interface RouterHandlers {
     payload: Uint8Array,
     isFinal: boolean,
   ) => void;
-  /** errorCode is the WebSocketErrorCode SBE enum int value (1..12). */
-  onWebSocketError: (errorCode: number) => void;
+  /**
+   * errorCode is the WebSocketErrorCode SBE enum int value (1..12).
+   * errorText is the server-supplied diagnostic varData (may be empty).
+   * Caller MUST whitelist against the static allowlist before logging
+   * (per APP-36 plan §2.13).
+   */
+  onWebSocketError: (errorCode: number, errorText: Uint8Array) => void;
   onReplayComplete: () => void;
   /** templateIds 100..116 — event templates; payload is decoded by C8. */
   onEvent: (templateId: number, payload: Uint8Array) => void;
@@ -225,6 +230,11 @@ export class MessageRouter {
     // returns the numeric value typed as the union — coerce to number
     // for the public callback.
     const code = this.errorDec.errorCode() as unknown as number;
-    this.handlers.onWebSocketError(code);
+    // errorText is the server-supplied diagnostic varData. The accessor
+    // returns a zero-copy view valid until the next decoder.wrap(...);
+    // caller MUST whitelist (ErrorTextRegistry static allowlist) before
+    // logging or surfacing — never trust server-supplied free-form text.
+    const errorText = this.errorDec.errorText();
+    this.handlers.onWebSocketError(code, errorText);
   }
 }

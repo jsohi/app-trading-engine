@@ -44,7 +44,20 @@ import {
 } from "@/workers/session/AuthClient";
 import { SessionState } from "@/workers/session/SessionState";
 
-import { BATCH_FLUSH_FRAMES, BATCH_FLUSH_INTERVAL_MS } from "@/workers/WorkerTuning";
+import {
+  BATCH_FLUSH_FRAMES,
+  BATCH_FLUSH_INTERVAL_MS,
+  SUBPROTOCOL,
+  TOKEN_ACQUIRE_TIMEOUT_MS,
+} from "@/workers/WorkerTuning";
+
+// Schema constants — pinned at version 1 per pre-prod policy. See
+// `messages/src/main/resources/trading-schema.xml` for source of truth.
+const EXPECTED_SCHEMA_ID = 1;
+const EXPECTED_SCHEMA_VERSION = 1;
+// SBE template ID for WebSocketAuth (template 60) — used by the
+// placeholder encoder until APP-260 ships per-direction encoders.
+const TEMPLATE_ID_AUTH = 60;
 
 // ─── Bootstrap span (cold path; ESLint rule allows here) ────────────
 const startSpan = tracer.startSpan("web-ui.worker.start", {
@@ -65,6 +78,10 @@ let connectionState: ConnectionState = "CONNECTING";
 
 const outboundBatch: WorkerMessage[] = [];
 let flushTimerHandle: number | null = null;
+// Bidirectional watchdog port — main thread sends PING, worker MUST PONG
+// inside the configured deadline or the watchdog terminates + respawns.
+// Wired in `handleInit`; cleared in `shutdown`.
+let watchdogPort: MessagePort | null = null;
 
 // ─── Main-thread message handler (FIRST line: protocolVersion check) ──
 
@@ -82,13 +99,18 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
   const msg = data as MainToWorker;
   switch (msg.type) {
     case "INIT":
-      void handleInit(msg.wsUrl, msg.tokenPort);
+      void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort);
       break;
     case "PING":
-      // Watchdog liveness PONG: not yet wired (C7 main-thread client).
+      // PINGs from main arrive on `self.onmessage` only as a fallback;
+      // the canonical channel is the watchdog `MessagePort` wired in
+      // `handleInit`. Echo PONG defensively here too.
+      postPong(msg.mainNanos);
       break;
     case "RECONNECT_NOW":
-      // Manual reconnect: not yet wired (C7).
+      // Force-reconnect: close current WS so the onclose handler triggers
+      // the auto-reconnect path (caller-side Reconnect resets backoff).
+      ws?.close();
       break;
     case "CLOSE":
       shutdown();
@@ -98,8 +120,17 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
 
 // ─── Bootstrap: wire WebSocket + parser + router on INIT ────────────
 
-async function handleInit(wsUrl: string, tokenPort: MessagePort): Promise<void> {
+async function handleInit(
+  wsUrl: string,
+  tokenPort: MessagePort,
+  watchdogPort: MessagePort,
+): Promise<void> {
   try {
+    // Wire watchdog port — main thread sends PING on this channel; we
+    // must respond PONG within the deadline or the watchdog terminates
+    // the worker (per APP-36 §4.7).
+    wireWatchdogPort(watchdogPort);
+
     // 1. Validate the URL — production refuses ws://, *.local, etc.
     const mode: "prod" | "dev" = import.meta.env.PROD ? "prod" : "dev";
     validateWsUrl(wsUrl, mode);
@@ -108,11 +139,11 @@ async function handleInit(wsUrl: string, tokenPort: MessagePort): Promise<void> 
     const token = await acquireToken(tokenPort);
 
     // 3. Open the WebSocket with the pinned subprotocol.
-    ws = new WebSocket(wsUrl, ["trading-ws.v1"]);
+    ws = new WebSocket(wsUrl, [SUBPROTOCOL]);
     ws.binaryType = "arraybuffer";
     ws.onopen = (): void => {
       // Hard-assert subprotocol echo per §2.5.
-      if (ws !== null && ws.protocol !== "trading-ws.v1") {
+      if (ws !== null && ws.protocol !== SUBPROTOCOL) {
         postError("PROTOCOL", `subprotocol mismatch: ${ws.protocol}`);
         ws.close();
         return;
@@ -122,7 +153,11 @@ async function handleInit(wsUrl: string, tokenPort: MessagePort): Promise<void> 
         onFrame: handleFrame,
         onError: handleParserError,
       });
-      router = new MessageRouter(buildRouterHandlers(), 1, 1);
+      router = new MessageRouter(
+        buildRouterHandlers(),
+        EXPECTED_SCHEMA_ID,
+        EXPECTED_SCHEMA_VERSION,
+      );
       authClient = new AuthClient(state, buildAuthCallbacks(), buildAuthScheduler());
       authClient.authenticate(token);
       transitionConnection("CONNECTING");
@@ -148,11 +183,53 @@ async function handleInit(wsUrl: string, tokenPort: MessagePort): Promise<void> 
   }
 }
 
+function wireWatchdogPort(port: MessagePort): void {
+  // If a previous port was wired (worker reused after RECONNECT_NOW), close
+  // it before swapping — prevents leaking PING/PONG channels.
+  if (watchdogPort !== null) {
+    watchdogPort.onmessage = null;
+    watchdogPort.close();
+  }
+  watchdogPort = port;
+  port.onmessage = (ev: MessageEvent<unknown>): void => {
+    const data = ev.data;
+    if (
+      data !== null &&
+      typeof data === "object" &&
+      (data as { type?: unknown }).type === "PING" &&
+      typeof (data as { mainNanos?: unknown }).mainNanos === "bigint"
+    ) {
+      postPong((data as { mainNanos: bigint }).mainNanos);
+    }
+  };
+}
+
+function postPong(mainNanos: bigint): void {
+  const workerNanos = BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000));
+  if (watchdogPort !== null) {
+    watchdogPort.postMessage({
+      type: "PONG",
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      echoMainNanos: mainNanos,
+      workerNanos,
+    });
+    return;
+  }
+  // Fallback: PING arrived via `self.onmessage` before the watchdog port
+  // was wired (or watchdog port already closed). Echo via main channel.
+  postMessage({
+    type: "PONG",
+    protocolVersion: WORKER_PROTOCOL_VERSION,
+    echoMainNanos: mainNanos,
+    workerNanos,
+  });
+}
+
 async function acquireToken(port: MessagePort): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error("token-port acquire timeout"));
-    }, 5000);
+    }, TOKEN_ACQUIRE_TIMEOUT_MS);
     port.onmessage = (ev: MessageEvent<unknown>): void => {
       clearTimeout(timeout);
       const data = ev.data;
@@ -220,7 +297,10 @@ function buildRouterHandlers(): RouterHandlers {
       // SnapshotAssembler integration lives in C7+ (needs main-thread ack
       // routing for the assembled bytes via Transferable postMessage).
     },
-    onWebSocketError: (code) => {
+    onWebSocketError: (code, _errorText) => {
+      // errorText is intentionally NOT logged here — server-supplied free-
+      // form bytes must clear the static allowlist (`ErrorTextRegistry`,
+      // wired in C8) before reaching any logger or telemetry attribute.
       authClient?.onAuthError(`server WebSocketError code ${String(code)}`);
     },
     onReplayComplete: () => {
@@ -259,9 +339,9 @@ function buildAuthCallbacks(): AuthClientCallbacks {
       const headerBytes = 8;
       const payload = new Uint8Array(headerBytes);
       const view = new DataView(payload.buffer);
-      view.setUint16(2, 60, true); // templateId = 60 (WebSocketAuth)
-      view.setUint16(4, 1, true); // schemaId = 1
-      view.setUint16(6, 1, true); // version = 1
+      view.setUint16(2, TEMPLATE_ID_AUTH, true);
+      view.setUint16(4, EXPECTED_SCHEMA_ID, true);
+      view.setUint16(6, EXPECTED_SCHEMA_VERSION, true);
       return encodeBestEffort(payload);
     },
     onAuthSuccess: () => {
@@ -331,11 +411,26 @@ function postError(
 }
 
 function shutdown(): void {
-  ws?.close();
+  // Detach WebSocket handlers BEFORE close() so the implicit `close` event
+  // does not reach `transitionConnection("DOWN")` and emit a spurious DOWN
+  // state after the user requested shutdown. Same for `error` — a forced
+  // close on some browsers (Firefox) emits an `error` event first.
+  if (ws !== null) {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.close();
+  }
   ws = null;
   parser = null;
   router = null;
   authClient = null;
+  if (watchdogPort !== null) {
+    watchdogPort.onmessage = null;
+    watchdogPort.close();
+    watchdogPort = null;
+  }
   flushBatch();
 }
 

@@ -50,6 +50,12 @@ export class GapTracker {
   private readonly outOfOrder = new Map<bigint, Uint8Array>();
   private bufferedBytes = 0;
   private dead = false;
+  // Highest `toSeqNo` already requested. Suppresses GapRequest storms
+  // when subsequent out-of-order frames arrive in the same gap window:
+  // the server is already replaying [fromSeqNo, highestRequestedSeqNo],
+  // so re-asking for a sub-interval is wasted bandwidth and may trip
+  // server-side rate limits. Reset on `coldStart()`.
+  private highestRequestedSeqNo = 0n;
   private readonly state: SessionState;
   private readonly cb: GapTrackerCallbacks;
 
@@ -99,12 +105,17 @@ export class GapTracker {
       this.bufferedBytes = newBufferedBytes;
     }
 
-    // Emit a GapRequest covering the missing interval. The server
-    // replays only what is requested; we do not re-emit on every
-    // subsequent out-of-order arrival to avoid storms — but since
-    // a gap may contain multiple missing seqNos, the bounds here are
-    // the full gap span at the moment of detection.
-    this.cb.onGapRequest({ fromSeqNo: expected, toSeqNo: seqNo - 1n });
+    // Per Gemini review (MEDIUM): GapRequest storm defense. Only emit a
+    // new request when the gap window has *grown* beyond what we have
+    // already asked the server to replay. If `seqNo - 1n` is at or below
+    // `highestRequestedSeqNo`, the server is already replaying that
+    // span; re-asking wastes bandwidth and trips rate limits. Reset on
+    // `coldStart()` (the new connection has nothing in flight).
+    const toSeqNo = seqNo - 1n;
+    if (toSeqNo > this.highestRequestedSeqNo) {
+      this.highestRequestedSeqNo = toSeqNo;
+      this.cb.onGapRequest({ fromSeqNo: expected, toSeqNo });
+    }
     return true;
   }
 
@@ -113,6 +124,7 @@ export class GapTracker {
     this.outOfOrder.clear();
     this.bufferedBytes = 0;
     this.dead = false;
+    this.highestRequestedSeqNo = 0n;
   }
 
   /** Visible for tests + watchdog assertions. */
