@@ -386,14 +386,14 @@ public final class QuoteRequestHandler implements CommandHandler {
         requestedEncoder.noLegsCount(slot.noLegs);
     for (int j = 0; j < slot.noLegs; j++) {
       outLegGrp.next();
-      outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
+      outLegGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
       outLegGrp.legSettlType(
           slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
               ? SettlTypeEnum.NULL_VAL
               : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
-      outLegGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
+      outLegGrp.legTenor(SafeEnumMappers.safeTenor(slot.legTenor[j]));
       outLegGrp.legOrderQty(slot.legOrderQty[j]);
     }
 

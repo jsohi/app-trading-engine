@@ -8,13 +8,10 @@ import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.messages.sbe.BooleanType;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.PriceResponseDecoder;
-import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.QuoteCreatedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
-import com.trading.engine.messages.sbe.SideEnum;
-import com.trading.engine.messages.sbe.TenorEnum;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import java.util.Objects;
@@ -191,14 +188,14 @@ public final class PriceResponseHandler implements CommandHandler {
     createdEncoder.putQuoteId(slot.quoteIdBytes, 0);
     createdEncoder.putQuoteReqId(slot.quoteReqIdBytes, 0);
     createdEncoder.putSymbol(slot.symbolBytes, 0);
-    createdEncoder.side(SideEnum.get(slot.side));
+    createdEncoder.side(SafeEnumMappers.safeSide(slot.side));
     createdEncoder.putAccountCode(slot.accountCodeBytes, 0);
     createdEncoder.bidPx(bidPx);
     createdEncoder.offerPx(offerPx);
     createdEncoder.bidSize(bidSize);
     createdEncoder.offerSize(offerSize);
     createdEncoder.validUntil(slot.validUntil);
-    createdEncoder.productType(ProductTypeEnum.get(slot.productType));
+    createdEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     createdEncoder.putSettlDate(slot.settlDateBytes, 0);
     // slot.settlType holds the raw SBE enum byte including NULL_VAL (255 / signed -1).
     // Mask to 0..255 before SettlTypeEnum.get to safely cover the NULL_VAL sentinel and
@@ -209,7 +206,7 @@ public final class PriceResponseHandler implements CommandHandler {
             : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
     createdEncoder.putCurrency(slot.currencyBytes, 0);
     createdEncoder.putSettlCurrency(slot.settlCurrencyBytes, 0);
-    createdEncoder.tenor(TenorEnum.get(slot.tenor));
+    createdEncoder.tenor(SafeEnumMappers.safeTenor(slot.tenor));
     createdEncoder.swapPoints(swapPoints);
 
     // Legs (PriceResponse may carry leg-level prices we propagate to the event)
@@ -217,7 +214,7 @@ public final class PriceResponseHandler implements CommandHandler {
         createdEncoder.noLegsCount(slot.noLegs);
     for (int j = 0; j < slot.noLegs; j++) {
       outLegGrp.next();
-      outLegGrp.legSide(SideEnum.get(slot.legSide[j]));
+      outLegGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
       outLegGrp.legSettlType(
           slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
@@ -256,10 +253,10 @@ public final class PriceResponseHandler implements CommandHandler {
     rejectedEncoder.timestamp(0L);
     rejectedEncoder.putQuoteReqId(slot.quoteReqIdBytes, 0);
     rejectedEncoder.putSymbol(slot.symbolBytes, 0);
-    rejectedEncoder.side(SideEnum.get(slot.side));
+    rejectedEncoder.side(SafeEnumMappers.safeSide(slot.side));
     rejectedEncoder.putAccountCode(slot.accountCodeBytes, 0);
     rejectedEncoder.quoteRejectReason(QuoteRejectReasonEnum.InvalidPrice);
-    rejectedEncoder.productType(ProductTypeEnum.get(slot.productType));
+    rejectedEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     rejectedEncoder.putText(RfqRejectMessages.PRICING_REJECTED, 0);
     final int len = HDR_LEN + rejectedEncoder.encodedLength();
     eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
@@ -276,10 +273,10 @@ public final class PriceResponseHandler implements CommandHandler {
     rejectedEncoder.timestamp(0L);
     rejectedEncoder.putQuoteReqId(slot.quoteReqIdBytes, 0);
     rejectedEncoder.putSymbol(slot.symbolBytes, 0);
-    rejectedEncoder.side(SideEnum.get(slot.side));
+    rejectedEncoder.side(SafeEnumMappers.safeSide(slot.side));
     rejectedEncoder.putAccountCode(slot.accountCodeBytes, 0);
     rejectedEncoder.quoteRejectReason(QuoteRejectReasonEnum.TooLateToEnter);
-    rejectedEncoder.productType(ProductTypeEnum.get(slot.productType));
+    rejectedEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     rejectedEncoder.putText(RfqRejectMessages.TIMER_POOL_EXHAUSTED, 0);
     final int len = HDR_LEN + rejectedEncoder.encodedLength();
     eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
