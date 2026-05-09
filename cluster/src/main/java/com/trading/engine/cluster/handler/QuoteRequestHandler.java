@@ -317,17 +317,20 @@ public final class QuoteRequestHandler implements CommandHandler {
       // Use raw-byte accessors for leg enums to match the safe-decode pattern above. A
       // malformed leg enum byte must not throw out of the cluster duty cycle; the slot
       // simply stores the raw byte (0 if unrecognized) and downstream encode is bounded.
-      slot.legSide[legIdx] = (byte) legGrp.legSideRaw();
+      // Validate the raw byte against the enum's known cases; map any unrecognized byte
+      // to the enum's NULL_VAL sentinel so the encode-side SideEnum.get() / TenorEnum.get()
+      // never throw IllegalArgumentException out of the cluster duty cycle.
+      final short legSdRaw = legGrp.legSideRaw();
+      slot.legSide[legIdx] =
+          isValidSide(legSdRaw) ? (byte) legSdRaw : (byte) SideEnum.NULL_VAL.value();
       legGrp.getLegSettlDate(slot.legSettlDate[legIdx], 0);
-      // Store the raw enum byte (including NULL_VAL=255 sentinel for malformed). Cannot
-      // collapse to 0 because Regular also has wire value 0; Regular and "no settlType"
-      // must be distinguishable on the encode side.
       final short legStRaw = legGrp.legSettlTypeRaw();
       slot.legSettlType[legIdx] =
           isValidSettlType(legStRaw) ? (byte) legStRaw : (byte) SettlTypeEnum.NULL_VAL.value();
       legGrp.getLegCurrency(slot.legCurrency[legIdx], 0);
       final short legTnRaw = legGrp.legTenorRaw();
-      slot.legTenor[legIdx] = isValidTenor(legTnRaw) ? (byte) legTnRaw : 0;
+      slot.legTenor[legIdx] =
+          isValidTenor(legTnRaw) ? (byte) legTnRaw : (byte) TenorEnum.NULL_VAL.value();
       slot.legOrderQty[legIdx] = legGrp.legOrderQty();
       legIdx++;
     }
@@ -556,5 +559,10 @@ public final class QuoteRequestHandler implements CommandHandler {
   /** Returns true if {@code raw} is a valid {@link TenorEnum} wire value. */
   private static boolean isValidTenor(final short raw) {
     return raw >= 1 && raw <= 14;
+  }
+
+  /** Returns true if {@code raw} is a valid {@link SideEnum} wire value (Buy=1 or Sell=2). */
+  private static boolean isValidSide(final short raw) {
+    return raw == 1 || raw == 2;
   }
 }
