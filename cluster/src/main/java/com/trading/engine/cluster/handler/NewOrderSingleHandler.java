@@ -446,53 +446,75 @@ public final class NewOrderSingleHandler implements CommandHandler {
         // Price tolerance (bps).
         final long quotedPx = side == SideEnum.Buy ? slot.offerPx : slot.bidPx;
         final long quotedSize = side == SideEnum.Buy ? slot.offerSize : slot.bidSize;
-        if (quotedPx > 0L) {
-          // Overflow guards:
-          //   1) `price - quotedPx` can equal Long.MIN_VALUE on hostile input; Math.abs of
-          //      that is still Long.MIN_VALUE (negative). Treat negative pxDelta as
-          //      saturation → hard reject.
-          //   2) `pxDelta * 10_000L` can overflow long when pxDelta is large; guard by
-          //      saturating to Long.MAX_VALUE.
-          final long pxDelta = Math.abs(price - quotedPx);
-          final long pxDeltaBps =
-              (pxDelta < 0L || pxDelta > Long.MAX_VALUE / 10_000L)
-                  ? Long.MAX_VALUE
-                  : pxDelta * 10_000L / quotedPx;
-          if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
-            emitOrderRejected(
-                eventSink,
-                session,
-                timestamp,
-                side,
-                RejectReasonEnum.QuoteNotFound,
-                "price mismatch");
-            if (rfqMetrics != null) {
-              rfqMetrics.rejectQuotePriceMismatch++;
-            }
-            return null;
+        // One-sided quote: missing price for the requested side. A trader hitting the
+        // missing side (e.g., Buy against a bid-only quote) MUST be rejected — accepting
+        // would let the trader execute at their own NOS price with no firm offer.
+        if (quotedPx <= 0L) {
+          emitOrderRejected(
+              eventSink,
+              session,
+              timestamp,
+              side,
+              RejectReasonEnum.QuoteNotFound,
+              "quote side missing");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectUnknownQuote++;
           }
+          return null;
         }
-        // Qty tolerance (bps).
-        if (quotedSize > 0L) {
-          // Overflow guards: see price-bps above.
-          final long qtyDelta = Math.abs(orderQty - quotedSize);
-          final long qtyDeltaBps =
-              (qtyDelta < 0L || qtyDelta > Long.MAX_VALUE / 10_000L)
-                  ? Long.MAX_VALUE
-                  : qtyDelta * 10_000L / quotedSize;
-          if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
-            emitOrderRejected(
-                eventSink,
-                session,
-                timestamp,
-                side,
-                RejectReasonEnum.QuoteNotFound,
-                "qty mismatch");
-            if (rfqMetrics != null) {
-              rfqMetrics.rejectQuoteQtyMismatch++;
-            }
-            return null;
+        // Overflow guards:
+        //   1) `price - quotedPx` can equal Long.MIN_VALUE on hostile input; Math.abs of
+        //      that is still Long.MIN_VALUE (negative). Treat negative pxDelta as
+        //      saturation → hard reject.
+        //   2) `pxDelta * 10_000L` can overflow long when pxDelta is large; guard by
+        //      saturating to Long.MAX_VALUE.
+        final long pxDelta = Math.abs(price - quotedPx);
+        final long pxDeltaBps =
+            (pxDelta < 0L || pxDelta > Long.MAX_VALUE / 10_000L)
+                ? Long.MAX_VALUE
+                : pxDelta * 10_000L / quotedPx;
+        if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
+          emitOrderRejected(
+              eventSink,
+              session,
+              timestamp,
+              side,
+              RejectReasonEnum.QuoteNotFound,
+              "price mismatch");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectQuotePriceMismatch++;
           }
+          return null;
+        }
+        // Qty tolerance (bps). One-sided quote with missing size is also rejected via the
+        // same path the price check uses — a quote with bidPx>0 but bidSize=0 is malformed.
+        if (quotedSize <= 0L) {
+          emitOrderRejected(
+              eventSink,
+              session,
+              timestamp,
+              side,
+              RejectReasonEnum.QuoteNotFound,
+              "quote size missing");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectUnknownQuote++;
+          }
+          return null;
+        }
+        // Overflow guards: see price-bps above. quotedSize > 0 guaranteed by the
+        // missing-size reject above.
+        final long qtyDelta = Math.abs(orderQty - quotedSize);
+        final long qtyDeltaBps =
+            (qtyDelta < 0L || qtyDelta > Long.MAX_VALUE / 10_000L)
+                ? Long.MAX_VALUE
+                : qtyDelta * 10_000L / quotedSize;
+        if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
+          emitOrderRejected(
+              eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "qty mismatch");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectQuoteQtyMismatch++;
+          }
+          return null;
         }
         pendingQuoteAcceptSlot = slot;
       }
