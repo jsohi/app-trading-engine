@@ -1355,6 +1355,10 @@ public final class RfqStateMachine {
    * {@code rfqPoolCapacity in [256, 65536]}.
    */
   private static int nextPowerOfTwo(final int value) {
-    return Integer.highestOneBit(value - 1) << 1;
+    // Guard against value <= 1: highestOneBit(0) returns 0, so the original
+    // formula returned 0 for input 1 — mathematically wrong (smallest power of two ≥ 1
+    // is 1). Current call sites all pass capacity*2 (>= 512), but the helper is now
+    // defensible for arbitrary inputs.
+    return value <= 1 ? 1 : Integer.highestOneBit(value - 1) << 1;
   }
 }

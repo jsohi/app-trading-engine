@@ -296,7 +296,14 @@ public final class QuoteRequestHandler implements CommandHandler {
     final var legGrp = qrDecoder.noLegs();
     final int legCount = legGrp.count();
     if (legCount > RfqSlot.MAX_LEGS) {
-      // Release the just-acquired slot before rejecting; slot is not yet in any lookup map.
+      // Release the just-acquired slot before rejecting. The slot is NOT yet in any lookup
+      // map, but release() defensively calls byQuoteReqId.remove(slot.quoteReqIdKey) — and
+      // the key still holds the LAST-SYNCED content from this slot's prior lifecycle (R9
+      // zeroes slot.quoteReqIdBytes on release, but the ByteArrayKey is a separate copy
+      // whose bytes are only refreshed by syncQuoteReqIdKey()). Sync the key to the freshly-
+      // decoded bytes here so the remove either matches the new key (no live entry) or is
+      // a no-op — never an accidental remove of a different active RFQ via stale content.
+      slot.syncQuoteReqIdKey();
       rfqStateMachine.release(slot);
       emitRejectByQuoteReqId(
           session,
