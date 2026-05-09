@@ -13,6 +13,8 @@
 package com.trading.engine.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
@@ -128,14 +130,14 @@ final class WebSocketAuthAckEncoderTest {
     final long beyondHeartbeat = (long) Integer.MAX_VALUE + 1L;
     final long bigClientTimeout = beyondHeartbeat + 1_000L;
     final var ex =
-        org.junit.jupiter.api.Assertions.assertThrows(
+        assertThrows(
             IllegalArgumentException.class,
             () ->
                 WebSocketServerConfig.builder()
                     .heartbeatIntervalMs(beyondHeartbeat)
                     .clientTimeoutMs(bigClientTimeout)
                     .build());
-    org.junit.jupiter.api.Assertions.assertTrue(
+    assertTrue(
         ex.getMessage().contains("Integer.MAX_VALUE")
             && ex.getMessage().contains("heartbeatIntervalMs"),
         "expected error referencing heartbeatIntervalMs upper bound; got: " + ex.getMessage());
@@ -150,14 +152,14 @@ final class WebSocketAuthAckEncoderTest {
     // so only the new validator fires (heartbeatIntervalMs stays in-range).
     final long beyond = 2L * Integer.MAX_VALUE + 2L;
     final var ex =
-        org.junit.jupiter.api.Assertions.assertThrows(
+        assertThrows(
             IllegalArgumentException.class,
             () ->
                 WebSocketServerConfig.builder()
                     .clientTimeoutMs(beyond)
                     .heartbeatIntervalMs(5_000)
                     .build());
-    org.junit.jupiter.api.Assertions.assertTrue(
+    assertTrue(
         ex.getMessage().contains("Integer.MAX_VALUE")
             && ex.getMessage().contains("clientTimeoutMs"),
         "expected error referencing clientTimeoutMs upper bound; got: " + ex.getMessage());

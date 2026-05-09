@@ -468,15 +468,16 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
-    boolean written = false;
+    // Release on any exception path BEFORE the write happens; the
+    // successful path transfers ownership to writeAndFlush(). Avoids
+    // a `boolean written` mutable local in favour of catch+rethrow
+    // per CLAUDE.md "all locals must be `final`".
     try {
       nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
       ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf)).addListener(f -> ctx.close());
-      written = true;
-    } finally {
-      if (!written) {
-        nettyBuf.release();
-      }
+    } catch (final Throwable t) {
+      nettyBuf.release();
+      throw t;
     }
     resolveAuth();
   }
@@ -501,15 +502,15 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
-    boolean written = false;
+    // Release on any exception path BEFORE the write happens; successful
+    // writeAndFlush transfers buffer ownership. catch+rethrow avoids a
+    // mutable `boolean written` local per CLAUDE.md.
     try {
       nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
       ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
-      written = true;
-    } finally {
-      if (!written) {
-        nettyBuf.release();
-      }
+    } catch (final Throwable t) {
+      nettyBuf.release();
+      throw t;
     }
   }
 

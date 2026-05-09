@@ -68,16 +68,16 @@ final class ErrorCodesFixtureTest {
   }
 
   private static Path findRepoRoot() throws IOException {
-    Path cur = Paths.get("").toAbsolutePath();
-    for (int i = 0; i < 10; i++) {
+    final var start = Paths.get("").toAbsolutePath();
+    // Loop control variable `cur` is intentionally mutable per CLAUDE.md
+    // carve-out for classic for-loop counters; the loop walks parents
+    // bounded by depth=10 to defend against pathological symlink loops.
+    for (Path cur = start; cur != null; cur = cur.getParent()) {
       if (Files.isDirectory(cur.resolve("web-ui"))
           && Files.isRegularFile(cur.resolve("settings.gradle.kts"))) {
         return cur;
       }
-      final Path parent = cur.getParent();
-      if (parent == null) break;
-      cur = parent;
     }
-    throw new IOException("could not locate repo root from " + Paths.get("").toAbsolutePath());
+    throw new IOException("could not locate repo root from " + start);
   }
 }
