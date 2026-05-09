@@ -79,7 +79,7 @@ public final class RfqSlot {
   // -------------------------------------------------------------------------
 
   /** Pool index within {@link RfqStateMachine}'s slot array. Immutable after construction. */
-  final int poolIndex;
+  public final int poolIndex;
 
   /**
    * Per-slot generation counter (31-bit). Incremented on each {@link RfqStateMachine#release}.
@@ -87,10 +87,10 @@ public final class RfqSlot {
    * slot has been released and reused at generation {@code G+1} is silently dropped. Retirement
    * threshold: {@code Integer.MAX_VALUE >> 1} (~1 billion reuses, ~100+ years at 10/sec).
    */
-  int generation;
+  public int generation;
 
   /** Current slot lifecycle state. */
-  RfqSlotState state;
+  public RfqSlotState state;
 
   // -------------------------------------------------------------------------
   // Timer correlation IDs (set by RfqStateMachine only)
@@ -101,7 +101,7 @@ public final class RfqSlot {
    * {@code (generation << 31) | poolIndex}. Registered with {@code Cluster.scheduleTimer} when the
    * slot transitions REQUESTED→QUOTED. Fires → {@code QuoteExpiredEvent} (107).
    */
-  long timerCorrelationId;
+  public long timerCorrelationId;
 
   /**
    * Correlation ID for the request-timeout timer (high bit set). Computed as
@@ -109,7 +109,7 @@ public final class RfqSlot {
    * {@code Cluster.scheduleTimer} when the slot is first acquired (REQUESTED state). Fires →
    * {@code QuoteRejectedEvent} (106) with {@code text="request timeout"}.
    */
-  long requestTimeoutCorrelationId;
+  public long requestTimeoutCorrelationId;
 
   // -------------------------------------------------------------------------
   // Timing fields
@@ -120,7 +120,7 @@ public final class RfqSlot {
    * {@code onSessionMessage} timestamp). Used to compute the request-timeout deadline on recovery.
    * Matches the {@code transactTime} field in template 203.
    */
-  long transactTime;
+  public long transactTime;
 
   /**
    * Epoch-nanos deadline for the TTL timer. Set when transitioning REQUESTED→QUOTED.
@@ -128,7 +128,7 @@ public final class RfqSlot {
    * {@code validUntil} field in template 203 and is the {@code ValidUntilTime} (FIX tag 62) value
    * in {@code QuoteCreatedEvent} (105).
    */
-  long validUntil;
+  public long validUntil;
 
   // -------------------------------------------------------------------------
   // Account and session routing
@@ -139,13 +139,13 @@ public final class RfqSlot {
    * {@link TokenBucket} on {@code onSessionClose} and to fast-fail in-flight slots originating from
    * a closed session.
    */
-  long sessionId;
+  public long sessionId;
 
   /**
    * Numeric account ID resolved from AccountCode at request time. Used during snapshot recovery to
    * rehydrate {@code accountCodeBytes} via {@code AccountStore.get(accountId)}.
    */
-  long accountId;
+  public long accountId;
 
   // -------------------------------------------------------------------------
   // Idempotent retransmit detection
@@ -156,124 +156,124 @@ public final class RfqSlot {
    * detection (fast path). On CRC match, the full byte-for-byte comparison against
    * {@link #requestBody} disambiguates the ~2^{-32} collision case.
    */
-  int bodyCrc;
+  public int bodyCrc;
 
   /**
    * Raw bytes of the decoded QuoteRequest body for byte-for-byte idempotent retransmit comparison
    * (second tier after CRC match). Sized to {@link #REQUEST_BODY_SIZE}.
    */
-  final byte[] requestBody;
+  public final byte[] requestBody;
 
   /** Number of valid bytes in {@link #requestBody}. */
-  int requestBodyLen;
+  public int requestBodyLen;
 
   // -------------------------------------------------------------------------
   // Fixed-length identity fields (FIX tag refs in field Javadoc)
   // -------------------------------------------------------------------------
 
   /** QuoteReqID (FIX tag 131) — 20-byte fixed-length ASCII, NUL-padded. */
-  final byte[] quoteReqIdBytes;
+  public final byte[] quoteReqIdBytes;
 
   /** QuoteID (FIX tag 117) — 20-byte fixed-length ASCII, NUL-padded. Set on REQUESTED→QUOTED. */
-  final byte[] quoteIdBytes;
+  public final byte[] quoteIdBytes;
 
   /** Symbol (FIX tag 55) — 8-byte fixed-length ASCII, NUL-padded. */
-  final byte[] symbolBytes;
+  public final byte[] symbolBytes;
 
   /** AccountCode (FIX tag 1) — 16-byte fixed-length ASCII, NUL-padded. */
-  final byte[] accountCodeBytes;
+  public final byte[] accountCodeBytes;
 
   /** SettlDate (FIX tag 64) — 8-byte fixed-length ASCII, NUL-padded. */
-  final byte[] settlDateBytes;
+  public final byte[] settlDateBytes;
 
   /** Currency (FIX tag 15) — 3 bytes. */
-  final byte[] currencyBytes;
+  public final byte[] currencyBytes;
 
   /** SettlCurrency (FIX tag 120) — 3 bytes. */
-  final byte[] settlCurrencyBytes;
+  public final byte[] settlCurrencyBytes;
 
   // -------------------------------------------------------------------------
   // Enum-typed fields (stored as bytes to avoid enum boxing on hot path)
   // -------------------------------------------------------------------------
 
   /** Side (FIX tag 54) — byte: 1=Buy, 2=Sell. */
-  byte side;
+  public byte side;
 
   /** ProductType (FIX tag 460) — byte: 1=Spot, 2=Forward, 3=Swap. */
-  byte productType;
+  public byte productType;
 
   /** SettlType (FIX tag 63) — byte: 0=Regular (sentinel for unset), 1=Cash, 2=NextDay, etc. */
-  byte settlType;
+  public byte settlType;
 
   /** Tenor (byte enum). */
-  byte tenor;
+  public byte tenor;
 
   // -------------------------------------------------------------------------
   // Numeric price and quantity fields (fixed-point 10^-8)
   // -------------------------------------------------------------------------
 
   /** OrderQty (FIX tag 38) — fixed-point 10^-8. */
-  long orderQty;
+  public long orderQty;
 
   /** BidPx (FIX tag 132) — fixed-point 10^-8. Set on REQUESTED→QUOTED. */
-  long bidPx;
+  public long bidPx;
 
   /** OfferPx (FIX tag 133) — fixed-point 10^-8. Set on REQUESTED→QUOTED. */
-  long offerPx;
+  public long offerPx;
 
   /** BidSize (FIX tag 134) — fixed-point 10^-8. Set on REQUESTED→QUOTED. */
-  long bidSize;
+  public long bidSize;
 
   /** OfferSize (FIX tag 135) — fixed-point 10^-8. Set on REQUESTED→QUOTED. */
-  long offerSize;
+  public long offerSize;
 
   /** LastPx — the last traded/execution price (fixed-point 10^-8). */
-  long lastPx;
+  public long lastPx;
 
   /** SwapPoints — forward swap points (fixed-point 10^-8, may be negative). */
-  long swapPoints;
+  public long swapPoints;
 
   // -------------------------------------------------------------------------
   // Leg fields (FX swap — up to MAX_LEGS legs)
   // -------------------------------------------------------------------------
 
   /** Number of legs (0 for Spot/Forward, 2 for Swap). Range [0, MAX_LEGS]. */
-  int noLegs;
+  public int noLegs;
 
   // Per-leg arrays: indexed [0..noLegs). Pre-allocated to MAX_LEGS depth.
 
   /** LegSide (FIX tag 624) — byte per leg. */
-  final byte[] legSide;
+  public final byte[] legSide;
 
   /** LegSettlDate (FIX tag 588) — 8 bytes per leg. */
-  final byte[][] legSettlDate;
+  public final byte[][] legSettlDate;
 
   /** LegSettlType (FIX tag 587) — byte per leg. */
-  final byte[] legSettlType;
+  public final byte[] legSettlType;
 
   /** LegCurrency (FIX tag 556) — 3 bytes per leg. */
-  final byte[][] legCurrency;
+  public final byte[][] legCurrency;
 
   /** LegTenor — byte enum per leg. */
-  final byte[] legTenor;
+  public final byte[] legTenor;
 
   /** LegOrderQty (FIX tag 685) — fixed-point 10^-8 per leg. */
-  final long[] legOrderQty;
+  public final long[] legOrderQty;
 
   /** LegPrice (FIX tag 566) — fixed-point 10^-8 per leg. */
-  final long[] legPrice;
+  public final long[] legPrice;
 
   /** LegBidPx — fixed-point 10^-8 per leg. */
-  final long[] legBidPx;
+  public final long[] legBidPx;
 
   /** LegOfferPx — fixed-point 10^-8 per leg. */
-  final long[] legOfferPx;
+  public final long[] legOfferPx;
 
   /** LegBidSize — fixed-point 10^-8 per leg. */
-  final long[] legBidSize;
+  public final long[] legBidSize;
 
   /** LegOfferSize — fixed-point 10^-8 per leg. */
-  final long[] legOfferSize;
+  public final long[] legOfferSize;
 
   // -------------------------------------------------------------------------
   // Map key (per-slot, pre-allocated for zero-alloc byQuoteReqId lookup)
@@ -285,13 +285,13 @@ public final class RfqSlot {
    * {@code RfqStateMachine.byQuoteReqId} and {@code byQuoteId} maps. Must be removed from all maps
    * BEFORE any byte mutation in {@link RfqStateMachine#release(RfqSlot)}.
    */
-  final ByteArrayKey quoteReqIdKey;
+  public final ByteArrayKey quoteReqIdKey;
 
   /**
    * Pre-allocated owned {@link ByteArrayKey} wrapping {@link #quoteIdBytes}. Populated when the
    * slot transitions REQUESTED→QUOTED. Used as the key in {@code RfqStateMachine.byQuoteId} map.
    */
-  final ByteArrayKey quoteIdKey;
+  public final ByteArrayKey quoteIdKey;
 
   // -------------------------------------------------------------------------
   // Buffer views for GFLog zero-alloc logging
@@ -301,13 +301,13 @@ public final class RfqSlot {
    * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteReqIdBytes}. Used by
    * {@link BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
    */
-  final UnsafeBuffer quoteReqIdBuffer;
+  public final UnsafeBuffer quoteReqIdBuffer;
 
   /**
    * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteIdBytes}. Used by
    * {@link BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
    */
-  final UnsafeBuffer quoteIdBuffer;
+  public final UnsafeBuffer quoteIdBuffer;
 
   // -------------------------------------------------------------------------
   // Constructor
