@@ -6,11 +6,15 @@ import static io.aeron.Publication.BACK_PRESSURED;
 import com.trading.engine.cluster.handler.CommandHandler;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.handler.NewOrderSingleHandler;
+import com.trading.engine.cluster.handler.PriceResponseHandler;
+import com.trading.engine.cluster.handler.QuoteRequestHandler;
 import com.trading.engine.cluster.journal.EventJournal;
+import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
 import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
@@ -21,6 +25,7 @@ import com.trading.engine.messages.sbe.IdGeneratorSnapshotEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
+import com.trading.engine.messages.sbe.RfqStateSnapshotDecoder;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
@@ -94,8 +99,9 @@ public final class TradingClusteredService implements ClusteredService {
    */
   private static final long SUPPORTED_SNAPSHOT_VERSION = 1L;
 
-  /** Number of body fragments in a well-formed snapshot envelope. */
-  private static final int SNAPSHOT_STORE_COUNT = 6;
+  /** Number of body fragments in a well-formed snapshot envelope. Bumped from 6 to 7 by APP-232
+   * to include {@code RfqStateSnapshot} (template 203). */
+  private static final int SNAPSHOT_STORE_COUNT = 7;
 
   /**
    * Maximum consecutive empty polls tolerated during snapshot reassembly in {@link #onStart} before
@@ -122,6 +128,10 @@ public final class TradingClusteredService implements ClusteredService {
   private final CurrencyStore currencyStore;
   private final RiskLimitStore riskLimitStore;
   private final ReferenceDataRegistry referenceDataRegistry;
+  private final RfqStateMachine rfqStateMachine;
+  private final RfqMetrics rfqMetrics;
+  private final QuoteRequestHandler quoteRequestHandler;
+  private final PriceResponseHandler priceResponseHandler;
   private final Int2ObjectHashMap<CommandHandler> commandHandlers;
 
   // ===== Pre-allocated SBE flyweights (zero allocation on the hot path) =====
@@ -154,6 +164,8 @@ public final class TradingClusteredService implements ClusteredService {
   private final MutableDirectBuffer currencySnapBuf = new ExpandableArrayBuffer(8 * 1024);
   private final MutableDirectBuffer riskLimitSnapBuf = new ExpandableArrayBuffer(64 * 1024);
   private final MutableDirectBuffer orderBookSnapBuf = new ExpandableArrayBuffer(8 * 1024 * 1024);
+  /** Snapshot 203 (RfqStateSnapshot) staging buffer. Sized for capacity 8192 × ~320 bytes/slot. */
+  private final MutableDirectBuffer rfqStateSnapBuf = new ExpandableArrayBuffer(4 * 1024 * 1024);
 
   // Lengths populated by encodeSnapshotFragments().
   private int snapshotHeaderLen;
@@ -163,6 +175,7 @@ public final class TradingClusteredService implements ClusteredService {
   private int currencySnapLen;
   private int riskLimitSnapLen;
   private int orderBookSnapLen;
+  private int rfqStateSnapLen;
 
   // Used by onStart() for snapshot image reassembly and by onTakeSnapshot() for atomic assembly
   // before publication. Dual use is safe: Aeron Cluster guarantees onStart() completes before
@@ -186,8 +199,10 @@ public final class TradingClusteredService implements ClusteredService {
   private boolean accountFragmentSeen;
   private boolean currencyFragmentSeen;
   private boolean riskLimitFragmentSeen;
+  private boolean rfqStateFragmentSeen;
   private boolean orderIdGenRestored;
   private boolean execIdGenRestored;
+  private boolean quoteIdGenRestored;
 
   private Cluster cluster;
 
@@ -211,7 +226,9 @@ public final class TradingClusteredService implements ClusteredService {
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore,
-      final ReferenceDataRegistry referenceDataRegistry) {
+      final ReferenceDataRegistry referenceDataRegistry,
+      final RfqStateMachine rfqStateMachine,
+      final RfqMetrics rfqMetrics) {
     this.tradingState = notNull(tradingState, "tradingState");
     this.eventSink = notNull(eventSink, "eventSink");
     this.eventJournal = notNull(eventJournal, "eventJournal");
@@ -219,6 +236,8 @@ public final class TradingClusteredService implements ClusteredService {
     this.currencyStore = notNull(currencyStore, "currencyStore");
     this.riskLimitStore = notNull(riskLimitStore, "riskLimitStore");
     this.referenceDataRegistry = notNull(referenceDataRegistry, "referenceDataRegistry");
+    this.rfqStateMachine = notNull(rfqStateMachine, "rfqStateMachine");
+    this.rfqMetrics = notNull(rfqMetrics, "rfqMetrics");
     // Consistency check: the registry must be backed by the same concrete store instances we
     // hold a direct reference to. Otherwise NewOrderSingle validation would read from one
     // object graph while ref-data commands mutate another, or a snapshot restore could put the
@@ -239,6 +258,12 @@ public final class TradingClusteredService implements ClusteredService {
     final var nosHandler =
         new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
     commandHandlers.put(nosHandler.commandTemplateId(), nosHandler);
+    this.quoteRequestHandler =
+        new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);
+    commandHandlers.put(quoteRequestHandler.commandTemplateId(), quoteRequestHandler);
+    this.priceResponseHandler =
+        new PriceResponseHandler(rfqStateMachine, tradingState.quoteIdGen(), rfqMetrics);
+    commandHandlers.put(priceResponseHandler.commandTemplateId(), priceResponseHandler);
   }
 
   private static void requireSameStore(
@@ -271,6 +296,9 @@ public final class TradingClusteredService implements ClusteredService {
   public void onStart(final Cluster cluster, final Image snapshotImage) {
     this.cluster = cluster;
     eventSink.setCluster(cluster);
+    rfqStateMachine.setCluster(cluster);
+    quoteRequestHandler.setCluster(cluster);
+    priceResponseHandler.setCluster(cluster);
     if (snapshotImage == null) {
       return;
     }
@@ -306,6 +334,12 @@ public final class TradingClusteredService implements ClusteredService {
     }
     if (snapshotReassemblyOffset > 0) {
       loadSnapshot(snapshotReassemblyBuf, 0, snapshotReassemblyOffset);
+      // Recovery sweep §9.4: re-arm timers / emit terminal events for in-flight RFQ slots.
+      final long currentTs = cluster.time();
+      final var errorHandler = cluster.context() != null ? cluster.context().errorHandler() : null;
+      if (errorHandler != null) {
+        rfqStateMachine.onSnapshotRestored(currentTs, eventSink, errorHandler);
+      }
     }
   }
 
@@ -317,7 +351,8 @@ public final class TradingClusteredService implements ClusteredService {
   @Override
   public void onSessionClose(
       final ClientSession session, final long timestamp, final CloseReason closeReason) {
-    // Phase 1: no session state to tear down.
+    // Plan §7.6a — fast-fail in-flight RFQ slots from this session and release rate-limit bucket.
+    rfqStateMachine.onSessionClose(session.id(), timestamp);
   }
 
   @Override
@@ -366,7 +401,7 @@ public final class TradingClusteredService implements ClusteredService {
 
   @Override
   public void onTimerEvent(final long correlationId, final long timestamp) {
-    // Phase 1: no scheduled timers. Future: RFQ expiry, daily rollover, etc.
+    rfqStateMachine.onTimerExpiry(correlationId, timestamp, eventSink);
   }
 
   @Override
@@ -402,8 +437,9 @@ public final class TradingClusteredService implements ClusteredService {
   int assembleSnapshot(final int maxMessageLength) {
     encodeSnapshotFragments(cluster == null ? 0L : cluster.time());
 
-    // Pre-compute total assembled length across all seven fragments. Use long arithmetic so a
-    // pathological state-growth bug cannot wrap the sum negative and silently bypass the hard cap.
+    // Pre-compute total assembled length across all eight fragments (header + 7 body). Use long
+    // arithmetic so a pathological state-growth bug cannot wrap the sum negative and silently
+    // bypass the hard cap.
     final long totalLenLong =
         (long) snapshotHeaderLen
             + eventSeqSnapLen
@@ -411,7 +447,8 @@ public final class TradingClusteredService implements ClusteredService {
             + accountSnapLen
             + currencySnapLen
             + riskLimitSnapLen
-            + orderBookSnapLen;
+            + orderBookSnapLen
+            + rfqStateSnapLen;
 
     // Hard cap: fail fast before attempting allocation to protect against OOM from unbounded
     // state growth (e.g., order pool leak that never releases slots). Scales with maxMessageLength
@@ -458,6 +495,8 @@ public final class TradingClusteredService implements ClusteredService {
     pos += riskLimitSnapLen;
     snapshotReassemblyBuf.putBytes(pos, orderBookSnapBuf, 0, orderBookSnapLen);
     pos += orderBookSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, rfqStateSnapBuf, 0, rfqStateSnapLen);
+    pos += rfqStateSnapLen;
 
     // Post-assembly integrity: verify cursor matches pre-computed total.
     if (pos != totalLen) {
@@ -584,15 +623,18 @@ public final class TradingClusteredService implements ClusteredService {
     eventSeqSnapEncoder.nextSequence(eventSink.sequencer().currentSequence() + 1L);
     eventSeqSnapLen = MessageHeaderEncoder.ENCODED_LENGTH + eventSeqSnapEncoder.encodedLength();
 
-    // 2. IdGeneratorSnapshot — two entries (ORD, EXE).
+    // 2. IdGeneratorSnapshot — three entries (ORD, EXE, QTE).
     idGenSnapEncoder.wrapAndApplyHeader(idGenSnapBuf, 0, headerEncoder);
-    final var idGenGroup = idGenSnapEncoder.noGeneratorsCount(2);
+    final var idGenGroup = idGenSnapEncoder.noGeneratorsCount(3);
     idGenGroup.next();
     idGenGroup.prefix(tradingState.orderIdGen().prefix());
     idGenGroup.counter(tradingState.orderIdGen().currentCounter());
     idGenGroup.next();
     idGenGroup.prefix(tradingState.execIdGen().prefix());
     idGenGroup.counter(tradingState.execIdGen().currentCounter());
+    idGenGroup.next();
+    idGenGroup.prefix(tradingState.quoteIdGen().prefix());
+    idGenGroup.counter(tradingState.quoteIdGen().currentCounter());
     idGenSnapLen = MessageHeaderEncoder.ENCODED_LENGTH + idGenSnapEncoder.encodedLength();
 
     // 3-5. Ref-data stores — each returns the total bytes including header.
@@ -603,7 +645,10 @@ public final class TradingClusteredService implements ClusteredService {
     // 6. OrderBookSnapshot.
     orderBookSnapLen = tradingState.snapshotOrderBookTo(orderBookSnapBuf, 0);
 
-    // CRC32C over the six body fragments in publish order.
+    // 7. RfqStateSnapshot (template 203) — APP-232.
+    rfqStateSnapLen = rfqStateMachine.encodeInto(rfqStateSnapBuf, 0, headerEncoder);
+
+    // CRC32C over the seven body fragments in publish order.
     crc.reset();
     crc.update(eventSeqSnapBuf.byteArray(), 0, eventSeqSnapLen);
     crc.update(idGenSnapBuf.byteArray(), 0, idGenSnapLen);
@@ -611,6 +656,7 @@ public final class TradingClusteredService implements ClusteredService {
     crc.update(currencySnapBuf.byteArray(), 0, currencySnapLen);
     crc.update(riskLimitSnapBuf.byteArray(), 0, riskLimitSnapLen);
     crc.update(orderBookSnapBuf.byteArray(), 0, orderBookSnapLen);
+    crc.update(rfqStateSnapBuf.byteArray(), 0, rfqStateSnapLen);
     final int checksum = (int) crc.getValue();
 
     final long totalBody =
@@ -619,7 +665,8 @@ public final class TradingClusteredService implements ClusteredService {
             + accountSnapLen
             + currencySnapLen
             + riskLimitSnapLen
-            + orderBookSnapLen;
+            + orderBookSnapLen
+            + rfqStateSnapLen;
 
     // Finally, encode the SnapshotTaken header.
     snapshotTakenEncoder.wrapAndApplyHeader(snapshotHeaderBuf, 0, headerEncoder);
@@ -760,7 +807,8 @@ public final class TradingClusteredService implements ClusteredService {
     // 2. Reset destination ref-data state so smaller snapshots don't leave orphans behind.
     referenceDataRegistry.resetAll();
     tradingState.clearOrderBook();
-    // Track whether each of the six required fragments has been seen so we can reject
+    rfqStateMachine.clear();
+    // Track whether each of the seven required fragments has been seen so we can reject
     // CRC-valid but semantically incomplete snapshots (missing or duplicated fragments).
     eventSeqFragmentSeen = false;
     idGenFragmentSeen = false;
@@ -768,8 +816,10 @@ public final class TradingClusteredService implements ClusteredService {
     accountFragmentSeen = false;
     currencyFragmentSeen = false;
     riskLimitFragmentSeen = false;
+    rfqStateFragmentSeen = false;
     orderIdGenRestored = false;
     execIdGenRestored = false;
+    quoteIdGenRestored = false;
 
     // 3. Walk body fragments in publish order, dispatching each by templateId and computing CRC
     //    as we go.
@@ -815,7 +865,8 @@ public final class TradingClusteredService implements ClusteredService {
         || !orderBookFragmentSeen
         || !accountFragmentSeen
         || !currencyFragmentSeen
-        || !riskLimitFragmentSeen) {
+        || !riskLimitFragmentSeen
+        || !rfqStateFragmentSeen) {
       throw new IllegalStateException(
           "snapshot missing required fragments"
               + " (eventSeq="
@@ -830,14 +881,18 @@ public final class TradingClusteredService implements ClusteredService {
               + riskLimitFragmentSeen
               + ", orderBook="
               + orderBookFragmentSeen
+              + ", rfqState="
+              + rfqStateFragmentSeen
               + ")");
     }
-    if (!orderIdGenRestored || !execIdGenRestored) {
+    if (!orderIdGenRestored || !execIdGenRestored || !quoteIdGenRestored) {
       throw new IllegalStateException(
-          "snapshot IdGenerator fragment missing ORD or EXE counter (orderIdGenRestored="
+          "snapshot IdGenerator fragment missing ORD, EXE or QTE counter (orderIdGenRestored="
               + orderIdGenRestored
               + ", execIdGenRestored="
               + execIdGenRestored
+              + ", quoteIdGenRestored="
+              + quoteIdGenRestored
               + ")");
     }
     final long actualChecksum = Integer.toUnsignedLong((int) crc.getValue());
@@ -888,6 +943,9 @@ public final class TradingClusteredService implements ClusteredService {
         } else if (prefixMatches(group, tradingState.execIdGen().prefix())) {
           tradingState.execIdGen().setCounter(counter);
           execIdGenRestored = true;
+        } else if (prefixMatches(group, tradingState.quoteIdGen().prefix())) {
+          tradingState.quoteIdGen().setCounter(counter);
+          quoteIdGenRestored = true;
         } else {
           // Snapshot carries an IdGenerator prefix we don't recognize — refuse to silently drop
           // it, since lost counter state would break determinism on the next command dispatch.
@@ -903,6 +961,17 @@ public final class TradingClusteredService implements ClusteredService {
       }
       orderBookFragmentSeen = true;
       return tradingState.restoreOrderBookFrom(src, offset);
+    }
+    if (templateId == RfqStateSnapshotDecoder.TEMPLATE_ID) {
+      if (rfqStateFragmentSeen) {
+        throw new IllegalStateException("duplicate RfqStateSnapshot fragment in snapshot");
+      }
+      rfqStateFragmentSeen = true;
+      return rfqStateMachine.restoreFrom(
+          src,
+          offset + MessageHeaderDecoder.ENCODED_LENGTH,
+          headerDecoder.blockLength(),
+          headerDecoder.version());
     }
     // Ref-data snapshots (Account 201, Currency 208, RiskLimit 209) route via the registry.
     if (templateId == AccountSnapshotDecoder.TEMPLATE_ID) {
@@ -929,7 +998,7 @@ public final class TradingClusteredService implements ClusteredService {
   }
 
   private static final String UNREGISTERED_ID_PREFIX_MESSAGE =
-      "IdGeneratorSnapshot contains an unregistered prefix (expected ORD or EXE)";
+      "IdGeneratorSnapshot contains an unregistered prefix (expected ORD, EXE, or QTE)";
 
   /**
    * Compare the full 8-byte prefix carried by an {@code IdGeneratorSnapshot} record against a known
