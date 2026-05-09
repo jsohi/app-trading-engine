@@ -143,6 +143,10 @@ export class Heartbeat {
       this.sched.clearTimeout(this.outboundHandle);
     }
     this.outboundHandle = this.sched.setTimeout(() => {
+      // Per Gemini review (MEDIUM): if `stop()` cleared outboundHandle
+      // while this callback was queued/executing, exit so we don't re-arm
+      // and keep firing heartbeats after shutdown.
+      if (this.outboundHandle === null) return;
       this.fireOutboundNow();
     }, this.state.clientHeartbeatIntervalMs);
   }

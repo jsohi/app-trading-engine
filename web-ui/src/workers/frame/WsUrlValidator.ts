@@ -68,10 +68,11 @@ export function validateWsUrl(raw: string, mode: "prod" | "dev" = "prod"): Valid
     }
   }
 
-  // hostport is the canonicalised host[:port] string used by the loopback patterns
-  // when a port is present. URL.host already contains "host:port" if non-default;
-  // construct the explicit form when port is the protocol default.
-  const hostport = parsed.port === "" ? parsed.host : `${parsed.host}:${parsed.port}`;
+  // Per Gemini review (MEDIUM): URL.host already contains "host:port" when the
+  // port is non-default, so concatenating parsed.port back onto parsed.host
+  // produced strings like "localhost:8443:8443" that broke the loopback regex
+  // tests. URL.host is the correct canonical form on its own.
+  const hostport = parsed.host;
   if (mode === "prod") {
     for (const pat of LOCAL_HOST_PATTERNS) {
       if (pat.test(parsed.host) || pat.test(hostport)) {

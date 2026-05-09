@@ -110,6 +110,10 @@ export class BackpressureController {
       this.sched.clearTimeout(this.timerHandle);
     }
     this.timerHandle = this.sched.setTimeout(() => {
+      // Per Gemini review (MEDIUM): if `stop()` cleared `timerHandle` while
+      // this callback was queued/executing, exit early so we don't re-arm
+      // the timer and resurrect the polling loop.
+      if (this.timerHandle === null) return;
       this.sampleAndDecide();
       this.armTimer();
     }, BACKPRESSURE_POLL_MS);

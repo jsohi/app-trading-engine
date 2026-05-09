@@ -189,7 +189,7 @@ export class MessageRouter {
     this.handlers.onServerHeartbeat(this.serverHbDec.serverNanos());
   }
 
-  private dispatchSnapshot(view: DataView, payload: Uint8Array, frameFlags: number): void {
+  private dispatchSnapshot(view: DataView, _payload: Uint8Array, frameFlags: number): void {
     this.snapshotDec.wrap(view, SBE_HEADER_BYTES);
     const sid = this.snapshotDec.snapshotId();
     const snapshotId: UuidComposite = {
@@ -198,19 +198,17 @@ export class MessageRouter {
     };
     const fragmentIndex = this.snapshotDec.fragmentIndex();
     const totalFragments = this.snapshotDec.totalFragments();
-    // varData payload field is zero-copy via the generated decoder.
-    // We let the SnapshotAssembler copy as needed.
     // FLAG_SNAPSHOT_FINAL = 0x0C; we check bit 3 specifically.
     const isFinal = (frameFlags & 0x08) !== 0;
 
-    // The snapshot fragment's actual entity bytes are in the SBE varData
-    // section; we surface the entire post-header SBE payload to the
-    // assembler which forwards it to whatever entity decoder runs in C8.
-    const entityBytes = new Uint8Array(
-      payload.buffer,
-      payload.byteOffset + SBE_HEADER_BYTES,
-      payload.byteLength - SBE_HEADER_BYTES,
-    );
+    // Per Gemini review (HIGH): the SnapshotAssembler concatenates
+    // fragment payloads verbatim into the assembled entity. The fixed
+    // SBE fields (snapshotId, fragmentIndex, totalFragments) MUST NOT
+    // be included in the concatenated bytes — only the `varData`
+    // section. The generated decoder's `payload()` accessor returns a
+    // zero-copy view of just the varData bytes, which is what the
+    // assembler should accumulate.
+    const entityBytes = this.snapshotDec.payload();
     this.handlers.onSnapshotFragment(
       snapshotId,
       fragmentIndex,
