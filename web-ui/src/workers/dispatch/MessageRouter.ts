@@ -88,9 +88,6 @@ const TEMPLATE_COMMAND_ACK = 70;
 const TEMPLATE_SUBSCRIBE = 62;
 const TEMPLATE_UNSUBSCRIBE = 63;
 
-const EVENT_TEMPLATE_LO = 100;
-const EVENT_TEMPLATE_HI = 116;
-
 export class MessageRouter {
   /** Reused decoders — zero-alloc steady state. */
   private readonly headerDec = new MessageHeaderDecoder();
@@ -161,12 +158,11 @@ export class MessageRouter {
         this.handlers.onUnexpectedServerTemplate(templateId);
         break;
       default:
-        if (templateId >= EVENT_TEMPLATE_LO && templateId <= EVENT_TEMPLATE_HI) {
-          this.handlers.onEvent(templateId, payload);
-        } else {
-          // Snapshot-entity templates (200–209) and any unknown id.
-          this.handlers.onEvent(templateId, payload);
-        }
+        // Event templates (100–116), snapshot-entity templates (200–209),
+        // and unknown templateIds all flow to the same caller-supplied
+        // `onEvent` handler — caller decides per-template routing. Per
+        // Gemini review (MEDIUM): keep a single branch.
+        this.handlers.onEvent(templateId, payload);
         break;
     }
 

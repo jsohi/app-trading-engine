@@ -38,7 +38,7 @@
  * Plan reference: §2.1 / §2.2 / §4.4 / §6 rows 8, 9, 26, 27.
  */
 
-import { crc32cOf } from "@/workers/frame/Crc32c";
+import { crc32c } from "@/workers/frame/Crc32c";
 import {
   BEST_EFFORT_HEADER_SIZE,
   FLAG_RELIABLE,
@@ -188,20 +188,17 @@ export class FrameParser {
         const crcOnWire = this.view.getUint32(this.readPos + 13, true) >>> 0;
         const payloadStart = this.readPos + RELIABLE_HEADER_SIZE;
         const payloadLen = totalLength - RELIABLE_HEADER_SIZE;
-        // Compute CRC over the contiguous ring slice [readPos .. payloadStart) || payload
-        // by passing the same Uint8Array twice with the appropriate offsets.
-        const headerSlice = new Uint8Array(
-          this.ring.buffer,
-          this.ring.byteOffset + this.readPos,
-          BEST_EFFORT_HEADER_SIZE,
-        );
-        const payloadSlice = new Uint8Array(
-          this.ring.buffer,
-          this.ring.byteOffset + payloadStart,
-          payloadLen,
+        // Per Gemini review (MEDIUM): pass the ring + offsets directly to
+        // `crc32c` instead of allocating two `Uint8Array` views per reliable
+        // frame. Hot-path allocation pressure mattered at 5 k frames/s.
+        const headerCrc = crc32c(
+          this.ring,
+          this.readPos,
+          this.readPos + BEST_EFFORT_HEADER_SIZE,
+          0,
         );
         const computed =
-          crc32cOf(headerSlice, BEST_EFFORT_HEADER_SIZE, payloadSlice, payloadLen) >>> 0;
+          crc32c(this.ring, payloadStart, payloadStart + payloadLen, headerCrc) >>> 0;
         if (computed !== crcOnWire) {
           this.fail(
             "CRC_MISMATCH",

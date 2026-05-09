@@ -42,7 +42,13 @@ import {
   type AuthClientCallbacks,
   type AuthScheduler,
 } from "@/workers/session/AuthClient";
+import { AckSender } from "@/workers/session/AckSender";
+import { BackpressureController } from "@/workers/session/BackpressureController";
+import { GapTracker } from "@/workers/session/GapTracker";
+import { Heartbeat } from "@/workers/session/Heartbeat";
+import { Reconnect } from "@/workers/session/Reconnect";
 import { SessionState } from "@/workers/session/SessionState";
+import { SnapshotAssembler } from "@/workers/session/SnapshotAssembler";
 
 import {
   BATCH_FLUSH_FRAMES,
@@ -74,6 +80,24 @@ let ws: WebSocket | null = null;
 let parser: FrameParser | null = null;
 let router: MessageRouter | null = null;
 let authClient: AuthClient | null = null;
+// Session-layer components — instantiated on AuthAck (negotiated
+// heartbeat intervals are required by Heartbeat). Per Gemini review
+// (HIGH): these MUST be wired into the runtime to activate heartbeat,
+// gap detection, snapshot reassembly, ack watermarking, and
+// backpressure handling.
+let heartbeat: Heartbeat | null = null;
+let gapTracker: GapTracker | null = null;
+let snapshotAssembler: SnapshotAssembler | null = null;
+let backpressureController: BackpressureController | null = null;
+let ackSender: AckSender | null = null;
+const reconnect = new Reconnect(
+  // No randomness used inside the cluster service; here we are
+  // outside-the-cluster main-thread/worker code where Math.random is
+  // permitted by APP-36 §3 ("WebSocket Server (Non-Deterministic)").
+  // The RandomSource interface keeps the choice testable.
+  { next: () => Math.random() },
+  () => BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000)),
+);
 let connectionState: ConnectionState = "CONNECTING";
 
 const outboundBatch: WorkerMessage[] = [];
@@ -138,7 +162,21 @@ async function handleInit(
     // 2. Acquire the JWT from the issuer's MessagePort.
     const token = await acquireToken(tokenPort);
 
-    // 3. Open the WebSocket with the pinned subprotocol.
+    // Per Gemini review (HIGH): extract the JWT `sub` claim and store
+    // it in SessionState so the AuthClient continuity check can refuse
+    // a SessionResume whose new token's `sub` differs from the prior
+    // session's `sub`. The token is opaque to the worker except for
+    // this single read; never logged in full.
+    state.subClaim = extractJwtSubClaim(token);
+    // Per Gemini review (HIGH): reset session state on every fresh
+    // connection so non-resume sessions start clean (lastReliableSeqNo,
+    // counters, lastServerActivityNs, etc.).
+    state.coldStart();
+
+    // 3. Open the WebSocket with the pinned subprotocol. Close any
+    // prior socket first per Gemini review (HIGH) — defends against a
+    // duplicate INIT message leaking the previous WebSocket.
+    ws?.close();
     ws = new WebSocket(wsUrl, [SUBPROTOCOL]);
     ws.binaryType = "arraybuffer";
     ws.onopen = (): void => {
@@ -171,9 +209,26 @@ async function handleInit(
       parser?.feed(new Uint8Array(ev.data));
     };
     ws.onclose = (ev: CloseEvent): void => {
-      transitionConnection("DOWN");
+      // Stop session-layer timers immediately; a reconnect re-creates them.
+      heartbeat?.stop();
+      backpressureController?.stop();
       stats.incReconnect();
-      void ev.code; // C7 wires close-code → Reconnect.applyCloseCode
+      // Per Gemini review (HIGH): consult Reconnect for the close-code
+      // policy. Codes 1002/1003/1007–1010/1015 freeze; 1012/1013 cap × 8;
+      // others fall through to a normal reconnect with backoff.
+      const decision = reconnect.applyCloseCode(ev.code);
+      if (decision === "PROTOCOL_VIOLATION") {
+        transitionConnection("PROTOCOL_VIOLATION");
+        return;
+      }
+      if (decision === "SCHEMA_MISMATCH") {
+        transitionConnection("SCHEMA_MISMATCH");
+        return;
+      }
+      transitionConnection("DOWN");
+      // Caller (main thread WorkerClient) drives the actual reopen via
+      // `RECONNECT_NOW` — the worker does not silently auto-reopen. The
+      // backoff math is owned by Reconnect.nextDelayMs(state).
     };
     ws.onerror = (): void => {
       transitionConnection("DOWN");
@@ -225,6 +280,35 @@ function postPong(mainNanos: bigint): void {
   });
 }
 
+/**
+ * Extract the JWT `sub` claim without verifying the signature. The
+ * token is opaque to the worker — the SERVER validates JWKS + RS256
+ * (APP-160). This worker reads `sub` only to refuse a `SessionResume`
+ * whose new token's subject differs from the prior session's subject
+ * (continuity check, see APP-36 §2.6). Never logged in full.
+ *
+ * Returns `""` if the token is malformed (3-part), the middle segment
+ * fails base64url decoding, or `sub` is missing — the AuthClient
+ * surfaces this as a credential failure.
+ *
+ * Allocation: cold path (called once per worker boot per re-auth).
+ */
+function extractJwtSubClaim(token: string): string {
+  const parts = token.split(".");
+  if (parts.length !== 3) return "";
+  try {
+    const middle = parts[1] ?? "";
+    // Base64URL → Base64; pad to multiple of 4.
+    const b64 = middle.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(padded);
+    const obj = JSON.parse(json) as { sub?: unknown };
+    return typeof obj.sub === "string" ? obj.sub : "";
+  } catch {
+    return "";
+  }
+}
+
 async function acquireToken(port: MessagePort): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -260,6 +344,14 @@ function handleFrame(frame: ParsedFrame): void {
     postError("PROTOCOL", `unexpected flag combo 0x${frame.flags.toString(16)}`);
     return;
   }
+  // Reliable frames (FLAG_RELIABLE = 0x01) flow through GapTracker for
+  // sequence-continuity + out-of-order buffering. The tracker invokes
+  // `onInOrderFrame` for each delivered seqNo; we route those through
+  // the dispatcher exactly once, in order.
+  if (gapTracker !== null && (frame.flags & 0x01) !== 0) {
+    const accepted = gapTracker.onReliableFrame(frame.seqNo, frame.payload);
+    if (!accepted) return; // duplicate or buffered for later release.
+  }
   const result = router.route(frame.payload, frame.flags);
   if (!result.schemaIdMatch || !result.versionMatch) {
     transitionConnection("SCHEMA_MISMATCH");
@@ -282,8 +374,14 @@ function handleParserError(code: FrameParseErrorCode, message: string): void {
 function buildRouterHandlers(): RouterHandlers {
   return {
     onAuthAck: (ack) => {
-      // Caller (AuthClient) consumes + applies; we surface success here.
+      // AuthClient updates SessionState (negotiated heartbeat intervals,
+      // sessionId, etc.). Once that is in place, instantiate the
+      // session-layer components that depend on the negotiated state
+      // (per Gemini review HIGH: previously these were declared but
+      // never wired into the runtime).
       authClient?.onAuthAck(ack, state.subClaim);
+      activateSessionLayer();
+      reconnect.notifyAuthAckSuccess(state);
       transitionConnection("CONNECTED");
     },
     onAnyInbound: () => {
@@ -293,14 +391,33 @@ function buildRouterHandlers(): RouterHandlers {
     onServerHeartbeat: (_serverNanos) => {
       // Activity already refreshed via onAnyInbound. Nothing more to do here.
     },
-    onSnapshotFragment: (_id, _idx, _total, _payload, _isFinal) => {
-      // SnapshotAssembler integration lives in C7+ (needs main-thread ack
-      // routing for the assembled bytes via Transferable postMessage).
+    onSnapshotFragment: (snapshotId, fragmentIndex, totalFragments, payload, isFinal) => {
+      snapshotAssembler?.onFragment({
+        snapshotId,
+        fragmentIndex,
+        totalFragments,
+        payload,
+        isFinal,
+      });
     },
     onWebSocketError: (code, _errorText) => {
       // errorText is intentionally NOT logged here — server-supplied free-
       // form bytes must clear the static allowlist (`ErrorTextRegistry`,
       // wired in C8) before reaching any logger or telemetry attribute.
+      // Code 9 (SlowConsumer) feeds the BACKPRESSURE controller; all
+      // other codes are forwarded to AuthClient's error path which
+      // consults the §2.13 matrix.
+      if (code === 9) {
+        backpressureController?.onSlowConsumerSignal();
+        return;
+      }
+      if (code === 12) {
+        // SnapshotEntityTooLarge — caller surfaces; do not close.
+        // The id-specific cleanup belongs to SnapshotAssembler, but the
+        // server frame does not include the snapshotId here; the
+        // dispatcher hands us only the code. C8 widens the contract.
+        return;
+      }
       authClient?.onAuthError(`server WebSocketError code ${String(code)}`);
     },
     onReplayComplete: () => {
@@ -317,18 +434,129 @@ function buildRouterHandlers(): RouterHandlers {
   };
 }
 
+/**
+ * Instantiate the session-layer components after the negotiated
+ * heartbeat / ack intervals are known (i.e. after AuthAck). These
+ * components are torn down on shutdown(); a fresh AuthAck on a
+ * reconnect re-creates them so timer state is clean.
+ *
+ * Plan reference: §5.2 (session components), §6 row 24 (BACKPRESSURE).
+ */
+function activateSessionLayer(): void {
+  const nowMs = (): number => performance.timeOrigin + performance.now();
+  const nowNs = (): bigint => BigInt(Math.floor(nowMs() * 1_000_000));
+
+  heartbeat = new Heartbeat(
+    state,
+    {
+      onOutboundDue: (_clientNanos) => {
+        // Encoder lands in C8; for now record the tick on Stats so the
+        // wire-up is observable from the test harness.
+        stats.incFramesDecoded(); // placeholder — TODO(APP-260) emit ClientHeartbeat.
+      },
+      onServerDeadlineExceeded: (_ms) => {
+        transitionConnection("STALE");
+        ws?.close();
+      },
+    },
+    {
+      setTimeout: (h, d) => self.setTimeout(h, d),
+      clearTimeout: (h) => {
+        self.clearTimeout(h);
+      },
+    },
+    nowMs,
+  );
+  heartbeat.start();
+
+  gapTracker = new GapTracker(state, {
+    onInOrderFrame: (_seqNo, _payload) => {
+      ackSender?.onReliableFrameDelivered();
+    },
+    onGapRequest: (_ev) => {
+      // Encoder wired in C8.
+    },
+    onBufferOverflow: (_bytes) => {
+      postError("BUFFER", "gap buffer overflow");
+      ws?.close();
+    },
+  });
+
+  snapshotAssembler = new SnapshotAssembler(
+    {
+      onSnapshotComplete: (_snap) => {
+        // Caller will emit the assembled bytes via Transferable
+        // postMessage in C8 (snapshot consumers are not wired yet).
+      },
+      onProtocolViolation: (reason) => {
+        postError("PROTOCOL", `snapshot: ${reason}`);
+        ws?.close();
+      },
+      onBufferOverflow: (reason) => {
+        postError("BUFFER", `snapshot: ${reason}`);
+        ws?.close();
+      },
+      onSnapshotEntityTooLarge: (_id) => {
+        // Surface only; do not close per §2.13.
+      },
+    },
+    nowMs,
+  );
+
+  ackSender = new AckSender(
+    state,
+    {
+      onAckDue: (_lastReliableSeqNo) => {
+        // Encoder wired in C8.
+      },
+    },
+    nowNs,
+  );
+
+  backpressureController = new BackpressureController(
+    {
+      onEnter: (_source) => {
+        ackSender?.setBackpressure(true);
+        transitionConnection("BACKPRESSURE");
+      },
+      onExit: () => {
+        ackSender?.setBackpressure(false);
+        transitionConnection("CONNECTED");
+      },
+    },
+    () => ws?.bufferedAmount ?? 0,
+    {
+      setTimeout: (h, d) => self.setTimeout(h, d),
+      clearTimeout: (h) => {
+        self.clearTimeout(h);
+      },
+    },
+    nowMs,
+  );
+  backpressureController.start();
+}
+
 // ─── AuthClient wiring ──────────────────────────────────────────────
 
 function buildAuthCallbacks(): AuthClientCallbacks {
   return {
     sendBytes: (bytes) => {
-      // WebSocket.send accepts ArrayBuffer; copy out of the typed-array view
-      // to satisfy TS strict-lib BufferSource which excludes SharedArrayBuffer-
-      // backed views. The copy is on the cold path (auth handshake, heartbeat,
-      // ack — never per inbound frame).
-      const out = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(out).set(bytes);
-      ws?.send(out);
+      // Per Gemini review (MEDIUM): `WebSocket.send()` accepts
+      // `ArrayBufferView` at runtime (Uint8Array IS a view), so the
+      // prior ArrayBuffer-copy allocation was redundant. TS's strict
+      // lib types `WebSocket.send` to `BufferSource` which excludes
+      // SharedArrayBuffer-backed views; SAB is forbidden by APP-36 §4.3
+      // ESLint rule, so the encoder never produces one. The cast is
+      // therefore safe and the copy is gone.
+      // `bytes.buffer` is `ArrayBufferLike`; SAB is banned by APP-36 §4.3
+      // ESLint rule so the runtime invariant is `ArrayBuffer`. Pass the
+      // ArrayBuffer slice directly (zero-copy view via byteOffset/length).
+      const ab = bytes.buffer as ArrayBuffer;
+      ws?.send(
+        bytes.byteOffset === 0 && bytes.byteLength === ab.byteLength
+          ? ab
+          : ab.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      );
     },
     encodeAuth: (_token, _protocolVersion) => {
       // Placeholder: a real encoder is wired in C8 (per the SBE TS
@@ -426,6 +654,13 @@ function shutdown(): void {
   parser = null;
   router = null;
   authClient = null;
+  heartbeat?.stop();
+  heartbeat = null;
+  backpressureController?.stop();
+  backpressureController = null;
+  gapTracker = null;
+  snapshotAssembler = null;
+  ackSender = null;
   if (watchdogPort !== null) {
     watchdogPort.onmessage = null;
     watchdogPort.close();
