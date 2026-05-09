@@ -238,6 +238,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
             ccy1,
             ccy2);
     if (account == null) {
+      // Defensive: if the peek phase (§9.2a step 10) cached a slot but a later check rejected
+      // the order, drain the field here so the stale reference cannot leak into the next call.
+      // The slot itself remains in QUOTED state (peek is read-only), so the client may retry.
+      pendingQuoteAcceptSlot = null;
       return;
     }
 
@@ -429,12 +433,17 @@ public final class NewOrderSingleHandler implements CommandHandler {
         final long quotedPx = side == SideEnum.Buy ? slot.offerPx : slot.bidPx;
         final long quotedSize = side == SideEnum.Buy ? slot.offerSize : slot.bidSize;
         if (quotedPx > 0L) {
-          // Overflow guard: Math.abs(price - quotedPx) * 10_000L can overflow long if the
-          // diff is large. If we'd overflow, the actual ratio is astronomically larger than
-          // any tolerance, so emit a hard reject without doing the multiply.
+          // Overflow guards:
+          //   1) `price - quotedPx` can equal Long.MIN_VALUE on hostile input; Math.abs of
+          //      that is still Long.MIN_VALUE (negative). Treat negative pxDelta as
+          //      saturation → hard reject.
+          //   2) `pxDelta * 10_000L` can overflow long when pxDelta is large; guard by
+          //      saturating to Long.MAX_VALUE.
           final long pxDelta = Math.abs(price - quotedPx);
           final long pxDeltaBps =
-              pxDelta > Long.MAX_VALUE / 10_000L ? Long.MAX_VALUE : pxDelta * 10_000L / quotedPx;
+              (pxDelta < 0L || pxDelta > Long.MAX_VALUE / 10_000L)
+                  ? Long.MAX_VALUE
+                  : pxDelta * 10_000L / quotedPx;
           if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
             emitOrderRejected(
                 eventSink,
@@ -451,10 +460,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
         }
         // Qty tolerance (bps).
         if (quotedSize > 0L) {
-          // Overflow guard: same rationale as price-bps above.
+          // Overflow guards: see price-bps above.
           final long qtyDelta = Math.abs(orderQty - quotedSize);
           final long qtyDeltaBps =
-              qtyDelta > Long.MAX_VALUE / 10_000L
+              (qtyDelta < 0L || qtyDelta > Long.MAX_VALUE / 10_000L)
                   ? Long.MAX_VALUE
                   : qtyDelta * 10_000L / quotedSize;
           if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
@@ -529,6 +538,20 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * @param ccy1 currency byte 1
    * @param ccy2 currency byte 2
    */
+  /**
+   * Returns the {@link RfqStateMachine.commitAccept} slot reference resolved during the peek phase
+   * ({@code validateNewOrder} step 10), or {@code null} if no §9.2a quote acceptance is pending.
+   * Used by {@link #onCommand} to clear the field eagerly when a later validation (#11/#12)
+   * rejects, so the slot reference never escapes the failed call.
+   *
+   * @return the cached pending slot, or null
+   */
+  private RfqSlot drainPendingQuoteAcceptSlot() {
+    final RfqSlot s = pendingQuoteAcceptSlot;
+    pendingQuoteAcceptSlot = null;
+    return s;
+  }
+
   private void admitNewOrder(
       final EventSink eventSink,
       final ClientSession session,

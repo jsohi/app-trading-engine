@@ -321,7 +321,12 @@ public final class RfqSlot {
    */
   public RfqSlot(final int poolIndex) {
     this.poolIndex = poolIndex;
-    this.generation = 0;
+    // Start at generation=1 (not 0) so the very first acquire of poolIndex=0 produces a
+    // non-zero TTL correlation ID. The `!= 0L` guards in
+    // RfqStateMachine.{registerQuoted, release} treat 0 as the "unassigned" sentinel, and the
+    // snapshot-restore path also uses generation=1 — keeping the constructor symmetric
+    // prevents a silent first-RFQ leak (Agent A + B HIGH-severity finding, iter 2).
+    this.generation = 1;
     this.state = RfqSlotState.FREE;
 
     this.requestBody = new byte[REQUEST_BODY_SIZE];

@@ -155,6 +155,13 @@ public final class RfqMetrics {
   /** Number of sessions whose close triggered the §7.6a fast-fail path. */
   public long sessionClosed;
 
+  /**
+   * Number of timer-rearm failures during {@code onSessionClose} fast-fail. Distinct from {@link
+   * #recoveryTimerRearmFailed} which is recorded only during snapshot recovery; operators track
+   * these counters separately because the alerting and remediation paths differ.
+   */
+  public long sessionCloseTimerRearmFailed;
+
   // ---- Handler-misroute (defensive — should never fire in steady state) ----
 
   /** Handler received a command with the wrong templateId. */
