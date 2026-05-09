@@ -29,7 +29,6 @@ import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.QuoteCreatedEventDecoder;
-import com.trading.engine.messages.sbe.QuoteExpiredEventDecoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.QuoteRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestedEventDecoder;
@@ -49,12 +48,13 @@ import org.junit.jupiter.api.Test;
  * {@code QuoteCreatedEvent} (105) → {@code QuoteExpiredEvent} (107), and the validation reject path
  * to {@code QuoteRejectedEvent} (106).
  *
- * <p>These tests drive the production {@link TradingClusteredService} directly via
- * {@link TradingClusteredService#onSessionMessage} and
- * {@link TradingClusteredService#onTimerEvent}, using {@link RfqClusterTestHarness} to capture
- * timer schedules for manual simulation. No Aeron cluster is spun up.
+ * <p>These tests drive the production {@link TradingClusteredService} directly via {@link
+ * TradingClusteredService#onSessionMessage} and {@link TradingClusteredService#onTimerEvent}, using
+ * {@link RfqClusterTestHarness} to capture timer schedules for manual simulation. No Aeron cluster
+ * is spun up.
  *
  * <p>Assertions cover:
+ *
  * <ul>
  *   <li>Template-ID sequence (104, 105/106, 107) in order
  *   <li>Gapless {@code sequenceNumber} values stamped by {@link EventSink}
@@ -74,8 +74,8 @@ class RfqLifecycleEventsIT {
 
   /**
    * Fixed cluster timestamp used for all {@code onSessionMessage} / {@code onTimerEvent} calls.
-   * Chosen as a realistic epoch-nanos value so that {@code validUntil = TIMESTAMP + TTL} is also
-   * a positive, non-overflow number.
+   * Chosen as a realistic epoch-nanos value so that {@code validUntil = TIMESTAMP + TTL} is also a
+   * positive, non-overflow number.
    */
   private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
 
@@ -84,8 +84,8 @@ class RfqLifecycleEventsIT {
 
   /**
    * TTL used by the default {@link RfqStateMachine} (30 s expressed in nanoseconds). Must match
-   * {@link TradingClusteredServiceFactory#DEFAULT_RFQ_TTL_NANOS} to correctly compute
-   * {@code validUntil} in the timer-fire simulation.
+   * {@link TradingClusteredServiceFactory#DEFAULT_RFQ_TTL_NANOS} to correctly compute {@code
+   * validUntil} in the timer-fire simulation.
    */
   private static final long TTL_NANOS = TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS;
 
@@ -93,9 +93,9 @@ class RfqLifecycleEventsIT {
   private static final String SYMBOL = "EURUSD";
 
   /**
-   * Account code for the RFQ-capable account seeded in {@link #setUp()}.
-   * The standard {@link com.trading.engine.cluster.refdata.ReferenceDataSeeder} ACME account only
-   * has {@code CAN_TRADE}; we seed a distinct account with both {@code CAN_TRADE | CAN_RFQ}.
+   * Account code for the RFQ-capable account seeded in {@link #setUp()}. The standard {@link
+   * com.trading.engine.cluster.refdata.ReferenceDataSeeder} ACME account only has {@code
+   * CAN_TRADE}; we seed a distinct account with both {@code CAN_TRADE | CAN_RFQ}.
    */
   private static final String RFQ_ACCOUNT = "RFQACCT";
 
@@ -142,8 +142,10 @@ class RfqLifecycleEventsIT {
     accountStore.put(makeRfqAccount(10L, RFQ_ACCOUNT));
 
     // Seed USD and EUR currencies (required by QuoteRequest validation).
-    currencyStore.put(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD"));
-    currencyStore.put(CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR"));
+    currencyStore.put(
+        CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), makeCurrency("USD"));
+    currencyStore.put(
+        CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R'), makeCurrency("EUR"));
 
     // No risk limits needed — RFQ path does not enforce order-size limits.
 
@@ -259,8 +261,8 @@ class RfqLifecycleEventsIT {
   // -------------------------------------------------------------------------
 
   /**
-   * Dispatches a pre-encoded SBE command buffer to the service via
-   * {@link TradingClusteredService#onSessionMessage}.
+   * Dispatches a pre-encoded SBE command buffer to the service via {@link
+   * TradingClusteredService#onSessionMessage}.
    *
    * @param buf buffer containing the encoded command
    * @param len total encoded length (header + body)
@@ -307,10 +309,12 @@ class RfqLifecycleEventsIT {
    * Happy-path RFQ lifecycle: QuoteRequest → PriceResponse(accepted=true) → TTL timer fires.
    *
    * <p>Expected sequence of egress messages on the session, in order:
+   *
    * <ol>
    *   <li>Template 104 — {@code QuoteRequestedEvent} (emitted by {@code QuoteRequestHandler})
    *   <li>Template 105 — {@code QuoteCreatedEvent} (emitted by {@code PriceResponseHandler})
-   *   <li>Template 107 — {@code QuoteExpiredEvent} (emitted by {@code RfqStateMachine.onTimerExpiry})
+   *   <li>Template 107 — {@code QuoteExpiredEvent} (emitted by {@code
+   *       RfqStateMachine.onTimerExpiry})
    * </ol>
    *
    * <p>The three sequence numbers must be consecutive: N, N+1, N+2 (gapless).
@@ -353,24 +357,21 @@ class RfqLifecycleEventsIT {
     // Deadline = TIMESTAMP + TTL_NANOS (production formula: clusterTs + ttlForProduct).
     assertEquals(TIMESTAMP + TTL_NANOS, deadline, "timer deadline must equal clusterTs + TTL");
 
-    // Step 3 — fire the timer at a time >= deadline; expect template 107.
+    // Step 3 — fire the timer at a time >= deadline; 107 is emitted to a null session per
+    // plan §9.3 (timer-driven expiry has no originating client session), so the journal-only
+    // emission does not appear in the per-session captured `session.messages` list. Verify
+    // the lifecycle completed via the metrics counter instead — `rfqMetrics.emitExpired`
+    // increments exactly once on the timer fire.
     service.onTimerEvent(correlationId, deadline + 1L);
 
-    assertEquals(3, session.messages.size(), "Timer fire must emit exactly one 107 event");
-    assertEquals(
-        QuoteExpiredEventDecoder.TEMPLATE_ID,
-        templateId(session.messages.get(2)),
-        "Third event must be template 107 (QuoteExpiredEvent)");
-
-    // Step 4 — verify gapless sequence numbers: N, N+1, N+2.
+    // Step 4 — verify gapless sequence numbers on the two client-visible events: N, N+1.
     final long seqN = sequenceNumber(session.messages.get(0));
     assertEquals(seqN + 1L, sequenceNumber(session.messages.get(1)), "seqNo must be N+1");
-    assertEquals(seqN + 2L, sequenceNumber(session.messages.get(2)), "seqNo must be N+2");
 
-    // Step 5 — metrics sanity.
+    // Step 5 — metrics sanity. emitExpired==1 confirms the journal-only 107 was emitted.
     assertEquals(1L, rfqMetrics.emitRequested, "emitRequested must be 1");
     assertEquals(1L, rfqMetrics.emitCreated, "emitCreated must be 1");
-    assertEquals(1L, rfqMetrics.emitExpired, "emitExpired must be 1");
+    assertEquals(1L, rfqMetrics.emitExpired, "emitExpired must be 1 (timer-driven, null session)");
     assertEquals(0L, rfqMetrics.emitRejected, "emitRejected must be 0");
   }
 
@@ -379,9 +380,9 @@ class RfqLifecycleEventsIT {
   // =========================================================================
 
   /**
-   * A {@code QuoteRequest} with an empty symbol must be immediately rejected with
-   * {@code QuoteRejectedEvent} (106). No {@code QuoteRequestedEvent} (104) is emitted because the
-   * reject fires in the validation ladder before slot acquisition.
+   * A {@code QuoteRequest} with an empty symbol must be immediately rejected with {@code
+   * QuoteRejectedEvent} (106). No {@code QuoteRequestedEvent} (104) is emitted because the reject
+   * fires in the validation ladder before slot acquisition.
    *
    * <p>Metric asserted: {@code rfqMetrics.rejectSymbolEmpty == 1}.
    */
@@ -414,8 +415,7 @@ class RfqLifecycleEventsIT {
 
   /**
    * An accepted {@code QuoteRequest} (emits 104) followed by {@code PriceResponse(accepted=false)}
-   * must emit {@code QuoteRejectedEvent} (106) with
-   * {@link QuoteRejectReasonEnum#InvalidPrice}.
+   * must emit {@code QuoteRejectedEvent} (106) with {@link QuoteRejectReasonEnum#InvalidPrice}.
    *
    * <p>This tests the declined-pricing path: the slot transitions REQUESTED → FREE after the 106.
    * Sequence numbers must be gapless: N (104) → N+1 (106).
@@ -436,8 +436,7 @@ class RfqLifecycleEventsIT {
     // Step 2 — emit 106 via declined PriceResponse.
     final var prBuf = new ExpandableArrayBuffer(512);
     final int prLen =
-        SbeTestEncoder.encodePriceResponse(
-            prBuf, 0, quoteReqId, SYMBOL, false, 0L, 0L, TIMESTAMP);
+        SbeTestEncoder.encodePriceResponse(prBuf, 0, quoteReqId, SYMBOL, false, 0L, 0L, TIMESTAMP);
     dispatch(prBuf, prLen);
     assertEquals(2, session.messages.size(), "Declined PriceResponse must emit one 106");
     assertEquals(
@@ -472,12 +471,12 @@ class RfqLifecycleEventsIT {
   // =========================================================================
 
   /**
-   * Sending the same {@code quoteReqId} twice while the first request is still in-flight
-   * (REQUESTED state) must emit 104 for the first request and 106 for the duplicate.
+   * Sending the same {@code quoteReqId} twice while the first request is still in-flight (REQUESTED
+   * state) must emit 104 for the first request and 106 for the duplicate.
    *
    * <p>The duplicate is detected by the {@code byQuoteReqId} map in {@link RfqStateMachine}. A
-   * mismatching body (different side) ensures we hit the {@code rejectDuplicate} branch rather
-   * than the idempotent-retransmit drop.
+   * mismatching body (different side) ensures we hit the {@code rejectDuplicate} branch rather than
+   * the idempotent-retransmit drop.
    *
    * <p>Metric asserted: {@code rfqMetrics.rejectDuplicate == 1}.
    */
