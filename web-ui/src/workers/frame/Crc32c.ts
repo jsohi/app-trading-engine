@@ -115,11 +115,11 @@ export function crc32c(bytes: Uint8Array, start = 0, end: number = bytes.length,
 
   // Tail (≤ 7 bytes).
   while (p < end) {
-    crc = (((crc >>> 8) ^ T0[(crc ^ bytes[p]!) & 0xff]!) >>> 0) | 0;
+    crc = ((crc >>> 8) ^ T0[(crc ^ bytes[p]!) & 0xff]!) >>> 0;
     p += 1;
   }
 
-  return (~crc >>> 0) >>> 0;
+  return ~crc >>> 0;
 }
 
 /**

@@ -119,7 +119,14 @@ export class SnapshotAssembler {
         snapshotId: frag.snapshotId,
         idKey: key,
         totalFragments: frag.totalFragments,
-        fragments: new Array<Uint8Array>(frag.totalFragments),
+        // Per Gemini review R8 (HIGH): use a sparse array. `fragments[i]
+        // = ...` allocates slots lazily; unused indices stay holes (no
+        // eager `new Array(N)` allocation from an attacker-controlled
+        // length). Memory growth is upper-bounded by
+        // `bytesAccumulated <= MAX_SNAPSHOT_BYTES_PER_ID` (8 MiB) and
+        // by `totalBytesInflight <= MAX_TOTAL_INFLIGHT_SNAPSHOT_BYTES`
+        // (64 MiB) regardless of the wire-supplied totalFragments.
+        fragments: [],
         filledFragments: 0,
         bytesAccumulated: 0,
         startedAtMs: this.nowMs(),

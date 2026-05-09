@@ -202,7 +202,16 @@ async function handleInit(
     // a SessionResume whose new token's `sub` differs from the prior
     // session's `sub`. The token is opaque to the worker except for
     // this single read; never logged in full.
-    state.subClaim = extractJwtSubClaim(token);
+    const newSub = extractJwtSubClaim(token);
+    // Per Gemini review R8 (SECURITY-MEDIUM): sub-claim continuity
+    // check on resume. If the prior session's sub differs from the new
+    // token's sub, force a coldStart so we cannot accidentally resume
+    // session A's reliable cursor on a connection authenticated as
+    // user B (cross-user session-hijack defense, §2.6).
+    if (state.subClaim !== "" && newSub !== state.subClaim) {
+      state.coldStart();
+    }
+    state.subClaim = newSub;
     // Per Gemini review R6 (HIGH): only coldStart when there is no
     // priorSessionId to resume. Resume must preserve `lastReliableSeqNo`
     // so the SessionResume frame can ask the server to replay
@@ -216,8 +225,17 @@ async function handleInit(
 
     // 3. Open the WebSocket with the pinned subprotocol. Close any
     // prior socket first per Gemini review (HIGH) — defends against a
-    // duplicate INIT message leaking the previous WebSocket.
-    ws?.close();
+    // duplicate INIT message leaking the previous WebSocket. Per
+    // Gemini review R8 (MEDIUM): detach the old socket's handlers
+    // BEFORE close() so the implicit `close` event does not re-enter
+    // the reconnect path (which would race with this fresh INIT).
+    if (ws !== null) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.close();
+    }
     ws = new WebSocket(wsUrl, [SUBPROTOCOL]);
     ws.binaryType = "arraybuffer";
     ws.onopen = (): void => {
@@ -370,8 +388,16 @@ function extractJwtSubClaim(token: string): string {
     // Base64URL → Base64; pad to multiple of 4.
     const b64 = middle.replace(/-/g, "+").replace(/_/g, "/");
     const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const json = atob(padded);
+    // Per Gemini review R8 (SECURITY-MEDIUM): `atob` returns a binary
+    // string, not UTF-8. JWT `sub` claims may legitimately contain
+    // non-ASCII characters (e.g. emoji or non-Latin display names);
+    // decoding via TextDecoder gives the correct Unicode string.
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
     const obj = JSON.parse(json) as { sub?: unknown };
+    // Defense: JSON.parse can produce objects with `__proto__` keys,
+    // but reading a single own-property string off the result is safe
+    // (we don't spread / Object.assign / Reflect.set anywhere here).
     return typeof obj.sub === "string" ? obj.sub : "";
   } catch {
     return "";
