@@ -202,12 +202,14 @@ public final class OrchestratorRfqForwarder {
       hash ^= (src[offset + i] & 0xFFL);
       hash *= prime;
     }
-    // Sentinel-collision avoidance: a natural FNV-1a hash equal to MISSING_SESSION (Long.MIN_VALUE)
-    // would be indistinguishable from "no entry". Instead of remapping to a fixed value (which
-    // creates an artificial collision with whichever input naturally hashes to that fixed value),
-    // mix one extra round of the prime so the remapped hash is still pseudo-random over the
-    // 64-bit space. The remapping is deterministic and reversible only with full knowledge of
-    // the input, which is fine for a non-cryptographic dedup hash.
-    return hash == MISSING_SESSION ? hash * 0x100000001B3L : hash;
+    // Sentinel-collision avoidance: a natural FNV-1a hash equal to MISSING_SESSION
+    // (Long.MIN_VALUE) would be indistinguishable from "no entry". Cannot use multiplication
+    // — Long.MIN_VALUE × any odd number stays Long.MIN_VALUE in two's-complement 64-bit
+    // arithmetic, so the prime trick doesn't escape the sentinel. Use `hash + 1` instead:
+    // produces Long.MIN_VALUE+1, a distinct value, and creates an artificial collision only
+    // with whichever input naturally hashes to Long.MIN_VALUE+1 — same probability (~2^-64
+    // per pair) as any other natural hash collision, which is the irreducible floor for a
+    // 64-bit hash.
+    return hash == MISSING_SESSION ? hash + 1L : hash;
   }
 }
