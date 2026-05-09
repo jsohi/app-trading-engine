@@ -37,10 +37,10 @@ final class ErrorCodesFixtureTest {
     // Resolve the fixture path relative to the repo root. Gradle test runs
     // with `user.dir` = the module root (websocket-server / messages /…),
     // so we walk up until we find the web-ui/ directory.
-    final Path repoRoot = findRepoRoot();
-    final Path fixturesDir = repoRoot.resolve("web-ui/test/fixtures");
+    final var repoRoot = findRepoRoot();
+    final var fixturesDir = repoRoot.resolve("web-ui/test/fixtures");
     Files.createDirectories(fixturesDir);
-    final Path target = fixturesDir.resolve("error-codes.json");
+    final var target = fixturesDir.resolve("error-codes.json");
 
     // Build a small JSON document by hand (no Jackson dep in :messages).
     // Schema:

@@ -28,7 +28,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -51,10 +50,10 @@ final class SnapshotConcurrencyInvariantTest {
   @Test
   @DisplayName("invariant_serverCapMatchesTsCounterpart_inWorkerTuningTs")
   void invariant_serverCapMatchesTsCounterpart_inWorkerTuningTs() throws IOException {
-    final Path tsFile = findRepoRoot().resolve("web-ui/src/workers/WorkerTuning.ts");
+    final var tsFile = findRepoRoot().resolve("web-ui/src/workers/WorkerTuning.ts");
     assertTrue(Files.isRegularFile(tsFile), "expected to find " + tsFile);
-    final String src = Files.readString(tsFile);
-    final Matcher m = TS_CONSTANT.matcher(src);
+    final var src = Files.readString(tsFile);
+    final var m = TS_CONSTANT.matcher(src);
     assertTrue(m.find(), "could not locate MAX_INFLIGHT_SNAPSHOT_IDS export in " + tsFile);
     final int tsValue = Integer.parseInt(m.group(1));
     assertEquals(

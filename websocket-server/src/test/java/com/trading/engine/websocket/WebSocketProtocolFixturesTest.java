@@ -56,9 +56,9 @@ final class WebSocketProtocolFixturesTest {
   @Test
   @DisplayName("emit_protocolConversation_writesDeterministicFixtureForCrossStack")
   void emit_protocolConversation_writesDeterministicFixtureForCrossStack() throws IOException {
-    final Path fixturesDir = findRepoRoot().resolve("web-ui/test/fixtures");
+    final var fixturesDir = findRepoRoot().resolve("web-ui/test/fixtures");
     Files.createDirectories(fixturesDir);
-    final Path target = fixturesDir.resolve("protocol-conversation.bin");
+    final var target = fixturesDir.resolve("protocol-conversation.bin");
 
     try (final OutputStream out = Files.newOutputStream(target)) {
       // Frame 1: best-effort WebSocketHeartbeat — server-side cadence pulse.
@@ -114,7 +114,7 @@ final class WebSocketProtocolFixturesTest {
     headerNoCrc.putInt(totalLen);
     headerNoCrc.putLong(seqNo);
     headerNoCrc.put((byte) (flags | FLAG_RELIABLE));
-    final byte[] headerBytes = headerNoCrc.array();
+    final var headerBytes = headerNoCrc.array();
 
     final var crc = new CRC32C();
     crc.reset();
@@ -140,7 +140,7 @@ final class WebSocketProtocolFixturesTest {
     enc.wrapAndApplyHeader(buf, 0, new MessageHeaderEncoder());
     enc.serverNanos(serverNanos);
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    final byte[] copy = new byte[len];
+    final var copy = new byte[len];
     buf.getBytes(0, copy, 0, len);
     return copy;
   }
@@ -161,7 +161,7 @@ final class WebSocketProtocolFixturesTest {
     enc.serverHeartbeatIntervalMs(serverIntervalMs);
     enc.clientHeartbeatIntervalMs(clientIntervalMs);
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    final byte[] copy = new byte[len];
+    final var copy = new byte[len];
     buf.getBytes(0, copy, 0, len);
     return copy;
   }
@@ -178,7 +178,7 @@ final class WebSocketProtocolFixturesTest {
     final var enc = new ReplayCompleteEncoder();
     enc.wrapAndApplyHeader(buf, 0, new MessageHeaderEncoder());
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    final byte[] copy = new byte[len];
+    final var copy = new byte[len];
     buf.getBytes(0, copy, 0, len);
     return copy;
   }
@@ -190,10 +190,10 @@ final class WebSocketProtocolFixturesTest {
     enc.errorCode(code);
     // varData errorText — empty for this fixture; the C9 cross-stack test
     // extends with realistic payloads keyed off ErrorTextRegistry entries.
-    final byte[] empty = new byte[0];
+    final var empty = new byte[0];
     enc.putErrorText(empty, 0, 0);
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    final byte[] copy = new byte[len];
+    final var copy = new byte[len];
     buf.getBytes(0, copy, 0, len);
     return copy;
   }
