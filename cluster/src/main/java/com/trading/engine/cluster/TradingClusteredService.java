@@ -37,8 +37,10 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import java.util.Objects;
 import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
+import org.agrona.ErrorHandler;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
@@ -347,7 +349,7 @@ public final class TradingClusteredService implements ClusteredService {
       final long currentTs = cluster.time();
       final var ctx = cluster.context();
       final var ctxErrorHandler = ctx != null ? ctx.errorHandler() : null;
-      final org.agrona.ErrorHandler errorHandler =
+      final ErrorHandler errorHandler =
           ctxErrorHandler != null ? ctxErrorHandler : (final Throwable t) -> {};
       rfqStateMachine.onSnapshotRestored(currentTs, eventSink, errorHandler);
     }
@@ -364,7 +366,7 @@ public final class TradingClusteredService implements ClusteredService {
     // Plan §7.6a — fast-fail in-flight RFQ slots from this session and release rate-limit bucket.
     // Aeron Cluster's contract guarantees a non-null session here, but defend explicitly to
     // surface any framework regression as a clear NPE rather than a silent swallow.
-    java.util.Objects.requireNonNull(session, "session");
+    Objects.requireNonNull(session, "session");
     rfqStateMachine.onSessionClose(session.id(), timestamp);
   }
 

@@ -186,8 +186,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
   /**
    * {@inheritDoc}
    *
-   * <p>Decodes the NOS command, runs 11 validation checks, and either emits an {@code
-   * OrderCreatedEvent} (happy path) or an {@code OrderRejectedEvent} (validation failure).
+   * <p>Decodes the NOS command, runs 12 pre-trade checks (plus the §9.2a quote-acceptance peek),
+   * and either emits an {@code OrderCreatedEvent} (happy path) or an {@code OrderRejectedEvent}
+   * (validation failure).
    */
   @Override
   public void onCommand(
@@ -419,8 +420,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
     pendingQuoteAcceptSlot = null;
     if (rfqStateMachine != null && ordType == OrdTypeEnum.PreviouslyQuoted) {
       nosDecoder.getQuoteId(quoteIdScratch, 0);
-      if (quoteIdScratch[0] != 0) {
-        final var slot = rfqStateMachine.peekByQuoteId(quoteIdScratch, 0, quoteIdScratch.length);
+      // Defence-in-depth presence check: scan all 20 bytes via trimTrailingZeros (matches the
+      // accountCodeLen / symbolLen pattern earlier in this method). A first-byte-nonzero check
+      // would let a hostile input with `quoteId="\0..."` bypass §9.2a entirely.
+      final int quoteIdLen = trimTrailingZeros(quoteIdScratch, RfqSlot.QUOTE_ID_LENGTH);
+      if (quoteIdLen > 0) {
+        final var slot = rfqStateMachine.peekByQuoteId(quoteIdScratch, 0, RfqSlot.QUOTE_ID_LENGTH);
         if (slot == null) {
           emitOrderRejected(
               eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "unknown quote");

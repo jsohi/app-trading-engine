@@ -213,6 +213,59 @@ class QuoteRequestHandlerTest {
   }
 
   // -------------------------------------------------------------------------
+  // Stale-buffer guard: malformed emit AFTER a successful 104 must zero
+  // quoteReqId / symbol / accountCode so the reject doesn't ship stale wire bytes
+  // -------------------------------------------------------------------------
+
+  /**
+   * R4 fix: {@code emitMalformed} reuses the egress buffer across emits. Without explicit
+   * zero-fills of the char-array fields, a malformed-path 106 emitted after a successful 104 would
+   * carry the previous emit's quoteReqId / symbol / accountCode at the same body offsets. This test
+   * drives the "happy 104, then malformed" sequence and asserts every char field on the second emit
+   * is fully zero.
+   */
+  @Test
+  void onCommand_malformedAfterValid_doesNotLeakPriorBufferContent() {
+    // First: drive a happy-path QuoteRequest that emits 104 with populated fields.
+    final var firstBuf = new ExpandableArrayBuffer(512);
+    final int firstLen =
+        SbeTestEncoder.encodeQuoteRequest(
+            firstBuf, 0, "QREQ-LEAK", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    dispatch(firstBuf, firstLen);
+    assertEquals(1, session.messages.size());
+
+    // Second: dispatch a malformed message (length below block length).
+    final var secondBuf = new UnsafeBuffer(new byte[HDR_LEN]);
+    final MessageHeaderEncoder hdr2 = new MessageHeaderEncoder();
+    hdr2.wrap(secondBuf, 0)
+        .blockLength(QuoteRequestDecoder.BLOCK_LENGTH)
+        .templateId(QuoteRequestDecoder.TEMPLATE_ID)
+        .schemaId(1)
+        .version(1);
+    dispatchRaw(secondBuf, 1);
+
+    // Decode the second emit and verify every byte of the four char fields is zero.
+    assertEquals(2, session.messages.size());
+    final var dec = decodeQuoteRejected(session.messages.get(1));
+    final byte[] qrIdBytes = new byte[20];
+    final byte[] symBytes = new byte[8];
+    final byte[] acctBytes = new byte[16];
+    dec.getQuoteReqId(qrIdBytes, 0);
+    dec.getSymbol(symBytes, 0);
+    dec.getAccountCode(acctBytes, 0);
+    for (int i = 0; i < qrIdBytes.length; i++) {
+      assertEquals((byte) 0, qrIdBytes[i], "quoteReqId[" + i + "] not zero — stale buffer leak");
+    }
+    for (int i = 0; i < symBytes.length; i++) {
+      assertEquals((byte) 0, symBytes[i], "symbol[" + i + "] not zero — stale buffer leak");
+    }
+    for (int i = 0; i < acctBytes.length; i++) {
+      assertEquals((byte) 0, acctBytes[i], "accountCode[" + i + "] not zero — stale buffer leak");
+    }
+    assertEquals(SideEnum.NULL_VAL, dec.side(), "side must be NULL_VAL on malformed");
+  }
+
+  // -------------------------------------------------------------------------
   // Empty symbol → template 106 UnknownSymbol
   // -------------------------------------------------------------------------
 
