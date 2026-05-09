@@ -56,6 +56,21 @@ export type AppErrorCode =
   | 10 // ServerShutdown
   | 11; // CommandRejected
 
+/**
+ * Runtime set of `AppErrorCode` values for caller-side membership
+ * checks. Single source of truth — callers MUST consult this rather
+ * than hard-coding `code === 1 || code === 2 || …` lists which would
+ * silently drift if the union widens.
+ *
+ * Per /review MEDIUM (Agent B).
+ */
+export const APP_ERROR_CODES: ReadonlySet<number> = new Set<number>([1, 2, 3, 4, 6, 7, 8, 10, 11]);
+
+/** Type guard: narrow `number` to `AppErrorCode` via the runtime set. */
+export function isAppErrorCode(code: number): code is AppErrorCode {
+  return APP_ERROR_CODES.has(code);
+}
+
 /** Numeric WebSocket close code (RFC 6455 + 4xxx custom). */
 export type CloseCode = number;
 

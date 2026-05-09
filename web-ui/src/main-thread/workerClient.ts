@@ -330,7 +330,11 @@ export class WorkerClient implements WorkerClientStreams {
     this.watchdogChannel?.port1.close();
     this.watchdogChannel = null;
 
-    const now = Date.now();
+    // Per /review LOW + Agent B MEDIUM: use monotonic `performance.now()`
+    // instead of wall-clock `Date.now()`. This is elapsed-time math (the
+    // 30 s respawn window); a wall-clock step (NTP, VM snapshot restore)
+    // could falsely retain stale timestamps and trip WORKER_DEAD.
+    const now = performance.now();
     this.respawnTimestamps.push(now);
     const cutoff = now - WORKER_RESPAWN_WINDOW_MS;
     this.respawnTimestamps = this.respawnTimestamps.filter((t) => t >= cutoff);

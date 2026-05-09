@@ -54,18 +54,22 @@ export class Heartbeat {
   private readonly state: SessionState;
   private readonly cb: HeartbeatCallbacks;
   private readonly sched: HeartbeatScheduler;
-  private readonly nowMs: () => number;
+  // Per /review HIGH (Agent B): inject a precision-preserving
+  // `nowNs` instead of recomputing `BigInt(Math.floor(nowMs * 1e6))`
+  // inline (which loses sub-millisecond precision; see time.ts
+  // header for the full rationale and APP-36 R12).
+  private readonly nowNs: () => bigint;
 
   constructor(
     state: SessionState,
     callbacks: HeartbeatCallbacks,
     scheduler: HeartbeatScheduler,
-    nowMs: () => number,
+    nowNs: () => bigint,
   ) {
     this.state = state;
     this.cb = callbacks;
     this.sched = scheduler;
-    this.nowMs = nowMs;
+    this.nowNs = nowNs;
   }
 
   /**
@@ -106,8 +110,7 @@ export class Heartbeat {
     const deadlineMs = this.hidden
       ? Math.max(baseDeadlineMs, HEARTBEAT_HIDDEN_FLOOR_MS)
       : baseDeadlineMs;
-    const nowNs = BigInt(Math.floor(this.nowMs() * 1_000_000));
-    const elapsedNs = nowNs - activityNanos;
+    const elapsedNs = this.nowNs() - activityNanos;
     if (elapsedNs > BigInt(deadlineMs) * 1_000_000n) {
       // bigint → number on a bounded value (elapsedNs / 1_000_000n is the
       // deadline ms since last activity; the deadline check just fired so
@@ -128,7 +131,7 @@ export class Heartbeat {
   onVisibilityChange(visible: boolean): void {
     this.hidden = !visible;
     if (visible) {
-      this.state.lastServerActivityNs = BigInt(Math.floor(this.nowMs() * 1_000_000));
+      this.state.lastServerActivityNs = this.nowNs();
       this.fireOutboundNow();
     }
   }
@@ -152,8 +155,7 @@ export class Heartbeat {
   }
 
   private fireOutboundNow(): void {
-    const clientNanos = BigInt(Math.floor(this.nowMs() * 1_000_000));
-    this.cb.onOutboundDue(clientNanos);
+    this.cb.onOutboundDue(this.nowNs());
     this.armOutbound();
   }
 }

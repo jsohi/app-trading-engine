@@ -28,7 +28,7 @@ import {
   type FrameParseErrorCode,
   type ParsedFrame,
 } from "@/workers/frame/FrameParser";
-import { isValidFlagCombo } from "@/workers/frame/Flags";
+import { FLAG_RELIABLE, FLAG_SNAPSHOT, isValidFlagCombo } from "@/workers/frame/Flags";
 import { validateWsUrl } from "@/workers/frame/WsUrlValidator";
 
 import { Stats } from "@/workers/protocol/Stats";
@@ -47,7 +47,7 @@ import { AckSender } from "@/workers/session/AckSender";
 import { BackpressureController } from "@/workers/session/BackpressureController";
 import { GapTracker } from "@/workers/session/GapTracker";
 import { Heartbeat } from "@/workers/session/Heartbeat";
-import { Reconnect } from "@/workers/session/Reconnect";
+import { isAppErrorCode, Reconnect } from "@/workers/session/Reconnect";
 import { SessionState } from "@/workers/session/SessionState";
 import { SnapshotAssembler } from "@/workers/session/SnapshotAssembler";
 
@@ -123,6 +123,12 @@ let watchdogPort: MessagePort | null = null;
 // when a NEW snapshot id arrives.
 let sessionTickTimer: number | null = null;
 const SESSION_TICK_MS = 250;
+// Per /review HIGH (Agent B): 1 s STATS emitter — drains Stats
+// counters into a `MESSAGE_BATCH` `StatsMsg` for the main thread (and
+// downstream APP-245 RUM/OTel bridge). Without this the counters were
+// accumulated forever in the worker and never observable.
+let statsEmitterTimer: number | null = null;
+const STATS_EMIT_MS = 1_000;
 // Concurrency guard: handleInit is async, so multiple INIT messages
 // arriving in quick succession (rapid UI reconnect, message-port
 // retries) could otherwise spawn overlapping connection attempts. Per
@@ -302,11 +308,20 @@ async function handleInit(
       // others fall through to a normal reconnect with backoff.
       const decision = reconnect.applyCloseCode(ev.code);
       if (decision === "PROTOCOL_VIOLATION") {
+        // Per /review HIGH (Agent B): cold-start invariant per §2.6.
+        // PROTOCOL_VIOLATION terminates the session relationship; the
+        // server will not honour a SessionResume on the prior id.
+        // Clear both ids so the next handleInit cold-starts cleanly.
+        state.coldStart();
         transitionConnection("PROTOCOL_VIOLATION");
         ws = null;
         return;
       }
       if (decision === "SCHEMA_MISMATCH") {
+        // Per /review HIGH (Agent B): same cold-start invariant —
+        // schema mismatch means the prior session's wire-protocol no
+        // longer matches what the next handshake will negotiate.
+        state.coldStart();
         transitionConnection("SCHEMA_MISMATCH");
         ws = null;
         return;
@@ -320,6 +335,11 @@ async function handleInit(
       // read — only main can mint a fresh one.
       const dec = reconnect.nextDelayMs(state);
       if (dec.kind === "FREEZE") {
+        // Per /review HIGH (Agent B): cold-start on FREEZE — the
+        // circuit breaker fires only on terminal auth/rate-limit
+        // failure (codes 1/2/3-2nd/8 or 30-in-10min). Resume on a
+        // frozen session would just trigger another breaker cycle.
+        state.coldStart();
         transitionConnection("DOWN_REQUIRES_USER_ACTION");
         postError("AUTH", `circuit breaker tripped: ${dec.reason}`);
         return;
@@ -462,7 +482,7 @@ function handleFrame(frame: ParsedFrame): void {
   // released after gap-fill); routing happens THERE — never inline
   // here. Per Gemini review (HIGH): the prior boolean contract caused
   // out-of-order frames to be double-routed.
-  const isReliable = (frame.flags & 0x01) !== 0;
+  const isReliable = (frame.flags & FLAG_RELIABLE) !== 0;
   if (gapTracker !== null && isReliable) {
     gapTracker.onReliableFrame(frame.seqNo, frame.flags, frame.payload);
     return;
@@ -558,21 +578,16 @@ function buildRouterHandlers(): RouterHandlers {
       // VersionMismatch) advance the freeze counters. Without this
       // wiring the client could enter an infinite reconnect loop on a
       // terminal credential failure.
-      // Codes that fall outside Reconnect's AppErrorCode union (e.g. 5
-      // InvalidSubscription per §2.13 — surface only, do not close)
-      // bypass the circuit breaker.
-      const isAppErrorCode =
-        code === 1 ||
-        code === 2 ||
-        code === 3 ||
-        code === 4 ||
-        code === 6 ||
-        code === 7 ||
-        code === 8 ||
-        code === 10 ||
-        code === 11;
-      const freeze = isAppErrorCode ? reconnect.applyAppErrorCode(state, code) : false;
+      // Per /review MEDIUM (Agent B): consult the canonical
+      // `APP_ERROR_CODES` set exported from Reconnect.ts so the
+      // membership check stays in lockstep with the AppErrorCode
+      // union (codes outside it — e.g. 5 InvalidSubscription, 9
+      // SlowConsumer, 12 SnapshotEntityTooLarge — bypass the breaker
+      // per §2.13 surface-only semantics).
+      const freeze = isAppErrorCode(code) ? reconnect.applyAppErrorCode(state, code) : false;
       if (freeze) {
+        // Per /review HIGH (Agent B): cold-start on FREEZE.
+        state.coldStart();
         transitionConnection("DOWN_REQUIRES_USER_ACTION");
         postError("AUTH", `circuit breaker frozen by WebSocketError code ${String(code)}`);
         ws?.close();
@@ -628,7 +643,7 @@ function activateSessionLayer(): void {
         self.clearTimeout(h);
       },
     },
-    nowMs,
+    nowNs,
   );
   heartbeat.start();
 
@@ -644,7 +659,7 @@ function activateSessionLayer(): void {
       // and this frame is NOT a snapshot fragment (FLAG_SNAPSHOT
       // unset), trip the protocol violation BEFORE routing so the
       // dispatcher does not see a fragment break.
-      const isSnapshotFrame = (flags & 0x04) !== 0;
+      const isSnapshotFrame = (flags & FLAG_SNAPSHOT) !== 0;
       if (!isSnapshotFrame && snapshotAssembler?.hasInflightSnapshots() === true) {
         snapshotAssembler.onNonSnapshotInterleave();
         return;
@@ -724,7 +739,37 @@ function activateSessionLayer(): void {
   sessionTickTimer = self.setInterval(() => {
     ackSender?.onTimerTick();
     snapshotAssembler?.onTimerTick();
+    // Per /review HIGH (Agent B): drive Heartbeat's stale-server
+    // deadline check from the same periodic tick. Without this call
+    // `onServerDeadlineExceeded` was unreachable and §2.8's
+    // `> 3 × interval` (or 60s under hidden visibility) deadline
+    // never fired — STALE state was dead.
+    heartbeat?.checkServerDeadline(state.lastServerActivityNs);
   }, SESSION_TICK_MS);
+
+  // Per /review HIGH (Agent B): 1 s STATS emitter — drains the Stats
+  // snapshot into `MESSAGE_BATCH` so the main thread sees throughput,
+  // CRC mismatch counts, gap counts, etc. APP-245 will bridge to OTel.
+  if (statsEmitterTimer !== null) self.clearInterval(statsEmitterTimer);
+  statsEmitterTimer = self.setInterval(() => {
+    if (ws !== null) {
+      stats.observeBufferedAmount(ws.bufferedAmount);
+    }
+    const snap = stats.snapshot();
+    emit({
+      type: "stats",
+      framesDecoded: snap.framesDecoded,
+      bytesDecoded: snap.bytesDecoded,
+      crcMismatches: snap.crcMismatches,
+      gaps: snap.gaps,
+      reconnects: snap.reconnects,
+      replayFrames: snap.replayFrames,
+      snapshotBytes: snap.snapshotBytes,
+      bufferedAmountPeak: snap.bufferedAmountPeak,
+      degradedTimingMode: snap.degradedTimingMode,
+      serverNanos: nowEpochNs(),
+    });
+  }, STATS_EMIT_MS);
 }
 
 // ─── AuthClient wiring ──────────────────────────────────────────────
@@ -847,6 +892,10 @@ function shutdown(): void {
   if (sessionTickTimer !== null) {
     self.clearInterval(sessionTickTimer);
     sessionTickTimer = null;
+  }
+  if (statsEmitterTimer !== null) {
+    self.clearInterval(statsEmitterTimer);
+    statsEmitterTimer = null;
   }
   if (watchdogPort !== null) {
     watchdogPort.onmessage = null;
