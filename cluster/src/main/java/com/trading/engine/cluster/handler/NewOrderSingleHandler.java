@@ -429,7 +429,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
         final long quotedPx = side == SideEnum.Buy ? slot.offerPx : slot.bidPx;
         final long quotedSize = side == SideEnum.Buy ? slot.offerSize : slot.bidSize;
         if (quotedPx > 0L) {
-          final long pxDeltaBps = Math.abs(price - quotedPx) * 10_000L / quotedPx;
+          // Overflow guard: Math.abs(price - quotedPx) * 10_000L can overflow long if the
+          // diff is large. If we'd overflow, the actual ratio is astronomically larger than
+          // any tolerance, so emit a hard reject without doing the multiply.
+          final long pxDelta = Math.abs(price - quotedPx);
+          final long pxDeltaBps =
+              pxDelta > Long.MAX_VALUE / 10_000L ? Long.MAX_VALUE : pxDelta * 10_000L / quotedPx;
           if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
             emitOrderRejected(
                 eventSink,
@@ -446,7 +451,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
         }
         // Qty tolerance (bps).
         if (quotedSize > 0L) {
-          final long qtyDeltaBps = Math.abs(orderQty - quotedSize) * 10_000L / quotedSize;
+          // Overflow guard: same rationale as price-bps above.
+          final long qtyDelta = Math.abs(orderQty - quotedSize);
+          final long qtyDeltaBps =
+              qtyDelta > Long.MAX_VALUE / 10_000L
+                  ? Long.MAX_VALUE
+                  : qtyDelta * 10_000L / quotedSize;
           if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
             emitOrderRejected(
                 eventSink,
