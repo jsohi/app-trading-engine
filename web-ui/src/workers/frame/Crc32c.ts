@@ -90,7 +90,7 @@ const T7 = TABLES[7]!;
  * @param seed running CRC for chained computation (default 0)
  */
 export function crc32c(bytes: Uint8Array, start = 0, end: number = bytes.length, seed = 0): number {
-  let crc = (~seed >>> 0) >>> 0; // start state — bitwise inverse of seed
+  let crc = ~seed >>> 0; // start state — bitwise inverse of seed (single >>> 0 is sufficient)
   let p = start;
 
   // Main slicing-by-8 loop.

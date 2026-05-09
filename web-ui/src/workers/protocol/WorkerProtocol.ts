@@ -86,19 +86,16 @@ export interface PingMsg {
   readonly mainNanos: bigint;
 }
 
-/** Manual user-driven reconnect; resets reconnect backoff cap. */
-export interface ReconnectNowMsg {
-  readonly type: "RECONNECT_NOW";
-  readonly protocolVersion: typeof WORKER_PROTOCOL_VERSION;
-}
-
 /** Graceful close request; worker closes WS, posts final STATS, exits. */
 export interface CloseMsg {
   readonly type: "CLOSE";
   readonly protocolVersion: typeof WORKER_PROTOCOL_VERSION;
 }
 
-export type MainToWorker = InitMsg | PingMsg | ReconnectNowMsg | CloseMsg;
+// Per Gemini review (MEDIUM): no RECONNECT_NOW envelope. Manual
+// "reconnect now" from main is implemented as a worker terminate +
+// fresh spawn (see workerClient.reconnectNow), not via a message.
+export type MainToWorker = InitMsg | PingMsg | CloseMsg;
 
 // ─── Worker → main ─────────────────────────────────────────────────
 
@@ -147,5 +144,5 @@ export function isMainToWorker(x: unknown): x is MainToWorker {
   const o = x as { type?: unknown; protocolVersion?: unknown };
   if (o.protocolVersion !== WORKER_PROTOCOL_VERSION) return false;
   if (typeof o.type !== "string") return false;
-  return o.type === "INIT" || o.type === "PING" || o.type === "RECONNECT_NOW" || o.type === "CLOSE";
+  return o.type === "INIT" || o.type === "PING" || o.type === "CLOSE";
 }
