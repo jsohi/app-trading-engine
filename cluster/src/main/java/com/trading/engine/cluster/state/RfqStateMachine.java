@@ -556,6 +556,12 @@ public final class RfqStateMachine {
   public void releaseRateLimitForSession(final long sessionId) {
     final TokenBucket bucket = rateLimitBuckets.remove(sessionId);
     if (bucket != null) {
+      // Defensive bound check — pool corruption (double-release or misaligned counter) would
+      // otherwise overflow the free-index array and silently corrupt subsequent allocations.
+      if (tokenBucketFreeCount >= capacity) {
+        throw new IllegalStateException(
+            "tokenBucket free list overflow on session " + sessionId + " release; pool corrupted");
+      }
       tokenBucketFreeIndices[tokenBucketFreeCount++] = bucket.poolIndex();
     }
   }
@@ -770,7 +776,7 @@ public final class RfqStateMachine {
         ok = true;
       }
       if (!ok) {
-        metrics.recoveryTimerRearmFailed++;
+        metrics.sessionCloseTimerRearmFailed++;
       }
     }
     metrics.sessionClosed++;
@@ -999,6 +1005,14 @@ public final class RfqStateMachine {
     byQuoteReqId.clear();
     byQuoteId.clear();
     rateLimitBuckets.clear();
+    // Reset the recently-terminal ring + side-index so a back-to-back restore (within a
+    // single JVM) doesn't carry stale post-terminal entries forward.
+    recentlyTerminalIndex.clear();
+    for (int i = 0; i < RECENTLY_TERMINAL_CAPACITY; i++) {
+      recentlyTerminalRing[i].overwrite(EMPTY_KEY_BYTES, 0, 0);
+      recentlyTerminalReason[i] = 0;
+    }
+    recentlyTerminalRingHead = 0;
     tokenBucketFreeCount = capacity;
     for (int i = 0; i < capacity; i++) {
       tokenBucketFreeIndices[i] = capacity - 1 - i;
@@ -1012,8 +1026,15 @@ public final class RfqStateMachine {
     }
     freeCount = capacity;
     activeCount = 0;
+    // poolRetiredSlots is process-lifetime (retirement at generation overflow is permanent
+    // even across snapshot restores within the same JVM). Reset to keep poolOccupancy math
+    // consistent post-restore.
+    metrics.poolRetiredSlots = 0L;
     metrics.poolOccupancy = 0L;
   }
+
+  /** Empty source for {@link ByteArrayKey#overwrite} when zeroing a ring slot. */
+  private static final byte[] EMPTY_KEY_BYTES = new byte[0];
 
   // -------------------------------------------------------------------------
   // Recovery sweep (called from TradingClusteredService.onStart after snapshot+replay)
@@ -1049,11 +1070,17 @@ public final class RfqStateMachine {
       final AccountState account = accountStore.get(slot.accountId);
       if (account == null) {
         metrics.recoveryAccountMissing++;
+        // Clear accountCodeBytes BEFORE emit. Snapshot template 203 does not persist
+        // accountCode (only accountId), so on a back-to-back restore the bytes may carry
+        // stale content from a prior slot lifecycle. Zero them so the emitted 106/107 has
+        // an unambiguously-empty accountCode rather than wire-corrupted data.
+        for (int b = 0; b < RfqSlot.ACCOUNT_CODE_LENGTH; b++) {
+          slot.accountCodeBytes[b] = 0;
+        }
         if (slot.state == RfqSlotState.REQUESTED) {
           emit106(slot, currentClusterTs, eventSink, RfqRejectMessages.ACCOUNT_MISSING_ON_RECOVERY);
           metrics.emitRejected++;
         } else if (slot.state == RfqSlotState.QUOTED) {
-          // Empty accountCode (slot field already restored from snapshot, may be stale).
           emit107(slot, currentClusterTs, eventSink);
           metrics.emitExpired++;
         }
