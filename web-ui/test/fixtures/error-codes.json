@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "codes": [
+    { "name": "AuthenticationFailed", "value": 1 },
+    { "name": "AuthorizationFailed", "value": 2 },
+    { "name": "RateLimitExceeded", "value": 3 },
+    { "name": "SessionExpired", "value": 4 },
+    { "name": "InvalidSubscription", "value": 5 },
+    { "name": "HeartbeatTimeout", "value": 6 },
+    { "name": "BufferOverflow", "value": 7 },
+    { "name": "VersionMismatch", "value": 8 },
+    { "name": "SlowConsumer", "value": 9 },
+    { "name": "ServerShutdown", "value": 10 },
+    { "name": "CommandRejected", "value": 11 },
+    { "name": "SnapshotEntityTooLarge", "value": 12 }
+  ]
+}

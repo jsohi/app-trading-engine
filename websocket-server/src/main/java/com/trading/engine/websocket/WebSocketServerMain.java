@@ -226,8 +226,17 @@ public final class WebSocketServerMain implements AutoCloseable {
                 // allowExtensions=false: CRIME/BREACH prevention (permessage-deflate disabled)
                 pipeline.addLast(
                     "ws-protocol",
+                    // APP-36 §A3: subprotocol pinning. Server echoes
+                    // "trading-ws.v1" on the upgrade response so the client
+                    // can hard-assert the protocol contract. Mismatch (or
+                    // absent echo) → client closes PROTOCOL_VIOLATION.
+                    // Bump to "trading-ws.vN" only on breaking changes to
+                    // the frame envelope, header layout, or non-additive
+                    // Auth/Ack semantics. SBE schema-version bumps inside
+                    // templates do NOT bump the subprotocol — those are
+                    // caught by APP-36 §2.11 schema-id check.
                     new WebSocketServerProtocolHandler(
-                        "/", null, false, 65_536, false, true, 30_000));
+                        "/", "trading-ws.v1", false, 65_536, false, true, 30_000));
                 pipeline.addLast("rate-limiter", new ConnectionRateLimiter(rateLimiterState));
                 pipeline.addLast("origin-validator", originValidator);
                 // WriteByteCounterHandler must be installed BEFORE the auth handler so its
