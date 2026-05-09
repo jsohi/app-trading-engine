@@ -31,8 +31,10 @@
 import type { WorkerMessage } from "@/shared/transport/MessageShape";
 
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
-
-export { WORKER_PROTOCOL_VERSION };
+// Note: WORKER_PROTOCOL_VERSION is imported here for type-positions
+// (`typeof WORKER_PROTOCOL_VERSION`) and runtime guards. Consumers
+// must import from `@/workers/WorkerTuning` directly — re-exporting
+// here was removed to avoid two import paths drifting.
 
 // ─── Token-port channel (one-way, single-message) ──────────────────
 

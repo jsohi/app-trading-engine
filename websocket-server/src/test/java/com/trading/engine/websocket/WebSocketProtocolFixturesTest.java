@@ -70,8 +70,10 @@ final class WebSocketProtocolFixturesTest {
       writeReliable(out, 1L, FLAG_RELIABLE, ackPayload);
 
       // Frame 3: reliable replay-tagged ReplayComplete (template 72) —
-      // exercises the FLAG_REPLAY flag combo and the no-gap path.
-      final var replayCompletePayload = encodeReplayComplete(42L);
+      // exercises the FLAG_REPLAY flag combo and the no-gap path. The
+      // SBE body is empty per schema; the seqNo lives in the frame envelope
+      // (we pass 2L to writeReliable below).
+      final var replayCompletePayload = encodeReplayComplete();
       writeReliable(out, 2L, FLAG_RELIABLE | FLAG_REPLAY, replayCompletePayload);
 
       // Frame 4: best-effort WebSocketError — server-side notification of
@@ -164,9 +166,14 @@ final class WebSocketProtocolFixturesTest {
     return copy;
   }
 
-  @SuppressWarnings("unused") // signature pinned to plan vocabulary; payload is header-only.
-  private static byte[] encodeReplayComplete(final long lastReplayedSeqNo) {
-    // Per trading-schema.xml id=72: ReplayComplete has empty body — header only.
+  /**
+   * Encodes a ReplayComplete (template 72) — header-only per schema.
+   *
+   * <p>The reliable-stream sequence number lives in the frame envelope, not in the SBE body, so
+   * this encoder takes no parameters. Callers pass {@code seqNo} to {@link
+   * #writeReliable(OutputStream, long, int, byte[])} instead.
+   */
+  private static byte[] encodeReplayComplete() {
     final var buf = new UnsafeBuffer(new byte[16]);
     final var enc = new ReplayCompleteEncoder();
     enc.wrapAndApplyHeader(buf, 0, new MessageHeaderEncoder());

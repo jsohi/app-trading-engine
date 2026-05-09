@@ -811,7 +811,7 @@
     <sbe:message name="WebSocketAuthAck" id="61"
                  description="Server-to-browser: authentication accepted, session assigned.">
         <field name="sessionId"                 id="1" type="uuid"   description="Assigned session UUID (UUID.randomUUID — acceptable outside cluster)"/>
-        <field name="protocolVersion"           id="2" type="uint16" description="Server-asserted protocol version (NOT echoed; client validates against EXPECTED_PROTOCOL_VERSION AND sent value — anti-echo defense per APP-36 §2.5)"/>
+        <field name="protocolVersion"           id="2" type="uint16" description="Server-asserted protocol version constant. Server hard-codes EXPECTED_PROTOCOL_VERSION (=1); never echoes a client-supplied value. Client compares the decoded value against its own EXPECTED_PROTOCOL_VERSION constant — anti-echo defense per APP-36 §2.5."/>
         <field name="maxSubscriptions"          id="3" type="uint16" description="Maximum symbols per client subscription"/>
         <field name="serverHeartbeatIntervalMs" id="4" type="uint32" description="Negotiated server-→client WebSocketHeartbeat (template 64) cadence in ms; 0 → client uses 5000ms default per APP-36 §2.8"/>
         <field name="clientHeartbeatIntervalMs" id="5" type="uint32" description="Negotiated client-→server ClientHeartbeat (template 65) cadence in ms; 0 → client uses 10000ms default; server hard-disconnect at 2× this value"/>

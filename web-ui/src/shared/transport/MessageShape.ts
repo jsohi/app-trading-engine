@@ -208,5 +208,10 @@ export const MESSAGE_SHAPE_VERSION = 1;
  * Allocation: zero (call site is the throw path).
  */
 export function assertNever(x: never): never {
-  throw new Error(`unhandled discriminant: ${JSON.stringify(x)}`);
+  // bigint-aware replacer: every WorkerMessage variant carries a `serverNanos`
+  // bigint; a naive JSON.stringify would itself throw `TypeError: Do not know
+  // how to serialize a BigInt` and mask the intended exhaustiveness diagnostic.
+  const replacer = (_key: string, value: unknown): unknown =>
+    typeof value === "bigint" ? value.toString() : value;
+  throw new Error(`unhandled discriminant: ${JSON.stringify(x, replacer)}`);
 }

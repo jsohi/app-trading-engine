@@ -26,9 +26,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins the server-asserted protocolVersion contract: every AuthAck
- * the server writes carries the constant {@code EXPECTED_PROTOCOL_VERSION}
- * irrespective of any client-side value.
+ * Pins the server-asserted protocolVersion contract: every AuthAck the server writes carries the
+ * constant {@code EXPECTED_PROTOCOL_VERSION} irrespective of any client-side value.
  */
 final class JwtAuthHandlerProtocolVersionAssertTest {
 
