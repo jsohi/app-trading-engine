@@ -162,12 +162,14 @@ export class SnapshotAssembler {
 
     if (inflight.filledFragments === inflight.totalFragments) {
       this.finaliseAndEmit(inflight);
-    } else if (frag.isFinal) {
-      // Final flag set but not all fragments present — protocol violation
-      // (server emits final exactly once on the highest-index fragment).
-      this.protocolViolation("FLAG_SNAPSHOT_FINAL set but not all fragments present");
-      return false;
     }
+    // Per Gemini review (MEDIUM): the FLAG_SNAPSHOT_FINAL bit is a hint,
+    // not an ordering invariant. Fragments may legitimately arrive
+    // out-of-order (the assembler indexes by `fragmentIndex`); the final
+    // flag may therefore appear on any fragment whose index is the
+    // highest-emitted-so-far rather than strictly last-arriving. Trust
+    // `filledFragments === totalFragments` as the sole completion gate;
+    // do NOT trip protocolViolation just because final arrived first.
     return true;
   }
 

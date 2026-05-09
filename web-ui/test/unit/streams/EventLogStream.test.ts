@@ -77,7 +77,9 @@ describe("eventLogStream", () => {
     sub.unsubscribe();
 
     expect(emitted).toHaveLength(1);
-    expect(emitted[0]?.entries).toHaveLength(1);
+    expect(emitted[0]?.count).toBe(1);
+    expect(emitted[0]?.capacity).toBe(10_000);
+    expect(emitted[0]?.read(0)).toBeDefined();
     expect(emitted[0]?.version).toBe(1);
   });
 
@@ -98,14 +100,23 @@ describe("eventLogStream", () => {
     // The last snapshot should have exactly 2 000 visible entries.
     const last = emitted[emitted.length - 1];
     expect(last).toBeDefined();
-    expect(last?.entries).toHaveLength(2000);
+    expect(last?.count).toBe(2000);
+    expect(last?.capacity).toBe(2000);
   });
 
   it("eventLogStream_overCapacity_dropsOldest_versionMonotonic", () => {
     // Capacity 3; emit 5 events — ring drops oldest entries.
-    const emitted: EventLogSnapshot[] = [];
+    // Snapshot identity is stable across emissions, so `version` must be
+    // captured at observe-time (not via post-hoc array inspection).
+    const observedVersions: number[] = [];
+    const observedCounts: number[] = [];
+    let emissions = 0;
     const op = eventLogStream({ capacity: 3 });
-    const sub = op(source$).subscribe((s) => emitted.push(s));
+    const sub = op(source$).subscribe((s) => {
+      observedVersions.push(s.version);
+      observedCounts.push(s.count);
+      emissions += 1;
+    });
 
     for (let i = 1; i <= 5; i++) {
       source$.next(makeEventUpdate(BigInt(i), `Event${String(i)}`));
@@ -113,23 +124,15 @@ describe("eventLogStream", () => {
 
     sub.unsubscribe();
 
-    expect(emitted).toHaveLength(5);
-
-    // After 5 emissions into a capacity-3 ring, the entries array holds 3.
-    const last = emitted[emitted.length - 1];
-    expect(last).toBeDefined();
-    if (last) {
-      expect(last.entries).toHaveLength(3);
-    }
-
+    expect(emissions).toBe(5);
     // Version must be strictly monotonically increasing (1, 2, 3, 4, 5).
-    for (let i = 0; i < emitted.length; i++) {
-      expect(emitted[i]?.version).toBe(i + 1);
-    }
+    expect(observedVersions).toEqual([1, 2, 3, 4, 5]);
+    // Count saturates at capacity.
+    expect(observedCounts).toEqual([1, 2, 3, 3, 3]);
   });
 
   it("eventLogStream_snapshotRefStable_acrossEmissions", () => {
-    // §6 row 49: the `entries` array reference is stable across emissions —
+    // §6 row 49: the snapshot object reference is stable across emissions —
     // consumers diff via the `version` counter.
     const emitted: EventLogSnapshot[] = [];
     const op = eventLogStream({ capacity: 10 });
@@ -141,10 +144,10 @@ describe("eventLogStream", () => {
     sub.unsubscribe();
 
     expect(emitted).toHaveLength(2);
-    // Both emissions share the same `entries` array identity.
-    expect(emitted[0]?.entries).toBe(emitted[1]?.entries);
-    // But version differs.
-    expect(emitted[0]?.version).toBe(1);
+    // Both emissions share the same snapshot identity (Gemini fix).
+    expect(emitted[0]).toBe(emitted[1]);
+    // version differs across emissions even though identity is stable
+    // (we captured by ref so the final value is observed both times).
     expect(emitted[1]?.version).toBe(2);
   });
 
