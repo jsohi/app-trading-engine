@@ -11,19 +11,18 @@ import org.agrona.concurrent.UnsafeBuffer;
  * <p>The slot stores all fields required to:
  *
  * <ul>
- *   <li>Encode {@code QuoteRequestedEvent} (104), {@code QuoteCreatedEvent} (105),
- *       {@code QuoteRejectedEvent} (106), and {@code QuoteExpiredEvent} (107).
+ *   <li>Encode {@code QuoteRequestedEvent} (104), {@code QuoteCreatedEvent} (105), {@code
+ *       QuoteRejectedEvent} (106), and {@code QuoteExpiredEvent} (107).
  *   <li>Snapshot the RFQ state via template 203 ({@code RfqStateSnapshot}).
  *   <li>Detect idempotent retransmits via CRC32C of the decoded request body with byte-for-byte
  *       fallback comparison.
  *   <li>Manage per-slot TTL and request-timeout timers via Aeron's {@code Cluster.scheduleTimer}.
  * </ul>
  *
- * <p><b>Field sizing notes:</b> all fixed-length fields match the SBE schema definitions in
- * {@code trading-schema.xml}. {@code QuoteReqID} (FIX tag 131) = 20 bytes; {@code QuoteID} (FIX
- * tag 117) = 20 bytes; {@code Symbol} (FIX tag 55) = 8 bytes; AccountCode (FIX tag 1) = 16 bytes;
- * SettlDate (FIX tag 64) = 8 bytes; Currency (FIX tag 15) = 3 bytes; SettlCurrency (FIX tag 120)
- * = 3 bytes.
+ * <p><b>Field sizing notes:</b> all fixed-length fields match the SBE schema definitions in {@code
+ * trading-schema.xml}. {@code QuoteReqID} (FIX tag 131) = 20 bytes; {@code QuoteID} (FIX tag 117) =
+ * 20 bytes; {@code Symbol} (FIX tag 55) = 8 bytes; AccountCode (FIX tag 1) = 16 bytes; SettlDate
+ * (FIX tag 64) = 8 bytes; Currency (FIX tag 15) = 3 bytes; SettlCurrency (FIX tag 120) = 3 bytes.
  *
  * <p><b>Threading:</b> not thread-safe — single-threaded cluster duty cycle only.
  *
@@ -68,9 +67,9 @@ public final class RfqSlot {
 
   /**
    * Size of the request body buffer used for idempotent retransmit detection. Sized generously to
-   * accommodate the largest possible {@code QuoteRequest} command body including a full
-   * {@code noLegs(2)} group with all leg fields, plus an 8-byte header guard. At 256 bytes this is
-   * well above the actual maximum (~180 bytes for 2 legs) while remaining cache-line friendly.
+   * accommodate the largest possible {@code QuoteRequest} command body including a full {@code
+   * noLegs(2)} group with all leg fields, plus an 8-byte header guard. At 256 bytes this is well
+   * above the actual maximum (~180 bytes for 2 legs) while remaining cache-line friendly.
    */
   public static final int REQUEST_BODY_SIZE = 256;
 
@@ -82,10 +81,10 @@ public final class RfqSlot {
   public final int poolIndex;
 
   /**
-   * Per-slot generation counter (31-bit). Incremented on each {@link RfqStateMachine#release}.
-   * Used to detect stale timer correlations: a timer firing with generation {@code G} after the
-   * slot has been released and reused at generation {@code G+1} is silently dropped. Retirement
-   * threshold: {@code Integer.MAX_VALUE >> 1} (~1 billion reuses, ~100+ years at 10/sec).
+   * Per-slot generation counter (31-bit). Incremented on each {@link RfqStateMachine#release}. Used
+   * to detect stale timer correlations: a timer firing with generation {@code G} after the slot has
+   * been released and reused at generation {@code G+1} is silently dropped. Retirement threshold:
+   * {@code Integer.MAX_VALUE >> 1} (~1 billion reuses, ~100+ years at 10/sec).
    */
   public int generation;
 
@@ -97,17 +96,17 @@ public final class RfqSlot {
   // -------------------------------------------------------------------------
 
   /**
-   * Correlation ID for the TTL timer (high bit clear). Computed as
-   * {@code (generation << 31) | poolIndex}. Registered with {@code Cluster.scheduleTimer} when the
-   * slot transitions REQUESTED→QUOTED. Fires → {@code QuoteExpiredEvent} (107).
+   * Correlation ID for the TTL timer (high bit clear). Computed as {@code (generation << 31) |
+   * poolIndex}. Registered with {@code Cluster.scheduleTimer} when the slot transitions
+   * REQUESTED→QUOTED. Fires → {@code QuoteExpiredEvent} (107).
    */
   public long timerCorrelationId;
 
   /**
-   * Correlation ID for the request-timeout timer (high bit set). Computed as
-   * {@code 0x8000_0000_0000_0000L | (generation << 31) | poolIndex}. Registered with
-   * {@code Cluster.scheduleTimer} when the slot is first acquired (REQUESTED state). Fires →
-   * {@code QuoteRejectedEvent} (106) with {@code text="request timeout"}.
+   * Correlation ID for the request-timeout timer (high bit set). Computed as {@code
+   * 0x8000_0000_0000_0000L | (generation << 31) | poolIndex}. Registered with {@code
+   * Cluster.scheduleTimer} when the slot is first acquired (REQUESTED state). Fires → {@code
+   * QuoteRejectedEvent} (106) with {@code text="request timeout"}.
    */
   public long requestTimeoutCorrelationId;
 
@@ -116,17 +115,17 @@ public final class RfqSlot {
   // -------------------------------------------------------------------------
 
   /**
-   * Epoch-nanos cluster timestamp when the slot reached REQUESTED state (set from
-   * {@code onSessionMessage} timestamp). Used to compute the request-timeout deadline on recovery.
-   * Matches the {@code transactTime} field in template 203.
+   * Epoch-nanos cluster timestamp when the slot reached REQUESTED state (set from {@code
+   * onSessionMessage} timestamp). Used to compute the request-timeout deadline on recovery. Matches
+   * the {@code transactTime} field in template 203.
    */
   public long transactTime;
 
   /**
-   * Epoch-nanos deadline for the TTL timer. Set when transitioning REQUESTED→QUOTED.
-   * {@code validUntil = clusterTimestamp + ttlForProduct(productType)}. Matches the
-   * {@code validUntil} field in template 203 and is the {@code ValidUntilTime} (FIX tag 62) value
-   * in {@code QuoteCreatedEvent} (105).
+   * Epoch-nanos deadline for the TTL timer. Set when transitioning REQUESTED→QUOTED. {@code
+   * validUntil = clusterTimestamp + ttlForProduct(productType)}. Matches the {@code validUntil}
+   * field in template 203 and is the {@code ValidUntilTime} (FIX tag 62) value in {@code
+   * QuoteCreatedEvent} (105).
    */
   public long validUntil;
 
@@ -153,8 +152,8 @@ public final class RfqSlot {
 
   /**
    * CRC32C of the decoded QuoteRequest body. Used as the first tier of idempotent retransmit
-   * detection (fast path). On CRC match, the full byte-for-byte comparison against
-   * {@link #requestBody} disambiguates the ~2^{-32} collision case.
+   * detection (fast path). On CRC match, the full byte-for-byte comparison against {@link
+   * #requestBody} disambiguates the ~2^{-32} collision case.
    */
   public int bodyCrc;
 
@@ -281,9 +280,9 @@ public final class RfqSlot {
 
   /**
    * Pre-allocated owned {@link ByteArrayKey} wrapping {@link #quoteReqIdBytes}. Populated when the
-   * slot transitions FREE→REQUESTED (commit step). Used as the key in
-   * {@code RfqStateMachine.byQuoteReqId} and {@code byQuoteId} maps. Must be removed from all maps
-   * BEFORE any byte mutation in {@link RfqStateMachine#release(RfqSlot)}.
+   * slot transitions FREE→REQUESTED (commit step). Used as the key in {@code
+   * RfqStateMachine.byQuoteReqId} and {@code byQuoteId} maps. Must be removed from all maps BEFORE
+   * any byte mutation in {@link RfqStateMachine#release(RfqSlot)}.
    */
   public final ByteArrayKey quoteReqIdKey;
 
@@ -298,14 +297,14 @@ public final class RfqSlot {
   // -------------------------------------------------------------------------
 
   /**
-   * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteReqIdBytes}. Used by
-   * {@link BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
+   * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteReqIdBytes}. Used by {@link
+   * BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
    */
   public final UnsafeBuffer quoteReqIdBuffer;
 
   /**
-   * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteIdBytes}. Used by
-   * {@link BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
+   * Pre-allocated {@link UnsafeBuffer} view over {@link #quoteIdBytes}. Used by {@link
+   * BufferAsAsciiCharSequence} for zero-alloc GFLog char-by-char append.
    */
   public final UnsafeBuffer quoteIdBuffer;
 
@@ -315,8 +314,8 @@ public final class RfqSlot {
 
   /**
    * Constructs a fresh FREE slot at the given pool index. All arrays are pre-allocated; all
-   * primitive fields are zero-initialized. Called once per pool entry at
-   * {@link RfqStateMachine} construction time.
+   * primitive fields are zero-initialized. Called once per pool entry at {@link RfqStateMachine}
+   * construction time.
    *
    * @param poolIndex the immutable pool index within the slot array; must be &gt;= 0
    */
@@ -362,8 +361,8 @@ public final class RfqSlot {
 
   /**
    * Overwrites the {@link #quoteReqIdKey} content from the current {@link #quoteReqIdBytes}. Must
-   * be called after populating {@code quoteReqIdBytes} and before inserting into
-   * {@code byQuoteReqId}. Zero allocation — uses {@link ByteArrayKey#overwrite}.
+   * be called after populating {@code quoteReqIdBytes} and before inserting into {@code
+   * byQuoteReqId}. Zero allocation — uses {@link ByteArrayKey#overwrite}.
    */
   public void syncQuoteReqIdKey() {
     quoteReqIdKey.overwrite(quoteReqIdBytes, 0, QUOTE_REQ_ID_LENGTH);

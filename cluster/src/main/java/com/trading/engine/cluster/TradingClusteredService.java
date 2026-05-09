@@ -99,8 +99,10 @@ public final class TradingClusteredService implements ClusteredService {
    */
   private static final long SUPPORTED_SNAPSHOT_VERSION = 1L;
 
-  /** Number of body fragments in a well-formed snapshot envelope. Bumped from 6 to 7 by APP-232
-   * to include {@code RfqStateSnapshot} (template 203). */
+  /**
+   * Number of body fragments in a well-formed snapshot envelope. Bumped from 6 to 7 by APP-232 to
+   * include {@code RfqStateSnapshot} (template 203).
+   */
   private static final int SNAPSHOT_STORE_COUNT = 7;
 
   /**
@@ -164,6 +166,7 @@ public final class TradingClusteredService implements ClusteredService {
   private final MutableDirectBuffer currencySnapBuf = new ExpandableArrayBuffer(8 * 1024);
   private final MutableDirectBuffer riskLimitSnapBuf = new ExpandableArrayBuffer(64 * 1024);
   private final MutableDirectBuffer orderBookSnapBuf = new ExpandableArrayBuffer(8 * 1024 * 1024);
+
   /** Snapshot 203 (RfqStateSnapshot) staging buffer. Sized for capacity 8192 × ~320 bytes/slot. */
   private final MutableDirectBuffer rfqStateSnapBuf = new ExpandableArrayBuffer(4 * 1024 * 1024);
 

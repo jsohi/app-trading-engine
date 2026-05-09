@@ -1,8 +1,6 @@
 package com.trading.engine.cluster.handler;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.trading.engine.cluster.TradingClusteredServiceFactory;
 import com.trading.engine.cluster.journal.EventJournal;
@@ -36,8 +34,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link QuoteRequestHandler}.
  *
- * <p>Each test seeds {@link AccountStore} and {@link CurrencyStore} as needed, dispatches a
- * {@code QuoteRequest} via {@link QuoteRequestHandler#onCommand}, then asserts on:
+ * <p>Each test seeds {@link AccountStore} and {@link CurrencyStore} as needed, dispatches a {@code
+ * QuoteRequest} via {@link QuoteRequestHandler#onCommand}, then asserts on:
  *
  * <ul>
  *   <li>The emitted template ID ({@code 104} = QuoteRequestedEvent or {@code 106} =
@@ -65,10 +63,8 @@ class QuoteRequestHandlerTest {
   private static final String INACTIVE_CODE = "SUSPENDED";
 
   // ---- Pre-packed currencies ----
-  private static final int USD_PACKED =
-      CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D');
-  private static final int EUR_PACKED =
-      CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R');
+  private static final int USD_PACKED = CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D');
+  private static final int EUR_PACKED = CurrencyStore.packCode((byte) 'E', (byte) 'U', (byte) 'R');
 
   private AccountStore accountStore;
   private CurrencyStore currencyStore;
@@ -89,22 +85,28 @@ class QuoteRequestHandlerTest {
     currencyStore.put(EUR_PACKED, makeCurrency('E', 'U', 'R'));
 
     // ACME: active, CAN_RFQ | CAN_TRADE.
-    accountStore.put(makeAccount(
-        ACTIVE_ACCOUNT_ID, ACTIVE_CODE,
-        AccountStatusEnum.Active,
-        AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ));
+    accountStore.put(
+        makeAccount(
+            ACTIVE_ACCOUNT_ID,
+            ACTIVE_CODE,
+            AccountStatusEnum.Active,
+            AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ));
 
     // NORFQ: active, CAN_TRADE only — CAN_RFQ not set.
-    accountStore.put(makeAccount(
-        NO_RFQ_ACCOUNT_ID, NO_RFQ_CODE,
-        AccountStatusEnum.Active,
-        AccountState.Capabilities.CAN_TRADE));
+    accountStore.put(
+        makeAccount(
+            NO_RFQ_ACCOUNT_ID,
+            NO_RFQ_CODE,
+            AccountStatusEnum.Active,
+            AccountState.Capabilities.CAN_TRADE));
 
     // SUSPENDED: inactive account.
-    accountStore.put(makeAccount(
-        INACTIVE_ACCOUNT_ID, INACTIVE_CODE,
-        AccountStatusEnum.Suspended,
-        AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ));
+    accountStore.put(
+        makeAccount(
+            INACTIVE_ACCOUNT_ID,
+            INACTIVE_CODE,
+            AccountStatusEnum.Suspended,
+            AccountState.Capabilities.CAN_TRADE | AccountState.Capabilities.CAN_RFQ));
 
     stateMachine = newStateMachine();
 
@@ -130,15 +132,18 @@ class QuoteRequestHandlerTest {
   @Test
   void onCommand_validQuoteRequest_emitsTemplate104WithAllFields() {
     final var buf = new ExpandableArrayBuffer(512);
-    final int len = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "REQ-001", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    final int len =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "REQ-001", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
 
     dispatch(buf, len);
 
     assertEquals(1, session.messages.size(), "exactly one message must be emitted");
     final byte[] msg = session.messages.get(0);
     final int templateId = templateId(msg);
-    assertEquals(QuoteRequestedEventDecoder.TEMPLATE_ID, templateId,
+    assertEquals(
+        QuoteRequestedEventDecoder.TEMPLATE_ID,
+        templateId,
         "template 104 (QuoteRequestedEvent) expected, got " + templateId);
 
     final var dec = decodeQuoteRequested(msg);
@@ -161,13 +166,15 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Verifies that {@link QuoteRequestHandler#commandTemplateId()} returns
-   * {@link QuoteRequestDecoder#TEMPLATE_ID}. This ensures the handler is correctly self-
-   * describing for the dispatch table.
+   * Verifies that {@link QuoteRequestHandler#commandTemplateId()} returns {@link
+   * QuoteRequestDecoder#TEMPLATE_ID}. This ensures the handler is correctly self- describing for
+   * the dispatch table.
    */
   @Test
   void commandTemplateId_returnsQuoteRequestTemplateId() {
-    assertEquals(QuoteRequestDecoder.TEMPLATE_ID, handler.commandTemplateId(),
+    assertEquals(
+        QuoteRequestDecoder.TEMPLATE_ID,
+        handler.commandTemplateId(),
         "handler must declare the QuoteRequest template ID");
   }
 
@@ -210,8 +217,8 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * A QuoteRequest with an all-NUL symbol must be rejected with
-   * {@code quoteRejectReason=UnknownSymbol} and text "symbol empty".
+   * A QuoteRequest with an all-NUL symbol must be rejected with {@code
+   * quoteRejectReason=UnknownSymbol} and text "symbol empty".
    */
   @Test
   void onCommand_emptySymbol_emitsTemplate106UnknownSymbol() {
@@ -250,14 +257,15 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * A QuoteRequest from an inactive account must emit template 106 with
-   * {@code quoteRejectReason=Other} and text "account inactive".
+   * A QuoteRequest from an inactive account must emit template 106 with {@code
+   * quoteRejectReason=Other} and text "account inactive".
    */
   @Test
   void onCommand_inactiveAccount_emitsTemplate106Other() {
     final var buf = new ExpandableArrayBuffer(512);
-    final int len = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "REQ-INACT", "EURUSD", SideEnum.Sell, 50_000_000L, INACTIVE_CODE);
+    final int len =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "REQ-INACT", "EURUSD", SideEnum.Sell, 50_000_000L, INACTIVE_CODE);
 
     dispatch(buf, len);
 
@@ -275,14 +283,15 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * An active account without the {@code CAN_RFQ} capability bit must be rejected with
-   * text "rfq not permitted".
+   * An active account without the {@code CAN_RFQ} capability bit must be rejected with text "rfq
+   * not permitted".
    */
   @Test
   void onCommand_accountWithoutCanRfq_emitsTemplate106RfqNotPermitted() {
     final var buf = new ExpandableArrayBuffer(512);
-    final int len = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "REQ-NORFQ", "EURUSD", SideEnum.Buy, 100_000_000L, NO_RFQ_CODE);
+    final int len =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "REQ-NORFQ", "EURUSD", SideEnum.Buy, 100_000_000L, NO_RFQ_CODE);
 
     dispatch(buf, len);
 
@@ -299,8 +308,7 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * A QuoteRequest with a currency not in CurrencyStore must emit 106 with
-   * text "currency unknown".
+   * A QuoteRequest with a currency not in CurrencyStore must emit 106 with text "currency unknown".
    */
   @Test
   void onCommand_unknownCurrency_emitsTemplate106Other() {
@@ -339,8 +347,8 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * After consuming all {@code DEFAULT_RFQ_RATE_LIMIT_PER_SESSION} tokens (100 by default),
-   * the 101st request from the same session must be rejected with text "rate limit".
+   * After consuming all {@code DEFAULT_RFQ_RATE_LIMIT_PER_SESSION} tokens (100 by default), the
+   * 101st request from the same session must be rejected with text "rate limit".
    *
    * <p>Each call uses a unique quoteReqId to avoid the duplicate-detection path.
    */
@@ -354,19 +362,23 @@ class QuoteRequestHandlerTest {
     // First `limit` requests must succeed.
     for (int i = 1; i <= limit; i++) {
       session.messages.clear();
-      final int len = SbeTestEncoder.encodeQuoteRequest(
-          buf, 0, "RATE-" + i, "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+      final int len =
+          SbeTestEncoder.encodeQuoteRequest(
+              buf, 0, "RATE-" + i, "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
       dispatch(buf, len);
       // Each should produce a 104 (not 106).
       assertEquals(1, session.messages.size(), "request " + i + " should succeed");
-      assertEquals(QuoteRequestedEventDecoder.TEMPLATE_ID, templateId(session.messages.get(0)),
+      assertEquals(
+          QuoteRequestedEventDecoder.TEMPLATE_ID,
+          templateId(session.messages.get(0)),
           "request " + i + " should produce 104");
     }
 
     // 101st request — same session, same timestamp → rate limit exhausted.
     session.messages.clear();
-    final int lenOver = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "RATE-OVER", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    final int lenOver =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "RATE-OVER", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
     dispatch(buf, lenOver);
 
     assertEquals(1, session.messages.size());
@@ -381,14 +393,15 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Sending the same quoteReqId twice (while the first is still REQUESTED) must reject the
-   * second with text "duplicate".
+   * Sending the same quoteReqId twice (while the first is still REQUESTED) must reject the second
+   * with text "duplicate".
    */
   @Test
   void onCommand_duplicateQuoteReqId_emitsTemplate106Duplicate() {
     final var buf = new ExpandableArrayBuffer(512);
-    final int len = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "REQ-DUP", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    final int len =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "REQ-DUP", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
 
     // First submission must succeed.
     dispatch(buf, len);
@@ -412,40 +425,44 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * When the RFQ slot pool is fully occupied, a new QuoteRequest must be rejected with
-   * text "pool exhausted".
+   * When the RFQ slot pool is fully occupied, a new QuoteRequest must be rejected with text "pool
+   * exhausted".
    *
-   * <p>The pool is filled by sending {@code capacity} valid requests with distinct quoteReqIds.
-   * The next request must then hit the pool-exhausted guard.
+   * <p>The pool is filled by sending {@code capacity} valid requests with distinct quoteReqIds. The
+   * next request must then hit the pool-exhausted guard.
    */
   @Test
   void onCommand_poolExhausted_emitsTemplate106PoolExhausted() {
     // Use a small-capacity state machine so we don't need to send 8192 requests.
     final int smallCapacity = 256;
-    stateMachine = new RfqStateMachine(
-        smallCapacity,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
-        /* rateLimitPerSession */ smallCapacity + 1L, // generous limit to not block fill
-        TradingClusteredServiceFactory.DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
-        TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS,
-        accountStore,
-        metrics);
+    stateMachine =
+        new RfqStateMachine(
+            smallCapacity,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            /* rateLimitPerSession */ smallCapacity + 1L, // generous limit to not block fill
+            TradingClusteredServiceFactory.DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
+            TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS,
+            accountStore,
+            metrics);
     handler = new QuoteRequestHandler(stateMachine, accountStore, currencyStore, metrics);
 
     final var buf = new ExpandableArrayBuffer(512);
 
     // Fill the pool.
     for (int i = 0; i < smallCapacity; i++) {
-      final int len = SbeTestEncoder.encodeQuoteRequest(
-          buf, 0, "POOL-" + pad4(i), "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+      final int len =
+          SbeTestEncoder.encodeQuoteRequest(
+              buf, 0, "POOL-" + pad4(i), "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
       session.messages.clear();
       dispatch(buf, len);
-      assertEquals(QuoteRequestedEventDecoder.TEMPLATE_ID, templateId(session.messages.get(0)),
+      assertEquals(
+          QuoteRequestedEventDecoder.TEMPLATE_ID,
+          templateId(session.messages.get(0)),
           "slot " + i + " fill must succeed");
     }
 
@@ -453,8 +470,9 @@ class QuoteRequestHandlerTest {
 
     // Next request must fail with pool-exhausted.
     session.messages.clear();
-    final int overLen = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "POOL-OVER", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    final int overLen =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "POOL-OVER", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
     dispatch(buf, overLen);
 
     assertEquals(1, session.messages.size());
@@ -469,16 +487,17 @@ class QuoteRequestHandlerTest {
   // -------------------------------------------------------------------------
 
   /**
-   * Verifies that after N successful QuoteRequests the metrics accurately report
-   * emitRequested=N and emitRejected=0.
+   * Verifies that after N successful QuoteRequests the metrics accurately report emitRequested=N
+   * and emitRejected=0.
    */
   @Test
   void metrics_afterMultipleSuccessfulRequests_countedCorrectly() {
     final int count = 5;
     final var buf = new ExpandableArrayBuffer(512);
     for (int i = 0; i < count; i++) {
-      final int len = SbeTestEncoder.encodeQuoteRequest(
-          buf, 0, "MET-" + i, "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+      final int len =
+          SbeTestEncoder.encodeQuoteRequest(
+              buf, 0, "MET-" + i, "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
       dispatch(buf, len);
     }
     assertEquals((long) count, metrics.emitRequested);
@@ -486,21 +505,23 @@ class QuoteRequestHandlerTest {
   }
 
   /**
-   * Verifies that a mix of valid and invalid requests correctly increments both emitRequested
-   * and emitRejected.
+   * Verifies that a mix of valid and invalid requests correctly increments both emitRequested and
+   * emitRejected.
    */
   @Test
   void metrics_mixedValidAndInvalidRequests_bothCountersIncrementCorrectly() {
     final var buf = new ExpandableArrayBuffer(512);
 
     // One valid.
-    final int len = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "MIXED-OK", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
+    final int len =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "MIXED-OK", "EURUSD", SideEnum.Buy, 100_000_000L, ACTIVE_CODE);
     dispatch(buf, len);
 
     // One invalid (inactive account).
-    final int lenBad = SbeTestEncoder.encodeQuoteRequest(
-        buf, 0, "MIXED-BAD", "EURUSD", SideEnum.Buy, 100_000_000L, INACTIVE_CODE);
+    final int lenBad =
+        SbeTestEncoder.encodeQuoteRequest(
+            buf, 0, "MIXED-BAD", "EURUSD", SideEnum.Buy, 100_000_000L, INACTIVE_CODE);
     dispatch(buf, lenBad);
 
     assertEquals(1L, metrics.emitRequested);
@@ -520,14 +541,17 @@ class QuoteRequestHandlerTest {
     final int blockLength = hdrDec.blockLength();
     final int version = hdrDec.version();
 
-    handler.onCommand(
-        session, TIMESTAMP, buf, 0, len, blockLength, version, eventSink);
+    handler.onCommand(session, TIMESTAMP, buf, 0, len, blockLength, version, eventSink);
   }
 
   /** Dispatches with a raw UnsafeBuffer without re-parsing header (for malformed tests). */
   private void dispatchRaw(final UnsafeBuffer buf, final int len) {
     handler.onCommand(
-        session, TIMESTAMP, buf, 0, len,
+        session,
+        TIMESTAMP,
+        buf,
+        0,
+        len,
         QuoteRequestDecoder.BLOCK_LENGTH,
         1, // sbeSchemaVersion — version 1 matches current schema
         eventSink);
@@ -564,8 +588,7 @@ class QuoteRequestHandlerTest {
    * Asserts that the {@code text} field of the given decoder starts with the expected ASCII prefix
    * (trimmed of trailing NUL padding).
    */
-  private static void assertTextEquals(
-      final String expected, final QuoteRejectedEventDecoder dec) {
+  private static void assertTextEquals(final String expected, final QuoteRejectedEventDecoder dec) {
     final byte[] textBytes = new byte[64];
     dec.getText(textBytes, 0);
     final var actual = new String(textBytes, StandardCharsets.US_ASCII).replace("\0", "").trim();
@@ -587,10 +610,7 @@ class QuoteRequestHandlerTest {
 
   /** Creates an AccountState with the given id, code, status, and capabilities. */
   private static AccountState makeAccount(
-      final long id,
-      final String code,
-      final AccountStatusEnum status,
-      final long capabilities) {
+      final long id, final String code, final AccountStatusEnum status, final long capabilities) {
     final var s = new AccountState();
     s.setAccountId(id);
     s.setParentAccountId(0L);

@@ -33,8 +33,8 @@ class RfqRejectMessagesTest {
 
   /**
    * Returns all {@code public static byte[]} field values from {@link RfqRejectMessages}. Uses
-   * reflection so new constants added to the class are automatically picked up by every test here
-   * — no manual enumeration required.
+   * reflection so new constants added to the class are automatically picked up by every test here —
+   * no manual enumeration required.
    */
   private static List<byte[]> allConstants() throws IllegalAccessException {
     final var result = new ArrayList<byte[]>();
@@ -53,14 +53,15 @@ class RfqRejectMessagesTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Reflectively iterates every {@code public static byte[]} field in {@link RfqRejectMessages}
-   * and asserts that its length is exactly {@link RfqRejectMessages#MAX_TEXT_LEN} (64). The test
-   * skips the non-array field {@code MAX_TEXT_LEN} because reflection filters to {@code byte[]}.
+   * Reflectively iterates every {@code public static byte[]} field in {@link RfqRejectMessages} and
+   * asserts that its length is exactly {@link RfqRejectMessages#MAX_TEXT_LEN} (64). The test skips
+   * the non-array field {@code MAX_TEXT_LEN} because reflection filters to {@code byte[]}.
    */
   @Test
   void everyConstant_isExactly64BytesAscii() throws IllegalAccessException {
     final var constants = allConstants();
-    assertTrue(constants.size() >= 15,
+    assertTrue(
+        constants.size() >= 15,
         "expected at least 15 byte[] constants (got " + constants.size() + ")");
 
     for (final byte[] constant : constants) {
@@ -72,7 +73,8 @@ class RfqRejectMessagesTest {
       // All bytes must be 7-bit ASCII (0..127); NUL (0) is allowed as padding.
       for (int i = 0; i < constant.length; i++) {
         final int b = constant[i] & 0xFF;
-        assertTrue(b <= 127,
+        assertTrue(
+            b <= 127,
             "byte at index " + i + " is 0x" + Integer.toHexString(b) + " > 127 (not ASCII)");
       }
     }
@@ -84,8 +86,8 @@ class RfqRejectMessagesTest {
 
   /**
    * After the ASCII content ends (first NUL byte), every remaining byte in the constant must also
-   * be NUL. This invariant guarantees the constant can be written directly into the SBE
-   * {@code char[64]} {@code text} field without additional padding.
+   * be NUL. This invariant guarantees the constant can be written directly into the SBE {@code
+   * char[64]} {@code text} field without additional padding.
    */
   @Test
   void everyConstant_isNulPaddedAfterContent() throws IllegalAccessException {
@@ -119,18 +121,19 @@ class RfqRejectMessagesTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Passing a string longer than {@link RfqRejectMessages#MAX_TEXT_LEN} to
-   * {@link RfqRejectMessages#pad} must throw {@link IllegalArgumentException}.
+   * Passing a string longer than {@link RfqRejectMessages#MAX_TEXT_LEN} to {@link
+   * RfqRejectMessages#pad} must throw {@link IllegalArgumentException}.
    */
   @Test
   void pad_messageExceedingLimit_throwsIllegalArgumentException() {
     // Build a string that is exactly one character too long.
     final var tooLong = "A".repeat(RfqRejectMessages.MAX_TEXT_LEN + 1);
 
-    final var ex = assertThrows(
-        IllegalArgumentException.class,
-        () -> RfqRejectMessages.pad(tooLong),
-        "pad() must throw IllegalArgumentException for input longer than MAX_TEXT_LEN");
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> RfqRejectMessages.pad(tooLong),
+            "pad() must throw IllegalArgumentException for input longer than MAX_TEXT_LEN");
 
     assertTrue(
         ex.getMessage().contains("MAX_TEXT_LEN"),
@@ -167,12 +170,14 @@ class RfqRejectMessagesTest {
   void rateLimit_startsWithExpectedAscii() {
     final byte[] expected = "rate limit".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     for (int i = 0; i < expected.length; i++) {
-      assertEquals(expected[i], RfqRejectMessages.RATE_LIMIT[i],
-          "RATE_LIMIT byte mismatch at index " + i);
+      assertEquals(
+          expected[i], RfqRejectMessages.RATE_LIMIT[i], "RATE_LIMIT byte mismatch at index " + i);
     }
     // Remainder must be NUL.
     for (int i = expected.length; i < RfqRejectMessages.MAX_TEXT_LEN; i++) {
-      assertEquals((byte) 0, RfqRejectMessages.RATE_LIMIT[i],
+      assertEquals(
+          (byte) 0,
+          RfqRejectMessages.RATE_LIMIT[i],
           "RATE_LIMIT must be NUL-padded after content at index " + i);
     }
   }
@@ -182,7 +187,9 @@ class RfqRejectMessagesTest {
   void poolExhausted_startsWithExpectedAscii() {
     final byte[] expected = "pool exhausted".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     for (int i = 0; i < expected.length; i++) {
-      assertEquals(expected[i], RfqRejectMessages.POOL_EXHAUSTED[i],
+      assertEquals(
+          expected[i],
+          RfqRejectMessages.POOL_EXHAUSTED[i],
           "POOL_EXHAUSTED byte mismatch at index " + i);
     }
   }

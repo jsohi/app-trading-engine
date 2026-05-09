@@ -13,13 +13,13 @@ import jdk.jfr.StackTrace;
  *
  * <p><b>Always emitted at every emit call site.</b> When JFR is disabled, the event payload write
  * is short-circuited to a few primitive moves on the TLAB-cached event slot — no heap allocation.
- * When JFR is enabled, primitive fields are stored directly into the JFR ring buffer; no field
- * here forces a per-event {@link String} construction (which would defeat the zero-alloc goal).
+ * When JFR is enabled, primitive fields are stored directly into the JFR ring buffer; no field here
+ * forces a per-event {@link String} construction (which would defeat the zero-alloc goal).
  *
- * <p>The {@link #quoteReqIdHigh} / {@link #quoteReqIdLow} pair encodes the first 16 ASCII bytes
- * of the QuoteReqID (FIX tag 131) as two little-endian {@code long}s, which the JFR consumer or a
- * post-processing step can decode back into the originating ASCII string. This avoids any per-
- * emit {@link String} allocation while preserving full diagnostic provenance.
+ * <p>The {@link #quoteReqIdHigh} / {@link #quoteReqIdLow} pair encodes the first 16 ASCII bytes of
+ * the QuoteReqID (FIX tag 131) as two little-endian {@code long}s, which the JFR consumer or a
+ * post-processing step can decode back into the originating ASCII string. This avoids any per- emit
+ * {@link String} allocation while preserving full diagnostic provenance.
  *
  * <p><b>Threading:</b> single-threaded cluster duty cycle.
  *
@@ -48,9 +48,9 @@ public final class RfqEmissionEvent extends Event {
   public long quoteReqIdLow;
 
   /**
-   * Cluster-time emission latency in nanoseconds — derived from cluster timestamps
-   * ({@code emitTs - ingestTs}), <b>not</b> wall-clock time. Diagnostic only; null/zero when the
-   * emit path does not measure latency.
+   * Cluster-time emission latency in nanoseconds — derived from cluster timestamps ({@code emitTs -
+   * ingestTs}), <b>not</b> wall-clock time. Diagnostic only; null/zero when the emit path does not
+   * measure latency.
    */
   @Label("Emit Latency (cluster ns)")
   public long latencyNanos;

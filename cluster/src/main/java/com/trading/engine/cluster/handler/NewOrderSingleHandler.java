@@ -116,8 +116,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
   /**
    * Optional injection from {@link com.trading.engine.cluster.TradingClusteredService} for plan
    * §9.2a quote-acceptance integration. When set, NOS commands carrying {@code
-   * ordType=PreviouslyQuoted} and a non-empty quoteId are matched against an active QUOTED RFQ
-   * slot via {@link RfqStateMachine#peekByQuoteId}, validated for side / price / qty match, and
+   * ordType=PreviouslyQuoted} and a non-empty quoteId are matched against an active QUOTED RFQ slot
+   * via {@link RfqStateMachine#peekByQuoteId}, validated for side / price / qty match, and
    * atomically committed via {@link RfqStateMachine#commitAccept} after all NOS validations pass.
    * Null in tests that exercise the legacy single-leg flow.
    */
@@ -130,9 +130,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private RfqMetrics rfqMetrics;
 
   /**
-   * Scratch field holding the QUOTED slot returned by {@link RfqStateMachine#peekByQuoteId}
-   * during the peek phase. Cleared after commit (or on any reject path). Single-threaded duty
-   * cycle invariant means this never races.
+   * Scratch field holding the QUOTED slot returned by {@link RfqStateMachine#peekByQuoteId} during
+   * the peek phase. Cleared after commit (or on any reject path). Single-threaded duty cycle
+   * invariant means this never races.
    */
   private RfqSlot pendingQuoteAcceptSlot;
 
@@ -432,7 +432,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
           final long pxDeltaBps = Math.abs(price - quotedPx) * 10_000L / quotedPx;
           if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
             emitOrderRejected(
-                eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "price mismatch");
+                eventSink,
+                session,
+                timestamp,
+                side,
+                RejectReasonEnum.QuoteNotFound,
+                "price mismatch");
             if (rfqMetrics != null) {
               rfqMetrics.rejectQuotePriceMismatch++;
             }
@@ -444,7 +449,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
           final long qtyDeltaBps = Math.abs(orderQty - quotedSize) * 10_000L / quotedSize;
           if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
             emitOrderRejected(
-                eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "qty mismatch");
+                eventSink,
+                session,
+                timestamp,
+                side,
+                RejectReasonEnum.QuoteNotFound,
+                "qty mismatch");
             if (rfqMetrics != null) {
               rfqMetrics.rejectQuoteQtyMismatch++;
             }

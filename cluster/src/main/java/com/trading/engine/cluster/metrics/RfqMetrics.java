@@ -4,19 +4,19 @@ package com.trading.engine.cluster.metrics;
  * Per-counter observability for the RFQ command path. Holds primitive {@code long} counters for
  * every emission, reject, drop, and recovery code path documented in the APP-232 plan §12.1.
  *
- * <p>Using plain {@code long} fields (rather than {@code AtomicLong} or Aeron {@code AtomicCounter})
- * is intentional: the cluster duty cycle is single-threaded, so unsynchronized increments are safe
- * and zero-allocation. Test code reads counters via the typed accessors. Future export to Aeron CnC
- * (when that infrastructure lands per APP-137) is a one-line change per counter — wrap the field in
- * an {@code AtomicCounter}.
+ * <p>Using plain {@code long} fields (rather than {@code AtomicLong} or Aeron {@code
+ * AtomicCounter}) is intentional: the cluster duty cycle is single-threaded, so unsynchronized
+ * increments are safe and zero-allocation. Test code reads counters via the typed accessors. Future
+ * export to Aeron CnC (when that infrastructure lands per APP-137) is a one-line change per counter
+ * — wrap the field in an {@code AtomicCounter}.
  *
  * <p><b>Threading:</b> not thread-safe — single-threaded cluster duty cycle only.
  *
  * <p><b>Allocation:</b> zero allocation after construction.
  *
- * <p><b>Naming convention:</b> {@code rfq.<dimension>.<reason>} where dimension is one of
- * {emit, reject, drop, recovery, pool, session, handler}. The ASCII counter name is derivable from
- * any field name via {@code dotName(fieldName)}.
+ * <p><b>Naming convention:</b> {@code rfq.<dimension>.<reason>} where dimension is one of {emit,
+ * reject, drop, recovery, pool, session, handler}. The ASCII counter name is derivable from any
+ * field name via {@code dotName(fieldName)}.
  */
 public final class RfqMetrics {
 

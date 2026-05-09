@@ -60,9 +60,9 @@ public final class BufferAsAsciiCharSequence implements CharSequence {
   }
 
   /**
-   * Returns the byte at position {@code index} as a {@code char}. Interprets the byte as a
-   * 7-bit ASCII value — values above 0x7F are passed through as-is (not sanitized), which matches
-   * GFLog's expectation for US-ASCII log fields.
+   * Returns the byte at position {@code index} as a {@code char}. Interprets the byte as a 7-bit
+   * ASCII value — values above 0x7F are passed through as-is (not sanitized), which matches GFLog's
+   * expectation for US-ASCII log fields.
    *
    * @param index position within the wrapped slice; must be in {@code [0, length())}
    * @return the ASCII character at the given index
@@ -71,16 +71,15 @@ public final class BufferAsAsciiCharSequence implements CharSequence {
   @Override
   public char charAt(final int index) {
     if (index < 0 || index >= length) {
-      throw new IndexOutOfBoundsException(
-          "index " + index + " out of range [0, " + length + ")");
+      throw new IndexOutOfBoundsException("index " + index + " out of range [0, " + length + ")");
     }
     return (char) (buffer.getByte(offset + index) & 0xFF);
   }
 
   /**
-   * Returns a {@link CharSequence} sub-view of this adapter. <b>Allocates a new
-   * {@link BufferAsAsciiCharSequence}</b> — intended for diagnostic/test use only. Not called
-   * on the hot path.
+   * Returns a {@link CharSequence} sub-view of this adapter. <b>Allocates a new {@link
+   * BufferAsAsciiCharSequence}</b> — intended for diagnostic/test use only. Not called on the hot
+   * path.
    *
    * @param start the start index (inclusive)
    * @param end the end index (exclusive)
@@ -94,8 +93,8 @@ public final class BufferAsAsciiCharSequence implements CharSequence {
   }
 
   /**
-   * Returns the ASCII bytes of the wrapped slice as a {@link String}. <b>Allocates a new
-   * {@link String}</b> — cold-path / debug use only. Never call on the hot path.
+   * Returns the ASCII bytes of the wrapped slice as a {@link String}. <b>Allocates a new {@link
+   * String}</b> — cold-path / debug use only. Never call on the hot path.
    *
    * @return the ASCII string representation
    */

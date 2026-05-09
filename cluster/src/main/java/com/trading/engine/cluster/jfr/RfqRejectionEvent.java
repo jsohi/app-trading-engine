@@ -12,11 +12,11 @@ import jdk.jfr.StackTrace;
  * quoteId reject reason from the §9.2a peek phase. Carries the reject reason byte and a packed
  * 16-byte ASCII text identifier for postmortem analysis.
  *
- * <p><b>Always emitted at every reject call site.</b> All fields are primitive — no per-event
- * heap allocation when JFR is enabled or disabled. The {@link #textHigh} / {@link #textLow} pair
- * encodes the first 16 ASCII bytes of the {@code text} field (FIX tag 58, 64-byte fixed length)
- * for diagnostic identification; the JFR consumer or post-processing step can decode the lanes
- * back into ASCII.
+ * <p><b>Always emitted at every reject call site.</b> All fields are primitive — no per-event heap
+ * allocation when JFR is enabled or disabled. The {@link #textHigh} / {@link #textLow} pair encodes
+ * the first 16 ASCII bytes of the {@code text} field (FIX tag 58, 64-byte fixed length) for
+ * diagnostic identification; the JFR consumer or post-processing step can decode the lanes back
+ * into ASCII.
  *
  * <p><b>Threading:</b> single-threaded cluster duty cycle.
  *
@@ -30,8 +30,8 @@ import jdk.jfr.StackTrace;
 public final class RfqRejectionEvent extends Event {
 
   /**
-   * SBE {@code QuoteRejectReasonEnum} value: 1=UnknownSymbol, 2=ExchangeClosed, 3=QuoteExceedsLimit,
-   * 4=TooLateToEnter, 5=InvalidPrice, 99=Other.
+   * SBE {@code QuoteRejectReasonEnum} value: 1=UnknownSymbol, 2=ExchangeClosed,
+   * 3=QuoteExceedsLimit, 4=TooLateToEnter, 5=InvalidPrice, 99=Other.
    */
   @Label("Reject Reason Code")
   public byte reasonCode;
