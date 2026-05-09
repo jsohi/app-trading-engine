@@ -25,7 +25,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -52,8 +51,7 @@ final class ErrorCodesFixtureTest {
       if (code == WebSocketErrorCode.NULL_VAL) {
         continue;
       }
-      entries.add(
-          "    { \"name\": \"" + code.name() + "\", \"value\": " + code.value() + " }");
+      entries.add("    { \"name\": \"" + code.name() + "\", \"value\": " + code.value() + " }");
     }
     final var sb = new StringBuilder(256);
     sb.append("{\n  \"schemaVersion\": 1,\n  \"codes\": [\n");

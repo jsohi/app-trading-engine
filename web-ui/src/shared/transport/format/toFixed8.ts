@@ -13,9 +13,11 @@
  *
  * Threading: callable from main thread render code only.
  *
- * Allocation: one string per call (display-only; never on the
- * per-frame hot path — banned in `src/workers/**` and `src/streams/**`
- * by ESLint `local/no-bigint-to-number-coerce`).
+ * Allocation: ~3 transient string allocations per call
+ * (`whole.toString()`, the padded `fracStr`, and the template-literal
+ * concatenation). Display-only; never on the per-frame hot path —
+ * banned in `src/workers/**` and `src/streams/**` by ESLint
+ * `local/no-bigint-to-number-coerce`.
  *
  * Plan reference: §5.7 / §6 row 16.
  */

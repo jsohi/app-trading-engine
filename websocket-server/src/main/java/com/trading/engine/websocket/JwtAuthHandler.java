@@ -491,12 +491,13 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     enc.maxSubscriptions(config.maxSubscriptionsPerClient());
     // APP-36 §A1: server-asserted heartbeat cadence published in AuthAck.
     // serverHeartbeatIntervalMs (id=4) — outbound WebSocketHeartbeat cadence.
-    // clientHeartbeatIntervalMs (id=5) — half of clientTimeoutMs so server
-    // disconnect threshold remains 2× the published client cadence per §2.8.
-    // Both fields are uint32 in the schema; clamp via narrowing cast (configs
-    // validated > 0 in WebSocketServerConfig and the values are well below 2^32).
-    enc.serverHeartbeatIntervalMs((int) config.heartbeatIntervalMs());
-    enc.clientHeartbeatIntervalMs((int) (config.clientTimeoutMs() / 2L));
+    // clientHeartbeatIntervalMs (id=5) — negotiated cadence == clientTimeoutMs/2,
+    // so server hard-disconnect threshold remains 2× the published client cadence
+    // per APP-36 §2.8. WebSocketServerConfig.validate() rejects values that would
+    // narrow into a negative int (uint32 wire range); Math.toIntExact provides
+    // a defensive fail-fast even if validation is bypassed.
+    enc.serverHeartbeatIntervalMs(Math.toIntExact(config.heartbeatIntervalMs()));
+    enc.clientHeartbeatIntervalMs(Math.toIntExact(config.negotiatedClientHeartbeatIntervalMs()));
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);

@@ -95,8 +95,9 @@ final class WebSocketAuthAckEncoderTest {
   @DisplayName("authAck_largeIntervals_encodeDecodeUint32Range")
   void authAck_largeIntervals_encodeDecodeUint32Range() {
     // uint32 max = 2^32 - 1. Java SBE encodes via int; positive values up to
-    // Integer.MAX_VALUE (2^31 - 1) round-trip cleanly. Anything larger maps
-    // through the schema's uint32 range; we cap at server config validation.
+    // Integer.MAX_VALUE (2^31 - 1) round-trip cleanly. Anything larger is
+    // rejected at server config validation (see
+    // configValidate_outOfRangeHeartbeatIntervalMs_throws below).
     final var encoder = new WebSocketAuthAckEncoder();
     encoder.wrapAndApplyHeader(buffer, 0, headerEncoder);
     encoder.sessionId().mostSignificantBits(0L).leastSignificantBits(0L);
@@ -110,5 +111,55 @@ final class WebSocketAuthAckEncoderTest {
     decoder.wrapAndApplyHeader(buffer, 0, headerDecoder);
     assertEquals(Integer.MAX_VALUE, decoder.serverHeartbeatIntervalMs());
     assertEquals(Integer.MAX_VALUE, decoder.clientHeartbeatIntervalMs());
+  }
+
+  @Test
+  @DisplayName("configValidate_heartbeatIntervalMsBeyondIntMax_throwsIllegalArgument")
+  void configValidate_heartbeatIntervalMsBeyondIntMax_throwsIllegalArgument() {
+    // APP-36 §A1 / iter-1 review MEDIUM-1 fix: WebSocketServerConfig must
+    // reject heartbeatIntervalMs > Integer.MAX_VALUE so the AuthAck wire
+    // narrowing cast in JwtAuthHandler.sendAuthAck cannot silently produce
+    // a sign-flipped uint32. Math.toIntExact in the encoder is a defense-
+    // in-depth backstop for the same range.
+    //
+    // Set clientTimeoutMs above the bad heartbeat so the existing
+    // "clientTimeoutMs > heartbeatIntervalMs" check passes; only the new
+    // upper-bound validator should fire.
+    final long beyondHeartbeat = (long) Integer.MAX_VALUE + 1L;
+    final long bigClientTimeout = beyondHeartbeat + 1_000L;
+    final var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                WebSocketServerConfig.builder()
+                    .heartbeatIntervalMs(beyondHeartbeat)
+                    .clientTimeoutMs(bigClientTimeout)
+                    .build());
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getMessage().contains("Integer.MAX_VALUE")
+            && ex.getMessage().contains("heartbeatIntervalMs"),
+        "expected error referencing heartbeatIntervalMs upper bound; got: " + ex.getMessage());
+  }
+
+  @Test
+  @DisplayName("configValidate_clientTimeoutMsBeyond2xIntMax_throwsIllegalArgument")
+  void configValidate_clientTimeoutMsBeyond2xIntMax_throwsIllegalArgument() {
+    // APP-36 §A1 / iter-1 review MEDIUM-1: clientTimeoutMs/2 is published
+    // as the negotiated client cadence. The cap must allow for the divide.
+    // Construct a clientTimeoutMs strictly greater than 2 * Integer.MAX_VALUE
+    // so only the new validator fires (heartbeatIntervalMs stays in-range).
+    final long beyond = 2L * Integer.MAX_VALUE + 2L;
+    final var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                WebSocketServerConfig.builder()
+                    .clientTimeoutMs(beyond)
+                    .heartbeatIntervalMs(5_000)
+                    .build());
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getMessage().contains("Integer.MAX_VALUE")
+            && ex.getMessage().contains("clientTimeoutMs"),
+        "expected error referencing clientTimeoutMs upper bound; got: " + ex.getMessage());
   }
 }

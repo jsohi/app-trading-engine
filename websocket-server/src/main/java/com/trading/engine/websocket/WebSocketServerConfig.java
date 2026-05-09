@@ -178,6 +178,21 @@ public final class WebSocketServerConfig {
             + ")");
     require(subscriptionsPerSec > 0, "subscriptionsPerSec must be > 0");
     require(heartbeatIntervalMs > 0, "heartbeatIntervalMs must be > 0");
+    // APP-36 §A1: AuthAck publishes serverHeartbeatIntervalMs as uint32 wire
+    // (Java SBE encoder takes int). Reject configs that would silently
+    // narrow to a negative int and produce a corrupt AuthAck.
+    require(
+        heartbeatIntervalMs <= Integer.MAX_VALUE,
+        "heartbeatIntervalMs ("
+            + heartbeatIntervalMs
+            + ") must be <= Integer.MAX_VALUE for AuthAck wire safety");
+    // clientTimeoutMs / 2 is the published clientHeartbeatIntervalMs; same
+    // narrowing constraint applies. clientTimeoutMs > 0 enforced at line 157.
+    require(
+        clientTimeoutMs <= 2L * Integer.MAX_VALUE,
+        "clientTimeoutMs ("
+            + clientTimeoutMs
+            + ") must be <= 2 * Integer.MAX_VALUE so clientTimeoutMs/2 fits in uint32 AuthAck wire");
     require(
         snapshotFragmentSizeBytes > 0 && snapshotFragmentSizeBytes <= 65_536,
         "snapshotFragmentSizeBytes must be in [1, 65536], got: " + snapshotFragmentSizeBytes);
@@ -563,6 +578,19 @@ public final class WebSocketServerConfig {
    */
   public long clientTimeoutMs() {
     return clientTimeoutMs;
+  }
+
+  /**
+   * APP-36 §A1: published in AuthAck (template 61, id=5) so the client knows how often to send
+   * {@code ClientHeartbeat}. Server hard-disconnects at {@code 2 × this value} (== {@link
+   * #clientTimeoutMs()}); the half-of relationship is the contract.
+   *
+   * @return half of {@link #clientTimeoutMs()}, in milliseconds. Validated {@code <=
+   *     Integer.MAX_VALUE} so the {@link Math#toIntExact(long)} narrowing in {@code
+   *     JwtAuthHandler.sendAuthAck} is range-safe.
+   */
+  public long negotiatedClientHeartbeatIntervalMs() {
+    return clientTimeoutMs / 2L;
   }
 
   /**

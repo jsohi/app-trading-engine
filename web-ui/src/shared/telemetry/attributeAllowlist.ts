@@ -30,64 +30,71 @@
  */
 
 /**
- * Frozen Set of allowed OTel attribute keys for ALL web-ui spans.
- * Adding a key here is a deliberate review-time decision.
+ * Allow-listed OTel attribute keys for ALL web-ui spans. Backed by a frozen
+ * source array (`Object.freeze(...)` on a `Set` is a no-op against `add`/
+ * `delete` mutators — it freezes own properties only, not contents — so we
+ * freeze the source array and rely on the `ReadonlySet` type for compile-time
+ * mutation guards). Adding a key is a deliberate review-time decision.
  */
-export const OTEL_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = Object.freeze(
-  new Set<string>([
-    // Existing (createStore + worker bootstrap) — preserved as-is.
-    "store.name",
-    "error.type",
-    "error.message",
-    "exception.type",
-    "exception.message",
-    "exception.stacktrace",
-    "worker.id",
+const OTEL_ATTRIBUTE_KEYS = Object.freeze<readonly string[]>([
+  // Existing (createStore + worker bootstrap) — preserved as-is.
+  "store.name",
+  "error.type",
+  "error.message",
+  "exception.type",
+  "exception.message",
+  "exception.stacktrace",
+  "worker.id",
 
-    // APP-36 additions (§3 cold-path span names, attributes referenced in §5):
-    "ws.url", // wss-host / route — never includes ?token=
-    "schema.id",
-    "schema.version",
-    "session.id-trunc", // last-4 hex of sessionId; never the full UUID
-    "close.code", // numeric WebSocket close code
-    "error.code", // application-level WebSocketErrorCode (§2.13)
-    "gap.from",
-    "gap.to",
-    "gap.count",
-    "gap.timings", // delimited string of last-100 gap timings (rate-limited)
-    "subprotocol", // value-asserted on handshake echo
-    "reauth.outcome", // "success" | "rejected" | "queue-overflow"
-    "snapshot.id-trunc", // last-4 hex of snapshotId
-    "snapshot.fragment-index",
-    "snapshot.total-fragments",
-    "stats.frames-decoded",
-    "stats.bytes-decoded",
-    "stats.crc-mismatches",
-    "stats.gaps",
-    "stats.reconnects",
-    "stats.replay-frames",
-    "stats.snapshot-bytes",
-    "stats.buffered-amount-peak",
-    "stats.degraded-timing-mode",
-  ]),
-);
+  // APP-36 additions (§3 cold-path span names, attributes referenced in §5):
+  "ws.url", // wss-host / route — never includes ?token=
+  "schema.id",
+  "schema.version",
+  "session.id-trunc", // last-4 hex of sessionId; never the full UUID
+  "close.code", // numeric WebSocket close code
+  "error.code", // application-level WebSocketErrorCode (§2.13)
+  "gap.from",
+  "gap.to",
+  "gap.count",
+  "gap.timings", // delimited string of last-100 gap timings (rate-limited)
+  "subprotocol", // value-asserted on handshake echo
+  "reauth.outcome", // "success" | "rejected" | "queue-overflow"
+  "snapshot.id-trunc", // last-4 hex of snapshotId
+  "snapshot.fragment-index",
+  "snapshot.total-fragments",
+  "stats.frames-decoded",
+  "stats.bytes-decoded",
+  "stats.crc-mismatches",
+  "stats.gaps",
+  "stats.reconnects",
+  "stats.replay-frames",
+  "stats.snapshot-bytes",
+  "stats.buffered-amount-peak",
+  "stats.degraded-timing-mode",
+]);
+
+/**
+ * Public allow-list — typed `ReadonlySet<string>` for compile-time mutation
+ * guards. Built once at module init from the frozen source array.
+ */
+export const OTEL_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = new Set<string>(OTEL_ATTRIBUTE_KEYS);
+
+const OTEL_SPAN_NAMES_SOURCE = Object.freeze<readonly string[]>([
+  "web-ui.store.subscribe",
+  "web-ui.store.error",
+  "web-ui.worker.start",
+  "web-ui.worker.error",
+  "web-ui.worker.auth",
+  "web-ui.worker.reconnect",
+  "web-ui.worker.crc-mismatch",
+  "web-ui.worker.schema-mismatch",
+  "web-ui.worker.buffer-overflow",
+  "web-ui.worker.protocol-violation",
+  "web-ui.worker.gap-batch",
+]);
 
 /**
  * Allow-listed span names — paired with the attribute set above for
  * the OTel telemetry contract test (§5.8).
  */
-export const OTEL_SPAN_NAMES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([
-    "web-ui.store.subscribe",
-    "web-ui.store.error",
-    "web-ui.worker.start",
-    "web-ui.worker.error",
-    "web-ui.worker.auth",
-    "web-ui.worker.reconnect",
-    "web-ui.worker.crc-mismatch",
-    "web-ui.worker.schema-mismatch",
-    "web-ui.worker.buffer-overflow",
-    "web-ui.worker.protocol-violation",
-    "web-ui.worker.gap-batch",
-  ]),
-);
+export const OTEL_SPAN_NAMES: ReadonlySet<string> = new Set<string>(OTEL_SPAN_NAMES_SOURCE);

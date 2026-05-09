@@ -38,8 +38,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Pins the WebSocketServerProtocolHandler subprotocol echo for {@code trading-ws.v1}.
  *
- * <p>Mirrors the handler configuration in {@link WebSocketServerMain} line ~230:
- * {@code new WebSocketServerProtocolHandler("/", "trading-ws.v1", false, 65_536, false, true, 30_000)}.
+ * <p>Mirrors the handler configuration in {@link WebSocketServerMain} line ~230: {@code new
+ * WebSocketServerProtocolHandler("/", "trading-ws.v1", false, 65_536, false, true, 30_000)}.
  */
 final class WebSocketServerMainSubprotocolTest {
 
@@ -84,9 +84,9 @@ final class WebSocketServerMainSubprotocolTest {
   // ─── Helpers ───────────────────────────────────────────────────────
 
   /**
-   * Drives an HTTP/1.1 WebSocket upgrade through a Netty {@code EmbeddedChannel}
-   * with the production handler configuration and returns the server's
-   * {@link FullHttpResponse}. Caller releases the returned buffer.
+   * Drives an HTTP/1.1 WebSocket upgrade through a Netty {@code EmbeddedChannel} with the
+   * production handler configuration and returns the server's {@link FullHttpResponse}. Caller
+   * releases the returned buffer.
    */
   private static FullHttpResponse runUpgrade(
       final java.util.function.Consumer<DefaultFullHttpRequest> mutator) {
