@@ -1230,26 +1230,16 @@ public final class RfqStateMachine {
           break;
       }
     }
-    // Re-populate maps after rehydration. The first loop's release() calls swap-with-last on
-    // activeIndices and decrement activeCount, so activeIndices[0..activeCount) exactly
-    // contains the surviving slots after the sweep — no slot is skipped, no stale slot is
-    // visited. Iterating up to (post-sweep) activeCount is therefore the canonical idiom.
+    // Map population for surviving slots happens INSIDE recoverRequested / recoverQuoted —
+    // every map for a single slot is set in the same step that schedules its timer, so
+    // there's no intermediate state where the slot is byCorrelationId-tracked but
+    // byQuoteReqId / byQuoteId are not yet populated. Defensive invariant:
+    // activeIndices[0..activeCount) is FREE-free per release()'s swap-with-last contract.
     for (int i = 0; i < activeCount; i++) {
       final var slot = slots[activeIndices[i]];
-      // Defensive — every slot in activeIndices[0..activeCount) MUST be non-FREE per the
-      // release() contract. If this fires, release()'s swap-with-last invariant is broken.
       if (slot.state == RfqSlotState.FREE) {
         throw new IllegalStateException(
             "post-sweep activeIndices contains FREE slot poolIndex=" + slot.poolIndex);
-      }
-      if (slot.state == RfqSlotState.REQUESTED) {
-        slot.syncQuoteReqIdKey();
-        byQuoteReqId.put(slot.quoteReqIdKey, slot);
-      } else if (slot.state == RfqSlotState.QUOTED) {
-        slot.syncQuoteReqIdKey();
-        slot.syncQuoteIdKey();
-        byQuoteReqId.put(slot.quoteReqIdKey, slot);
-        byQuoteId.put(slot.quoteIdKey, slot);
       }
     }
   }
@@ -1276,7 +1266,14 @@ public final class RfqStateMachine {
       release(slot);
       return;
     }
+    // Populate ALL maps for this surviving slot atomically — per Gemini round-5 review,
+    // splitting the population across two loops was fragile if release() logic changes
+    // (e.g. a future tweak to swap-with-last). One survivor → all maps populated, no
+    // intermediate state where a slot is byCorrelationId-tracked but not byQuoteReqId-
+    // tracked.
+    slot.syncQuoteReqIdKey();
     byCorrelationId.put(slot.requestTimeoutCorrelationId, slot);
+    byQuoteReqId.put(slot.quoteReqIdKey, slot);
     metrics.recoveryRequestRearmed++;
   }
 
@@ -1301,7 +1298,12 @@ public final class RfqStateMachine {
       release(slot);
       return;
     }
+    // Populate ALL maps for this surviving slot atomically (see recoverRequested above).
+    slot.syncQuoteReqIdKey();
+    slot.syncQuoteIdKey();
     byCorrelationId.put(slot.timerCorrelationId, slot);
+    byQuoteReqId.put(slot.quoteReqIdKey, slot);
+    byQuoteId.put(slot.quoteIdKey, slot);
     metrics.recoveryQuotedRearmed++;
   }
 
