@@ -261,10 +261,15 @@ describe("Reconnect", () => {
     expect(reconnect.applyCloseCode(1015)).toBe("SCHEMA_MISMATCH");
   });
 
-  it("closeCode_4xxx_returns_PROTOCOL_VIOLATION", () => {
-    expect(reconnect.applyCloseCode(4000)).toBe("PROTOCOL_VIOLATION");
-    expect(reconnect.applyCloseCode(4001)).toBe("PROTOCOL_VIOLATION");
-    expect(reconnect.applyCloseCode(4999)).toBe("PROTOCOL_VIOLATION");
+  it("closeCode_4xxx_returns_RECONNECT", () => {
+    // Per Gemini review R9 (HIGH): bare 4xxx custom codes typically
+    // follow a `WebSocketError` template whose code already advanced
+    // the breaker via applyAppErrorCode; treating the close itself as
+    // PROTOCOL_VIOLATION blocked the reconnect path. Accept and let
+    // the §2.13 matrix decide via the preceding error code.
+    expect(reconnect.applyCloseCode(4000)).toBe("RECONNECT");
+    expect(reconnect.applyCloseCode(4001)).toBe("RECONNECT");
+    expect(reconnect.applyCloseCode(4999)).toBe("RECONNECT");
   });
 
   // ─── Backoff multiplier verification ────────────────────────────────

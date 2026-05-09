@@ -115,6 +115,21 @@ export class SnapshotAssembler {
       }
       // Drop any expired snapshots before admitting a new one.
       this.expireStale();
+      // Per Gemini review R9 (MEDIUM): hard-cap `totalFragments`. The
+      // sparse-array fix from R8 prevents OOM at admission time, but
+      // `finaliseAndEmit` later iterates `[0, totalFragments)` to
+      // concatenate fragments — a 2^32 value would hang the worker
+      // thread regardless of how few fragments actually arrived.
+      // 1_000_000 is far above any plausible legitimate snapshot
+      // (8 MiB / 8B = 1M absolute floor; 8 MiB / 16 KiB = 512 typical)
+      // and well below the loop-hang threshold.
+      const MAX_TOTAL_FRAGMENTS = 1_000_000;
+      if (frag.totalFragments > MAX_TOTAL_FRAGMENTS) {
+        this.protocolViolation(
+          `totalFragments ${String(frag.totalFragments)} > MAX_TOTAL_FRAGMENTS (${String(MAX_TOTAL_FRAGMENTS)})`,
+        );
+        return false;
+      }
       inflight = {
         snapshotId: frag.snapshotId,
         idKey: key,

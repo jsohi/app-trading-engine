@@ -100,6 +100,24 @@ export class WorkerClient implements WorkerClientStreams {
 
   /** Manual reconnect — resets backoff and triggers a worker reset. */
   reconnectNow(): void {
+    // Per Gemini review R9 (HIGH): if a backoff timer is currently
+    // armed, the worker's WS is already null and `RECONNECT_NOW`
+    // would be a no-op. Cancel the backoff and respawn immediately so
+    // the user-facing "reconnect now" button is responsive even
+    // mid-backoff window.
+    if (this.reconnectTimer !== null) {
+      self.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      this.spawn().catch((err: unknown) => {
+        this.errors$.next({
+          type: "ERROR",
+          protocolVersion: WORKER_PROTOCOL_VERSION,
+          code: "WORKER",
+          hint: `reconnectNow respawn failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+      return;
+    }
     if (this.worker === null) return;
     this.worker.postMessage({
       type: "RECONNECT_NOW",
