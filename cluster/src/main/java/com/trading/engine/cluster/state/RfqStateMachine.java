@@ -401,6 +401,17 @@ public final class RfqStateMachine {
     slot.state = RfqSlotState.FREE;
     slot.timerCorrelationId = 0L;
     slot.requestTimeoutCorrelationId = 0L;
+    // Defense-in-depth: zero the quoteReqId and quoteId byte buffers so a stale
+    // ByteArrayKey content-equals lookup against this slot's keys (after the map remove
+    // has already happened) cannot find a stale match. The keys themselves are reused
+    // (wrap the same byte arrays), so zeroing the bytes invalidates the keys without
+    // re-allocation.
+    for (int b = 0; b < RfqSlot.QUOTE_REQ_ID_LENGTH; b++) {
+      slot.quoteReqIdBytes[b] = 0;
+    }
+    for (int b = 0; b < RfqSlot.QUOTE_ID_LENGTH; b++) {
+      slot.quoteIdBytes[b] = 0;
+    }
     freeIndices[freeCount++] = slot.poolIndex;
     metrics.poolOccupancy = capacity - freeCount;
   }
@@ -1128,10 +1139,18 @@ public final class RfqStateMachine {
           break;
       }
     }
-    // Re-populate maps after rehydration. Iterate the post-sweep activeIndices (slots that
-    // survived the sweep without being released) — O(activeCount) instead of O(capacity).
+    // Re-populate maps after rehydration. The first loop's release() calls swap-with-last on
+    // activeIndices and decrement activeCount, so activeIndices[0..activeCount) exactly
+    // contains the surviving slots after the sweep — no slot is skipped, no stale slot is
+    // visited. Iterating up to (post-sweep) activeCount is therefore the canonical idiom.
     for (int i = 0; i < activeCount; i++) {
       final RfqSlot slot = slots[activeIndices[i]];
+      // Defensive — every slot in activeIndices[0..activeCount) MUST be non-FREE per the
+      // release() contract. If this fires, release()'s swap-with-last invariant is broken.
+      if (slot.state == RfqSlotState.FREE) {
+        throw new IllegalStateException(
+            "post-sweep activeIndices contains FREE slot poolIndex=" + slot.poolIndex);
+      }
       if (slot.state == RfqSlotState.REQUESTED) {
         slot.syncQuoteReqIdKey();
         byQuoteReqId.put(slot.quoteReqIdKey, slot);
