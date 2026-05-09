@@ -1290,9 +1290,11 @@
         </group>
     </sbe:message>
 
-    <!-- RfqStateSnapshot (203) — non-terminal RFQs only. The state field uses RfqStateEnum (Requested/Quoted/Accepted). -->
+    <!-- RfqStateSnapshot (203) — non-terminal RFQs + recentlyTerminal LRU. The state field uses RfqStateEnum (Requested/Quoted/Accepted). -->
     <sbe:message name="RfqStateSnapshot" id="203"
-                 description="Repeating group of non-terminal RFQs from the RfqStateMachine. After restore the state machine immediately expires any RFQ whose TTL has elapsed relative to the recovery cluster timestamp.">
+                 description="Non-terminal RFQs from the RfqStateMachine + recentlyTerminal LRU ring contents. After restore the state machine immediately expires any RFQ whose TTL has elapsed relative to the recovery cluster timestamp.">
+        <field name="recentlyTerminalRingHead" id="10102" type="uint16"
+               description="LRU ring head index — pointer to the next insertion slot. Persisted so a recovered node reconstructs the FIFO eviction order exactly as the leader had it at snapshot time."/>
         <group name="noRfqs" id="10041" dimensionType="groupSizeEncoding"
                description="One entry per non-terminal RFQ">
             <field name="quoteReqId"      id="131"   type="QuoteReqID"/>
@@ -1332,13 +1334,14 @@
             </group>
         </group>
         <!-- recentlyTerminal LRU ring contents — bounded list of recently-terminated quoteReqIds
-             with the terminal reason byte. Persisting this in the snapshot eliminates the
-             cross-replica determinism gap on node restart: a freshly-recovered node would
-             otherwise have an empty LRU while long-running peers carry pre-snapshot entries,
-             so a duplicate-quoteReqId arriving in that window would be processed differently
-             on the recovered node vs the others. Bounded by RECENTLY_TERMINAL_CAPACITY (1024). -->
+             with the terminal reason byte AND the original ring slot index. Persisting both is
+             required to eliminate the cross-replica determinism gap on node restart: a freshly-
+             recovered node must place entries at the same ring positions as the leader had them
+             at snapshot time so that the next FIFO eviction targets the same entry. Bounded by
+             RECENTLY_TERMINAL_CAPACITY (1024). -->
         <group name="noRecentlyTerminal" id="10100" dimensionType="groupSizeEncoding"
-               description="Recently-terminal quoteReqIds + reason byte for cross-replica dedup determinism">
+               description="Recently-terminal quoteReqIds + ring slot + reason byte for cross-replica dedup determinism">
+            <field name="slotIndex"  id="10103" type="uint16"    description="Original LRU ring slot index (0..RECENTLY_TERMINAL_CAPACITY-1)"/>
             <field name="quoteReqId" id="131"   type="QuoteReqID"/>
             <field name="reason"     id="10101" type="uint8"     description="Terminal reason byte: 1=Expired, 2=Rejected, 3=Accepted"/>
         </group>

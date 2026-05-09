@@ -840,6 +840,11 @@ public final class RfqStateMachine {
       final MutableDirectBuffer dst, final int offset, final MessageHeaderEncoder hdr) {
     final int active = activeSlotCount();
     rfqStateEncoder.wrapAndApplyHeader(dst, offset, hdr);
+    // Persist the LRU ring head BEFORE the noRfqs group (SBE field-then-group ordering).
+    // This is required for cross-replica determinism: a follower restoring from snapshot
+    // must reconstruct the same ring head as the leader had at snapshot time so the next
+    // FIFO eviction targets the same slot.
+    rfqStateEncoder.recentlyTerminalRingHead(recentlyTerminalRingHead);
     final var grp = rfqStateEncoder.noRfqsCount(active);
     // Iterate only active slots (O(activeCount)) — replicas process the same event history
     // deterministically, so activeIndices is byte-identical across replicas at any point and
@@ -910,9 +915,10 @@ public final class RfqStateMachine {
     // dedup determinism across the snapshot boundary.
     final int liveTerminalCount = recentlyTerminalIndex.size();
     final var termGrp = rfqStateEncoder.noRecentlyTerminalCount(liveTerminalCount);
-    // Iterate the ring in head-relative order (oldest → newest) so the snapshot bytes are
-    // deterministic across replicas with identical command history. Skip empty slots
-    // (where the key bytes have been zeroed via clear() but the side-index has the entry).
+    // Walk pool-index order, emitting each live entry with its ORIGINAL slotIndex so the
+    // restore can place it at the same ring position. Combined with the persisted ringHead
+    // above, this restores the LRU's FIFO eviction order exactly as the leader had it at
+    // snapshot time — eliminating the cross-replica determinism gap.
     for (int i = 0; i < RECENTLY_TERMINAL_CAPACITY; i++) {
       final var key = recentlyTerminalRing[i];
       // A slot is "live" if the side-index points at this ring position (canonical mapping).
@@ -920,6 +926,7 @@ public final class RfqStateMachine {
         continue;
       }
       termGrp.next();
+      termGrp.slotIndex(i);
       termGrp.putQuoteReqId(key.backingArray(), key.offset());
       termGrp.reason((short) (recentlyTerminalReason[i] & 0xFF));
     }
@@ -979,6 +986,12 @@ public final class RfqStateMachine {
     // Reset state.
     clear();
     rfqStateDecoder.wrap(src, offset, blockLength, schemaVersion);
+    // Restore the LRU ring head BEFORE iterating groups (SBE field-then-group order).
+    final int restoredRingHead = rfqStateDecoder.recentlyTerminalRingHead();
+    if (restoredRingHead < 0 || restoredRingHead >= RECENTLY_TERMINAL_CAPACITY) {
+      throw new IllegalStateException(
+          "RfqStateSnapshot recentlyTerminalRingHead out of range: " + restoredRingHead);
+    }
     final var grp = rfqStateDecoder.noRfqs();
     int restoredCount = 0;
     while (grp.hasNext()) {
@@ -1077,19 +1090,25 @@ public final class RfqStateMachine {
               + RECENTLY_TERMINAL_CAPACITY
               + " — corrupted snapshot or version mismatch");
     }
-    int termIdx = 0;
     while (termGrp.hasNext()) {
       termGrp.next();
-      final var ringKey = recentlyTerminalRing[termIdx];
+      // Restore each entry at its ORIGINAL ring slot (encoded as slotIndex). This
+      // preserves the exact ring layout the leader had at snapshot time so that the
+      // next FIFO eviction targets the same entry across replicas.
+      final int slotIdx = termGrp.slotIndex();
+      if (slotIdx < 0 || slotIdx >= RECENTLY_TERMINAL_CAPACITY) {
+        throw new IllegalStateException(
+            "RfqStateSnapshot noRecentlyTerminal slotIndex out of range: " + slotIdx);
+      }
+      final var ringKey = recentlyTerminalRing[slotIdx];
       termGrp.getQuoteReqId(restoreTermScratch, 0);
       ringKey.overwrite(restoreTermScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
-      recentlyTerminalReason[termIdx] = (byte) termGrp.reason();
-      recentlyTerminalIndex.put(ringKey, termIdx);
-      termIdx++;
+      recentlyTerminalReason[slotIdx] = (byte) termGrp.reason();
+      recentlyTerminalIndex.put(ringKey, slotIdx);
     }
-    // Position the ring head at the next free slot so subsequent inserts append after the
-    // restored entries (overwriting the oldest once the ring fills).
-    recentlyTerminalRingHead = termIdx % RECENTLY_TERMINAL_CAPACITY;
+    // Restore the persisted ring head — guarantees cross-replica determinism on the
+    // next eviction.
+    recentlyTerminalRingHead = restoredRingHead;
     return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateDecoder.encodedLength();
   }
 

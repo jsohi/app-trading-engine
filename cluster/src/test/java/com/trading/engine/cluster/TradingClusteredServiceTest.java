@@ -1005,7 +1005,7 @@ class TradingClusteredServiceTest {
   @Test
   void assembleSnapshot_warningThresholdSurfacedViaErrorHandler() {
     // Wire a FakeCluster with a real context + error handler.
-    final AtomicReference<Throwable> capturedWarning = new AtomicReference<>();
+    final var capturedWarning = new AtomicReference<Throwable>();
     final var warningCluster = new FakeCluster(TIMESTAMP);
     warningCluster.setErrorHandler(capturedWarning::set);
 
