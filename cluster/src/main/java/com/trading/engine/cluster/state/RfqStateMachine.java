@@ -2,6 +2,7 @@ package com.trading.engine.cluster.state;
 
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.handler.RfqRejectMessages;
+import com.trading.engine.cluster.handler.SafeEnumMappers;
 import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
@@ -14,8 +15,6 @@ import com.trading.engine.messages.sbe.RfqStateEnum;
 import com.trading.engine.messages.sbe.RfqStateSnapshotDecoder;
 import com.trading.engine.messages.sbe.RfqStateSnapshotEncoder;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
-import com.trading.engine.messages.sbe.SideEnum;
-import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.util.ByteArrayKey;
 import io.aeron.cluster.service.Cluster;
 import java.util.Objects;
@@ -731,9 +730,9 @@ public final class RfqStateMachine {
     quoteExpiredEncoder.putQuoteId(slot.quoteIdBytes, 0);
     quoteExpiredEncoder.putQuoteReqId(slot.quoteReqIdBytes, 0);
     quoteExpiredEncoder.putSymbol(slot.symbolBytes, 0);
-    quoteExpiredEncoder.side(SideEnum.get(slot.side));
+    quoteExpiredEncoder.side(SafeEnumMappers.safeSide(slot.side));
     quoteExpiredEncoder.putAccountCode(slot.accountCodeBytes, 0);
-    quoteExpiredEncoder.productType(ProductTypeEnum.get(slot.productType));
+    quoteExpiredEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + quoteExpiredEncoder.encodedLength();
     if (len > expiredEgressBuffer.capacity()) {
       throw new IllegalStateException("RFQ 107 encode overflow: " + len);
@@ -749,10 +748,10 @@ public final class RfqStateMachine {
     quoteRejectedEncoder.timestamp(0L);
     quoteRejectedEncoder.putQuoteReqId(slot.quoteReqIdBytes, 0);
     quoteRejectedEncoder.putSymbol(slot.symbolBytes, 0);
-    quoteRejectedEncoder.side(SideEnum.get(slot.side));
+    quoteRejectedEncoder.side(SafeEnumMappers.safeSide(slot.side));
     quoteRejectedEncoder.putAccountCode(slot.accountCodeBytes, 0);
     quoteRejectedEncoder.quoteRejectReason(QuoteRejectReasonEnum.Other);
-    quoteRejectedEncoder.productType(ProductTypeEnum.get(slot.productType));
+    quoteRejectedEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     quoteRejectedEncoder.putText(text, 0);
     final int len = MessageHeaderEncoder.ENCODED_LENGTH + quoteRejectedEncoder.encodedLength();
     if (len > rejectedEgressBuffer.capacity()) {
@@ -856,7 +855,7 @@ public final class RfqStateMachine {
       grp.state(toWireState(slot.state));
       grp.putQuoteId(slot.quoteIdBytes, 0);
       grp.putSymbol(slot.symbolBytes, 0);
-      grp.side(SideEnum.get(slot.side));
+      grp.side(SafeEnumMappers.safeSide(slot.side));
       grp.orderQty(slot.orderQty);
       grp.bidPx(slot.bidPx);
       grp.offerPx(slot.offerPx);
@@ -866,7 +865,7 @@ public final class RfqStateMachine {
       grp.swapPoints(slot.swapPoints);
       grp.validUntil(slot.validUntil);
       grp.transactTime(slot.transactTime);
-      grp.productType(ProductTypeEnum.get(slot.productType));
+      grp.productType(SafeEnumMappers.safeProductType(slot.productType));
       grp.putSettlDate(slot.settlDateBytes, 0);
       // slot.settlType holds the raw enum byte (NULL_VAL=255 / signed -1) per the encoder
       // contract — see QuoteRequestHandler:281. Compare against (byte) NULL_VAL to detect
@@ -878,19 +877,19 @@ public final class RfqStateMachine {
               : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
       grp.putCurrency(slot.currencyBytes, 0);
       grp.putSettlCurrency(slot.settlCurrencyBytes, 0);
-      grp.tenor(TenorEnum.get(slot.tenor));
+      grp.tenor(SafeEnumMappers.safeTenor(slot.tenor));
       final RfqStateSnapshotEncoder.NoRfqsEncoder.NoLegsEncoder legGrp =
           grp.noLegsCount(slot.noLegs);
       for (int j = 0; j < slot.noLegs; j++) {
         legGrp.next();
-        legGrp.legSide(SideEnum.get(slot.legSide[j]));
+        // Use SafeEnumMappers for raw-byte → enum conversion to avoid the
+        // IllegalArgumentException that the SBE-generated XEnum.get(short) throws on
+        // sign-extended NULL_VAL.value() (byte -1).
+        legGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));
         legGrp.putLegSettlDate(slot.legSettlDate[j], 0);
-        legGrp.legSettlType(
-            slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
-                ? SettlTypeEnum.NULL_VAL
-                : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
+        legGrp.legSettlType(SafeEnumMappers.safeSettlType(slot.legSettlType[j]));
         legGrp.putLegCurrency(slot.legCurrency[j], 0);
-        legGrp.legTenor(TenorEnum.get(slot.legTenor[j]));
+        legGrp.legTenor(SafeEnumMappers.safeTenor(slot.legTenor[j]));
         legGrp.legOrderQty(slot.legOrderQty[j]);
         legGrp.legPrice(slot.legPrice[j]);
         legGrp.legBidPx(slot.legBidPx[j]);
