@@ -709,6 +709,14 @@ public final class TradingClusteredService implements ClusteredService {
     return orderBookSnapLen;
   }
 
+  int rfqStateSnapLength() {
+    return rfqStateSnapLen;
+  }
+
+  MutableDirectBuffer rfqStateSnapBuffer() {
+    return rfqStateSnapBuf;
+  }
+
   MutableDirectBuffer snapshotHeaderBuffer() {
     return snapshotHeaderBuf;
   }
