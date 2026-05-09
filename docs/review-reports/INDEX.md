@@ -11,3 +11,4 @@ Auto-populated by `/orchestrate` after each convergence. Do not edit manually.
 | 2026-04-30 | APP-34 (chunks 7–11) | 8 iters + 6 Gemini rounds  | 47       | 47 fixed / 0 deferred | 100% (8/8 applicable)    | [report](APP-34-session-2026-04-30-chunks-7-11.md) |
 | 2026-04-30 | APP-39               | 5 iters + 3 Gemini rounds  | 70       | 70 fixed / 4 deferred | ~98% (13/13 measured)    | [report](APP-39-session-2026-04-30.md)             |
 | 2026-05-09 | APP-36               | C1–C10 + 12 Gemini rounds  | 76       | 76 fixed / 0 deferred | 97.3% (10/13 applicable) | [report](APP-36-session-2026-05-09.md)             |
+| 2026-05-09 | APP-232              | 5                          | 48       | 47/48                 | 100% (APP-232 scope)     | [report](APP-232-session-2026-05-09.md)            |
