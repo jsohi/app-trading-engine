@@ -56,6 +56,7 @@ public final class TradingState {
   private final OrderBook orderBook;
   private final IdGenerator orderIdGen;
   private final IdGenerator execIdGen;
+  private final IdGenerator quoteIdGen;
 
   // Pre-allocated scratch buffers for ID generation (handler reads from these after generate*)
   private final byte[] orderIdScratch;
@@ -69,12 +70,17 @@ public final class TradingState {
    * @param orderBook the pre-allocated order pool (must not be null)
    * @param orderIdGen the deterministic order ID generator (must not be null)
    * @param execIdGen the deterministic execution ID generator (must not be null)
+   * @param quoteIdGen the deterministic quote ID generator (must not be null)
    */
   public TradingState(
-      final OrderBook orderBook, final IdGenerator orderIdGen, final IdGenerator execIdGen) {
+      final OrderBook orderBook,
+      final IdGenerator orderIdGen,
+      final IdGenerator execIdGen,
+      final IdGenerator quoteIdGen) {
     this.orderBook = Objects.requireNonNull(orderBook, "orderBook");
     this.orderIdGen = Objects.requireNonNull(orderIdGen, "orderIdGen");
     this.execIdGen = Objects.requireNonNull(execIdGen, "execIdGen");
+    this.quoteIdGen = Objects.requireNonNull(quoteIdGen, "quoteIdGen");
     // Scratch buffers sized to the SBE field length (OrderState.ORDER_ID_LENGTH = 20 bytes),
     // not the generator's idByteLength (e.g. 15 for "ORD"). The generator writes its shorter
     // ID left-aligned; the remaining bytes stay zero-padded, matching the SBE char[20] semantics
@@ -255,6 +261,17 @@ public final class TradingState {
    */
   public IdGenerator execIdGen() {
     return execIdGen;
+  }
+
+  /**
+   * Returns the quote ID generator for snapshot encode/decode (prefix "QTE" + counter
+   * serialization). Used by {@link com.trading.engine.cluster.handler.PriceResponseHandler} when
+   * minting a quoteId on REQUESTED→QUOTED transition.
+   *
+   * @return the quote ID generator
+   */
+  public IdGenerator quoteIdGen() {
+    return quoteIdGen;
   }
 
   // ---------------------------------------------------------------------------

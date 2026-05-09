@@ -45,6 +45,7 @@ public final class TradingClusteredServiceFactory {
       final RiskLimitStore riskLimitStore) {
     final var orderIdGen = new IdGenerator("ORD");
     final var execIdGen = new IdGenerator("EXE");
+    final var quoteIdGen = new IdGenerator("QTE");
     // Default capacities (~65k each) for production bootstrap. The existing unit test in
     // TradingClusteredServiceTest uses the int-capacity constructors (128 / 64) to keep its
     // scratch buffers small — a deliberate divergence: the factory is for production, the test
@@ -53,7 +54,7 @@ public final class TradingClusteredServiceFactory {
     final var orderBook = new OrderBook();
     final var eventSequencer = new EventSequencer();
     final var eventJournal = new EventJournal();
-    final var tradingState = new TradingState(orderBook, orderIdGen, execIdGen);
+    final var tradingState = new TradingState(orderBook, orderIdGen, execIdGen, quoteIdGen);
     final var eventSink = new EventSink(eventSequencer, eventJournal);
 
     final var registry = new ReferenceDataRegistry();
