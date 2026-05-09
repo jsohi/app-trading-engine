@@ -174,6 +174,12 @@ public final class RfqStateMachine {
   private final QuoteRejectedEventEncoder quoteRejectedEncoder = new QuoteRejectedEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
+  /** Pre-allocated snapshot encoder reused across every {@link #encodeInto} call. */
+  private final RfqStateSnapshotEncoder rfqStateEncoder = new RfqStateSnapshotEncoder();
+
+  /** Pre-allocated snapshot decoder reused across every {@link #restoreFrom} call. */
+  private final RfqStateSnapshotDecoder rfqStateDecoder = new RfqStateSnapshotDecoder();
+
   // -------------------------------------------------------------------------
   // Constructor
   // -------------------------------------------------------------------------
@@ -319,7 +325,10 @@ public final class RfqStateMachine {
       byCorrelationId.remove(slot.requestTimeoutCorrelationId);
     }
     byQuoteReqId.remove(slot.quoteReqIdKey);
-    if (slot.state == RfqSlotState.QUOTED) {
+    // byQuoteId entry exists for QUOTED slots and persists through the transient ACCEPTED
+    // state until release. Both states must trigger removal — without the ACCEPTED arm, every
+    // commitAccept (which sets state=ACCEPTED before calling release) silently leaks an entry.
+    if (slot.state == RfqSlotState.QUOTED || slot.state == RfqSlotState.ACCEPTED) {
       byQuoteId.remove(slot.quoteIdKey);
     }
 
@@ -685,11 +694,20 @@ public final class RfqStateMachine {
       if (slot.state == RfqSlotState.FREE || slot.sessionId != sessionId) {
         continue;
       }
-      // Re-arm whichever timer is currently bound at deadline = clusterTs + 1ns.
+      // Re-arm whichever timer is currently bound at deadline = clusterTs + 1ns. If the timer
+      // pool is exhausted, capture the failure into a counter so operators can see that some
+      // session-close fast-fails were dropped (the slot will still expire eventually via the
+      // original deadline; just not promptly).
+      final boolean ok;
       if (slot.state == RfqSlotState.REQUESTED && slot.requestTimeoutCorrelationId != 0L) {
-        cluster.scheduleTimer(slot.requestTimeoutCorrelationId, clusterTs + 1L);
+        ok = cluster.scheduleTimer(slot.requestTimeoutCorrelationId, clusterTs + 1L);
       } else if (slot.state == RfqSlotState.QUOTED && slot.timerCorrelationId != 0L) {
-        cluster.scheduleTimer(slot.timerCorrelationId, clusterTs + 1L);
+        ok = cluster.scheduleTimer(slot.timerCorrelationId, clusterTs + 1L);
+      } else {
+        ok = true;
+      }
+      if (!ok) {
+        metrics.recoveryTimerRearmFailed++;
       }
     }
     metrics.sessionClosed++;
@@ -730,9 +748,8 @@ public final class RfqStateMachine {
   public int encodeInto(
       final MutableDirectBuffer dst, final int offset, final MessageHeaderEncoder hdr) {
     final int active = activeSlotCount();
-    final RfqStateSnapshotEncoder encoder = new RfqStateSnapshotEncoder();
-    encoder.wrapAndApplyHeader(dst, offset, hdr);
-    final RfqStateSnapshotEncoder.NoRfqsEncoder grp = encoder.noRfqsCount(active);
+    rfqStateEncoder.wrapAndApplyHeader(dst, offset, hdr);
+    final RfqStateSnapshotEncoder.NoRfqsEncoder grp = rfqStateEncoder.noRfqsCount(active);
     for (int i = 0; i < capacity; i++) {
       final RfqSlot slot = slots[i];
       if (slot.state == RfqSlotState.FREE) {
@@ -779,7 +796,7 @@ public final class RfqStateMachine {
         legGrp.legOfferSize(slot.legOfferSize[j]);
       }
     }
-    return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateEncoder.encodedLength();
   }
 
   /** Maps internal {@link RfqSlotState} to wire {@link RfqStateEnum}. */
@@ -834,9 +851,8 @@ public final class RfqStateMachine {
       final int schemaVersion) {
     // Reset state.
     clear();
-    final RfqStateSnapshotDecoder decoder = new RfqStateSnapshotDecoder();
-    decoder.wrap(src, offset, blockLength, schemaVersion);
-    final RfqStateSnapshotDecoder.NoRfqsDecoder grp = decoder.noRfqs();
+    rfqStateDecoder.wrap(src, offset, blockLength, schemaVersion);
+    final RfqStateSnapshotDecoder.NoRfqsDecoder grp = rfqStateDecoder.noRfqs();
     int restoredCount = 0;
     while (grp.hasNext()) {
       grp.next();
@@ -903,7 +919,7 @@ public final class RfqStateMachine {
       }
     }
     metrics.poolOccupancy = capacity - freeCount;
-    return MessageHeaderEncoder.ENCODED_LENGTH + decoder.encodedLength();
+    return MessageHeaderEncoder.ENCODED_LENGTH + rfqStateDecoder.encodedLength();
   }
 
   /** Resets the pool to all-FREE. Called from restore and tests. */
@@ -944,6 +960,8 @@ public final class RfqStateMachine {
       final long currentClusterTs,
       final EventSink eventSink,
       final ErrorHandler errorHandler) {
+    Objects.requireNonNull(eventSink, "eventSink");
+    Objects.requireNonNull(errorHandler, "errorHandler");
     if (cluster == null) {
       throw new IllegalStateException("setCluster must be called before onSnapshotRestored");
     }

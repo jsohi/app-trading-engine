@@ -58,6 +58,10 @@ public final class QuoteRequestHandler implements CommandHandler {
 
   // ---- Scratch byte arrays for char-array fields ----
   private final byte[] quoteReqIdScratch = new byte[RfqSlot.QUOTE_REQ_ID_LENGTH];
+
+  /** Pre-allocated UnsafeBuffer view over {@link #quoteReqIdScratch} for {@code DirectBuffer}-typed
+   * lookups (e.g., {@link RfqStateMachine#recentlyTerminalReason}). Re-wrapped on every onCommand. */
+  private final UnsafeBuffer quoteReqIdScratchBuffer = new UnsafeBuffer(quoteReqIdScratch);
   private final byte[] symbolScratch = new byte[RfqSlot.SYMBOL_LENGTH];
   private final byte[] accountCodeScratch = new byte[RfqSlot.ACCOUNT_CODE_LENGTH];
   private final byte[] settlDateScratch = new byte[RfqSlot.SETTL_DATE_LENGTH];
@@ -146,7 +150,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
 
     // 4. Account validation
-    final ByteArrayKeyAdapter dummy = null; // placeholder — accountStore lookup uses byte[] directly
     final AccountState account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
     if (account == null || account.status() != AccountStatusEnum.Active) {
       emitRejectByQuoteReqId(
@@ -204,7 +207,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
     final byte terminalReason =
         rfqStateMachine.recentlyTerminalReason(
-            buffer, offset + HDR_LEN /* placeholder probe; accuracy via full body in plan */, 0);
+            quoteReqIdScratchBuffer, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     if (terminalReason != 0) {
       // Already-terminal — silently drop.
       metrics.dropAfterTerminal++;
@@ -379,9 +382,4 @@ public final class QuoteRequestHandler implements CommandHandler {
     return ((ccy[0] & 0xFF) << 16) | ((ccy[1] & 0xFF) << 8) | (ccy[2] & 0xFF);
   }
 
-  /** Placeholder type — retained for forward-compat with future ByteArrayKey adapter use. */
-  @SuppressWarnings("unused")
-  private static final class ByteArrayKeyAdapter {
-    // intentionally empty
-  }
 }
