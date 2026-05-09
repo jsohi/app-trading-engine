@@ -405,7 +405,12 @@ function extractJwtSubClaim(token: string): string {
     // decoding via TextDecoder gives the correct Unicode string.
     const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
     const json = new TextDecoder().decode(bytes);
-    const obj = JSON.parse(json) as { sub?: unknown };
+    const parsed: unknown = JSON.parse(json);
+    // Per Gemini review R11 (MEDIUM): `JSON.parse("null")` returns
+    // null, and accessing `.sub` would throw. Reject any non-object
+    // payload defensively.
+    if (parsed === null || typeof parsed !== "object") return "";
+    const obj = parsed as { sub?: unknown };
     // Defense: JSON.parse can produce objects with `__proto__` keys,
     // but reading a single own-property string off the result is safe
     // (we don't spread / Object.assign / Reflect.set anywhere here).
@@ -541,6 +546,9 @@ function buildRouterHandlers(): RouterHandlers {
         // Tracked: schema widening to add `snapshotId` to error code 12
         // (folded into APP-242 per §D.2 of the plan); when that lands
         // we wire `snapshotAssembler.onSnapshotEntityTooLarge(id)`.
+        // Per Gemini review R11 (MEDIUM): surface the occurrence so
+        // the UI can inform the user that a snapshot was rejected.
+        postError("PROTOCOL", "server WebSocketError code 12 (SnapshotEntityTooLarge)");
         return;
       }
       // Per Gemini review R7 (HIGH): feed every other application-level

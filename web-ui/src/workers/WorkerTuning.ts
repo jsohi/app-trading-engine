@@ -102,6 +102,16 @@ export const MAX_TOTAL_INFLIGHT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 export const MAX_INFLIGHT_SNAPSHOT_IDS = 8;
 /** Per-snapshotId completion deadline; defends hostile-server memory pinning. */
 export const SNAPSHOT_COMPLETION_DEADLINE_MS = 30_000;
+/**
+ * Hard cap on `totalFragments` from the wire. Defense-in-depth on top
+ * of the byte-cap defense — prevents a malicious server from sending
+ * a huge totalFragments value that would later hang the
+ * `finaliseAndEmit` concatenation loop. 1_000_000 sits well above any
+ * plausible legitimate snapshot (8 MiB / 8 B floor) and well below the
+ * worker-thread loop-hang threshold. Per Gemini review R11 (MEDIUM):
+ * hoisted from inline constant in SnapshotAssembler.
+ */
+export const MAX_TOTAL_FRAGMENTS = 1_000_000;
 
 // ─── Re-auth queue (§2.12) ─────────────────────────────────────────
 /** Max entitlement-sensitive frames queued during in-flight reauth; over → reauth rejected + PROTOCOL_VIOLATION. */

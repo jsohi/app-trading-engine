@@ -106,39 +106,34 @@ export class WorkerClient implements WorkerClientStreams {
 
   /** Manual reconnect — resets backoff and triggers a worker reset. */
   reconnectNow(): void {
-    // Per Gemini review R9 (HIGH): if a backoff timer is currently
-    // armed, the worker's WS is already null and `RECONNECT_NOW`
-    // would be a no-op. Cancel the backoff and respawn immediately so
-    // the user-facing "reconnect now" button is responsive even
-    // mid-backoff window.
+    // Per Gemini review R11 (MEDIUM): the previous "active worker"
+    // branch posted RECONNECT_NOW which closed the WS but then went
+    // back through the worker's onclose handler — which consults
+    // Reconnect.nextDelayMs and posts a `reconnect_due_after_ms`
+    // back to main, scheduling a backoff respawn. That entirely
+    // defeated the purpose of "Reconnect Now". Both branches
+    // (mid-backoff + active connection) collapse to the same
+    // terminate-and-spawn path so user-initiated reconnect is
+    // genuinely immediate.
+    if (this.dead) return;
     if (this.reconnectTimer !== null) {
       self.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-      // Per Gemini review R10 (HIGH): terminate the previous worker
-      // BEFORE spawning a fresh one — without this, the prior worker
-      // instance leaks (still alive in the background, holding its
-      // WebSocket and timers) when reconnectNow fires mid-backoff.
-      if (this.worker !== null) {
-        this.worker.terminate();
-        this.worker = null;
-      }
-      this.stopWatchdog();
-      this.watchdogChannel?.port1.close();
-      this.watchdogChannel = null;
-      this.spawn().catch((err: unknown) => {
-        this.errors$.next({
-          type: "ERROR",
-          protocolVersion: WORKER_PROTOCOL_VERSION,
-          code: "WORKER",
-          hint: `reconnectNow respawn failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      });
-      return;
     }
-    if (this.worker === null) return;
-    this.worker.postMessage({
-      type: "RECONNECT_NOW",
-      protocolVersion: WORKER_PROTOCOL_VERSION,
+    if (this.worker !== null) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.stopWatchdog();
+    this.watchdogChannel?.port1.close();
+    this.watchdogChannel = null;
+    this.spawn().catch((err: unknown) => {
+      this.errors$.next({
+        type: "ERROR",
+        protocolVersion: WORKER_PROTOCOL_VERSION,
+        code: "WORKER",
+        hint: `reconnectNow respawn failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
     });
   }
 

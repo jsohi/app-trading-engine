@@ -28,6 +28,7 @@ import {
   MAX_FRAGMENT_BYTES,
   MAX_INFLIGHT_SNAPSHOT_IDS,
   MAX_SNAPSHOT_BYTES_PER_ID,
+  MAX_TOTAL_FRAGMENTS,
   MAX_TOTAL_INFLIGHT_SNAPSHOT_BYTES,
   SNAPSHOT_COMPLETION_DEADLINE_MS,
 } from "@/workers/WorkerTuning";
@@ -70,7 +71,14 @@ interface InflightSnapshot {
 }
 
 function uuidKey(id: UuidComposite): string {
-  return `${id.mostSignificantBits.toString(16)}_${id.leastSignificantBits.toString(16)}`;
+  // Per Gemini review R11 (MEDIUM): convert to canonical unsigned
+  // 64-bit hex. `DataView.getBigInt64` returns SIGNED bigints, so
+  // negative values would emit a leading "-" and produce keys like
+  // "-1234..." that look broken in logs even though Map equality
+  // still works. Match the truncSessionId convention.
+  const msb = BigInt.asUintN(64, id.mostSignificantBits).toString(16).padStart(16, "0");
+  const lsb = BigInt.asUintN(64, id.leastSignificantBits).toString(16).padStart(16, "0");
+  return `${msb}_${lsb}`;
 }
 
 export class SnapshotAssembler {
@@ -123,15 +131,13 @@ export class SnapshotAssembler {
       }
       // Drop any expired snapshots before admitting a new one.
       this.expireStale();
-      // Per Gemini review R9 (MEDIUM): hard-cap `totalFragments`. The
-      // sparse-array fix from R8 prevents OOM at admission time, but
-      // `finaliseAndEmit` later iterates `[0, totalFragments)` to
-      // concatenate fragments — a 2^32 value would hang the worker
-      // thread regardless of how few fragments actually arrived.
-      // 1_000_000 is far above any plausible legitimate snapshot
-      // (8 MiB / 8B = 1M absolute floor; 8 MiB / 16 KiB = 512 typical)
-      // and well below the loop-hang threshold.
-      const MAX_TOTAL_FRAGMENTS = 1_000_000;
+      // Per Gemini review R9 (MEDIUM) + R11 (MEDIUM): hard-cap
+      // `totalFragments`. The sparse-array fix from R8 prevents OOM at
+      // admission time, but `finaliseAndEmit` later iterates
+      // `[0, totalFragments)` to concatenate fragments — a 2^32 value
+      // would hang the worker thread regardless of how few fragments
+      // actually arrived. The constant lives in WorkerTuning.ts
+      // alongside other snapshot caps.
       if (frag.totalFragments > MAX_TOTAL_FRAGMENTS) {
         this.protocolViolation(
           `totalFragments ${String(frag.totalFragments)} > MAX_TOTAL_FRAGMENTS (${String(MAX_TOTAL_FRAGMENTS)})`,
