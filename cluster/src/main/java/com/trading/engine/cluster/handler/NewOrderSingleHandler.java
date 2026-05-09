@@ -111,6 +111,31 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private final RiskLimitStore riskLimitStore;
 
   /**
+   * Optional injection from {@link com.trading.engine.cluster.TradingClusteredService} for plan
+   * §9.2a quote-acceptance integration. When set, NOS commands carrying {@code
+   * ordType=PreviouslyQuoted} and a non-empty quoteId are matched against an active QUOTED RFQ
+   * slot via {@link com.trading.engine.cluster.state.RfqStateMachine#peekByQuoteId}, validated for
+   * side / price / qty match, and atomically committed via
+   * {@link com.trading.engine.cluster.state.RfqStateMachine#commitAccept} after all NOS
+   * validations pass. Null in tests that exercise the legacy single-leg flow.
+   */
+  private com.trading.engine.cluster.state.RfqStateMachine rfqStateMachine;
+
+  /**
+   * Cached metrics from the RfqStateMachine for §9.2a reject-path counter increments. Null when
+   * {@link #rfqStateMachine} is null.
+   */
+  private com.trading.engine.cluster.metrics.RfqMetrics rfqMetrics;
+
+  /**
+   * Scratch field holding the QUOTED slot returned by {@link
+   * com.trading.engine.cluster.state.RfqStateMachine#peekByQuoteId} during the peek phase. Cleared
+   * after commit (or on any reject path). Single-threaded duty cycle invariant means this never
+   * races.
+   */
+  private com.trading.engine.cluster.state.RfqSlot pendingQuoteAcceptSlot;
+
+  /**
    * Creates a NewOrderSingleHandler wired to the given cluster state and reference data stores.
    *
    * @param tradingState the event-sourced order lifecycle state (must not be null)
@@ -127,6 +152,20 @@ public final class NewOrderSingleHandler implements CommandHandler {
     this.accountStore = Objects.requireNonNull(accountStore, "accountStore");
     this.currencyStore = Objects.requireNonNull(currencyStore, "currencyStore");
     this.riskLimitStore = Objects.requireNonNull(riskLimitStore, "riskLimitStore");
+  }
+
+  /**
+   * Optional: wires the RFQ state machine for plan §9.2a quote-acceptance integration. Called by
+   * {@link com.trading.engine.cluster.TradingClusteredService} during construction.
+   *
+   * @param rfqStateMachine the cluster-side RFQ state machine
+   * @param rfqMetrics observability counters for the RFQ path
+   */
+  public void wireRfqStateMachine(
+      final com.trading.engine.cluster.state.RfqStateMachine rfqStateMachine,
+      final com.trading.engine.cluster.metrics.RfqMetrics rfqMetrics) {
+    this.rfqStateMachine = rfqStateMachine;
+    this.rfqMetrics = rfqMetrics;
   }
 
   /** {@inheritDoc} */
@@ -151,6 +190,11 @@ public final class NewOrderSingleHandler implements CommandHandler {
       final int blockLength,
       final int version,
       final EventSink eventSink) {
+
+    // 0. Reset the per-call quote-accept scratch in case the previous onCommand left it set
+    //    after a validation reject (the slot was never committed but the field could still hold
+    //    a stale reference).
+    pendingQuoteAcceptSlot = null;
 
     // 1. Wrap the decoder at the body portion of the SBE message.
     nosDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, blockLength, version);
@@ -356,7 +400,62 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return null;
     }
 
-    // 10. OrderQty must not exceed account maxOrderSize risk limit.
+    // 10. (NEW per APP-232 §9.2a) NOS-with-quoteId peek phase — read-only RFQ slot lookup.
+    //     Slot is cached in pendingQuoteAcceptSlot; commit happens at the end of admitNewOrder
+    //     so a later validation reject (#11/#12) leaves the QUOTED slot intact for client retry.
+    pendingQuoteAcceptSlot = null;
+    if (rfqStateMachine != null && ordType == OrdTypeEnum.PreviouslyQuoted) {
+      nosDecoder.getQuoteId(quoteIdScratch, 0);
+      if (quoteIdScratch[0] != 0) {
+        final var slot = rfqStateMachine.peekByQuoteId(quoteIdScratch, 0, quoteIdScratch.length);
+        if (slot == null) {
+          emitOrderRejected(
+              eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "unknown quote");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectUnknownQuote++;
+          }
+          return null;
+        }
+        // Side mismatch is hard reject (no tolerance).
+        if (slot.side != (byte) side.value()) {
+          emitOrderRejected(
+              eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "side mismatch");
+          if (rfqMetrics != null) {
+            rfqMetrics.rejectQuoteSideMismatch++;
+          }
+          return null;
+        }
+        // Price tolerance (bps).
+        final long quotedPx = side == SideEnum.Buy ? slot.offerPx : slot.bidPx;
+        final long quotedSize = side == SideEnum.Buy ? slot.offerSize : slot.bidSize;
+        if (quotedPx > 0L) {
+          final long pxDeltaBps = Math.abs(price - quotedPx) * 10_000L / quotedPx;
+          if (pxDeltaBps > rfqStateMachine.acceptPriceToleranceBps()) {
+            emitOrderRejected(
+                eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "price mismatch");
+            if (rfqMetrics != null) {
+              rfqMetrics.rejectQuotePriceMismatch++;
+            }
+            return null;
+          }
+        }
+        // Qty tolerance (bps).
+        if (quotedSize > 0L) {
+          final long qtyDeltaBps = Math.abs(orderQty - quotedSize) * 10_000L / quotedSize;
+          if (qtyDeltaBps > rfqStateMachine.acceptQtyToleranceBps()) {
+            emitOrderRejected(
+                eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "qty mismatch");
+            if (rfqMetrics != null) {
+              rfqMetrics.rejectQuoteQtyMismatch++;
+            }
+            return null;
+          }
+        }
+        pendingQuoteAcceptSlot = slot;
+      }
+    }
+
+    // 11. OrderQty must not exceed account maxOrderSize risk limit.
     final var riskLimit = riskLimitStore.get(account.accountId());
     if (riskLimit != null && riskLimit.maxOrderSize() > 0L && orderQty > riskLimit.maxOrderSize()) {
       emitOrderRejected(
@@ -369,7 +468,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return null;
     }
 
-    // 11. Order book must not be full — checked BEFORE generating IDs to avoid wasting
+    // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
     //     deterministic counter space on an order that cannot be admitted.
     if (tradingState.isOrderBookFull()) {
       emitOrderRejected(
@@ -496,6 +595,14 @@ public final class NewOrderSingleHandler implements CommandHandler {
       // recovery action for a deterministic state machine.
       throw new IllegalStateException(
           "Order pool exhausted after event emitted — state machine inconsistency");
+    }
+
+    // 13. (NEW per APP-232 §9.2a) Quote-acceptance commit phase. Runs as the LAST step after
+    //     OrderCreatedEvent has been journaled successfully. Atomic transition QUOTED→ACCEPTED +
+    //     release; never observable in snapshot due to the single-threaded duty-cycle invariant.
+    if (pendingQuoteAcceptSlot != null && rfqStateMachine != null) {
+      rfqStateMachine.commitAccept(pendingQuoteAcceptSlot, timestamp, eventSink);
+      pendingQuoteAcceptSlot = null;
     }
   }
 

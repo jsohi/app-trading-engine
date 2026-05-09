@@ -257,6 +257,7 @@ public final class TradingClusteredService implements ClusteredService {
     this.commandHandlers = new Int2ObjectHashMap<>();
     final var nosHandler =
         new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
+    nosHandler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
     commandHandlers.put(nosHandler.commandTemplateId(), nosHandler);
     this.quoteRequestHandler =
         new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);
