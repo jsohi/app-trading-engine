@@ -122,6 +122,11 @@ export class SessionState {
  */
 export function truncSessionId(id: UuidComposite | null): string {
   if (id === null) return "null";
-  const lsbHex = id.leastSignificantBits.toString(16).padStart(16, "0");
+  // Per Gemini review R9 (MEDIUM): `DataView.getBigInt64` returns a
+  // signed bigint. `BigInt.toString(16)` on a negative value emits a
+  // leading `-` (e.g. "-7fff...") which `padStart` then garbles into
+  // "0000-1". Convert to the canonical unsigned 64-bit form so the
+  // hex always represents the actual on-wire bits.
+  const lsbHex = BigInt.asUintN(64, id.leastSignificantBits).toString(16).padStart(16, "0");
   return lsbHex.slice(-4);
 }

@@ -206,9 +206,17 @@ export class Reconnect {
     ) {
       return "PROTOCOL_VIOLATION";
     }
-    // 4xxx custom range: caller separately checks for preceding WebSocketError;
-    // bare 4xxx → PROTOCOL_VIOLATION.
-    if (code >= 4000 && code <= 4999) return "PROTOCOL_VIOLATION";
+    // 4xxx custom range: per Gemini review R9 (HIGH), §2.13 specifies
+    // that custom close codes typically *follow* a `WebSocketError`
+    // template frame (e.g. AuthFailed=1, SessionExpired=4) whose code
+    // already advanced the circuit breaker via `applyAppErrorCode`.
+    // Treating bare 4xxx as PROTOCOL_VIOLATION blocks the legitimate
+    // auto-reconnect path for non-fatal app errors. Returning
+    // RECONNECT lets the §2.13 matrix decide via the preceding error
+    // code; a server that emits a bare 4xxx with no prior error is
+    // misbehaving but the worker still attempts a reconnect with
+    // backoff (capped by `nextDelayMs`).
+    if (code >= 4000 && code <= 4999) return "RECONNECT";
     // Unknown close codes: treat as PROTOCOL_VIOLATION (defensive).
     return "PROTOCOL_VIOLATION";
   }
