@@ -84,7 +84,10 @@ describe("AckSender", () => {
     expect(acks[0]).toBe(25n);
   });
 
-  it("timeElapsedAckIntervalMs_triggersAckEvenWithFewerFrames", () => {
+  it("timeElapsedAckIntervalMs_onTimerTickFlushes", () => {
+    // Per Gemini review R10 (MEDIUM): the time-based ack trigger is
+    // driven by `onTimerTick`, NOT the per-frame hot path. The worker
+    // runtime fires onTimerTick from a 250 ms periodic timer.
     const { sender, state, acks, advanceMs } = makeAckSender();
 
     // Only deliver a few frames (well below frame threshold)
@@ -97,8 +100,8 @@ describe("AckSender", () => {
     // Advance clock past ACK_INTERVAL_MS (250 ms)
     advanceMs(ACK_INTERVAL_MS + 1);
 
-    // Deliver one more frame — should trigger ack via time check
-    sender.onReliableFrameDelivered();
+    // The time-based trigger now lives in onTimerTick.
+    sender.onTimerTick();
     expect(acks.length).toBe(1);
   });
 

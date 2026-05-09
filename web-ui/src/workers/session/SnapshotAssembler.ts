@@ -96,7 +96,15 @@ export class SnapshotAssembler {
       this.fail("buffer-overflow", `fragment ${String(frag.payload.length)} > MAX_FRAGMENT_BYTES`);
       return false;
     }
-    if (frag.fragmentIndex < 0 || frag.fragmentIndex >= frag.totalFragments) {
+    // Per Gemini review R10 (MEDIUM): defensively reject
+    // totalFragments <= 0. Without this, a malformed `totalFragments=0`
+    // frame would satisfy the completion test (`filledFragments === 0`)
+    // immediately and emit an empty snapshot.
+    if (
+      frag.totalFragments <= 0 ||
+      frag.fragmentIndex < 0 ||
+      frag.fragmentIndex >= frag.totalFragments
+    ) {
       this.protocolViolation(
         `fragmentIndex ${String(frag.fragmentIndex)} out of [0, ${String(frag.totalFragments)})`,
       );

@@ -51,16 +51,16 @@ export class AckSender {
   /**
    * Notify the sender that one in-order reliable frame was just delivered.
    * May synchronously trigger an ack via the `onAckDue` callback.
+   *
+   * Per Gemini review R10 (MEDIUM): the time-based ack trigger is
+   * intentionally NOT consulted here on the per-frame hot path —
+   * `performance.now()` is too expensive at 5 k frames/s. The 250 ms
+   * cadence is driven by `onTimerTick`, which the worker runtime
+   * fires from a dedicated periodic timer.
    */
   onReliableFrameDelivered(): void {
     this.framesSinceLastAck += 1;
     if (this.framesSinceLastAck >= this.frameThreshold()) {
-      this.flush();
-      return;
-    }
-    const now = this.nowNs();
-    const elapsedMs = (now - this.lastAckAtNs) / 1_000_000n;
-    if (elapsedMs >= BigInt(ACK_INTERVAL_MS)) {
       this.flush();
     }
   }
