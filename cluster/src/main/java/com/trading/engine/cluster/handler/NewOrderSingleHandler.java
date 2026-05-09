@@ -45,7 +45,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  *       {@link IllegalStateException} is thrown to trigger Aeron Cluster failover.
  * </ol>
  *
- * <p><b>Validation (11 checks):</b>
+ * <p><b>Validation (12 pre-trade checks plus §9.2a quote-acceptance peek):</b>
  *
  * <ol>
  *   <li>Symbol must not be empty (UnknownSymbol)
@@ -57,10 +57,19 @@ import org.agrona.concurrent.UnsafeBuffer;
  *   <li>Account must have CAN_TRADE permission (AccountNoTradePermission)
  *   <li>Currency must be 3 uppercase ASCII letters (InvalidCurrencyCode)
  *   <li>Currency must exist in {@link CurrencyStore} (UnknownCurrency)
+ *   <li>(NEW per APP-232 §9.2a) NOS-with-quoteId peek phase: when {@code ordType=PreviouslyQuoted}
+ *       and {@code quoteId} is non-empty, the order is matched against an active QUOTED RFQ slot
+ *       via {@link RfqStateMachine#peekByQuoteId}; rejects on unknown / expired quote, side
+ *       mismatch, or price/qty bps tolerance breach
  *   <li>OrderQty must not exceed account maxOrderSize risk limit (OrderExceedsMaxSize)
  *   <li>Order book must not be full (BookFull) — checked before generating IDs to avoid wasting
  *       deterministic counter space
  * </ol>
+ *
+ * <p>If checks 1–10 pass, the §9.2a slot reference is cached in {@link #pendingQuoteAcceptSlot}; if
+ * checks 11–12 then reject, the slot is left intact in QUOTED state for client retry. The slot
+ * transitions atomically to ACCEPTED + release as step 13 of {@link #admitNewOrder} after {@link
+ * TradingState#applyOrderCreated} succeeds.
  *
  * <p><b>Threading:</b> single-threaded cluster duty cycle. No synchronization required.
  *
@@ -262,7 +271,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
   }
 
   // ===========================================================================
-  // Validation — 11 pre-trade checks
+  // Validation — 12 pre-trade checks (plus §9.2a NOS-with-quoteId peek as check 10)
   // ===========================================================================
 
   /**
@@ -538,20 +547,6 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * @param ccy1 currency byte 1
    * @param ccy2 currency byte 2
    */
-  /**
-   * Returns the {@link RfqStateMachine.commitAccept} slot reference resolved during the peek phase
-   * ({@code validateNewOrder} step 10), or {@code null} if no §9.2a quote acceptance is pending.
-   * Used by {@link #onCommand} to clear the field eagerly when a later validation (#11/#12)
-   * rejects, so the slot reference never escapes the failed call.
-   *
-   * @return the cached pending slot, or null
-   */
-  private RfqSlot drainPendingQuoteAcceptSlot() {
-    final RfqSlot s = pendingQuoteAcceptSlot;
-    pendingQuoteAcceptSlot = null;
-    return s;
-  }
-
   private void admitNewOrder(
       final EventSink eventSink,
       final ClientSession session,

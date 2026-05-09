@@ -91,6 +91,9 @@ public final class RfqStateMachine {
   /** Recently-terminal LRU ring capacity. Covers ~10s of peak burst at 100/s. */
   static final int RECENTLY_TERMINAL_CAPACITY = 1024;
 
+  /** Empty source for {@link ByteArrayKey#overwrite} when zeroing a ring slot in {@link #clear}. */
+  private static final byte[] EMPTY_KEY_BYTES = new byte[0];
+
   /** {@code recentlyTerminal} reason byte — slot expired via TTL. */
   static final byte TERMINAL_REASON_EXPIRED = 1;
 
@@ -468,6 +471,7 @@ public final class RfqStateMachine {
    * @param eventSink the event sink (currently unused — no event is emitted by the cluster RFQ path
    *     on accept; the calling NewOrderSingleHandler emits OrderCreatedEvent on its own)
    */
+  @SuppressWarnings("unused") // clusterTs/eventSink reserved for future accept-time emission
   public void commitAccept(final RfqSlot slot, final long clusterTs, final EventSink eventSink) {
     if (slot.state != RfqSlotState.QUOTED) {
       throw new IllegalStateException(
@@ -890,6 +894,9 @@ public final class RfqStateMachine {
         return RfqSlotState.QUOTED;
       case Accepted:
         return RfqSlotState.ACCEPTED;
+      case NULL_VAL:
+        throw new IllegalStateException(
+            "RfqStateSnapshot record has NULL_VAL state — corrupted snapshot or version mismatch");
       default:
         throw new IllegalStateException("Unknown RfqStateEnum: " + w);
     }
@@ -1026,15 +1033,14 @@ public final class RfqStateMachine {
     }
     freeCount = capacity;
     activeCount = 0;
-    // poolRetiredSlots is process-lifetime (retirement at generation overflow is permanent
-    // even across snapshot restores within the same JVM). Reset to keep poolOccupancy math
-    // consistent post-restore.
+    // On a snapshot restore the slot pool is fully re-initialized from the snapshot bytes —
+    // pre-restore retirements (generation-overflow events) are no longer relevant to the
+    // post-restore pool. Zero the counter so poolOccupancy = capacity - freeCount remains
+    // consistent. In a fresh-process restart this counter is naturally zero; this branch
+    // matters only for in-test back-to-back restores or future warm-restart paths.
     metrics.poolRetiredSlots = 0L;
     metrics.poolOccupancy = 0L;
   }
-
-  /** Empty source for {@link ByteArrayKey#overwrite} when zeroing a ring slot. */
-  private static final byte[] EMPTY_KEY_BYTES = new byte[0];
 
   // -------------------------------------------------------------------------
   // Recovery sweep (called from TradingClusteredService.onStart after snapshot+replay)
@@ -1219,6 +1225,12 @@ public final class RfqStateMachine {
 
   // ---- Internal helpers ----
 
+  /**
+   * Returns the next power-of-two greater than or equal to {@code value}. Precondition: {@code
+   * value > 1 && value <= (1 << 30)} — outside that range the result is undefined. Used at
+   * construction-time to size hash maps from {@code capacity * 2}; the call sites are bounded by
+   * {@code rfqPoolCapacity in [256, 65536]}.
+   */
   private static int nextPowerOfTwo(final int value) {
     return Integer.highestOneBit(value - 1) << 1;
   }

@@ -37,7 +37,11 @@ public final class RfqMetrics {
   /** Increments on every successful NOS-with-quoteId acceptance (commit phase passes). */
   public long emitAccepted;
 
-  /** 107 emitted as a side effect of session close fast-fail. Subset of {@link #emitExpired}. */
+  /**
+   * 107 emitted as a side effect of session close fast-fail. <b>Strict subset of</b> {@link
+   * #emitExpired} — every increment of this counter MUST be paired with an increment of {@code
+   * emitExpired} so callers using {@code totalEmissions} cannot double-count.
+   */
   public long emitExpiredSessionClosed;
 
   /** Cached 105 re-emit when a duplicate byte-identical QuoteRequest arrives mid-QUOTED state. */

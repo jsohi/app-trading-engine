@@ -362,6 +362,9 @@ public final class TradingClusteredService implements ClusteredService {
   public void onSessionClose(
       final ClientSession session, final long timestamp, final CloseReason closeReason) {
     // Plan §7.6a — fast-fail in-flight RFQ slots from this session and release rate-limit bucket.
+    // Aeron Cluster's contract guarantees a non-null session here, but defend explicitly to
+    // surface any framework regression as a clear NPE rather than a silent swallow.
+    java.util.Objects.requireNonNull(session, "session");
     rfqStateMachine.onSessionClose(session.id(), timestamp);
   }
 
