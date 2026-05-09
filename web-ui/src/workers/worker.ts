@@ -95,6 +95,15 @@ const reconnect = new Reconnect(
   // outside-the-cluster main-thread/worker code where Math.random is
   // permitted by APP-36 §3 ("WebSocket Server (Non-Deterministic)").
   // The RandomSource interface keeps the choice testable.
+  // Per Gemini review (MEDIUM): this state lives at worker module
+  // scope and is therefore lost on a worker terminate+respawn cycle
+  // (e.g. watchdog miss). That is BY DESIGN: the upper-layer
+  // circuit-breaker is `WorkerClient.respawnTimestamps` on the main
+  // thread (3-in-30s cap → WORKER_DEAD), which prevents an infinite
+  // respawn loop even when the worker-side counter resets. Two-tier
+  // breaker matches the Aeron / LMAX practice — the inner counter
+  // tracks WS-level reconnect attempts within one worker lifetime;
+  // the outer counter tracks worker-process lifetimes themselves.
   { next: () => Math.random() },
   () => BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000)),
 );
@@ -106,6 +115,16 @@ let flushTimerHandle: number | null = null;
 // inside the configured deadline or the watchdog terminates + respawns.
 // Wired in `handleInit`; cleared in `shutdown`.
 let watchdogPort: MessagePort | null = null;
+// Concurrency guard: handleInit is async, so multiple INIT messages
+// arriving in quick succession (rapid UI reconnect, message-port
+// retries) could otherwise spawn overlapping connection attempts. Per
+// Gemini review (MEDIUM): refuse a second INIT while one is in flight.
+let initInFlight = false;
+// Reconnect retry timer handle; non-null only while a backoff is armed.
+// (RECONNECT_NOW from main clears it; close-handler cannot self-mint a
+// fresh tokenPort, so reconnect ultimately requires the main-thread
+// WorkerClient to re-issue INIT after surfacing DOWN.)
+let reconnectTimerHandle: number | null = null;
 
 // ─── Main-thread message handler (FIRST line: protocolVersion check) ──
 
@@ -123,7 +142,16 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
   const msg = data as MainToWorker;
   switch (msg.type) {
     case "INIT":
-      void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort);
+      // Per Gemini review (MEDIUM): refuse overlapping INIT calls so we
+      // do not spawn concurrent token-acquire / WebSocket-open paths.
+      if (initInFlight || ws !== null) {
+        postError("INIT", "INIT received while connection already in flight");
+        break;
+      }
+      initInFlight = true;
+      void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort).finally(() => {
+        initInFlight = false;
+      });
       break;
     case "PING":
       // PINGs from main arrive on `self.onmessage` only as a fallback;
@@ -132,9 +160,16 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
       postPong(msg.mainNanos);
       break;
     case "RECONNECT_NOW":
-      // Force-reconnect: close current WS so the onclose handler triggers
-      // the auto-reconnect path (caller-side Reconnect resets backoff).
+      // Force-reconnect: cancel any pending backoff timer and close the
+      // current WS (if open). The main-thread WorkerClient is responsible
+      // for re-issuing INIT with a fresh tokenPort — the worker cannot
+      // re-mint a token (the prior tokenPort closes after one read).
+      if (reconnectTimerHandle !== null) {
+        self.clearTimeout(reconnectTimerHandle);
+        reconnectTimerHandle = null;
+      }
       ws?.close();
+      transitionConnection("DOWN");
       break;
     case "CLOSE":
       shutdown();
@@ -168,10 +203,16 @@ async function handleInit(
     // session's `sub`. The token is opaque to the worker except for
     // this single read; never logged in full.
     state.subClaim = extractJwtSubClaim(token);
-    // Per Gemini review (HIGH): reset session state on every fresh
-    // connection so non-resume sessions start clean (lastReliableSeqNo,
-    // counters, lastServerActivityNs, etc.).
-    state.coldStart();
+    // Per Gemini review R6 (HIGH): only coldStart when there is no
+    // priorSessionId to resume. Resume must preserve `lastReliableSeqNo`
+    // so the SessionResume frame can ask the server to replay
+    // `(lastReliableSeqNo, current]`. A blanket coldStart at every
+    // INIT would break resume. close-code handling (Reconnect.applyCloseCode)
+    // owns the decision: it preserves `priorSessionId` for resume and
+    // clears it for cold-start codes.
+    if (state.priorSessionId === null) {
+      state.coldStart();
+    }
 
     // 3. Open the WebSocket with the pinned subprotocol. Close any
     // prior socket first per Gemini review (HIGH) — defends against a
@@ -212,6 +253,10 @@ async function handleInit(
       // Stop session-layer timers immediately; a reconnect re-creates them.
       heartbeat?.stop();
       backpressureController?.stop();
+      // Per Gemini review (MEDIUM): reject any in-flight reauth so
+      // callers awaiting the promise are notified of the failure
+      // rather than hanging forever.
+      authClient?.cancelPendingReauth("websocket closed");
       stats.incReconnect();
       // Per Gemini review (HIGH): consult Reconnect for the close-code
       // policy. Codes 1002/1003/1007–1010/1015 freeze; 1012/1013 cap × 8;
@@ -219,16 +264,31 @@ async function handleInit(
       const decision = reconnect.applyCloseCode(ev.code);
       if (decision === "PROTOCOL_VIOLATION") {
         transitionConnection("PROTOCOL_VIOLATION");
+        ws = null;
         return;
       }
       if (decision === "SCHEMA_MISMATCH") {
         transitionConnection("SCHEMA_MISMATCH");
+        ws = null;
         return;
       }
       transitionConnection("DOWN");
-      // Caller (main thread WorkerClient) drives the actual reopen via
-      // `RECONNECT_NOW` — the worker does not silently auto-reopen. The
-      // backoff math is owned by Reconnect.nextDelayMs(state).
+      ws = null;
+      // Per Gemini review R6 (HIGH): compute backoff and surface a
+      // `RECONNECT_DUE` ERROR so the main-thread WorkerClient can
+      // re-mint a tokenPort and re-issue INIT. The worker cannot
+      // self-reconnect because the prior tokenPort closed after one
+      // read — only main can mint a fresh one.
+      const dec = reconnect.nextDelayMs(state);
+      if (dec.kind === "FREEZE") {
+        transitionConnection("DOWN_REQUIRES_USER_ACTION");
+        postError("AUTH", `circuit breaker tripped: ${dec.reason}`);
+        return;
+      }
+      // Notify main with an ERROR carrying the delay — main schedules
+      // the actual respawn-with-fresh-token. We do not drive the timer
+      // ourselves because the credential lifecycle lives main-side.
+      postError("INIT", `reconnect_due_after_ms:${String(dec.delayMs)}`);
     };
     ws.onerror = (): void => {
       transitionConnection("DOWN");
