@@ -27,6 +27,7 @@ import { loadWorker } from "@/workers/loadWorker";
 import { type TokenProvider } from "@/main-thread/tokenProvider";
 
 import { type WorkerErrorMsg, type WorkerToMain } from "@/workers/protocol/WorkerProtocol";
+import { nowEpochNs } from "@/workers/time";
 
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
@@ -291,7 +292,7 @@ export class WorkerClient implements WorkerClientStreams {
     port.postMessage({
       type: "PING",
       protocolVersion: WORKER_PROTOCOL_VERSION,
-      mainNanos: BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000)),
+      mainNanos: nowEpochNs(),
     });
     this.armPongDeadline();
   }

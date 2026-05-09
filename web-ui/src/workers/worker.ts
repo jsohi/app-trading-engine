@@ -32,6 +32,7 @@ import { isValidFlagCombo } from "@/workers/frame/Flags";
 import { validateWsUrl } from "@/workers/frame/WsUrlValidator";
 
 import { Stats } from "@/workers/protocol/Stats";
+import { nowEpochMs, nowEpochNs } from "@/workers/time";
 import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
@@ -105,7 +106,7 @@ const reconnect = new Reconnect(
   // tracks WS-level reconnect attempts within one worker lifetime;
   // the outer counter tracks worker-process lifetimes themselves.
   { next: () => Math.random() },
-  () => BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000)),
+  () => nowEpochNs(),
 );
 let connectionState: ConnectionState = "CONNECTING";
 
@@ -358,7 +359,7 @@ function wireWatchdogPort(port: MessagePort): void {
 }
 
 function postPong(mainNanos: bigint): void {
-  const workerNanos = BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000));
+  const workerNanos = nowEpochNs();
   if (watchdogPort !== null) {
     watchdogPort.postMessage({
       type: "PONG",
@@ -513,7 +514,7 @@ function buildRouterHandlers(): RouterHandlers {
       transitionConnection("CONNECTED");
     },
     onAnyInbound: () => {
-      const nowNs = BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000));
+      const nowNs = nowEpochNs();
       state.lastServerActivityNs = nowNs;
     },
     onServerHeartbeat: (_serverNanos) => {
@@ -602,8 +603,11 @@ function buildRouterHandlers(): RouterHandlers {
  * Plan reference: §5.2 (session components), §6 row 24 (BACKPRESSURE).
  */
 function activateSessionLayer(): void {
-  const nowMs = (): number => performance.timeOrigin + performance.now();
-  const nowNs = (): bigint => BigInt(Math.floor(nowMs() * 1_000_000));
+  // Per Gemini review R12 (MEDIUM): use the precision-preserving
+  // helper instead of `BigInt(Math.floor(nowMs() * 1e6))` which loses
+  // sub-millisecond precision through the float → bigint pipeline.
+  const nowMs = nowEpochMs;
+  const nowNs = nowEpochNs;
 
   heartbeat = new Heartbeat(
     state,
@@ -767,7 +771,7 @@ function buildAuthScheduler(): AuthScheduler {
     clearTimeout: (handle) => {
       self.clearTimeout(handle);
     },
-    nowMs: () => performance.timeOrigin + performance.now(),
+    nowMs: nowEpochMs,
   };
 }
 
@@ -799,7 +803,7 @@ function flushBatch(): void {
 function transitionConnection(next: ConnectionState): void {
   if (connectionState === next) return;
   connectionState = next;
-  const nowNs = BigInt(Math.floor((performance.timeOrigin + performance.now()) * 1_000_000));
+  const nowNs = nowEpochNs();
   emit({ type: "connection-state", state: next, serverNanos: nowNs });
 }
 
