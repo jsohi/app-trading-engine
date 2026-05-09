@@ -23,6 +23,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.ErrorHandler;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.Object2IntHashMap;
 import org.agrona.collections.Object2ObjectHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -122,6 +123,28 @@ public final class RfqStateMachine {
   private final int[] freeIndices;
   private int freeCount;
 
+  /**
+   * Compact list of pool indices for currently-active (non-FREE) slots. Replaces O(capacity) scans
+   * in {@link #onSessionClose}, {@link #encodeInto}, and {@link #onSnapshotRestored} with
+   * O(activeCount) traversals — important when capacity reaches 65536 and only a fraction of slots
+   * are in flight. Maintained on every {@link #acquire} (append) and {@link #release}
+   * (swap-with-last).
+   */
+  private final int[] activeIndices;
+
+  /** Position of each slot within {@link #activeIndices}, or -1 if FREE. Sized to capacity. */
+  private final int[] activePositions;
+
+  /** Number of valid entries in {@link #activeIndices}. */
+  private int activeCount;
+
+  /**
+   * Pre-allocated scratch for {@link #onSnapshotRestored}'s stable-iteration snapshot of {@link
+   * #activeIndices} (release calls during the sweep mutate activeIndices, so we copy the pool
+   * indices up front). Sized to capacity; reused across restarts.
+   */
+  private final int[] sweepSnapshot;
+
   // -------------------------------------------------------------------------
   // Lookup maps
   // -------------------------------------------------------------------------
@@ -145,6 +168,16 @@ public final class RfqStateMachine {
 
   private final ByteArrayKey[] recentlyTerminalRing;
   private final byte[] recentlyTerminalReason;
+
+  /**
+   * O(1) side-index from {@code quoteReqId} content → ring position. Maintains the FIFO ring's
+   * eviction discipline while replacing the linear scan with hash lookup. The map's keys are the
+   * very same {@link ByteArrayKey} instances stored in {@link #recentlyTerminalRing}; on eviction
+   * (ring overwrite) we MUST {@code removeKey} the old content before mutating the bytes, else the
+   * entry strands in a stale hash bucket.
+   */
+  private final Object2IntHashMap<ByteArrayKey> recentlyTerminalIndex;
+
   private int recentlyTerminalRingHead;
 
   /** Probe key for recently-terminal lookups (zero-alloc). */
@@ -237,11 +270,16 @@ public final class RfqStateMachine {
     // Slot pool
     this.slots = new RfqSlot[capacity];
     this.freeIndices = new int[capacity];
+    this.activeIndices = new int[capacity];
+    this.activePositions = new int[capacity];
+    this.sweepSnapshot = new int[capacity];
     for (int i = 0; i < capacity; i++) {
       slots[i] = new RfqSlot(i);
       freeIndices[i] = capacity - 1 - i; // pop low-index slots first
+      activePositions[i] = -1;
     }
     this.freeCount = capacity;
+    this.activeCount = 0;
 
     // Lookup maps (load factor 0.55 to avoid rehash; pre-size to next power of two)
     final int mapCapacity = nextPowerOfTwo((int) (capacity * 2));
@@ -265,6 +303,8 @@ public final class RfqStateMachine {
     for (int i = 0; i < RECENTLY_TERMINAL_CAPACITY; i++) {
       recentlyTerminalRing[i] = ByteArrayKey.emptyForLookup(RfqSlot.QUOTE_REQ_ID_LENGTH);
     }
+    // -1 sentinel for absent keys; matches `Object2IntHashMap`'s `missingValue` API contract.
+    this.recentlyTerminalIndex = new Object2IntHashMap<>(RECENTLY_TERMINAL_CAPACITY * 2, 0.55f, -1);
     this.recentlyTerminalRingHead = 0;
     this.recentlyTerminalProbe = ByteArrayKey.emptyForLookup(RfqSlot.QUOTE_REQ_ID_LENGTH);
     this.byQuoteReqIdProbe = ByteArrayKey.emptyForLookup(RfqSlot.QUOTE_REQ_ID_LENGTH);
@@ -302,6 +342,9 @@ public final class RfqStateMachine {
     final int slotIndex = freeIndices[--freeCount];
     final RfqSlot slot = slots[slotIndex];
     slot.state = RfqSlotState.REQUESTED;
+    // Append to activeIndices (O(1)).
+    activePositions[slotIndex] = activeCount;
+    activeIndices[activeCount++] = slotIndex;
     metrics.poolOccupancy = capacity - freeCount;
     return slot;
   }
@@ -330,6 +373,16 @@ public final class RfqStateMachine {
     // commitAccept (which sets state=ACCEPTED before calling release) silently leaks an entry.
     if (slot.state == RfqSlotState.QUOTED || slot.state == RfqSlotState.ACCEPTED) {
       byQuoteId.remove(slot.quoteIdKey);
+    }
+
+    // Remove from activeIndices via swap-with-last (O(1)). Must run before retirement so the
+    // active list reflects the slot's exit even if it never returns to the free list.
+    final int activePos = activePositions[slot.poolIndex];
+    if (activePos >= 0) {
+      final int lastActiveSlotIdx = activeIndices[--activeCount];
+      activeIndices[activePos] = lastActiveSlotIdx;
+      activePositions[lastActiveSlotIdx] = activePos;
+      activePositions[slot.poolIndex] = -1;
     }
 
     // Generation-overflow retirement: when the slot reaches the threshold, do not return it to
@@ -431,31 +484,40 @@ public final class RfqStateMachine {
   // Recently-terminal LRU
   // -------------------------------------------------------------------------
 
-  /** Records a slot's quoteReqId in the LRU for post-terminal duplicate detection. */
+  /**
+   * Records a slot's quoteReqId in the FIFO ring for post-terminal duplicate detection.
+   *
+   * <p>The ring stores one {@link ByteArrayKey} per slot; the ring slot's content is mutated
+   * in-place on each insert. The {@link #recentlyTerminalIndex} side-map provides O(1) lookup; we
+   * MUST remove the old content from the index before overwriting bytes (otherwise the entry would
+   * strand in a stale hash bucket since {@code ByteArrayKey.hashCode()} is content- dependent).
+   */
   private void rememberTerminal(final RfqSlot slot, final byte reason) {
     final int idx = recentlyTerminalRingHead;
-    recentlyTerminalRing[idx].overwrite(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
+    final ByteArrayKey ringEntry = recentlyTerminalRing[idx];
+    if (ringEntry.length() > 0) {
+      // Evict prior occupant from the side-index BEFORE mutating the bytes.
+      recentlyTerminalIndex.removeKey(ringEntry);
+    }
+    ringEntry.overwrite(slot.quoteReqIdBytes, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     recentlyTerminalReason[idx] = reason;
+    recentlyTerminalIndex.put(ringEntry, idx);
     recentlyTerminalRingHead = (idx + 1) % RECENTLY_TERMINAL_CAPACITY;
   }
 
   /**
-   * Returns the terminal reason for a quoteReqId in the LRU, or 0 if not found.
+   * Returns the terminal reason for a quoteReqId in the FIFO ring, or 0 if not found. O(1) lookup
+   * via the {@link #recentlyTerminalIndex} side-map.
    *
    * @param src buffer containing the quoteReqId
    * @param offset start offset
    * @param length number of bytes
-   * @return the terminal reason byte, or 0 if not in LRU
+   * @return the terminal reason byte, or 0 if not in the ring
    */
   public byte recentlyTerminalReason(final DirectBuffer src, final int offset, final int length) {
     recentlyTerminalProbe.wrapForProbe(src, offset, length);
-    for (int i = 0; i < RECENTLY_TERMINAL_CAPACITY; i++) {
-      if (recentlyTerminalRing[i].length() == length
-          && recentlyTerminalRing[i].equals(recentlyTerminalProbe)) {
-        return recentlyTerminalReason[i];
-      }
-    }
-    return (byte) 0;
+    final int ringIdx = recentlyTerminalIndex.getValue(recentlyTerminalProbe);
+    return ringIdx < 0 ? (byte) 0 : recentlyTerminalReason[ringIdx];
   }
 
   // -------------------------------------------------------------------------
@@ -689,9 +751,10 @@ public final class RfqStateMachine {
     if (cluster == null) {
       return;
     }
-    for (int i = 0; i < capacity; i++) {
-      final RfqSlot slot = slots[i];
-      if (slot.state == RfqSlotState.FREE || slot.sessionId != sessionId) {
+    // Iterate only active slots (O(activeCount)) — avoids scanning the full pool.
+    for (int i = 0; i < activeCount; i++) {
+      final RfqSlot slot = slots[activeIndices[i]];
+      if (slot.sessionId != sessionId) {
         continue;
       }
       // Re-arm whichever timer is currently bound at deadline = clusterTs + 1ns. If the timer
@@ -719,20 +782,13 @@ public final class RfqStateMachine {
   // -------------------------------------------------------------------------
 
   /**
-   * Returns the active slot count for snapshot pre-flight sizing. Slots are counted in
-   * Requested/Quoted/Accepted state (Accepted should be unreachable in steady state but is counted
-   * defensively).
+   * Returns the active slot count for snapshot pre-flight sizing. O(1) — reads the maintained
+   * {@link #activeCount} counter rather than scanning the pool.
    *
    * @return number of active slots
    */
   public int activeSlotCount() {
-    int count = 0;
-    for (int i = 0; i < capacity; i++) {
-      if (slots[i].state != RfqSlotState.FREE) {
-        count++;
-      }
-    }
-    return count;
+    return activeCount;
   }
 
   /**
@@ -750,8 +806,11 @@ public final class RfqStateMachine {
     final int active = activeSlotCount();
     rfqStateEncoder.wrapAndApplyHeader(dst, offset, hdr);
     final RfqStateSnapshotEncoder.NoRfqsEncoder grp = rfqStateEncoder.noRfqsCount(active);
-    for (int i = 0; i < capacity; i++) {
-      final RfqSlot slot = slots[i];
+    // Iterate only active slots (O(activeCount)) — replicas process the same event history
+    // deterministically, so activeIndices is byte-identical across replicas at any point and
+    // the snapshot bytes match regardless of pool-index vs insertion-order traversal.
+    for (int idx = 0; idx < active; idx++) {
+      final RfqSlot slot = slots[activeIndices[idx]];
       if (slot.state == RfqSlotState.FREE) {
         continue;
       }
@@ -860,8 +919,11 @@ public final class RfqStateMachine {
         throw new IllegalStateException(
             "snapshot has more RFQs than rfqPoolCapacity=" + capacity + "; increase capacity");
       }
-      // Pop the next free slot for this restore entry.
+      // Pop the next free slot for this restore entry, and append to activeIndices so the
+      // recovery sweep (and any subsequent encodeInto / onSessionClose) sees the slot as live.
       final int slotIndex = freeIndices[--freeCount];
+      activePositions[slotIndex] = activeCount;
+      activeIndices[activeCount++] = slotIndex;
       final RfqSlot slot = slots[slotIndex];
 
       grp.getQuoteReqId(slot.quoteReqIdBytes, 0);
@@ -888,7 +950,18 @@ public final class RfqStateMachine {
       slot.tenor = (byte) grp.tenor().value();
 
       final RfqStateSnapshotDecoder.NoRfqsDecoder.NoLegsDecoder legGrp = grp.noLegs();
-      slot.noLegs = legGrp.count();
+      // Bounds-check legs from the snapshot — a corrupted or version-mismatched snapshot
+      // could carry a leg count > MAX_LEGS and crash the loop with AIOOBE, preventing recovery.
+      final int legCount = legGrp.count();
+      if (legCount > RfqSlot.MAX_LEGS) {
+        throw new IllegalStateException(
+            "RfqStateSnapshot leg count "
+                + legCount
+                + " exceeds RfqSlot.MAX_LEGS="
+                + RfqSlot.MAX_LEGS
+                + " — corrupted snapshot or version mismatch");
+      }
+      slot.noLegs = legCount;
       int legIdx = 0;
       while (legGrp.hasNext()) {
         legGrp.next();
@@ -935,8 +1008,10 @@ public final class RfqStateMachine {
       slots[i].timerCorrelationId = 0L;
       slots[i].requestTimeoutCorrelationId = 0L;
       freeIndices[i] = capacity - 1 - i;
+      activePositions[i] = -1;
     }
     freeCount = capacity;
+    activeCount = 0;
     metrics.poolOccupancy = 0L;
   }
 
@@ -960,10 +1035,15 @@ public final class RfqStateMachine {
     if (cluster == null) {
       throw new IllegalStateException("setCluster must be called before onSnapshotRestored");
     }
-    for (int i = 0; i < capacity; i++) {
-      final RfqSlot slot = slots[i];
+    // Iterate active slots only (O(activeCount)). Copy poolIndex values into a pre-allocated
+    // scratch buffer so iteration is stable even when release() (called inside the sweep)
+    // reshuffles activeIndices via swap-with-last.
+    final int sweepCount = activeCount;
+    System.arraycopy(activeIndices, 0, sweepSnapshot, 0, sweepCount);
+    for (int s = 0; s < sweepCount; s++) {
+      final RfqSlot slot = slots[sweepSnapshot[s]];
       if (slot.state == RfqSlotState.FREE) {
-        continue;
+        continue; // already released by an earlier iteration
       }
       // Rehydrate accountCode from AccountStore; fail-safe if account was deleted.
       final AccountState account = accountStore.get(slot.accountId);
@@ -1004,9 +1084,10 @@ public final class RfqStateMachine {
           break;
       }
     }
-    // Re-populate maps after rehydration.
-    for (int i = 0; i < capacity; i++) {
-      final RfqSlot slot = slots[i];
+    // Re-populate maps after rehydration. Iterate the post-sweep activeIndices (slots that
+    // survived the sweep without being released) — O(activeCount) instead of O(capacity).
+    for (int i = 0; i < activeCount; i++) {
+      final RfqSlot slot = slots[activeIndices[i]];
       if (slot.state == RfqSlotState.REQUESTED) {
         slot.syncQuoteReqIdKey();
         byQuoteReqId.put(slot.quoteReqIdKey, slot);

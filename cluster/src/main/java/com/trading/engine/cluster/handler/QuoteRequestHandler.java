@@ -270,9 +270,26 @@ public final class QuoteRequestHandler implements CommandHandler {
     slot.sessionId = sessionId;
     slot.transactTime = clusterTimestamp;
 
-    // Decode legs
+    // Decode legs — bounds-check first to prevent ArrayIndexOutOfBoundsException (DoS vector).
+    // RfqSlot.MAX_LEGS = 2 (Spot/Forward swap legs); a hostile or buggy client sending more
+    // legs would crash the cluster duty cycle without this guard.
     final QuoteRequestDecoder.NoLegsDecoder legGrp = qrDecoder.noLegs();
-    slot.noLegs = legGrp.count();
+    final int legCount = legGrp.count();
+    if (legCount > RfqSlot.MAX_LEGS) {
+      // Release the just-acquired slot before rejecting; slot is not yet in any lookup map.
+      rfqStateMachine.release(slot);
+      emitRejectByQuoteReqId(
+          session,
+          clusterTimestamp,
+          eventSink,
+          QuoteRejectReasonEnum.Other,
+          RfqRejectMessages.MALFORMED,
+          productType);
+      metrics.rejectMalformed++;
+      metrics.emitRejected++;
+      return;
+    }
+    slot.noLegs = legCount;
     int legIdx = 0;
     while (legGrp.hasNext()) {
       legGrp.next();
