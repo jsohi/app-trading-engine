@@ -424,7 +424,19 @@ public final class NewOrderSingleHandler implements CommandHandler {
       // accountCodeLen / symbolLen pattern earlier in this method). A first-byte-nonzero check
       // would let a hostile input with `quoteId="\0..."` bypass §9.2a entirely.
       final int quoteIdLen = trimTrailingZeros(quoteIdScratch, RfqSlot.QUOTE_ID_LENGTH);
-      if (quoteIdLen > 0) {
+      if (quoteIdLen == 0) {
+        // FIX protocol: ordType=PreviouslyQuoted REQUIRES a non-empty quoteId. An empty
+        // quoteId on this path is a protocol violation — reject rather than silently
+        // falling through to the normal-order path (which would let a client execute at
+        // their own NOS price without an actual quote on file).
+        emitOrderRejected(
+            eventSink, session, timestamp, side, RejectReasonEnum.QuoteNotFound, "missing quoteId");
+        if (rfqMetrics != null) {
+          rfqMetrics.rejectUnknownQuote++;
+        }
+        return null;
+      }
+      {
         final var slot = rfqStateMachine.peekByQuoteId(quoteIdScratch, 0, RfqSlot.QUOTE_ID_LENGTH);
         if (slot == null) {
           emitOrderRejected(

@@ -27,6 +27,7 @@ import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -399,18 +400,19 @@ class NewOrderSingleHandlerTest {
   }
 
   // =========================================================================
-  // §9.2a Test 6 — peek_emptyQuoteId_skipsPeekPhase
+  // §9.2a Test 6 — peek_emptyQuoteId_rejectsAsMissingQuoteId
   // =========================================================================
 
   /**
    * When a NOS carries {@code ordType=PreviouslyQuoted} but the quoteId field is all-zero bytes
-   * (i.e. effectively empty after trimTrailingZeros), the peek phase must be skipped entirely and
-   * the order proceeds through normal validation. {@code emitAccepted} stays at 0 and no reject
-   * counter increments.
+   * (i.e. effectively empty after trimTrailingZeros), the FIX protocol REQUIRES rejection — a
+   * PreviouslyQuoted order with no quoteId is malformed (the client claims to be referencing a
+   * quote but provides no quoteId to look it up). Falling through to the normal-order path would
+   * let the client execute at their own NOS price with no actual quote on file. (Previously this
+   * test asserted skip-and-admit; updated per Gemini round-5 feedback.)
    */
   @Test
-  void peek_emptyQuoteId_skipsPeekPhase() {
-    // Send PreviouslyQuoted NOS with an empty quoteId string — SBE pads with zeros
+  void peek_emptyQuoteId_rejectsAsMissingQuoteId() {
     final int len =
         SbeTestEncoder.encodeNewOrderSingle(
             msgBuf,
@@ -433,11 +435,12 @@ class NewOrderSingleHandlerTest {
             0L);
     dispatch(len);
 
-    // No reject from §9.2a (peek skipped); order admitted normally
+    // Single OrderRejected event with reason QuoteNotFound + text "missing quoteId"
     assertEquals(1, session.messages.size());
-    assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(0));
-    assertEquals(0L, rfqMetrics.emitAccepted, "emitAccepted stays 0 when peek was skipped");
-    assertEquals(0L, rfqMetrics.rejectUnknownQuote);
+    assertTemplateId(OrderRejectedEventDecoder.TEMPLATE_ID, session.messages.get(0));
+    assertEquals(
+        0L, rfqMetrics.emitAccepted, "emitAccepted stays 0 — order rejected pre-admission");
+    assertEquals(1L, rfqMetrics.rejectUnknownQuote, "rejectUnknownQuote bumps for missing quoteId");
   }
 
   // =========================================================================
