@@ -62,7 +62,8 @@ export interface SnapshotAssemblerCallbacks {
 
 interface InflightSnapshot {
   readonly snapshotId: UuidComposite;
-  readonly idKey: string;
+  /** Canonical 128-bit unsigned bigint id (msb<<64 | lsb). */
+  readonly idKey: bigint;
   readonly totalFragments: number;
   readonly fragments: Uint8Array[];
   filledFragments: number;
@@ -70,19 +71,34 @@ interface InflightSnapshot {
   readonly startedAtMs: number;
 }
 
-function uuidKey(id: UuidComposite): string {
-  // Per Gemini review R11 (MEDIUM): convert to canonical unsigned
-  // 64-bit hex. `DataView.getBigInt64` returns SIGNED bigints, so
-  // negative values would emit a leading "-" and produce keys like
-  // "-1234..." that look broken in logs even though Map equality
-  // still works. Match the truncSessionId convention.
-  const msb = BigInt.asUintN(64, id.mostSignificantBits).toString(16).padStart(16, "0");
-  const lsb = BigInt.asUintN(64, id.leastSignificantBits).toString(16).padStart(16, "0");
+/**
+ * Compose a `UuidComposite` into a single 128-bit unsigned bigint
+ * suitable as a `Map<bigint, …>` key. Per Gemini review R17 (MEDIUM):
+ * the prior string key forced `toString(16) + padStart + concat`
+ * allocations on every snapshot fragment hot-path call. A single
+ * bigint compose is two `BigInt.asUintN(64, …)` ops + one shift +
+ * one OR — all V8 small-bigint fast-path operations.
+ *
+ * `BigInt.asUintN(64, ...)` normalises signed bigints from
+ * `DataView.getBigInt64` to canonical unsigned 64-bit values so the
+ * compose has the same byte semantics as the on-wire UUID.
+ */
+function uuidKey(id: UuidComposite): bigint {
+  return (
+    (BigInt.asUintN(64, id.mostSignificantBits) << 64n) |
+    BigInt.asUintN(64, id.leastSignificantBits)
+  );
+}
+
+/** Render a bigint key as the canonical hex form (for logs / errors). */
+function keyHex(key: bigint): string {
+  const msb = ((key >> 64n) & 0xffffffffffffffffn).toString(16).padStart(16, "0");
+  const lsb = (key & 0xffffffffffffffffn).toString(16).padStart(16, "0");
   return `${msb}_${lsb}`;
 }
 
 export class SnapshotAssembler {
-  private readonly inflight = new Map<string, InflightSnapshot>();
+  private readonly inflight = new Map<bigint, InflightSnapshot>();
   private totalBytesInflight = 0;
   private dead = false;
   private readonly cb: SnapshotAssemblerCallbacks;
@@ -243,14 +259,14 @@ export class SnapshotAssembler {
    *   - With `snapshotId`: caller has a specific id (test path).
    */
   onNonSnapshotInterleave(snapshotId?: UuidComposite): void {
-    let key: string;
+    let label: string;
     if (snapshotId !== undefined) {
-      key = uuidKey(snapshotId);
+      label = keyHex(uuidKey(snapshotId));
     } else {
       const firstKey = this.inflight.keys().next();
-      key = firstKey.done === true ? "<none>" : firstKey.value;
+      label = firstKey.done === true ? "<none>" : keyHex(firstKey.value);
     }
-    this.protocolViolation(`non-snapshot reliable frame interleaved with snapshot ${key}`);
+    this.protocolViolation(`non-snapshot reliable frame interleaved with snapshot ${label}`);
   }
 
   /**
@@ -287,7 +303,7 @@ export class SnapshotAssembler {
       if (now - inflight.startedAtMs > SNAPSHOT_COMPLETION_DEADLINE_MS) {
         this.fail(
           "buffer-overflow",
-          `snapshot ${inflight.idKey} did not complete within ${String(
+          `snapshot ${keyHex(inflight.idKey)} did not complete within ${String(
             SNAPSHOT_COMPLETION_DEADLINE_MS,
           )} ms`,
         );

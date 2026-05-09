@@ -72,7 +72,10 @@ final class ErrorCodesFixtureTest {
     final var start = Paths.get("").toAbsolutePath();
     // Loop control variable `cur` is intentionally mutable per CLAUDE.md
     // carve-out for classic for-loop counters; the loop walks parents
-    // bounded by depth=10 to defend against pathological symlink loops.
+    // until `getParent()` returns null (filesystem root). Per Gemini
+    // review (MEDIUM): this test utility relies on a sane filesystem
+    // root rather than an explicit depth bound; the prior comment
+    // claiming depth=10 was out-of-date with the for-loop refactor.
     for (Path cur = start; cur != null; cur = cur.getParent()) {
       if (Files.isDirectory(cur.resolve("web-ui"))
           && Files.isRegularFile(cur.resolve("settings.gradle.kts"))) {

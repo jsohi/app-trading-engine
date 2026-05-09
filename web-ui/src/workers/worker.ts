@@ -96,15 +96,15 @@ const reconnect = new Reconnect(
   // outside-the-cluster main-thread/worker code where Math.random is
   // permitted by APP-36 §3 ("WebSocket Server (Non-Deterministic)").
   // The RandomSource interface keeps the choice testable.
-  // Per Gemini review (MEDIUM): this state lives at worker module
-  // scope and is therefore lost on a worker terminate+respawn cycle
-  // (e.g. watchdog miss). That is BY DESIGN: the upper-layer
-  // circuit-breaker is `WorkerClient.respawnTimestamps` on the main
-  // thread (3-in-30s cap → WORKER_DEAD), which prevents an infinite
-  // respawn loop even when the worker-side counter resets. Two-tier
-  // breaker matches the Aeron / LMAX practice — the inner counter
-  // tracks WS-level reconnect attempts within one worker lifetime;
-  // the outer counter tracks worker-process lifetimes themselves.
+  // Per Gemini review R10 (HIGH): the attempt counter is preserved
+  // across worker terminate+respawn cycles via
+  // `INIT.initialReconnectAttempt` (WorkerClient holds it on the main
+  // thread and seeds the worker's Reconnect on every spawn via
+  // `reconnect.setAttempt(...)` in the INIT handler). The two-tier
+  // breaker is intentional: inner counter (worker-side, persisted)
+  // tracks WS-level reconnect attempts; outer counter
+  // (`WorkerClient.respawnTimestamps`, 3-in-30s cap → WORKER_DEAD)
+  // tracks worker-process lifetimes.
   { next: () => Math.random() },
   () => nowEpochNs(),
 );
@@ -134,11 +134,6 @@ const STATS_EMIT_MS = 1_000;
 // retries) could otherwise spawn overlapping connection attempts. Per
 // Gemini review (MEDIUM): refuse a second INIT while one is in flight.
 let initInFlight = false;
-// Reconnect retry timer handle; non-null only while a backoff is armed.
-// (RECONNECT_NOW from main clears it; close-handler cannot self-mint a
-// fresh tokenPort, so reconnect ultimately requires the main-thread
-// WorkerClient to re-issue INIT after surfacing DOWN.)
-let reconnectTimerHandle: number | null = null;
 
 // ─── Main-thread message handler (FIRST line: protocolVersion check) ──
 
@@ -176,18 +171,6 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
       // the canonical channel is the watchdog `MessagePort` wired in
       // `handleInit`. Echo PONG defensively here too.
       postPong(msg.mainNanos);
-      break;
-    case "RECONNECT_NOW":
-      // Force-reconnect: cancel any pending backoff timer and close the
-      // current WS (if open). The main-thread WorkerClient is responsible
-      // for re-issuing INIT with a fresh tokenPort — the worker cannot
-      // re-mint a token (the prior tokenPort closes after one read).
-      if (reconnectTimerHandle !== null) {
-        self.clearTimeout(reconnectTimerHandle);
-        reconnectTimerHandle = null;
-      }
-      ws?.close();
-      transitionConnection("DOWN");
       break;
     case "CLOSE":
       shutdown();
@@ -358,7 +341,7 @@ async function handleInit(
 }
 
 function wireWatchdogPort(port: MessagePort): void {
-  // If a previous port was wired (worker reused after RECONNECT_NOW), close
+  // If a previous port was wired (e.g. worker reused after a duplicate INIT), close
   // it before swapping — prevents leaking PING/PONG channels.
   if (watchdogPort !== null) {
     watchdogPort.onmessage = null;
