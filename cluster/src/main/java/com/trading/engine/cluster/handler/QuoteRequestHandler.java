@@ -135,19 +135,22 @@ public final class QuoteRequestHandler implements CommandHandler {
       return;
     }
 
-    // 2. Decode wrap
+    // 2. Decode wrap. Use raw-byte accessors + safe-map switches to avoid the
+    // IllegalArgumentException that the generated SBE enum getters throw on unrecognized wire
+    // values. A malformed inbound QuoteRequest must produce a 106 reject — never an
+    // uncaught throw out of the cluster duty cycle.
     qrDecoder.wrap(buffer, offset + HDR_LEN, blockLength, version);
     qrDecoder.getQuoteReqId(quoteReqIdScratch, 0);
     qrDecoder.getSymbol(symbolScratch, 0);
     qrDecoder.getAccountCode(accountCodeScratch, 0);
-    final SideEnum sideEnum = qrDecoder.side();
+    final SideEnum sideEnum = safeSide();
     final long orderQty = qrDecoder.orderQty();
-    final ProductTypeEnum productType = qrDecoder.productType();
+    final ProductTypeEnum productType = safeProductType();
     qrDecoder.getSettlDate(settlDateScratch, 0);
-    final SettlTypeEnum settlType = qrDecoder.settlType();
+    final SettlTypeEnum settlType = safeSettlType();
     qrDecoder.getCurrency(currencyScratch, 0);
     qrDecoder.getSettlCurrency(settlCurrencyScratch, 0);
-    final TenorEnum tenor = qrDecoder.tenor();
+    final TenorEnum tenor = safeTenor();
 
     // 3. Symbol non-empty
     if (symbolScratch[0] == 0) {
@@ -303,12 +306,16 @@ public final class QuoteRequestHandler implements CommandHandler {
     int legIdx = 0;
     while (legGrp.hasNext()) {
       legGrp.next();
-      slot.legSide[legIdx] = (byte) legGrp.legSide().value();
+      // Use raw-byte accessors for leg enums to match the safe-decode pattern above. A
+      // malformed leg enum byte must not throw out of the cluster duty cycle; the slot
+      // simply stores the raw byte (0 if unrecognized) and downstream encode is bounded.
+      slot.legSide[legIdx] = (byte) legGrp.legSideRaw();
       legGrp.getLegSettlDate(slot.legSettlDate[legIdx], 0);
-      final SettlTypeEnum legSt = legGrp.legSettlType();
-      slot.legSettlType[legIdx] = legSt == SettlTypeEnum.NULL_VAL ? 0 : (byte) legSt.value();
+      final short legStRaw = legGrp.legSettlTypeRaw();
+      slot.legSettlType[legIdx] = isValidSettlType(legStRaw) ? (byte) legStRaw : 0;
       legGrp.getLegCurrency(slot.legCurrency[legIdx], 0);
-      slot.legTenor[legIdx] = (byte) legGrp.legTenor().value();
+      final short legTnRaw = legGrp.legTenorRaw();
+      slot.legTenor[legIdx] = isValidTenor(legTnRaw) ? (byte) legTnRaw : 0;
       slot.legOrderQty[legIdx] = legGrp.legOrderQty();
       legIdx++;
     }
@@ -437,6 +444,9 @@ public final class QuoteRequestHandler implements CommandHandler {
     rejectedEncoder.productType(ProductTypeEnum.NULL_VAL);
     rejectedEncoder.putText(RfqRejectMessages.MALFORMED, 0);
     final int len = HDR_LEN + rejectedEncoder.encodedLength();
+    if (len > egressBuffer.capacity()) {
+      throw new IllegalStateException("106 emitMalformed encode overflow: " + len);
+    }
     eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
     metrics.rejectMalformed++;
     metrics.emitRejected++;
@@ -454,5 +464,82 @@ public final class QuoteRequestHandler implements CommandHandler {
   /** Packs a 3-byte currency into an int for {@link CurrencyStore#contains}. */
   private static int packCurrency(final byte[] ccy) {
     return ((ccy[0] & 0xFF) << 16) | ((ccy[1] & 0xFF) << 8) | (ccy[2] & 0xFF);
+  }
+
+  /**
+   * Returns the {@link SideEnum} for the wire byte, or {@link SideEnum#NULL_VAL} for any
+   * unrecognized value. Avoids the {@link IllegalArgumentException} that {@code qrDecoder.side()}
+   * throws on an invalid byte.
+   */
+  private SideEnum safeSide() {
+    final short raw = qrDecoder.sideRaw();
+    return switch (raw) {
+      case 1 -> SideEnum.Buy;
+      case 2 -> SideEnum.Sell;
+      default -> SideEnum.NULL_VAL;
+    };
+  }
+
+  /** Safe map of productType wire byte to enum; returns NULL_VAL on unrecognized values. */
+  private ProductTypeEnum safeProductType() {
+    final short raw = qrDecoder.productTypeRaw();
+    return switch (raw) {
+      case 1 -> ProductTypeEnum.Spot;
+      case 2 -> ProductTypeEnum.Forward;
+      case 3 -> ProductTypeEnum.Swap;
+      default -> ProductTypeEnum.NULL_VAL;
+    };
+  }
+
+  /** Safe map of settlType wire byte to enum; returns NULL_VAL on unrecognized values. */
+  private SettlTypeEnum safeSettlType() {
+    final short raw = qrDecoder.settlTypeRaw();
+    return switch (raw) {
+      case 0 -> SettlTypeEnum.Regular;
+      case 1 -> SettlTypeEnum.Cash;
+      case 2 -> SettlTypeEnum.NextDay;
+      case 3 -> SettlTypeEnum.TPlus2;
+      case 4 -> SettlTypeEnum.TPlus3;
+      case 5 -> SettlTypeEnum.TPlus4;
+      case 6 -> SettlTypeEnum.Future;
+      case 7 -> SettlTypeEnum.WhenAndIfIssued;
+      case 8 -> SettlTypeEnum.SellersOption;
+      case 9 -> SettlTypeEnum.TPlus5;
+      case 10 -> SettlTypeEnum.BrokenDate;
+      case 11 -> SettlTypeEnum.FXSpotNextDay;
+      default -> SettlTypeEnum.NULL_VAL;
+    };
+  }
+
+  /** Safe map of tenor wire byte to enum; returns NULL_VAL on unrecognized values. */
+  private TenorEnum safeTenor() {
+    final short raw = qrDecoder.tenorRaw();
+    return switch (raw) {
+      case 1 -> TenorEnum.ON;
+      case 2 -> TenorEnum.TN;
+      case 3 -> TenorEnum.SN;
+      case 4 -> TenorEnum.W1;
+      case 5 -> TenorEnum.W2;
+      case 6 -> TenorEnum.M1;
+      case 7 -> TenorEnum.M2;
+      case 8 -> TenorEnum.M3;
+      case 9 -> TenorEnum.M6;
+      case 10 -> TenorEnum.M9;
+      case 11 -> TenorEnum.Y1;
+      case 12 -> TenorEnum.Y2;
+      case 13 -> TenorEnum.IMM;
+      case 14 -> TenorEnum.BRK;
+      default -> TenorEnum.NULL_VAL;
+    };
+  }
+
+  /** Returns true if {@code raw} is a valid {@link SettlTypeEnum} wire value. */
+  private static boolean isValidSettlType(final short raw) {
+    return raw >= 0 && raw <= 11;
+  }
+
+  /** Returns true if {@code raw} is a valid {@link TenorEnum} wire value. */
+  private static boolean isValidTenor(final short raw) {
+    return raw >= 1 && raw <= 14;
   }
 }
