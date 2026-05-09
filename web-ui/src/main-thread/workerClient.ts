@@ -30,7 +30,9 @@ import { type WorkerErrorMsg, type WorkerToMain } from "@/workers/protocol/Worke
 
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
-import { type WorkerMessage } from "@/shared/transport/MessageShape";
+import { type ConnectionState, type WorkerMessage } from "@/shared/transport/MessageShape";
+
+import { BehaviorSubject } from "rxjs";
 
 import {
   WATCHDOG_MISS_LIMIT,
@@ -46,6 +48,15 @@ export interface WorkerClientStreams {
   readonly messages$: Subject<WorkerMessage>;
   /** Sealed worker error envelope. */
   readonly errors$: Subject<WorkerErrorMsg>;
+  /**
+   * Connection state surfaced from the worker (CONNECTING / CONNECTED /
+   * BACKPRESSURE / DOWN / ...). `BehaviorSubject` so late subscribers
+   * always see the current state. Per Gemini review (HIGH): the worker
+   * emits `connection-state` messages and the main-thread client must
+   * surface them so the rest of the app (status banner, blotters,
+   * reconnect UX) can react.
+   */
+  readonly connectionState$: BehaviorSubject<ConnectionState>;
 }
 
 export interface WorkerClientOptions {
@@ -65,6 +76,7 @@ export interface WorkerClientOptions {
 export class WorkerClient implements WorkerClientStreams {
   readonly messages$ = new Subject<WorkerMessage>();
   readonly errors$ = new Subject<WorkerErrorMsg>();
+  readonly connectionState$ = new BehaviorSubject<ConnectionState>("CONNECTING");
 
   private readonly options: WorkerClientOptions;
   private worker: Worker | null = null;
@@ -148,6 +160,13 @@ export class WorkerClient implements WorkerClientStreams {
       case "MESSAGE_BATCH":
         for (const m of msg.messages) {
           this.messages$.next(m);
+          // Per Gemini review (HIGH): connection-state updates are
+          // emitted via the MESSAGE_BATCH stream (see worker.ts
+          // transitionConnection). Surface them on a dedicated subject
+          // so the rest of the app can subscribe.
+          if (m.type === "connection-state") {
+            this.connectionState$.next(m.state);
+          }
         }
         break;
       case "PONG":
@@ -237,7 +256,17 @@ export class WorkerClient implements WorkerClientStreams {
       return;
     }
 
-    // Fresh token + respawn.
-    void this.spawn();
+    // Fresh token + respawn. Per Gemini review (MEDIUM): catch any
+    // rejection from `spawn()` (e.g. tokenProvider hung, loadWorker
+    // failed) and surface via `errors$` instead of leaving an
+    // unhandled promise rejection that hides the failure mode.
+    this.spawn().catch((err: unknown) => {
+      this.errors$.next({
+        type: "ERROR",
+        protocolVersion: WORKER_PROTOCOL_VERSION,
+        code: "WORKER",
+        hint: `respawn failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
   }
 }

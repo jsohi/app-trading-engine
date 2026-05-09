@@ -60,7 +60,8 @@ export type AuthFailureReason =
   | "PROTOCOL_VERSION_MISMATCH"
   | "ECHO_ATTACK"
   | "SERVER_ERROR"
-  | "REAUTH_QUEUE_OVERFLOW";
+  | "REAUTH_QUEUE_OVERFLOW"
+  | "CONNECTION_CLOSED";
 
 export interface AuthClientCallbacks {
   /** Caller writes the encoded bytes to the WebSocket. */
@@ -161,6 +162,24 @@ export class AuthClient {
       const bytes = this.cb.encodeAuth(newToken, SENT_PROTOCOL_VERSION);
       this.cb.sendBytes(bytes);
     });
+  }
+
+  /**
+   * Reject any in-flight `reauth()` promise — invoked by the worker
+   * when the WebSocket closes before AuthAck arrives. Without this
+   * call the caller's `await reauth(...)` would hang forever (Gemini
+   * review MEDIUM). Idempotent — no-op when no reauth is pending.
+   */
+  cancelPendingReauth(reason: string): void {
+    if (!this.reauthInFlight) return;
+    const reject = this.pendingReauthReject;
+    this.reauthInFlight = false;
+    this.pendingReauthResolve = null;
+    this.pendingReauthReject = null;
+    this.reauthQueue.length = 0;
+    if (reject !== null) {
+      reject("CONNECTION_CLOSED", reason);
+    }
   }
 
   /**
