@@ -198,11 +198,33 @@ export class SnapshotAssembler {
   /**
    * Caller observed a non-snapshot reliable frame interleaved with a
    * snapshot in flight. Per §2.10, this is a protocol violation.
+   *
+   * Two overloads:
+   *   - No arg: caller doesn't know which id is in flight (typical:
+   *     `worker.ts` only sees the inbound frame's flags, not which
+   *     snapshot is mid-reassembly). The assembler picks any inflight
+   *     id for the violation message.
+   *   - With `snapshotId`: caller has a specific id (test path).
    */
-  onNonSnapshotInterleave(snapshotId: UuidComposite): void {
-    this.protocolViolation(
-      `non-snapshot reliable frame interleaved with snapshot ${uuidKey(snapshotId)}`,
-    );
+  onNonSnapshotInterleave(snapshotId?: UuidComposite): void {
+    let key: string;
+    if (snapshotId !== undefined) {
+      key = uuidKey(snapshotId);
+    } else {
+      const firstKey = this.inflight.keys().next();
+      key = firstKey.done === true ? "<none>" : firstKey.value;
+    }
+    this.protocolViolation(`non-snapshot reliable frame interleaved with snapshot ${key}`);
+  }
+
+  /**
+   * True iff at least one snapshot is mid-reassembly. Caller checks
+   * before invoking `onNonSnapshotInterleave()` (Gemini review R7
+   * MEDIUM): only fire the violation when a snapshot is actually
+   * in flight.
+   */
+  hasInflightSnapshots(): boolean {
+    return this.inflight.size > 0;
   }
 
   /** Reset on session cold-start. */

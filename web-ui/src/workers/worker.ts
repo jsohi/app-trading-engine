@@ -257,6 +257,15 @@ async function handleInit(
       // callers awaiting the promise are notified of the failure
       // rather than hanging forever.
       authClient?.cancelPendingReauth("websocket closed");
+      // Per Gemini review R7 (HIGH): preserve the current sessionId as
+      // the priorSessionId so the next handleInit can issue a
+      // SessionResume(priorSessionId, lastReliableSeqNo) instead of a
+      // cold-start. Reconnect.applyCloseCode below decides whether
+      // resume is even legal (cold-start codes clear priorSessionId
+      // afterwards inside SessionState; see §2.6).
+      if (state.currentSessionId !== null) {
+        state.priorSessionId = state.currentSessionId;
+      }
       stats.incReconnect();
       // Per Gemini review (HIGH): consult Reconnect for the close-code
       // policy. Codes 1002/1003/1007–1010/1015 freeze; 1012/1013 cap × 8;
@@ -410,9 +419,18 @@ function handleFrame(frame: ParsedFrame): void {
   // released after gap-fill); routing happens THERE — never inline
   // here. Per Gemini review (HIGH): the prior boolean contract caused
   // out-of-order frames to be double-routed.
-  if (gapTracker !== null && (frame.flags & 0x01) !== 0) {
+  const isReliable = (frame.flags & 0x01) !== 0;
+  if (gapTracker !== null && isReliable) {
     gapTracker.onReliableFrame(frame.seqNo, frame.flags, frame.payload);
     return;
+  }
+  // Pre-AuthAck reliable frames (e.g. AuthAck itself, seqNo=1) arrive
+  // before the GapTracker is wired by `activateSessionLayer`. Per
+  // Gemini review R7 (HIGH): we MUST advance `state.lastReliableSeqNo`
+  // here so the post-activation tracker sees the correct cursor and
+  // does not interpret the *next* reliable frame (seqNo=2) as a gap.
+  if (isReliable && frame.seqNo > state.lastReliableSeqNo) {
+    state.lastReliableSeqNo = frame.seqNo;
   }
   // Best-effort frames bypass GapTracker (no seqNo continuity).
   routeFrame(frame.payload, frame.flags);
@@ -481,9 +499,37 @@ function buildRouterHandlers(): RouterHandlers {
       }
       if (code === 12) {
         // SnapshotEntityTooLarge — caller surfaces; do not close.
-        // The id-specific cleanup belongs to SnapshotAssembler, but the
-        // server frame does not include the snapshotId here; the
-        // dispatcher hands us only the code. C8 widens the contract.
+        // The server-side WebSocketError frame does not include the
+        // snapshotId, so per-id cleanup is unreachable from this PR.
+        // Tracked: schema widening to add `snapshotId` to error code 12
+        // (folded into APP-242 per §D.2 of the plan); when that lands
+        // we wire `snapshotAssembler.onSnapshotEntityTooLarge(id)`.
+        return;
+      }
+      // Per Gemini review R7 (HIGH): feed every other application-level
+      // error code through Reconnect's circuit breaker so codes 1/2/3/8
+      // (AuthFailed, AuthorizationFailed, RateLimitExceeded,
+      // VersionMismatch) advance the freeze counters. Without this
+      // wiring the client could enter an infinite reconnect loop on a
+      // terminal credential failure.
+      // Codes that fall outside Reconnect's AppErrorCode union (e.g. 5
+      // InvalidSubscription per §2.13 — surface only, do not close)
+      // bypass the circuit breaker.
+      const isAppErrorCode =
+        code === 1 ||
+        code === 2 ||
+        code === 3 ||
+        code === 4 ||
+        code === 6 ||
+        code === 7 ||
+        code === 8 ||
+        code === 10 ||
+        code === 11;
+      const freeze = isAppErrorCode ? reconnect.applyAppErrorCode(state, code) : false;
+      if (freeze) {
+        transitionConnection("DOWN_REQUIRES_USER_ACTION");
+        postError("AUTH", `circuit breaker frozen by WebSocketError code ${String(code)}`);
+        ws?.close();
         return;
       }
       authClient?.onAuthError(`server WebSocketError code ${String(code)}`);
@@ -543,6 +589,17 @@ function activateSessionLayer(): void {
       // dispatched exactly once and only after their seqNo is in-order.
       // Buffered out-of-order frames flow through here when their gap
       // fills; their original `flags` are preserved.
+      // Per Gemini review R7 (MEDIUM): per APP-36 §2.10, no
+      // non-snapshot reliable frame may interleave between fragments
+      // of an in-flight snapshot. If the assembler is mid-reassembly
+      // and this frame is NOT a snapshot fragment (FLAG_SNAPSHOT
+      // unset), trip the protocol violation BEFORE routing so the
+      // dispatcher does not see a fragment break.
+      const isSnapshotFrame = (flags & 0x04) !== 0;
+      if (!isSnapshotFrame && snapshotAssembler?.hasInflightSnapshots() === true) {
+        snapshotAssembler.onNonSnapshotInterleave();
+        return;
+      }
       routeFrame(payload, flags);
       ackSender?.onReliableFrameDelivered();
     },
