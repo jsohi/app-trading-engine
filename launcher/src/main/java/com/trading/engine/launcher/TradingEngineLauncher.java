@@ -165,8 +165,7 @@ public final class TradingEngineLauncher {
       long stepStart = NANO_CLOCK.nanoTime();
       // If aeronDirPrefix is "e2e": /tmp/aeron-e2e-node-0, /tmp/aeron-e2e-gateway
       // If aeronDirPrefix is "":    /tmp/aeron-node-0, /tmp/aeron-gateway (production default)
-      final String dirInfix =
-          config.aeronDirPrefix().isEmpty() ? "" : config.aeronDirPrefix() + "-";
+      final var dirInfix = config.aeronDirPrefix().isEmpty() ? "" : config.aeronDirPrefix() + "-";
       final var aeronDirs = new String[config.nodeCount() + 1];
       for (int i = 0; i < config.nodeCount(); i++) {
         aeronDirs[i] = "/tmp/aeron-" + dirInfix + "node-" + i;
@@ -335,6 +334,7 @@ public final class TradingEngineLauncher {
           cluster.clusterSessionId(),
           cluster.leaderMemberId());
 
+      // Method reference / lambda assigned to var cannot infer functional-interface target.
       final ClusterCommandSender sender = cluster::offer;
       final Runnable pollEgress = () -> cluster.controlledPollEgress();
       final var orchestrator = new ReferenceDataOrchestrator(NANO_CLOCK);

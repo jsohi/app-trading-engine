@@ -86,16 +86,16 @@ final class RfqStateSnapshotRoundTripTest {
    */
   @Test
   void singleRequestedSlot_roundTrips_allFieldsPreserved() {
-    final String quoteReqId = "QREQ-RT-1";
+    final var quoteReqId = "QREQ-RT-1";
     final long accountId = 101L;
-    final String quoteId = ""; // not yet assigned
-    final String symbol = "EURUSD";
+    final var quoteId = ""; // not yet assigned
+    final var symbol = "EURUSD";
     final long orderQty = 1_000_000L * PRICE_SCALE;
     final long validUntil = 1_750_000_030_000_000_000L;
     final long transactTime = 1_750_000_000_000_000_000L;
-    final String settlDate = "20260115";
-    final String currency = "EUR";
-    final String settlCurrency = "USD";
+    final var settlDate = "20260115";
+    final var currency = "EUR";
+    final var settlCurrency = "USD";
 
     // Optional fields absent in Requested state — write null sentinel.
     final long nullLong = Long.MIN_VALUE; // SBE int64 null sentinel
@@ -212,10 +212,10 @@ final class RfqStateSnapshotRoundTripTest {
    */
   @Test
   void singleQuotedSlot_roundTrips_withNoLegsTwo() {
-    final String quoteReqId = "QREQ-RT-2";
+    final var quoteReqId = "QREQ-RT-2";
     final long accountId = 202L;
-    final String quoteId = "QTE-RT-2";
-    final String symbol = "USDJPY";
+    final var quoteId = "QTE-RT-2";
+    final var symbol = "USDJPY";
     final long orderQty = 2_000_000L * PRICE_SCALE;
     final long bidPx = 149_50000000L;
     final long offerPx = 149_60000000L;
@@ -224,9 +224,9 @@ final class RfqStateSnapshotRoundTripTest {
     final long swapPoints = 15000L; // swap mid-points in fixed-point
     final long validUntil = 1_750_000_060_000_000_000L;
     final long transactTime = 1_750_000_000_000_000_000L;
-    final String settlDate = "20260116";
-    final String currency = "USD";
-    final String settlCurrency = "JPY";
+    final var settlDate = "20260116";
+    final var currency = "USD";
+    final var settlCurrency = "JPY";
 
     // Near leg (leg 0).
     final long legOrderQty0 = 1_000_000L * PRICE_SCALE;
@@ -376,24 +376,24 @@ final class RfqStateSnapshotRoundTripTest {
   @Test
   void mixedStates_roundTripPreservesEachSlotsFieldsAndState() {
     // Slot 0 — Requested.
-    final String qreqId0 = "QREQ-MIX-0";
+    final var qreqId0 = "QREQ-MIX-0";
     final long accountId0 = 301L;
     final long orderQty0 = 1_000_000L * PRICE_SCALE;
 
     // Slot 1 — Quoted.
-    final String qreqId1 = "QREQ-MIX-1";
+    final var qreqId1 = "QREQ-MIX-1";
     final long accountId1 = 302L;
     final long orderQty1 = 2_000_000L * PRICE_SCALE;
-    final String quoteId1 = "QTE-MIX-1";
+    final var quoteId1 = "QTE-MIX-1";
     final long bidPx1 = 1_05100000_00L;
     final long offerPx1 = 1_05200000_00L;
     final long validUntil1 = 1_750_000_060_000_000_000L;
 
     // Slot 2 — Accepted.
-    final String qreqId2 = "QREQ-MIX-2";
+    final var qreqId2 = "QREQ-MIX-2";
     final long accountId2 = 303L;
     final long orderQty2 = 3_000_000L * PRICE_SCALE;
-    final String quoteId2 = "QTE-MIX-2";
+    final var quoteId2 = "QTE-MIX-2";
     final long lastPx2 = 1_05150000_00L;
 
     final long ts = 1_750_000_000_000_000_000L;
@@ -556,7 +556,7 @@ final class RfqStateSnapshotRoundTripTest {
     final var rfqsEnc = encoder.noRfqsCount(count);
     for (int i = 0; i < count; i++) {
       // quoteReqId: "QREQ-BULK-NNN" padded to 20 characters.
-      final String qreqId = String.format("QREQ-BULK-%03d", i);
+      final var qreqId = String.format("QREQ-BULK-%03d", i);
       // Vary orderQty per slot so misalignment is observable.
       final long orderQty = baseQty + (long) i * PRICE_SCALE;
 

@@ -51,13 +51,13 @@ final class RfqEventCodecRoundTripTest {
   void quoteRequestedEvent_roundTrip_noLegsZero() {
     final long seqNum = 1_001L;
     final long timestamp = 1_700_000_000_000_000_001L;
-    final String quoteReqId = "QREQ-RT-ZERO-1234";
-    final String symbol = "EURUSD";
-    final String accountCode = "ACC-SPOT-001";
+    final var quoteReqId = "QREQ-RT-ZERO-1234";
+    final var symbol = "EURUSD";
+    final var accountCode = "ACC-SPOT-001";
     final long orderQty = 1_000_000_00_000_000L; // 1 000 000 in fixed-point 10^-8
-    final String settlDate = "20260110";
-    final String currency = "EUR";
-    final String settlCurrency = "USD";
+    final var settlDate = "20260110";
+    final var currency = "EUR";
+    final var settlCurrency = "USD";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();
@@ -144,21 +144,21 @@ final class RfqEventCodecRoundTripTest {
   void quoteRequestedEvent_roundTrip_noLegsTwo() {
     final long seqNum = 2_002L;
     final long timestamp = 1_700_000_000_000_000_002L;
-    final String quoteReqId = "QREQ-RT-SWAP-0001";
-    final String symbol = "USDJPY";
+    final var quoteReqId = "QREQ-RT-SWAP-0001";
+    final var symbol = "USDJPY";
     final long orderQty = 5_000_000_00_000_000L;
-    final String settlDate = "20260111";
-    final String currency = "USD";
-    final String settlCurrency = "JPY";
-    final String accountCode = "ACC-SWAP-001";
+    final var settlDate = "20260111";
+    final var currency = "USD";
+    final var settlCurrency = "JPY";
+    final var accountCode = "ACC-SWAP-001";
 
     // Leg data — distinct values per leg so position bugs are caught.
-    final String legSettlDate0 = "20260111";
-    final String legSettlDate1 = "20261111";
+    final var legSettlDate0 = "20260111";
+    final var legSettlDate1 = "20261111";
     final long legOrderQty0 = 5_000_000_00_000_000L;
     final long legOrderQty1 = 5_000_100_00_000_000L;
-    final String legCurrency0 = "USD";
-    final String legCurrency1 = "USD";
+    final var legCurrency0 = "USD";
+    final var legCurrency1 = "USD";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();
@@ -253,10 +253,10 @@ final class RfqEventCodecRoundTripTest {
   void quoteCreatedEvent_roundTrip_noLegsZero() {
     final long seqNum = 3_003L;
     final long timestamp = 1_700_000_000_000_000_003L;
-    final String quoteId = "QTE-RT-ZERO-00003";
-    final String quoteReqId = "QREQ-RT-ZERO-003";
-    final String symbol = "GBPUSD";
-    final String accountCode = "ACC-SPOT-003";
+    final var quoteId = "QTE-RT-ZERO-00003";
+    final var quoteReqId = "QREQ-RT-ZERO-003";
+    final var symbol = "GBPUSD";
+    final var accountCode = "ACC-SPOT-003";
     final long bidPx =
         1_25000000_00L; // 1.25000000 × 10^-2 — intentionally unrealistic to catch scale bugs
     final long offerPx = 1_25100000_00L;
@@ -264,9 +264,9 @@ final class RfqEventCodecRoundTripTest {
     final long offerSize = 2_000_000_00_000_000L;
     final long validUntil = 1_700_000_030_000_000_003L;
     final long swapPoints = Long.MIN_VALUE; // NULL — optional, absent for single-leg
-    final String settlDate = "20260112";
-    final String currency = "GBP";
-    final String settlCurrency = "USD";
+    final var settlDate = "20260112";
+    final var currency = "GBP";
+    final var settlCurrency = "USD";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();
@@ -353,19 +353,19 @@ final class RfqEventCodecRoundTripTest {
   void quoteCreatedEvent_roundTrip_noLegsTwo() {
     final long seqNum = 4_004L;
     final long timestamp = 1_700_000_000_000_000_004L;
-    final String quoteId = "QTE-RT-SWAP-00004";
-    final String quoteReqId = "QREQ-RT-SWAP-004";
-    final String symbol = "EURUSD";
-    final String accountCode = "ACC-SWAP-004";
+    final var quoteId = "QTE-RT-SWAP-00004";
+    final var quoteReqId = "QREQ-RT-SWAP-004";
+    final var symbol = "EURUSD";
+    final var accountCode = "ACC-SWAP-004";
     final long bidPx = 1_05000000_00L;
     final long offerPx = 1_05010000_00L;
     final long bidSize = 1_000_000_00_000_000L;
     final long offerSize = 1_000_000_00_000_000L;
     final long validUntil = 1_700_000_060_000_000_004L;
     final long swapPoints = 100_00L;
-    final String settlDate = "20260113";
-    final String currency = "EUR";
-    final String settlCurrency = "USD";
+    final var settlDate = "20260113";
+    final var currency = "EUR";
+    final var settlCurrency = "USD";
 
     // Leg 0 — near.
     final long legBidPx0 = 1_04900000_00L;
@@ -478,9 +478,9 @@ final class RfqEventCodecRoundTripTest {
   void quoteRejectedEvent_roundTrip_textLengthZero() {
     final long seqNum = 5_005L;
     final long timestamp = 1_700_000_000_000_000_005L;
-    final String quoteReqId = "QREQ-RT-REJ-0005";
-    final String symbol = "AUDUSD";
-    final String accountCode = "ACC-SPOT-005";
+    final var quoteReqId = "QREQ-RT-REJ-0005";
+    final var symbol = "AUDUSD";
+    final var accountCode = "ACC-SPOT-005";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();
@@ -544,11 +544,11 @@ final class RfqEventCodecRoundTripTest {
   void quoteRejectedEvent_roundTrip_textLengthMid() {
     final long seqNum = 6_006L;
     final long timestamp = 1_700_000_000_000_000_006L;
-    final String quoteReqId = "QREQ-RT-REJ-0006";
-    final String symbol = "USDCHF";
-    final String accountCode = "ACC-SPOT-006";
+    final var quoteReqId = "QREQ-RT-REJ-0006";
+    final var symbol = "USDCHF";
+    final var accountCode = "ACC-SPOT-006";
     // 32-character text — well inside the 64-byte limit.
-    final String text = "Price not available: feed timeout";
+    final var text = "Price not available: feed timeout";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();
@@ -595,11 +595,11 @@ final class RfqEventCodecRoundTripTest {
   void quoteRejectedEvent_roundTrip_textLength64() {
     final long seqNum = 7_007L;
     final long timestamp = 1_700_000_000_000_000_007L;
-    final String quoteReqId = "QREQ-RT-REJ-0007";
-    final String symbol = "NZDUSD";
-    final String accountCode = "ACC-SPOT-007";
+    final var quoteReqId = "QREQ-RT-REJ-0007";
+    final var symbol = "NZDUSD";
+    final var accountCode = "ACC-SPOT-007";
     // Exactly 64 ASCII characters — fills the field with no trailing NUL.
-    final String text = "01234567890123456789012345678901234567890123456789ABCDEFGHIJKLMN";
+    final var text = "01234567890123456789012345678901234567890123456789ABCDEFGHIJKLMN";
     assertEquals(64, text.length(), "test setup: text must be exactly 64 chars");
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
@@ -646,10 +646,10 @@ final class RfqEventCodecRoundTripTest {
   void quoteExpiredEvent_roundTrip() {
     final long seqNum = 8_008L;
     final long timestamp = 1_700_000_000_000_000_008L;
-    final String quoteId = "QTE-RT-EXP-00008";
-    final String quoteReqId = "QREQ-RT-EXP-0008";
-    final String symbol = "USDJPY";
-    final String accountCode = "ACC-SPOT-008";
+    final var quoteId = "QTE-RT-EXP-00008";
+    final var quoteReqId = "QREQ-RT-EXP-0008";
+    final var symbol = "USDJPY";
+    final var accountCode = "ACC-SPOT-008";
 
     final var buf = new UnsafeBuffer(new byte[BUF_SIZE]);
     final var headerEncoder = new MessageHeaderEncoder();

@@ -27,7 +27,6 @@ import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
-import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -300,7 +299,7 @@ class NewOrderSingleHandlerTest {
     dispatch(len);
 
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rej = decodeOrderRejected(session.messages.get(0));
+    final var rej = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.QuoteNotFound, rej.rejectReason());
     assertEquals(1L, rfqMetrics.rejectUnknownQuote);
     assertEquals(0L, rfqMetrics.emitAccepted);
@@ -328,7 +327,7 @@ class NewOrderSingleHandlerTest {
     dispatch(len);
 
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rej = decodeOrderRejected(session.messages.get(0));
+    final var rej = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.QuoteNotFound, rej.rejectReason());
     assertEquals(1L, rfqMetrics.rejectQuoteSideMismatch);
     assertEquals(RfqSlotState.QUOTED, slot.state, "slot must remain QUOTED after peek-only reject");
@@ -361,7 +360,7 @@ class NewOrderSingleHandlerTest {
     dispatch(len);
 
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rej = decodeOrderRejected(session.messages.get(0));
+    final var rej = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.QuoteNotFound, rej.rejectReason());
     assertEquals(1L, rfqMetrics.rejectQuotePriceMismatch);
     assertEquals(RfqSlotState.QUOTED, slot.state, "slot must remain QUOTED after peek-only reject");
@@ -393,7 +392,7 @@ class NewOrderSingleHandlerTest {
     dispatch(len);
 
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rej = decodeOrderRejected(session.messages.get(0));
+    final var rej = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.QuoteNotFound, rej.rejectReason());
     assertEquals(1L, rfqMetrics.rejectQuoteQtyMismatch);
     assertEquals(RfqSlotState.QUOTED, slot.state, "slot must remain QUOTED after peek-only reject");
@@ -516,7 +515,7 @@ class NewOrderSingleHandlerTest {
 
     // Rejected by check 11 (OrderExceedsMaxSize)
     assertEquals(1, session.messages.size());
-    final OrderRejectedEventDecoder rej = decodeOrderRejected(session.messages.get(0));
+    final var rej = decodeOrderRejected(session.messages.get(0));
     assertEquals(RejectReasonEnum.OrderExceedsMaxSize, rej.rejectReason());
 
     // Slot must still be QUOTED — peek was read-only, commit never executed

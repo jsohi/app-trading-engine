@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.aeron.cluster.codecs.CloseReason;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -16,10 +17,8 @@ import org.junit.jupiter.api.Test;
  */
 class OrchestratorRfqForwarderTest {
 
-  private final byte[] qrId1 =
-      "REQ-12345678901234567".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-  private final byte[] qrId2 =
-      "REQ-99999999999999999".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  private final byte[] qrId1 = "REQ-12345678901234567".getBytes(StandardCharsets.US_ASCII);
+  private final byte[] qrId2 = "REQ-99999999999999999".getBytes(StandardCharsets.US_ASCII);
 
   @Test
   void recordOriginatingSession_thenLookup_returnsRecordedSessionId() {
@@ -73,7 +72,7 @@ class OrchestratorRfqForwarderTest {
     // branch were absent. The probability is ~2^-64; we instead validate the contract by
     // hashing many inputs and asserting none hit the sentinel.
     for (int i = 0; i < 10_000; i++) {
-      final byte[] in = ("input-" + i).getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+      final byte[] in = ("input-" + i).getBytes(StandardCharsets.US_ASCII);
       final long h = OrchestratorRfqForwarder.fnv1a64(in, 0, in.length);
       assertNotEquals(OrchestratorRfqForwarder.MISSING_SESSION, h);
     }

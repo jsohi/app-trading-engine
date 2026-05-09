@@ -277,7 +277,7 @@ public final class TradingClusteredService implements ClusteredService {
       final int snapshotTemplateId,
       final Object expected,
       final String name) {
-    final Object registered = registry.storeForSnapshotTemplateId(snapshotTemplateId);
+    final var registered = registry.storeForSnapshotTemplateId(snapshotTemplateId);
     if (registered != expected) {
       throw new IllegalArgumentException(
           name
@@ -312,6 +312,8 @@ public final class TradingClusteredService implements ClusteredService {
     // loadSnapshot(). Aeron Cluster delivers snapshot fragments in the order they were offered,
     // so the concatenated bytes match the publish order.
     snapshotReassemblyOffset = 0;
+    // Lambda assigned to a `var` cannot infer its functional-interface target — keep the
+    // explicit FragmentHandler type here so the lambda signature resolves.
     final FragmentHandler appender =
         (final DirectBuffer buffer, final int offset, final int length, final Header header) -> {
           snapshotReassemblyBuf.putBytes(snapshotReassemblyOffset, buffer, offset, length);
@@ -349,6 +351,8 @@ public final class TradingClusteredService implements ClusteredService {
       final long currentTs = cluster.time();
       final var ctx = cluster.context();
       final var ctxErrorHandler = ctx != null ? ctx.errorHandler() : null;
+      // Conditional with a lambda branch: var would erase to Object — keep ErrorHandler
+      // so the lambda has a functional-interface target.
       final ErrorHandler errorHandler =
           ctxErrorHandler != null ? ctxErrorHandler : (final Throwable t) -> {};
       rfqStateMachine.onSnapshotRestored(currentTs, eventSink, errorHandler);
@@ -956,7 +960,7 @@ public final class TradingClusteredService implements ClusteredService {
           offset + MessageHeaderDecoder.ENCODED_LENGTH,
           headerDecoder.blockLength(),
           headerDecoder.version());
-      final IdGeneratorSnapshotDecoder.NoGeneratorsDecoder group = idGenSnapDecoder.noGenerators();
+      final var group = idGenSnapDecoder.noGenerators();
       while (group.hasNext()) {
         group.next();
         final long counter = group.counter();

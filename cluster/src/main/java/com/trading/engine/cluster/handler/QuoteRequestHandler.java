@@ -143,14 +143,14 @@ public final class QuoteRequestHandler implements CommandHandler {
     qrDecoder.getQuoteReqId(quoteReqIdScratch, 0);
     qrDecoder.getSymbol(symbolScratch, 0);
     qrDecoder.getAccountCode(accountCodeScratch, 0);
-    final SideEnum sideEnum = safeSide();
+    final var sideEnum = safeSide();
     final long orderQty = qrDecoder.orderQty();
-    final ProductTypeEnum productType = safeProductType();
+    final var productType = safeProductType();
     qrDecoder.getSettlDate(settlDateScratch, 0);
-    final SettlTypeEnum settlType = safeSettlType();
+    final var settlType = safeSettlType();
     qrDecoder.getCurrency(currencyScratch, 0);
     qrDecoder.getSettlCurrency(settlCurrencyScratch, 0);
-    final TenorEnum tenor = safeTenor();
+    final var tenor = safeTenor();
 
     // 3. Symbol non-empty
     if (symbolScratch[0] == 0) {
@@ -167,8 +167,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
 
     // 4. Account validation
-    final AccountState account =
-        accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
+    final var account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
     if (account == null || account.status() != AccountStatusEnum.Active) {
       emitRejectByQuoteReqId(
           session,
@@ -229,7 +228,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
 
     // 8. Duplicate / recently-terminal detection
-    final RfqSlot existing =
+    final var existing =
         rfqStateMachine.lookupByQuoteReqId(quoteReqIdScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     if (existing != null) {
       // Duplicate quoteReqId in REQUESTED or QUOTED — emit 106 "duplicate".
@@ -254,7 +253,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
 
     // 9. Pool acquisition
-    final RfqSlot slot = rfqStateMachine.acquire();
+    final var slot = rfqStateMachine.acquire();
     if (slot == null) {
       emitRejectByQuoteReqId(
           session,
@@ -294,7 +293,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     // Decode legs — bounds-check first to prevent ArrayIndexOutOfBoundsException (DoS vector).
     // RfqSlot.MAX_LEGS = 2 (Spot/Forward swap legs); a hostile or buggy client sending more
     // legs would crash the cluster duty cycle without this guard.
-    final QuoteRequestDecoder.NoLegsDecoder legGrp = qrDecoder.noLegs();
+    final var legGrp = qrDecoder.noLegs();
     final int legCount = legGrp.count();
     if (legCount > RfqSlot.MAX_LEGS) {
       // Release the just-acquired slot before rejecting; slot is not yet in any lookup map.
@@ -382,8 +381,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     requestedEncoder.putSettlCurrency(slot.settlCurrencyBytes, 0);
     requestedEncoder.tenor(tenor);
 
-    final QuoteRequestedEventEncoder.NoLegsEncoder outLegGrp =
-        requestedEncoder.noLegsCount(slot.noLegs);
+    final var outLegGrp = requestedEncoder.noLegsCount(slot.noLegs);
     for (int j = 0; j < slot.noLegs; j++) {
       outLegGrp.next();
       outLegGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));

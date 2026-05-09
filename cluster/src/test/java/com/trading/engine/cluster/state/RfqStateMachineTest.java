@@ -27,12 +27,11 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
+import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,8 +72,8 @@ class RfqStateMachineTest {
    */
   static final class CapturingFakeCluster implements Cluster {
 
-    /** All (correlationId → deadline) pairs from scheduleTimer, in insertion order. */
-    final Map<Long, Long> scheduledTimers = new HashMap<>();
+    /** All (correlationId → deadline) pairs from scheduleTimer (primitive-keyed; no boxing). */
+    final Long2LongHashMap scheduledTimers = new Long2LongHashMap(Long.MIN_VALUE);
 
     /** Controls the return value of {@link #scheduleTimer}. Default {@code true}. */
     boolean scheduleTimerResult = true;

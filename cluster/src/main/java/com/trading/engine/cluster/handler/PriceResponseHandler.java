@@ -117,7 +117,7 @@ public final class PriceResponseHandler implements CommandHandler {
     prDecoder.getQuoteReqId(reqIdScratch, 0);
 
     // 3. Slot lookup
-    final RfqSlot slot =
+    final var slot =
         rfqStateMachine.lookupByQuoteReqId(reqIdScratch, 0, RfqSlot.QUOTE_REQ_ID_LENGTH);
     if (slot == null) {
       metrics.dropUnknownReqId++;
@@ -138,7 +138,7 @@ public final class PriceResponseHandler implements CommandHandler {
     // cluster duty cycle. Treat any non-True byte (including malformed) as "not accepted" →
     // 106 reject path.
     final short acceptedRaw = prDecoder.acceptedRaw();
-    final BooleanType accepted =
+    final var accepted =
         acceptedRaw == BooleanType.True.value() ? BooleanType.True : BooleanType.False;
 
     // 4. Pricing rejected → emit 106 + release
@@ -210,8 +210,7 @@ public final class PriceResponseHandler implements CommandHandler {
     createdEncoder.swapPoints(swapPoints);
 
     // Legs (PriceResponse may carry leg-level prices we propagate to the event)
-    final QuoteCreatedEventEncoder.NoLegsEncoder outLegGrp =
-        createdEncoder.noLegsCount(slot.noLegs);
+    final var outLegGrp = createdEncoder.noLegsCount(slot.noLegs);
     for (int j = 0; j < slot.noLegs; j++) {
       outLegGrp.next();
       outLegGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));

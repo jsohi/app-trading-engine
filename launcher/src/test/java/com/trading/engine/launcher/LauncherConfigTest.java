@@ -663,7 +663,7 @@ class LauncherConfigTest {
       "aeron.dir.prefix"
     };
     // Save and clear any overrides from other tests
-    final String[] saved = new String[keys.length];
+    final var saved = new String[keys.length];
     for (int i = 0; i < keys.length; i++) {
       saved[i] = System.getProperty(keys[i]);
       System.clearProperty(keys[i]);
@@ -719,7 +719,7 @@ class LauncherConfigTest {
       "e2e"
     };
     // Save originals before overwriting
-    final String[] saved = new String[keys.length];
+    final var saved = new String[keys.length];
     for (int i = 0; i < keys.length; i++) {
       saved[i] = System.getProperty(keys[i]);
       System.setProperty(keys[i], values[i]);
