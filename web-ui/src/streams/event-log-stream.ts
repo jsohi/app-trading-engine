@@ -12,10 +12,19 @@
  *
  * Threading: main thread.
  *
- * Allocation: zero per emission after construction. The ring slots
- * themselves are mutated in place; the snapshot object reference is
- * stable. The single `TextEncoder` is hoisted to module scope per
- * Gemini review (MEDIUM) to avoid per-event allocator pressure.
+ * Allocation: per event the operator allocates one
+ * `EventLogEntry { templateId, bytes }` plus the encoded `Uint8Array`
+ * payload (sized to the event-text length). The ring slots overwrite
+ * the prior entry once capacity is reached, so the steady-state heap
+ * cost is bounded at `capacity × avg-event-bytes`. The snapshot
+ * wrapper itself is stable (zero alloc per emission); the
+ * `TextEncoder` is module-scope so it does not allocate per call.
+ *
+ * Per Gemini review R12 (MEDIUM): the prior "Allocation: zero per
+ * emission" claim was inaccurate — once the SBE per-direction
+ * encoders ship (APP-260) we can stash the wire bytes directly into
+ * a slab and the entry+bytes allocation will go away. Until then,
+ * the documented behavior matches the implementation.
  *
  * Plan reference: §5.5 / §6 rows 21, 49.
  */
