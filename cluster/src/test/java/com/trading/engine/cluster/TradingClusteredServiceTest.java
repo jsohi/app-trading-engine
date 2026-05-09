@@ -76,7 +76,7 @@ class TradingClusteredServiceTest {
     orderBook = new OrderBook(128);
     eventSequencer = new EventSequencer();
     eventJournal = new EventJournal(64);
-    tradingState = new TradingState(orderBook, orderIdGen, execIdGen);
+    tradingState = new TradingState(orderBook, orderIdGen, execIdGen, new IdGenerator("QTE"));
     eventSink = new EventSink(eventSequencer, eventJournal);
     accountStore = new AccountStore();
     currencyStore = new CurrencyStore();
@@ -703,7 +703,7 @@ class TradingClusteredServiceTest {
     final var book = new OrderBook(128);
     final var seq = new EventSequencer();
     final var journal = new EventJournal(64);
-    final var state = new TradingState(book, ordGen, exeGen);
+    final var state = new TradingState(book, ordGen, exeGen, new IdGenerator("QTE"));
     final var sink = new EventSink(seq, journal);
     final var accounts = new AccountStore();
     final var currencies = new CurrencyStore();
@@ -994,7 +994,7 @@ class TradingClusteredServiceTest {
     final var bigBook = new OrderBook(2048);
     final var seq = new EventSequencer();
     final var journal = new EventJournal(2048);
-    final var bigState = new TradingState(bigBook, ordGen, exeGen);
+    final var bigState = new TradingState(bigBook, ordGen, exeGen, new IdGenerator("QTE"));
     final var bigSink = new EventSink(seq, journal);
     final var accounts = new AccountStore();
     final var currencies = new CurrencyStore();
@@ -1059,7 +1059,7 @@ class TradingClusteredServiceTest {
     final var freshBook = new OrderBook(2048);
     final var freshSeq = new EventSequencer();
     final var freshJournal = new EventJournal(2048);
-    final var freshState = new TradingState(freshBook, freshOrdGen, freshExeGen);
+    final var freshState = new TradingState(freshBook, freshOrdGen, freshExeGen, new IdGenerator("QTE"));
     final var freshSink = new EventSink(freshSeq, freshJournal);
     final var freshAccounts = new AccountStore();
     final var freshCurrencies = new CurrencyStore();
