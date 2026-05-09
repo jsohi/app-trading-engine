@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JFR profile for the trading-engine cluster service. Enables RFQ lifecycle JFR events
+  (RfqEmissionEvent, RfqRejectionEvent) at every emit / reject call site.
+
+  Usage at runtime:
+    -XX:StartFlightRecording=settings=cluster/src/main/resources/jfr/trading-engine.jfc,filename=rfq.jfr
+
+  Stack traces are disabled (per @StackTrace(false) on the event classes) to keep
+  per-event overhead at sub-microsecond on the cluster duty cycle. Threshold is
+  unset so every event is recorded — there is no minimum-duration filter.
+-->
+<configuration version="2.0" label="trading-engine" description="RFQ lifecycle observability"
+               provider="trading-engine">
+
+  <event name="com.trading.engine.cluster.RfqEmission">
+    <setting name="enabled">true</setting>
+    <setting name="stackTrace">false</setting>
+    <setting name="threshold">0 ns</setting>
+  </event>
+
+  <event name="com.trading.engine.cluster.RfqRejection">
+    <setting name="enabled">true</setting>
+    <setting name="stackTrace">false</setting>
+    <setting name="threshold">0 ns</setting>
+  </event>
+
+</configuration>
