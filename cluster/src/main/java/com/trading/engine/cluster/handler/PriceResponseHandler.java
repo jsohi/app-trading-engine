@@ -11,7 +11,6 @@ import com.trading.engine.messages.sbe.PriceResponseDecoder;
 import com.trading.engine.messages.sbe.QuoteCreatedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
-import com.trading.engine.messages.sbe.SettlTypeEnum;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import java.util.Objects;
@@ -197,13 +196,7 @@ public final class PriceResponseHandler implements CommandHandler {
     createdEncoder.validUntil(slot.validUntil);
     createdEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     createdEncoder.putSettlDate(slot.settlDateBytes, 0);
-    // slot.settlType holds the raw SBE enum byte including NULL_VAL (255 / signed -1).
-    // Mask to 0..255 before SettlTypeEnum.get to safely cover the NULL_VAL sentinel and
-    // preserve Regular (wire value 0). Per QuoteRequestHandler:281.
-    createdEncoder.settlType(
-        slot.settlType == (byte) SettlTypeEnum.NULL_VAL.value()
-            ? SettlTypeEnum.NULL_VAL
-            : SettlTypeEnum.get((short) (slot.settlType & 0xFF)));
+    createdEncoder.settlType(SafeEnumMappers.safeSettlType(slot.settlType));
     createdEncoder.putCurrency(slot.currencyBytes, 0);
     createdEncoder.putSettlCurrency(slot.settlCurrencyBytes, 0);
     createdEncoder.tenor(SafeEnumMappers.safeTenor(slot.tenor));
@@ -215,11 +208,12 @@ public final class PriceResponseHandler implements CommandHandler {
       outLegGrp.next();
       outLegGrp.legSide(SafeEnumMappers.safeSide(slot.legSide[j]));
       outLegGrp.putLegSettlDate(slot.legSettlDate[j], 0);
-      outLegGrp.legSettlType(
-          slot.legSettlType[j] == (byte) SettlTypeEnum.NULL_VAL.value()
-              ? SettlTypeEnum.NULL_VAL
-              : SettlTypeEnum.get((short) (slot.legSettlType[j] & 0xFF)));
+      outLegGrp.legSettlType(SafeEnumMappers.safeSettlType(slot.legSettlType[j]));
       outLegGrp.putLegCurrency(slot.legCurrency[j], 0);
+      // Propagate full leg identity to downstream consumers / audit trails (matches the
+      // QuoteRequestedEvent leg encode); legTenor + legOrderQty are part of every leg.
+      outLegGrp.legTenor(SafeEnumMappers.safeTenor(slot.legTenor[j]));
+      outLegGrp.legOrderQty(slot.legOrderQty[j]);
       outLegGrp.legBidPx(slot.legBidPx[j]);
       outLegGrp.legOfferPx(slot.legOfferPx[j]);
       outLegGrp.legBidSize(slot.legBidSize[j]);
