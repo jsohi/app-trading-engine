@@ -208,7 +208,8 @@ public final class TradingEngineLauncher {
       stepStart = NANO_CLOCK.nanoTime();
       for (int i = 0; i < config.nodeCount(); i++) {
         clusterNodes.set(
-            i, ClusterNodeLauncher.launch(i, config.baseDir(), aeronDirs[i], clusterMembers));
+            i,
+            ClusterNodeLauncher.launch(i, config.baseDir(), aeronDirs[i], clusterMembers, config));
         LOG.info("Cluster node {} launched", i);
       }
       LOG.info(

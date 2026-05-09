@@ -51,23 +51,77 @@ public final class TradingClusteredServiceFactory {
   /** Default tolerance for NOS-with-quoteId qty (bps). 0 = exact match. */
   public static final int DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS = 0;
 
-  private TradingClusteredServiceFactory() {}
+  /**
+   * Holder for RFQ runtime configuration values. Permits launchers to override any subset of the 10
+   * RFQ tunables while defaulting the rest to the {@code DEFAULT_RFQ_*} constants. The launcher
+   * constructs an instance from {@code LauncherConfig.fromSystemProperties()}; tests use the {@link
+   * #DEFAULTS} singleton.
+   *
+   * @param poolCapacity max concurrent RFQ slots
+   * @param defaultTtlNanos default per-product TTL (overridden by perProductTtlNanos)
+   * @param spotTtlNanos TTL for {@code ProductTypeEnum.Spot}
+   * @param forwardTtlNanos TTL for {@code ProductTypeEnum.Forward}
+   * @param swapTtlNanos TTL for {@code ProductTypeEnum.Swap}
+   * @param requestTimeoutNanos REQUESTED-state pricing-response timeout
+   * @param rateLimitPerSession token-bucket capacity per session
+   * @param rateLimitWindowNanos token-bucket refill window
+   * @param acceptPriceToleranceBps NOS-with-quoteId price tolerance
+   * @param acceptQtyToleranceBps NOS-with-quoteId qty tolerance
+   */
+  public record RfqConfig(
+      int poolCapacity,
+      long defaultTtlNanos,
+      long spotTtlNanos,
+      long forwardTtlNanos,
+      long swapTtlNanos,
+      long requestTimeoutNanos,
+      long rateLimitPerSession,
+      long rateLimitWindowNanos,
+      int acceptPriceToleranceBps,
+      int acceptQtyToleranceBps) {
 
-  /** Convenience for production bootstrap: fresh empty ref-data stores. */
-  public static TradingClusteredService create() {
-    return create(new AccountStore(), new CurrencyStore(), new RiskLimitStore());
+    /** Default RFQ config — used by tests and the zero-arg factory overload. */
+    public static final RfqConfig DEFAULTS =
+        new RfqConfig(
+            DEFAULT_RFQ_POOL_CAPACITY,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            DEFAULT_RFQ_RATE_LIMIT_PER_SESSION,
+            DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
+            DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
+            DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS);
   }
 
-  /**
-   * Build a {@link TradingClusteredService} wired with the given ref-data stores. The factory
-   * constructs the remaining dependencies ({@link IdGenerator}s, {@link OrderBook}, {@link
-   * EventSequencer}, {@link EventJournal}, {@link ReferenceDataRegistry} with all three loaders)
-   * internally.
-   */
+  private TradingClusteredServiceFactory() {}
+
+  /** Convenience for production bootstrap: fresh empty ref-data stores + default RFQ config. */
+  public static TradingClusteredService create() {
+    return create(
+        new AccountStore(), new CurrencyStore(), new RiskLimitStore(), RfqConfig.DEFAULTS);
+  }
+
+  /** Convenience overload: provided ref-data stores + default RFQ config. */
   public static TradingClusteredService create(
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore) {
+    return create(accountStore, currencyStore, riskLimitStore, RfqConfig.DEFAULTS);
+  }
+
+  /**
+   * Build a {@link TradingClusteredService} wired with the given ref-data stores and RFQ config.
+   * The factory constructs the remaining dependencies ({@link IdGenerator}s, {@link OrderBook},
+   * {@link EventSequencer}, {@link EventJournal}, {@link ReferenceDataRegistry} with all three
+   * loaders) internally.
+   */
+  public static TradingClusteredService create(
+      final AccountStore accountStore,
+      final CurrencyStore currencyStore,
+      final RiskLimitStore riskLimitStore,
+      final RfqConfig rfqConfig) {
     final var orderIdGen = new IdGenerator("ORD");
     final var execIdGen = new IdGenerator("EXE");
     final var quoteIdGen = new IdGenerator("QTE");
@@ -98,16 +152,16 @@ public final class TradingClusteredServiceFactory {
     final var rfqMetrics = new RfqMetrics();
     final var rfqStateMachine =
         new RfqStateMachine(
-            DEFAULT_RFQ_POOL_CAPACITY,
-            DEFAULT_RFQ_TTL_NANOS,
-            DEFAULT_RFQ_TTL_NANOS,
-            DEFAULT_RFQ_TTL_NANOS,
-            DEFAULT_RFQ_TTL_NANOS,
-            DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
-            DEFAULT_RFQ_RATE_LIMIT_PER_SESSION,
-            DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
-            DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
-            DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS,
+            rfqConfig.poolCapacity(),
+            rfqConfig.defaultTtlNanos(),
+            rfqConfig.spotTtlNanos(),
+            rfqConfig.forwardTtlNanos(),
+            rfqConfig.swapTtlNanos(),
+            rfqConfig.requestTimeoutNanos(),
+            rfqConfig.rateLimitPerSession(),
+            rfqConfig.rateLimitWindowNanos(),
+            rfqConfig.acceptPriceToleranceBps(),
+            rfqConfig.acceptQtyToleranceBps(),
             accountStore,
             rfqMetrics);
 

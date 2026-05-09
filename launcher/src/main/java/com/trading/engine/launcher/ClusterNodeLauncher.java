@@ -95,8 +95,21 @@ public final class ClusterNodeLauncher {
    * @throws IllegalStateException if the external Media Driver is not running ({@code cnc.dat}
    *     missing at {@code aeronDir}) or per-node directories cannot be created
    */
+  /**
+   * Test-friendly overload using {@link LauncherConfig#defaults()}. Production callers use the
+   * 5-arg form below to thread RFQ tunables from system properties.
+   */
   public static ClusterComponents launch(
       final int nodeId, final String baseDir, final String aeronDir, final String clusterMembers) {
+    return launch(nodeId, baseDir, aeronDir, clusterMembers, LauncherConfig.defaults());
+  }
+
+  public static ClusterComponents launch(
+      final int nodeId,
+      final String baseDir,
+      final String aeronDir,
+      final String clusterMembers,
+      final LauncherConfig launcherConfig) {
     // Validate all inputs BEFORE taking any filesystem side effects so that a bad nodeId /
     // blank arg does not leave stray archive-<n> / cluster-<n> directories behind.
     ClusterConfig.checkNodeId(nodeId);
@@ -191,7 +204,24 @@ public final class ClusterNodeLauncher {
       //    factory so test + production object graphs cannot drift. The service itself holds no
       //    AutoCloseable state (pre-allocated buffers + stores only), so constructing it before
       //    container launch and orphaning it on a subsequent failure is benign.
-      final TradingClusteredService service = TradingClusteredServiceFactory.create();
+      final var rfqConfig =
+          new TradingClusteredServiceFactory.RfqConfig(
+              (int) launcherConfig.rfqPoolCapacity(),
+              launcherConfig.rfqDefaultTtlNanos(),
+              launcherConfig.rfqDefaultTtlNanos(),
+              launcherConfig.rfqDefaultTtlNanos(),
+              launcherConfig.rfqDefaultTtlNanos(),
+              launcherConfig.rfqRequestTimeoutNanos(),
+              launcherConfig.rfqRateLimitPerSession(),
+              launcherConfig.rfqRateLimitWindowNanos(),
+              launcherConfig.rfqAcceptPriceToleranceBps(),
+              launcherConfig.rfqAcceptQtyToleranceBps());
+      final TradingClusteredService service =
+          TradingClusteredServiceFactory.create(
+              new com.trading.engine.cluster.refdata.AccountStore(),
+              new com.trading.engine.cluster.refdata.CurrencyStore(),
+              new com.trading.engine.cluster.refdata.RiskLimitStore(),
+              rfqConfig);
       final ClusteredServiceContainer.Context serviceCtx =
           new ClusteredServiceContainer.Context()
               .aeronDirectoryName(aeronDir)
