@@ -53,11 +53,12 @@ final class ErrorCodesFixtureTest {
       }
       entries.add("    { \"name\": \"" + code.name() + "\", \"value\": " + code.value() + " }");
     }
+    // Per /review MEDIUM (Gemini): use String.join for the JSON array
+    // body instead of a manual for-loop; idiomatic and shorter.
     final var sb = new StringBuilder(256);
     sb.append("{\n  \"schemaVersion\": 1,\n  \"codes\": [\n");
-    for (int i = 0; i < entries.size(); i++) {
-      sb.append(entries.get(i));
-      if (i < entries.size() - 1) sb.append(",");
+    sb.append(String.join(",\n", entries));
+    if (!entries.isEmpty()) {
       sb.append('\n');
     }
     sb.append("  ]\n}\n");
