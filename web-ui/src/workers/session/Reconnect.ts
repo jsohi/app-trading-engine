@@ -88,6 +88,24 @@ export class Reconnect {
   }
 
   /**
+   * Seed the attempt counter from a persisted value. Per Gemini
+   * review R10 (HIGH): `WorkerClient` carries the attempt count
+   * across worker terminate+respawn cycles via `INIT.initialReconnectAttempt`,
+   * preserving the exponential-backoff progression even when the
+   * worker thread is recycled. Reset to 0 inside
+   * `notifyAuthAckSuccess`.
+   */
+  setAttempt(n: number): void {
+    if (n < 0 || !Number.isFinite(n)) return;
+    this.attempt = Math.floor(n);
+  }
+
+  /** Visible for tests + persistence: report the current attempt count. */
+  attemptCount(): number {
+    return this.attempt;
+  }
+
+  /**
    * Compute the delay before the next reconnect attempt OR return
    * a freeze decision. Records the attempt timestamp for the sliding-
    * window check.

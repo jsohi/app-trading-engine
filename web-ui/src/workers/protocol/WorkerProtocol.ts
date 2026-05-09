@@ -66,6 +66,17 @@ export interface InitMsg {
   readonly tokenPort: MessagePort;
   /** Bidirectional watchdog port for PING/PONG liveness. */
   readonly watchdogPort: MessagePort;
+  /**
+   * Backoff attempt counter to seed the worker's `Reconnect`
+   * instance. Per Gemini review R10 (HIGH): WorkerClient persists
+   * this across worker terminate+respawn cycles so the exponential
+   * backoff progression continues across worker lifetimes (otherwise
+   * every fresh worker resets to attempt=0 and the progressive
+   * backoff collapses into a constant 0–500 ms window). Reset to 0
+   * only on a successful AuthAck (signalled via the `connection-
+   * state: CONNECTED` message).
+   */
+  readonly initialReconnectAttempt: number;
 }
 
 /** Liveness ping from main; worker MUST PONG within WATCHDOG_PONG_DEADLINE_MS. */

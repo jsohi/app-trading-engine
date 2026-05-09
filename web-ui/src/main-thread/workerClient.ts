@@ -86,6 +86,12 @@ export class WorkerClient implements WorkerClientStreams {
   private consecutiveMisses = 0;
   private respawnTimestamps: number[] = [];
   private reconnectTimer: number | null = null;
+  // Per Gemini review R10 (HIGH): persist the backoff attempt counter
+  // across worker terminate+respawn so the exponential progression
+  // continues. Reset to 0 only on `connection-state: CONNECTED` (a
+  // successful AuthAck — the same gate as worker-side
+  // `Reconnect.notifyAuthAckSuccess`).
+  private currentReconnectAttempt = 0;
   private dead = false;
 
   constructor(options: WorkerClientOptions) {
@@ -108,6 +114,17 @@ export class WorkerClient implements WorkerClientStreams {
     if (this.reconnectTimer !== null) {
       self.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      // Per Gemini review R10 (HIGH): terminate the previous worker
+      // BEFORE spawning a fresh one — without this, the prior worker
+      // instance leaks (still alive in the background, holding its
+      // WebSocket and timers) when reconnectNow fires mid-backoff.
+      if (this.worker !== null) {
+        this.worker.terminate();
+        this.worker = null;
+      }
+      this.stopWatchdog();
+      this.watchdogChannel?.port1.close();
+      this.watchdogChannel = null;
       this.spawn().catch((err: unknown) => {
         this.errors$.next({
           type: "ERROR",
@@ -168,6 +185,7 @@ export class WorkerClient implements WorkerClientStreams {
         wsUrl: this.options.wsUrl,
         tokenPort,
         watchdogPort: this.watchdogChannel.port2,
+        initialReconnectAttempt: this.currentReconnectAttempt,
       },
       [tokenPort, this.watchdogChannel.port2],
     );
@@ -189,6 +207,14 @@ export class WorkerClient implements WorkerClientStreams {
           // so the rest of the app can subscribe.
           if (m.type === "connection-state") {
             this.connectionState$.next(m.state);
+            // Per Gemini review R10 (HIGH): only reset the persisted
+            // backoff counter on a successful AuthAck (the same gate
+            // worker-side `Reconnect.notifyAuthAckSuccess` uses).
+            // CONNECTED is the post-AuthAck state per
+            // `transitionConnection("CONNECTED")` in worker.ts.
+            if (m.state === "CONNECTED") {
+              this.currentReconnectAttempt = 0;
+            }
           }
         }
         break;
@@ -226,6 +252,9 @@ export class WorkerClient implements WorkerClientStreams {
     }
     this.reconnectTimer = self.setTimeout(() => {
       this.reconnectTimer = null;
+      // Increment the persisted attempt counter so the next worker's
+      // Reconnect picks up where this one left off (Gemini R10 HIGH).
+      this.currentReconnectAttempt += 1;
       // Tear down the current worker (it has already closed its WS)
       // and respawn with a fresh tokenPort + watchdog channel.
       if (this.worker !== null) {

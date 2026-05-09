@@ -115,6 +115,13 @@ let flushTimerHandle: number | null = null;
 // inside the configured deadline or the watchdog terminates + respawns.
 // Wired in `handleInit`; cleared in `shutdown`.
 let watchdogPort: MessagePort | null = null;
+// Periodic 250 ms tick driving session-layer time-based triggers
+// (AckSender.onTimerTick + SnapshotAssembler.onTimerTick). Per Gemini
+// review R10 (MEDIUM): without this the time-based ACK trigger never
+// fires during quiet periods and stale snapshots are only expired
+// when a NEW snapshot id arrives.
+let sessionTickTimer: number | null = null;
+const SESSION_TICK_MS = 250;
 // Concurrency guard: handleInit is async, so multiple INIT messages
 // arriving in quick succession (rapid UI reconnect, message-port
 // retries) could otherwise spawn overlapping connection attempts. Per
@@ -149,6 +156,10 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
         break;
       }
       initInFlight = true;
+      // Per Gemini review R10 (HIGH): seed the backoff attempt counter
+      // from the main-thread-persisted value so the progression
+      // continues across worker respawn cycles.
+      reconnect.setAttempt(msg.initialReconnectAttempt);
       void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort).finally(() => {
         initInFlight = false;
       });
@@ -690,6 +701,18 @@ function activateSessionLayer(): void {
     nowMs,
   );
   backpressureController.start();
+
+  // Per Gemini review R10 (MEDIUM): drive AckSender + SnapshotAssembler
+  // periodic ticks. AckSender.onTimerTick covers the time-based ACK
+  // trigger during quiet periods (no inbound frames); the per-frame
+  // hot path no longer consults the clock. SnapshotAssembler.onTimerTick
+  // expires per-id 30 s completion deadlines even when no fresh
+  // snapshot id arrives.
+  if (sessionTickTimer !== null) self.clearInterval(sessionTickTimer);
+  sessionTickTimer = self.setInterval(() => {
+    ackSender?.onTimerTick();
+    snapshotAssembler?.onTimerTick();
+  }, SESSION_TICK_MS);
 }
 
 // ─── AuthClient wiring ──────────────────────────────────────────────
@@ -809,6 +832,10 @@ function shutdown(): void {
   gapTracker = null;
   snapshotAssembler = null;
   ackSender = null;
+  if (sessionTickTimer !== null) {
+    self.clearInterval(sessionTickTimer);
+    sessionTickTimer = null;
+  }
   if (watchdogPort !== null) {
     watchdogPort.onmessage = null;
     watchdogPort.close();
