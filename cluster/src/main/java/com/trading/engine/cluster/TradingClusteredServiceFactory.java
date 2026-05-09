@@ -2,6 +2,7 @@ package com.trading.engine.cluster;
 
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
+import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.LoadAccountBatchHandler;
@@ -13,6 +14,7 @@ import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 
 /**
@@ -25,6 +27,29 @@ import com.trading.engine.cluster.state.TradingState;
  * passing them in. The zero-arg overload constructs fresh empty stores for production bootstrap.
  */
 public final class TradingClusteredServiceFactory {
+
+  // ---- Default APP-232 RFQ configuration values (overrideable via LauncherConfig). ----
+
+  /** Default RFQ slot pool capacity. Power-of-two; covers 30s TTL × ~273 RFQs/sec peak. */
+  public static final int DEFAULT_RFQ_POOL_CAPACITY = 8192;
+
+  /** Default RFQ TTL (30s) — fallback when productType is unknown. */
+  public static final long DEFAULT_RFQ_TTL_NANOS = 30_000_000_000L;
+
+  /** Default request-timeout (5s) — REQUESTED slot timeout if no PriceResponse arrives. */
+  public static final long DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS = 5_000_000_000L;
+
+  /** Default per-session rate limit (100 RFQs/sec). */
+  public static final long DEFAULT_RFQ_RATE_LIMIT_PER_SESSION = 100L;
+
+  /** Default rate-limit window (1s). */
+  public static final long DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS = 1_000_000_000L;
+
+  /** Default tolerance for NOS-with-quoteId acceptance (bps). 0 = exact match. */
+  public static final int DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS = 0;
+
+  /** Default tolerance for NOS-with-quoteId qty (bps). 0 = exact match. */
+  public static final int DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS = 0;
 
   private TradingClusteredServiceFactory() {}
 
@@ -70,6 +95,22 @@ public final class TradingClusteredServiceFactory {
     registry.registerBatchLoader(new LoadCurrencyBatchHandler(currencyStore));
     registry.registerBatchLoader(new LoadRiskLimitBatchHandler(riskLimitStore, accountStore));
 
+    final var rfqMetrics = new RfqMetrics();
+    final var rfqStateMachine =
+        new RfqStateMachine(
+            DEFAULT_RFQ_POOL_CAPACITY,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_TTL_NANOS,
+            DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+            DEFAULT_RFQ_RATE_LIMIT_PER_SESSION,
+            DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
+            DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
+            DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS,
+            accountStore,
+            rfqMetrics);
+
     return new TradingClusteredService(
         tradingState,
         eventSink,
@@ -77,6 +118,8 @@ public final class TradingClusteredServiceFactory {
         accountStore,
         currencyStore,
         riskLimitStore,
-        registry);
+        registry,
+        rfqStateMachine,
+        rfqMetrics);
   }
 }

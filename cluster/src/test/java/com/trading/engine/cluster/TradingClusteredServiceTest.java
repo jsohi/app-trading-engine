@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
+import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
@@ -23,6 +24,7 @@ import com.trading.engine.cluster.refdata.ReferenceDataSeeder;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
+import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CurrencyClassEnum;
@@ -53,6 +55,24 @@ import org.junit.jupiter.api.Test;
 class TradingClusteredServiceTest {
 
   private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
+
+  /** Constructs a default-configured RfqStateMachine for tests. */
+  private static RfqStateMachine newRfqStateMachine(
+      final AccountStore acctStore, final RfqMetrics metrics) {
+    return new RfqStateMachine(
+        TradingClusteredServiceFactory.DEFAULT_RFQ_POOL_CAPACITY,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_TTL_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_REQUEST_TIMEOUT_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_RATE_LIMIT_PER_SESSION,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_RATE_LIMIT_WINDOW_NANOS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_PRICE_TOLERANCE_BPS,
+        TradingClusteredServiceFactory.DEFAULT_RFQ_ACCEPT_QTY_TOLERANCE_BPS,
+        acctStore,
+        metrics);
+  }
 
   private IdGenerator orderIdGen;
   private IdGenerator execIdGen;
@@ -92,6 +112,8 @@ class TradingClusteredServiceTest {
     registry.registerLoader(new LoadCurrencyHandler(currencyStore));
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
 
+    final var rfqMetrics = new RfqMetrics();
+    final var rfqStateMachine = newRfqStateMachine(accountStore, rfqMetrics);
     service =
         new TradingClusteredService(
             tradingState,
@@ -100,7 +122,9 @@ class TradingClusteredServiceTest {
             accountStore,
             currencyStore,
             riskLimitStore,
-            registry);
+            registry,
+            rfqStateMachine,
+            rfqMetrics);
 
     cluster = new FakeCluster(TIMESTAMP);
     session = new FakeClientSession();
@@ -716,7 +740,16 @@ class TradingClusteredServiceTest {
     reg.registerStore(currencies);
     reg.registerStore(limits);
     final var svc =
-        new TradingClusteredService(state, sink, journal, accounts, currencies, limits, reg);
+        new TradingClusteredService(
+            state,
+            sink,
+            journal,
+            accounts,
+            currencies,
+            limits,
+            reg,
+            newRfqStateMachine(accounts, new RfqMetrics()),
+            new RfqMetrics());
     svc.onStart(cluster, null);
     return new ServiceBundle(
         ordGen, exeGen, book, seq, journal, state, sink, accounts, currencies, limits, reg, svc);
@@ -797,6 +830,8 @@ class TradingClusteredServiceTest {
     // constructor must fail fast rather than let the service validate orders against one graph
     // while ref-data commands mutate another.
     final AccountStore differentAccountStore = new AccountStore();
+    final var rfqMetrics = new RfqMetrics();
+    final var rfqStateMachine = newRfqStateMachine(differentAccountStore, rfqMetrics);
     assertThrows(
         IllegalArgumentException.class,
         () ->
@@ -807,7 +842,9 @@ class TradingClusteredServiceTest {
                 differentAccountStore, // different instance than what is registered
                 currencyStore,
                 riskLimitStore,
-                registry));
+                registry,
+                rfqStateMachine,
+                rfqMetrics));
   }
 
   @Test
@@ -837,6 +874,8 @@ class TradingClusteredServiceTest {
 
   @Test
   void nullCollaboratorsRejected() {
+    final var rfqMetrics = new RfqMetrics();
+    final var rfqStateMachine = newRfqStateMachine(accountStore, rfqMetrics);
     assertThrows(
         NullPointerException.class,
         () ->
@@ -847,7 +886,9 @@ class TradingClusteredServiceTest {
                 accountStore,
                 currencyStore,
                 riskLimitStore,
-                registry));
+                registry,
+                rfqStateMachine,
+                rfqMetrics));
   }
 
   // ---------------------------------------------------------------------------
@@ -1016,7 +1057,16 @@ class TradingClusteredServiceTest {
     reg.registerLoader(new LoadRiskLimitHandler(limits, accounts));
 
     final var svc =
-        new TradingClusteredService(bigState, bigSink, journal, accounts, currencies, limits, reg);
+        new TradingClusteredService(
+            bigState,
+            bigSink,
+            journal,
+            accounts,
+            currencies,
+            limits,
+            reg,
+            newRfqStateMachine(accounts, new RfqMetrics()),
+            new RfqMetrics());
     svc.onStart(cluster, null);
 
     // Place 1000 orders.
@@ -1068,6 +1118,8 @@ class TradingClusteredServiceTest {
     freshReg.registerStore(freshAccounts);
     freshReg.registerStore(freshCurrencies);
     freshReg.registerStore(freshLimits);
+    final var freshRfqMetrics = new RfqMetrics();
+    final var freshRfqStateMachine = newRfqStateMachine(freshAccounts, freshRfqMetrics);
     final var freshSvc =
         new TradingClusteredService(
             freshState,
@@ -1076,7 +1128,9 @@ class TradingClusteredServiceTest {
             freshAccounts,
             freshCurrencies,
             freshLimits,
-            freshReg);
+            freshReg,
+            freshRfqStateMachine,
+            freshRfqMetrics);
     freshSvc.onStart(cluster, null);
 
     freshSvc.loadSnapshot(assembled, 0, totalLen);
