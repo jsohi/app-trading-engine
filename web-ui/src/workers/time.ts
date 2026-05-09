@@ -36,9 +36,14 @@
  * Safari's 1 ms floor anyway, but the math is correct everywhere).
  */
 export function nowEpochNs(): bigint {
+  // Per CodeRabbit (MEDIUM): `Math.floor(performance.timeOrigin)` drops
+  // up to 0.999 ms of fractional milliseconds in `timeOrigin`. Split
+  // integer + fractional parts before BigInt-converting so the
+  // microsecond-precision claim in the file header is honored.
+  const originMs = Math.trunc(performance.timeOrigin);
+  const originFracNs = BigInt(Math.trunc((performance.timeOrigin - originMs) * 1_000_000));
   return (
-    BigInt(Math.floor(performance.timeOrigin)) * 1_000_000n +
-    BigInt(Math.floor(performance.now() * 1_000_000))
+    BigInt(originMs) * 1_000_000n + originFracNs + BigInt(Math.trunc(performance.now() * 1_000_000))
   );
 }
 

@@ -50,14 +50,14 @@ final class WebSocketServerMainSubprotocolTest {
   @Test
   @DisplayName("upgrade_withSubprotocolHeader_serverEchoesTradingWsV1")
   void upgrade_withSubprotocolHeader_serverEchoesTradingWsV1() throws Exception {
-    final FullHttpResponse response =
+    final var response =
         runUpgrade(
             request -> {
               request.headers().set("Sec-WebSocket-Protocol", SUBPROTOCOL);
             });
     try {
       assertEquals(101, response.status().code(), "expected HTTP 101 Switching Protocols");
-      final String echoed = response.headers().get("Sec-WebSocket-Protocol");
+      final var echoed = response.headers().get("Sec-WebSocket-Protocol");
       assertEquals(SUBPROTOCOL, echoed, "server must echo trading-ws.v1");
     } finally {
       ReferenceCountUtil.release(response);
@@ -71,9 +71,14 @@ final class WebSocketServerMainSubprotocolTest {
     // echo any subprotocol back (per RFC 6455 §4.2.2). The client-side hard-
     // assert will then close PROTOCOL_VIOLATION because ws.protocol === '' ≠
     // 'trading-ws.v1'.
-    final FullHttpResponse response = runUpgrade(request -> {});
+    final var response = runUpgrade(request -> {});
     try {
-      final String echoed = response.headers().get("Sec-WebSocket-Protocol");
+      // Per CodeRabbit (MINOR): assert the upgrade itself succeeded
+      // before checking header absence — otherwise a non-101 response
+      // (e.g. 4xx from the server) would also satisfy "no echoed
+      // subprotocol" and the test would pass for the wrong reason.
+      assertEquals(101, response.status().code(), "expected HTTP 101 Switching Protocols");
+      final var echoed = response.headers().get("Sec-WebSocket-Protocol");
       assertTrue(
           echoed == null || echoed.isEmpty(),
           "server must not echo a subprotocol when client did not request one; got: " + echoed);
