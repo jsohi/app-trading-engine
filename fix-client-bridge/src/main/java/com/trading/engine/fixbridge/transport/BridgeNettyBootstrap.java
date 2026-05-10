@@ -4,6 +4,8 @@ import com.trading.engine.fixbridge.FixClientBridgeConfig;
 import com.trading.engine.fixbridge.audit.AuditLogger;
 import com.trading.engine.fixbridge.auth.JtiRevocationCache;
 import com.trading.engine.fixbridge.auth.JwtAuthHandler;
+import com.trading.engine.fixbridge.json.BrowserEventWriter;
+import com.trading.engine.fixbridge.translator.DecimalStringEmitter;
 import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.JwtValidator;
 import com.trading.engine.websocket.TransportDetector;
@@ -98,6 +100,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
   private final Executor jwtValidationExecutor;
   private final BridgeFrameDispatcher dispatcher;
   private final AuditLogger auditLogger;
+  private final AccountLimitsSource accountLimitsSource;
 
   private TransportDetector.Result transport;
   private Channel serverChannel;
@@ -117,6 +120,10 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
    * @param dispatcher post-auth frame dispatcher SAM (use {@link BridgeFrameDispatcher#NOOP} for
    *     bring-up; the real dispatcher lands in subsequent days)
    * @param auditLogger audit sink
+   * @param accountLimitsSource source of {@link
+   *     com.trading.engine.fixbridge.json.BrowserEvent.AccountLimits} push frames emitted on
+   *     AUTH_SUCCESS — use {@link AccountLimitsSource#NOOP} until the launcher's cluster client is
+   *     wired (APP-40b)
    */
   public BridgeNettyBootstrap(
       final FixClientBridgeConfig config,
@@ -127,7 +134,8 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
       final NanoClock nanoClock,
       final Executor jwtValidationExecutor,
       final BridgeFrameDispatcher dispatcher,
-      final AuditLogger auditLogger) {
+      final AuditLogger auditLogger,
+      final AccountLimitsSource accountLimitsSource) {
     this.config = Objects.requireNonNull(config, "config");
     this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
@@ -138,6 +146,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
         Objects.requireNonNull(jwtValidationExecutor, "jwtValidationExecutor");
     this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
+    this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
   }
 
   /**
@@ -186,6 +195,12 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                     "idle",
                     new IdleStateHandler(
                         config.idleReaderSeconds(), config.idleWriterSeconds(), 0));
+                // Per-channel BrowserEventWriter — paired with a per-channel
+                // DecimalStringEmitter scratch (zero-alloc on hot path). The writer is shared
+                // between JwtAuthHandler (cold-path Error frames) and OutboundDrainer (hot-path
+                // event serialisation) — the channel event loop guarantees they're never invoked
+                // concurrently, satisfying the writer's not-thread-safe contract.
+                final var eventWriter = new BrowserEventWriter(new DecimalStringEmitter());
                 pipeline.addLast(
                     "auth-handler",
                     new JwtAuthHandler(
@@ -197,7 +212,9 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                         nanoClock,
                         jwtValidationExecutor,
                         dispatcher,
-                        auditLogger));
+                        auditLogger,
+                        eventWriter,
+                        accountLimitsSource));
               }
             });
 
