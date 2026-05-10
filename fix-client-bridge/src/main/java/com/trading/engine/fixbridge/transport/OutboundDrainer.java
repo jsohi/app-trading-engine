@@ -133,7 +133,12 @@ public final class OutboundDrainer {
       final var buf = ctx.alloc().buffer();
       try {
         writer.writeAny(event, buf);
-        ctx.writeAndFlush(new TextWebSocketFrame(buf));
+        // ctx.write (NOT writeAndFlush) per event — accumulate queued frames in the outbound
+        // buffer and call ctx.flush() ONCE after the batch. This collapses up to DRAIN_BATCH_LIMIT
+        // (64) syscalls into one when the queue is hot. Writability still flips synchronously
+        // mid-batch because Netty's outbound buffer water-mark check fires on every write, so the
+        // intra-batch isWritable() guard below remains effective for backpressure surfacing.
+        ctx.write(new TextWebSocketFrame(buf));
       } catch (final RuntimeException ex) {
         // Writer rejected the event (e.g. forbidden character in a String field). The buffer
         // hasn't been wrapped in a frame yet, so release it ourselves to avoid a leak. The event
@@ -145,13 +150,19 @@ public final class OutboundDrainer {
             ex);
       }
       drained++;
-      // Re-check writability after each writeAndFlush — Netty flips writability synchronously
-      // when the outbound buffer crosses the high-water mark, and the drain loop must surface
-      // that backpressure mid-batch instead of optimistically pushing another DRAIN_BATCH_LIMIT
-      // events into the kernel send queue.
+      // Re-check writability after each write — Netty flips writability synchronously when the
+      // outbound buffer crosses the high-water mark (driven by ctx.write growing the buffer), so
+      // the drain loop must surface that backpressure mid-batch instead of optimistically pushing
+      // another DRAIN_BATCH_LIMIT events into the outbound buffer.
       if (!ch.isWritable()) {
         break;
       }
+    }
+    // Single flush after the batch — empty if nothing was drained (poll returned null first
+    // iteration or channel went non-writable before any write succeeded), so this is a cheap
+    // no-op in the empty case.
+    if (drained > 0) {
+      ctx.flush();
     }
 
     updateStallState(queue.size());

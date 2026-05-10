@@ -2,6 +2,7 @@ package com.trading.engine.fixbridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -30,8 +31,9 @@ final class BridgeBootstrapTest {
     Files.writeString(
         yaml,
         """
-        # Minimal config — relies on defaults
+        # Minimal config — relies on defaults (with explicit dev TLS opt-in)
         expectedAudience: "trading-engine-dev"
+        allowSelfSignedCert: true
         """);
 
     final var cfg = FixClientBridgeConfig.fromYaml(yaml);
@@ -62,6 +64,12 @@ final class BridgeBootstrapTest {
     assertEquals("audit_view", cfg.auditViewRole());
     assertEquals(5, cfg.authFailureLockoutThreshold());
     assertEquals(60, cfg.authFailureLockoutSeconds());
+    assertNull(cfg.tlsCertPath(), "tlsCertPath defaults to null");
+    assertNull(cfg.tlsKeyPath(), "tlsKeyPath defaults to null");
+    // allowSelfSignedCert defaults to false (fail-secure) — but the test YAML opts in via:
+    //   allowSelfSignedCert: true
+    // to keep the bare-defaults construction valid post the iter-2 fail-secure flip.
+    assertTrue(cfg.allowSelfSignedCert(), "test config opts into dev self-signed mode");
   }
 
   // --- YAML round-trip ---
@@ -96,6 +104,7 @@ final class BridgeBootstrapTest {
         fatalAfterFailures: 25
         fatalAfterSeconds: 1800
         heartbeatSeconds: 5
+        allowSelfSignedCert: true
         """);
 
     final var cfg = FixClientBridgeConfig.fromYaml(yaml);
@@ -129,7 +138,8 @@ final class BridgeBootstrapTest {
   void withSystemPropertyOverrides_jwksUriOverride_registrySingleEntry(@TempDir final Path tmp)
       throws IOException {
     final var yaml = tmp.resolve("bridge.yaml");
-    Files.writeString(yaml, "expectedAudience: \"trading-engine-dev\"\n");
+    Files.writeString(
+        yaml, "expectedAudience: \"trading-engine-dev\"\nallowSelfSignedCert: true\n");
 
     final var props = new Properties();
     props.setProperty("bridge.port", "9001");
@@ -269,6 +279,42 @@ final class BridgeBootstrapTest {
                 true));
   }
 
+  @Test
+  void compactCtor_certPathSetButKeyPathEmpty_throws() {
+    assertThrows(
+        IllegalArgumentException.class, () -> buildConfigWithTls("/path/to/cert.pem", "", false));
+  }
+
+  @Test
+  void compactCtor_keyPathSetButCertPathEmpty_throws() {
+    assertThrows(
+        IllegalArgumentException.class, () -> buildConfigWithTls("", "/path/to/key.pem", false));
+  }
+
+  @Test
+  void compactCtor_noCertAndAllowSelfSignedCertFalse_throws() {
+    // Production fail-fast: bare config with no cert AND no dev opt-in → IAE.
+    assertThrows(IllegalArgumentException.class, () -> buildConfigWithTls(null, null, false));
+  }
+
+  @Test
+  void compactCtor_realCertAndAllowSelfSignedCertFalse_succeeds() {
+    // Production happy path: real cert + key + explicit prod flag.
+    final var cfg = buildConfigWithTls("/path/to/cert.pem", "/path/to/key.pem", false);
+    assertEquals("/path/to/cert.pem", cfg.tlsCertPath());
+    assertEquals("/path/to/key.pem", cfg.tlsKeyPath());
+    assertFalse(cfg.allowSelfSignedCert());
+  }
+
+  @Test
+  void compactCtor_noCertAndAllowSelfSignedCertTrue_succeeds() {
+    // Dev path: no cert + explicit dev flag → succeeds, drops into self-signed mode.
+    final var cfg = buildConfigWithTls(null, null, true);
+    assertNull(cfg.tlsCertPath());
+    assertNull(cfg.tlsKeyPath());
+    assertTrue(cfg.allowSelfSignedCert());
+  }
+
   // --- allowedOrigins YAML parsing ---
 
   @Test
@@ -278,6 +324,7 @@ final class BridgeBootstrapTest {
         yaml,
         """
         expectedAudience: "trading-engine-dev"
+        allowSelfSignedCert: true
         allowedOrigins:
           - "https://a.test"
           - "https://b.test"
@@ -297,6 +344,7 @@ final class BridgeBootstrapTest {
         yaml,
         """
         expectedAudience: "trading-engine-dev"
+        allowSelfSignedCert: true
         allowedOrigins:
           - 42
         """);
@@ -308,7 +356,8 @@ final class BridgeBootstrapTest {
   void withSystemPropertyOverrides_allowedOriginsCsv_replacesList(@TempDir final Path tmp)
       throws IOException {
     final var yaml = tmp.resolve("bridge.yaml");
-    Files.writeString(yaml, "expectedAudience: \"trading-engine-dev\"\n");
+    Files.writeString(
+        yaml, "expectedAudience: \"trading-engine-dev\"\nallowSelfSignedCert: true\n");
 
     final var props = new Properties();
     props.setProperty("bridge.allowedOrigins", "https://x.test, https://y.test");
@@ -319,5 +368,42 @@ final class BridgeBootstrapTest {
     assertEquals(2, cfg.allowedOrigins().size(), "CSV override should produce 2 entries");
     assertEquals("https://x.test", cfg.allowedOrigins().get(0));
     assertEquals("https://y.test", cfg.allowedOrigins().get(1));
+  }
+
+  // --- Helpers ---
+
+  private static FixClientBridgeConfig buildConfigWithTls(
+      final String tlsCertPath, final String tlsKeyPath, final boolean allowSelfSigned) {
+    return new FixClientBridgeConfig(
+        8444,
+        "127.0.0.1",
+        "localhost",
+        19880,
+        "EXCH",
+        "BRIDGE",
+        "logs/sess",
+        false,
+        256,
+        65536,
+        64,
+        64,
+        30,
+        15,
+        5000L,
+        5,
+        Map.of(),
+        "trading-engine-dev",
+        false,
+        32,
+        10,
+        600,
+        10,
+        java.util.List.of(),
+        "audit_view",
+        5,
+        60,
+        tlsCertPath,
+        tlsKeyPath,
+        allowSelfSigned);
   }
 }

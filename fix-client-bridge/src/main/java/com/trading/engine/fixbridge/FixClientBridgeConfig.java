@@ -71,11 +71,12 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
  *     constructor.
  * @param allowSelfSignedCert {@code true} permits the bootstrap to fall back to a runtime-
  *     generated {@link io.netty.handler.ssl.util.SelfSignedCertificate} when no real cert is
- *     supplied. <b>Defaults to true so dev/test boots work without cert provisioning; production
- *     deploys MUST flip this to {@code false}</b> and provide {@code tlsCertPath}/{@code
- *     tlsKeyPath} so the compact ctor's TLS-mode validation surfaces a fail-fast {@link
- *     IllegalArgumentException} on misconfiguration instead of fail-OPEN-to-MITM with a self-signed
- *     cert.
+ *     supplied. <b>Defaults to {@code false}</b> — fail-secure per CLAUDE.md "no shortcuts,
+ *     prod-ready always". A bare config (no {@code tlsCertPath}/{@code tlsKeyPath} AND no explicit
+ *     {@code allowSelfSignedCert: true}) fails fast at the compact ctor with {@link
+ *     IllegalArgumentException}. Dev runs MUST opt into self-signed mode explicitly. This trades a
+ *     small dev-onboarding hurdle for the much larger guarantee that production deploys cannot
+ *     fail-OPEN-to-MITM via configuration omission.
  */
 public record FixClientBridgeConfig(
     int port,
@@ -405,13 +406,14 @@ public record FixClientBridgeConfig(
         intOr(raw, "authFailureLockoutSeconds", 60),
         strOrNull(raw, "tlsCertPath"),
         strOrNull(raw, "tlsKeyPath"),
-        // allowSelfSignedCert default: true so dev/test runs work without operator cert
-        // provisioning.
-        // Production deployments MUST flip this to `false` AND supply tlsCertPath/tlsKeyPath; the
-        // compact constructor's TLS-mode validation rejects (null cert + allowSelfSignedCert=false)
-        // at boot so a misconfigured prod deploy fails fast instead of fail-OPEN-to-MITM with the
-        // self-signed cert.
-        boolOr(raw, "allowSelfSignedCert", true));
+        // allowSelfSignedCert default: FALSE — fail-secure per CLAUDE.md "no shortcuts, prod-ready
+        // always". A bare YAML config (no tlsCertPath/tlsKeyPath, no allowSelfSignedCert override)
+        // hits the compact constructor's TLS-mode validation and throws IllegalArgumentException at
+        // boot. Dev runs MUST opt into self-signed mode by setting `allowSelfSignedCert: true` in
+        // YAML (or `-Dbridge.allowSelfSignedCert=true`). This trades a small dev-onboarding hurdle
+        // for the much larger guarantee that production deploys cannot fail-OPEN-to-MITM with a
+        // self-signed cert via configuration omission.
+        boolOr(raw, "allowSelfSignedCert", false));
   }
 
   /**
