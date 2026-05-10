@@ -188,6 +188,73 @@ final class PiiMaskTest {
     assertArrayEquals(expected.getBytes(StandardCharsets.US_ASCII), dst);
   }
 
+  // ─── SOH-delimited input regression (BLOCKER fix) ─────────────────────────
+  // Pre-fix behaviour: PiiMask only recognised '|' (0x7C) as the field terminator. Feeding it
+  // raw Artio bytes (SOH 0x01 delimited) caused the field-terminator scan to walk to
+  // end-of-buffer, treating the entire message as one un-masked field. PII tags 1/95/96/106/
+  // 109/110/116/375/448/449/802 silently leaked. These tests pin the post-fix behaviour: SOH
+  // and PIPE are interchangeable as field terminators, and the source terminator byte is
+  // preserved verbatim in the output.
+
+  /**
+   * SOH-delimited Account field {@code "1=ACME\x01"} must produce {@code "1=****\x01"}: value bytes
+   * redacted, terminator preserved verbatim (writer applies SOH→{@code '|'} substitution at
+   * serialisation time).
+   */
+  @Test
+  void mask_singleAccountFieldSohDelimited_replacesValueWithStarsPreservesSoh() {
+    final var mask = new PiiMask(new int[] {1});
+    final byte[] src = {'1', '=', 'A', 'C', 'M', 'E', 0x01};
+    final byte[] dst = new byte[src.length];
+
+    final int written = mask.mask(src, 0, src.length, dst, 0);
+
+    assertEquals(src.length, written);
+    assertArrayEquals(new byte[] {'1', '=', '*', '*', '*', '*', 0x01}, dst);
+  }
+
+  /**
+   * Realistic NewOrderSingle message with raw SOH delimiters (as Artio delivers them) — only the
+   * Account value (tag 1) must be redacted; all other fields pass through verbatim; SOH bytes are
+   * preserved unchanged. Pre-fix, the entire message was treated as one unmasked field starting
+   * with tag 8; this test would have failed with the entire input echoed back unchanged.
+   */
+  @Test
+  void mask_mixedFieldsSohDelimited_masksOnlyConfiguredOnesPreservesSoh() {
+    final var mask = PiiMask.withDefaultMask();
+    final byte[] src =
+        ("8=FIX.4.49=8035=D49=SENDER56=TARGET11=C-1"
+                + "55=EURUSD54=138=10001=ACME10=123")
+            .getBytes(StandardCharsets.US_ASCII);
+    final byte[] expected =
+        ("8=FIX.4.49=8035=D49=SENDER56=TARGET11=C-1"
+                + "55=EURUSD54=138=10001=****10=123")
+            .getBytes(StandardCharsets.US_ASCII);
+    final byte[] dst = new byte[src.length];
+
+    mask.mask(src, 0, src.length, dst, 0);
+
+    assertArrayEquals(expected, dst);
+  }
+
+  /**
+   * Default-masklist regression covering all PII tag families that were leaking pre-fix: Account
+   * (1), Issuer (106), OnBehalfOfCompID (109), PartyID (448). Mixed SOH delimiters.
+   */
+  @Test
+  void mask_allDefaultPiiTagsSohDelimited_eachValueRedacted() {
+    final var mask = PiiMask.withDefaultMask();
+    final byte[] src =
+        "1=ACME106=BANK109=DESK448=PARTY55=EURUSD".getBytes(StandardCharsets.US_ASCII);
+    final byte[] expected =
+        "1=****106=****109=****448=*****55=EURUSD".getBytes(StandardCharsets.US_ASCII);
+    final byte[] dst = new byte[src.length];
+
+    mask.mask(src, 0, src.length, dst, 0);
+
+    assertArrayEquals(expected, dst);
+  }
+
   /**
    * An Account field with an empty value {@code "1=|"} must produce {@code "1=|"}: no value bytes
    * to overwrite, so the output is identical to the input.

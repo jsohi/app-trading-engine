@@ -624,6 +624,177 @@ final class JwtAuthHandlerTest {
     channel.finishAndReleaseAll();
   }
 
+  // ─── DPoP runtime hook (§3.3 / §B-r2-7 / item 8) ──────────────────────────
+
+  /**
+   * STALE_DPOP → close 4001 (AUTH_EXPIRED) + audit reason "stale-dpop". Worker silently re-mints
+   * its token+DPoP pair instead of prompting the user.
+   */
+  @Test
+  void channelRead0_dpopValidatorReturnsStaleDpop_closedWith4001AndAuditedStaleDpop()
+      throws Exception {
+    final var jtiCache = new JtiRevocationCache();
+    final DpopValidator staleDpop = (claims, dpopProofHeader) -> DpopValidator.Result.STALE_DPOP;
+
+    final var handler =
+        new JwtAuthHandler(
+            buildConfig(),
+            validator,
+            jtiCache,
+            noLockoutTracker(),
+            nowEpochClock(),
+            systemNanoClock(),
+            Runnable::run,
+            BridgeFrameDispatcher.NOOP,
+            auditLogger,
+            new BrowserEventWriter(new DecimalStringEmitter()),
+            AccountLimitsSource.NOOP,
+            staleDpop);
+    final var channel = new EmbeddedChannel(handler);
+
+    final var token = fixture.mintValidJwt();
+    channel.writeInbound(authFrame(token));
+
+    boolean sawClose4001 = false;
+    Object outbound;
+    int maxReads = 10;
+    while ((outbound = channel.readOutbound()) != null && maxReads-- > 0) {
+      if (outbound instanceof CloseWebSocketFrame close) {
+        if (close.statusCode() == BridgeCloseCodes.AUTH_EXPIRED) {
+          sawClose4001 = true;
+        }
+        close.release();
+      } else if (outbound instanceof io.netty.util.ReferenceCounted rc) {
+        rc.release();
+      }
+    }
+    assertTrue(sawClose4001, "STALE_DPOP must produce close code 4001 (AUTH_EXPIRED)");
+    assertTrue(
+        auditLogger.actions.contains(AuditAction.AUTH_FAIL),
+        "AUTH_FAIL must be audited for STALE_DPOP");
+    assertTrue(
+        auditLogger.failureReasons.contains("stale-dpop"), "Failure reason must be 'stale-dpop'");
+
+    channel.finishAndReleaseAll();
+  }
+
+  /**
+   * INVALID → close 4008 (POLICY_VIOLATION) + audit reason "dpop-invalid". Single auth-failed error
+   * code (no oracle leak per §3.3).
+   */
+  @Test
+  void channelRead0_dpopValidatorReturnsInvalid_closedWith4008AndAuditedDpopInvalid()
+      throws Exception {
+    final var jtiCache = new JtiRevocationCache();
+    final DpopValidator invalidDpop = (claims, dpopProofHeader) -> DpopValidator.Result.INVALID;
+
+    final var handler =
+        new JwtAuthHandler(
+            buildConfig(),
+            validator,
+            jtiCache,
+            noLockoutTracker(),
+            nowEpochClock(),
+            systemNanoClock(),
+            Runnable::run,
+            BridgeFrameDispatcher.NOOP,
+            auditLogger,
+            new BrowserEventWriter(new DecimalStringEmitter()),
+            AccountLimitsSource.NOOP,
+            invalidDpop);
+    final var channel = new EmbeddedChannel(handler);
+
+    final var token = fixture.mintValidJwt();
+    channel.writeInbound(authFrame(token));
+
+    boolean sawClose4008 = false;
+    Object outbound;
+    int maxReads = 10;
+    while ((outbound = channel.readOutbound()) != null && maxReads-- > 0) {
+      if (outbound instanceof CloseWebSocketFrame close) {
+        if (close.statusCode() == BridgeCloseCodes.POLICY_VIOLATION) {
+          sawClose4008 = true;
+        }
+        close.release();
+      } else if (outbound instanceof io.netty.util.ReferenceCounted rc) {
+        rc.release();
+      }
+    }
+    assertTrue(sawClose4008, "INVALID must produce close code 4008 (POLICY_VIOLATION)");
+    assertTrue(
+        auditLogger.actions.contains(AuditAction.AUTH_FAIL),
+        "AUTH_FAIL must be audited for INVALID DPoP");
+    assertTrue(
+        auditLogger.failureReasons.contains("dpop-invalid"),
+        "Failure reason must be 'dpop-invalid'");
+
+    channel.finishAndReleaseAll();
+  }
+
+  /**
+   * DPoP runs BEFORE JTI revocation: if the DPoP validator returns INVALID and the JTI is also
+   * revoked, the close code MUST be 4008 (POLICY_VIOLATION from DPoP) — not 4001 (AUTH_EXPIRED from
+   * JTI). This proves the runtime ordering documented in {@code completeAuthOnEventLoop} (DPoP at
+   * step 4c, JTI at step 5).
+   */
+  @Test
+  void channelRead0_dpopInvalidAndJtiRevoked_dpopFiresFirstReturning4008() throws Exception {
+    final var jtiId = UUID.randomUUID().toString();
+    final long expEpochNs =
+        TimeUnit.MILLISECONDS.toNanos(System.currentTimeMillis()) + TimeUnit.MINUTES.toNanos(15);
+    final var jtiCache = new JtiRevocationCache();
+    jtiCache.revoke(jtiId, expEpochNs);
+
+    final DpopValidator invalidDpop = (claims, dpopProofHeader) -> DpopValidator.Result.INVALID;
+
+    final var handler =
+        new JwtAuthHandler(
+            buildConfig(),
+            validator,
+            jtiCache,
+            noLockoutTracker(),
+            nowEpochClock(),
+            systemNanoClock(),
+            Runnable::run,
+            BridgeFrameDispatcher.NOOP,
+            auditLogger,
+            new BrowserEventWriter(new DecimalStringEmitter()),
+            AccountLimitsSource.NOOP,
+            invalidDpop);
+    final var channel = new EmbeddedChannel(handler);
+
+    final var token = fixture.mintJwt("user-001", jtiId, true, List.of());
+    channel.writeInbound(authFrame(token));
+
+    boolean sawClose4008 = false;
+    boolean sawClose4001 = false;
+    Object outbound;
+    int maxReads = 10;
+    while ((outbound = channel.readOutbound()) != null && maxReads-- > 0) {
+      if (outbound instanceof CloseWebSocketFrame close) {
+        if (close.statusCode() == BridgeCloseCodes.POLICY_VIOLATION) {
+          sawClose4008 = true;
+        }
+        if (close.statusCode() == BridgeCloseCodes.AUTH_EXPIRED) {
+          sawClose4001 = true;
+        }
+        close.release();
+      } else if (outbound instanceof io.netty.util.ReferenceCounted rc) {
+        rc.release();
+      }
+    }
+    assertTrue(sawClose4008, "DPoP INVALID must fire FIRST and produce 4008");
+    assertFalse(sawClose4001, "JTI revocation must NOT fire when DPoP already rejected");
+    assertTrue(
+        auditLogger.failureReasons.contains("dpop-invalid"),
+        "Audit reason must be 'dpop-invalid' (DPoP fired first)");
+    assertFalse(
+        auditLogger.failureReasons.contains("jti-revoked"),
+        "JTI revocation audit must NOT fire when DPoP already rejected");
+
+    channel.finishAndReleaseAll();
+  }
+
   @Test
   void sendError_writerRejectsForbiddenChar_channelClosesAnyway() throws Exception {
     // JwtAuthHandler uses eventWriter.writeError(reason) for the Error frame.
