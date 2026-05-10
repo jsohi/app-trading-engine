@@ -419,6 +419,9 @@ public final class BrowserEventWriter {
     if (e instanceof BrowserEvent.RawFix r) {
       return writeRawFix(r, dst);
     }
+    if (e instanceof BrowserEvent.RawFixSlice r) {
+      return writeRawFixSlice(r, dst);
+    }
     if (e instanceof BrowserEvent.AuthExpired) {
       return writeAuthExpired(dst);
     }
@@ -460,6 +463,52 @@ public final class BrowserEventWriter {
       dst.writeByte(CLOSE_BRACE);
       return dst.writerIndex() - start;
     } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
+  }
+
+  /**
+   * Serialise a {@link BrowserEvent.RawFixSlice} directly from the tap's masked byte buffer without
+   * constructing an intermediate {@link String}.
+   *
+   * <p>This is the zero-String-alloc path introduced in APP-40a Day 5. SOH bytes (0x01) in the
+   * slice are substituted with {@code |} (0x7C) at write time via {@link
+   * Utf8JsonStringEmitter#appendRawFixBytes}. The {@code "direction"} value is determined from
+   * {@link BrowserEvent.RawFixSlice#inbound()}: {@code true} → {@code "in"}, {@code false} → {@code
+   * "out"}.
+   *
+   * <p>Zero allocation on the hot path — no {@link String}, no intermediate {@code byte[]}.
+   *
+   * @param e flyweight slice carrier (non-null; compact ctor guarantees well-formed bounds)
+   * @param dst destination Netty {@link ByteBuf}
+   * @return number of bytes appended to {@code dst}
+   * @throws IllegalStateException if the byte slice contains a forbidden JSON character ({@code "}
+   *     or {@code \\}) — indicates an upstream masking bug
+   */
+  public int writeRawFixSlice(final BrowserEvent.RawFixSlice e, final ByteBuf dst) {
+    final int start = dst.writerIndex();
+    try {
+      dst.writeBytes(HDR_RAW_FIX);
+      dst.writeBytes(K_DIRECTION);
+      // "in" or "out" written as pre-computed byte literals to avoid String allocation.
+      if (e.inbound()) {
+        dst.writeByte((byte) 'i');
+        dst.writeByte((byte) 'n');
+      } else {
+        dst.writeByte((byte) 'o');
+        dst.writeByte((byte) 'u');
+        dst.writeByte((byte) 't');
+      }
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_FIX);
+      // Emit the masked byte slice with SOH→| substitution at write time — no String allocation.
+      Utf8JsonStringEmitter.appendRawFixBytes(e.scratch(), e.off(), e.len(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      // Roll back partial write — consistent with all other write* methods in this class.
       dst.writerIndex(start);
       throw ex;
     }

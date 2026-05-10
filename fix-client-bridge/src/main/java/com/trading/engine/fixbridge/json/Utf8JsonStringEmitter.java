@@ -81,6 +81,45 @@ public final class Utf8JsonStringEmitter {
     }
   }
 
+  /**
+   * Append the ASCII bytes in {@code src[off..off+len)} into {@code dst} as a JSON-safe string
+   * value, substituting SOH (0x01) with {@code |} (0x7C) and rejecting embedded {@code "} (0x22) or
+   * {@code \\} (0x5C).
+   *
+   * <p>This is the zero-alloc hot-path variant used by {@link
+   * com.trading.engine.fixbridge.json.BrowserEventWriter#writeRawFixSlice} to emit a {@link
+   * com.trading.engine.fixbridge.json.BrowserEvent.RawFixSlice} without constructing an
+   * intermediate {@link String}. SOH bytes originate from the masked FIX wire; all other bytes must
+   * already be 7-bit ASCII printable (PiiMask guarantees this for masked fields; FIX field values
+   * are constrained to printable ASCII by the FIX 4.4 specification).
+   *
+   * <p>Zero allocation after construction.
+   *
+   * @param src source byte array containing masked FIX bytes (7-bit ASCII + SOH)
+   * @param off start offset within {@code src}
+   * @param len number of bytes to emit; must be {@code >= 0}
+   * @param dst destination Netty {@link ByteBuf}; written at {@code dst.writerIndex()}
+   * @throws IllegalStateException if any byte is a forbidden JSON character ({@code "} or {@code
+   *     \\})
+   */
+  public static void appendRawFixBytes(
+      final byte[] src, final int off, final int len, final ByteBuf dst) {
+    for (int i = 0; i < len; i++) {
+      final byte b = src[off + i];
+      if (b == (byte) 0x01) {
+        // SOH field delimiter → substitute with '|' as per the locked wire-format contract.
+        dst.writeByte((byte) '|');
+      } else if (b == (byte) '"' || b == (byte) '\\') {
+        throw new IllegalStateException(
+            "FIX byte slice contains forbidden JSON character at index " + i + ": " + (int) b);
+      } else {
+        // All other bytes are written verbatim; PiiMask + FIX 4.4 protocol constrain the input
+        // to 7-bit printable ASCII, so no multi-byte UTF-8 branching is needed here.
+        dst.writeByte(b);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Internals.
   // ---------------------------------------------------------------------------

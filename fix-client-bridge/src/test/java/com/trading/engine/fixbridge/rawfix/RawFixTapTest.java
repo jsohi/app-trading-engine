@@ -189,7 +189,7 @@ final class RawFixTapTest {
   // ─── Happy path: event enqueued with direction + masked content ───────────
 
   @Test
-  void tap_allGatesOpen_directionIn_enqueuesRawFixWithMaskedContent() throws Exception {
+  void tap_allGatesOpen_directionIn_enqueuesRawFixSliceWithMaskedContent() throws Exception {
     final var queue = new OutboundQueue(64);
     final var session = buildSession(List.of(AUDIT_ROLE), queue);
     final var tap =
@@ -207,18 +207,21 @@ final class RawFixTapTest {
     assertEquals(1, queue.size());
     assertEquals(0, dropCounter.reasons.size());
     final var event = queue.poll();
-    assertTrue(event instanceof BrowserEvent.RawFix, "Expected RawFix event");
-    final var rawFix = (BrowserEvent.RawFix) event;
-    assertEquals("in", rawFix.direction());
+    assertTrue(event instanceof BrowserEvent.RawFixSlice, "Expected RawFixSlice event");
+    final var slice = (BrowserEvent.RawFixSlice) event;
+    assertTrue(slice.inbound(), "Direction must be inbound=true for DIRECTION_IN");
+    // Inspect the masked bytes directly from the slice.
+    final var maskedStr =
+        new String(
+            slice.scratch(), slice.off(), slice.len(), java.nio.charset.StandardCharsets.US_ASCII);
     // Account tag 1 value "SECRET" must be masked as "******".
-    assertTrue(rawFix.fix().contains("1="), "Event must contain tag 1");
-    assertTrue(rawFix.fix().contains("11=ORD-001"), "Non-PII tag 11 must be preserved");
-    // Verify masking: the Account value bytes should all be '*'.
-    assertTrue(rawFix.fix().contains("1=******"), "Account (tag 1) value must be masked");
+    assertTrue(maskedStr.contains("1="), "Slice must contain tag 1");
+    assertTrue(maskedStr.contains("11=ORD-001"), "Non-PII tag 11 must be preserved");
+    assertTrue(maskedStr.contains("1=******"), "Account (tag 1) value must be masked");
   }
 
   @Test
-  void tap_allGatesOpen_directionOut_enqueuesRawFixDirectionOut() throws Exception {
+  void tap_allGatesOpen_directionOut_enqueuesRawFixSliceDirectionOut() throws Exception {
     final var queue = new OutboundQueue(64);
     final var session = buildSession(List.of(AUDIT_ROLE), queue);
     final var tap =
@@ -233,8 +236,10 @@ final class RawFixTapTest {
 
     tap.tap(RawFixTap.DIRECTION_OUT, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
-    final var rawFix = (BrowserEvent.RawFix) queue.poll();
-    assertEquals("out", rawFix.direction());
+    final var event = queue.poll();
+    assertTrue(event instanceof BrowserEvent.RawFixSlice, "Expected RawFixSlice event");
+    final var slice = (BrowserEvent.RawFixSlice) event;
+    assertTrue(!slice.inbound(), "Direction must be inbound=false for DIRECTION_OUT");
   }
 
   // ─── Direction validation ─────────────────────────────────────────────────

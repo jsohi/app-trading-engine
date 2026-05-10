@@ -2,6 +2,7 @@ package com.trading.engine.fixbridge.transport;
 
 import com.trading.engine.fixbridge.FixClientBridgeConfig;
 import com.trading.engine.fixbridge.audit.AuditLogger;
+import com.trading.engine.fixbridge.auth.DpopValidator;
 import com.trading.engine.fixbridge.auth.JtiRevocationCache;
 import com.trading.engine.fixbridge.auth.JwtAuthHandler;
 import com.trading.engine.fixbridge.json.BrowserEventWriter;
@@ -219,7 +220,8 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                         dispatcher,
                         auditLogger,
                         eventWriter,
-                        accountLimitsSource));
+                        accountLimitsSource,
+                        DpopValidator.NOOP));
               }
             });
 

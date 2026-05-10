@@ -32,7 +32,7 @@ package com.trading.engine.fixbridge.json;
  * BridgeStatus       : {"type":"BridgeStatus","fixSessionUp":&lt;bool&gt;,"fatal":&lt;bool&gt;,
  *                       "reason":"...","newOrders":&lt;bool&gt;,"newQuotes":&lt;bool&gt;,
  *                       "protocolVersion":&lt;int&gt;,"serverOrderTimeoutMs":&lt;long&gt;}
- * RawFix             : {"type":"RawFix","direction":"in|out","fix":"..."}
+ * RawFix / RawFixSlice : {"type":"RawFix","direction":"in|out","fix":"..."}
  * AuthExpired        : {"type":"AuthExpired"}
  * Error              : {"type":"Error","reason":"...","received":"..."}
  * AccountLimits      : {"type":"AccountLimits","account":"...",
@@ -59,6 +59,7 @@ public sealed interface BrowserEvent
         BrowserEvent.OrderReject,
         BrowserEvent.BridgeStatus,
         BrowserEvent.RawFix,
+        BrowserEvent.RawFixSlice,
         BrowserEvent.AuthExpired,
         BrowserEvent.Error,
         BrowserEvent.AccountLimits,
@@ -192,6 +193,66 @@ public sealed interface BrowserEvent
    * @param fix FIX raw message with {@code SOH} replaced by {@code |}, JSON-escaped where needed
    */
   record RawFix(String direction, String fix) implements BrowserEvent {}
+
+  /**
+   * Zero-String flyweight carrier for the FIX-tap hot path (§3.5 / APP-40a Day 5).
+   *
+   * <p><b>Purpose.</b> Replaces the per-tap-call {@link String} allocation in {@code RawFixTap.tap}
+   * with a thin slice descriptor that references the tap's pre-allocated {@code maskScratch} buffer
+   * directly. The SOH→{@code |} substitution and JSON-escaping are deferred to the queue consumer
+   * ({@link BrowserEventWriter#writeRawFixSlice}) which reads the byte slice at write time without
+   * an intermediate {@link String}.
+   *
+   * <p><b>Single-threaded ownership invariant.</b> The {@code scratch} array is the {@code
+   * RawFixTap}'s per-instance {@code maskScratch} buffer. The queue consumer ({@code
+   * BrowserEventWriter.writeAny}) MUST serialise this record BEFORE the next {@code RawFixTap.tap}
+   * call mutates the buffer. This invariant is guaranteed because both the drainer and the tap run
+   * exclusively on the same channel event loop — no external synchronisation is required.
+   *
+   * <p><b>Threading.</b> NOT thread-safe — slice is owned by a single event-loop thread.
+   *
+   * <p><b>Allocation.</b> One record allocation per emitted frame (unavoidable — the queue holds
+   * boxed {@link BrowserEvent} references). The {@code scratch} byte array is shared, not copied.
+   *
+   * @param inbound {@code true} if the FIX message was received from the exchange gateway
+   *     (direction "in"); {@code false} for messages sent to the gateway (direction "out")
+   * @param scratch shared {@code maskScratch} byte array owned by the {@code RawFixTap}; MUST NOT
+   *     be null
+   * @param off start offset of the masked FIX bytes within {@code scratch}; must be {@code >= 0}
+   * @param len byte length of the masked FIX bytes; must be {@code > 0} and {@code off + len <=
+   *     scratch.length}
+   */
+  record RawFixSlice(boolean inbound, byte[] scratch, int off, int len) implements BrowserEvent {
+
+    /**
+     * Compact constructor — validates the slice parameters so that the writer can assume a
+     * well-formed slice without re-checking on every byte.
+     *
+     * @throws NullPointerException if {@code scratch} is null
+     * @throws IllegalArgumentException if {@code off < 0}, {@code len <= 0}, or {@code off + len >
+     *     scratch.length}
+     */
+    public RawFixSlice {
+      if (scratch == null) {
+        throw new NullPointerException("scratch must not be null");
+      }
+      if (off < 0) {
+        throw new IllegalArgumentException("off must be >= 0, was " + off);
+      }
+      if (len <= 0) {
+        throw new IllegalArgumentException("len must be > 0, was " + len);
+      }
+      if (off + len > scratch.length) {
+        throw new IllegalArgumentException(
+            "slice out of bounds: off="
+                + off
+                + " len="
+                + len
+                + " scratch.length="
+                + scratch.length);
+      }
+    }
+  }
 
   /** JWT lifetime exhausted — sent immediately before WS close (code 4001) per locked §13. */
   record AuthExpired() implements BrowserEvent {

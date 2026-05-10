@@ -8,6 +8,7 @@ import com.trading.engine.fixbridge.json.BrowserEventWriter;
 import com.trading.engine.fixbridge.json.BrowserMessageReader;
 import com.trading.engine.fixbridge.json.JsonParseException;
 import com.trading.engine.fixbridge.json.MutableParsedMessage;
+import com.trading.engine.fixbridge.json.OrderRejectReason;
 import com.trading.engine.fixbridge.quote.SessionId;
 import com.trading.engine.fixbridge.ratelimit.PerTypeRateLimiter;
 import com.trading.engine.fixbridge.transport.AccountLimitsSource;
@@ -24,6 +25,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -97,6 +99,17 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
 
   private static final Logger LOG = LogManager.getLogger(JwtAuthHandler.class);
 
+  /**
+   * Channel attribute carrying the {@code DPoP} HTTP header value captured during the WebSocket
+   * upgrade handshake. The launcher-side handshake handler MUST set this attribute on the channel
+   * BEFORE the handshake completes; this handler reads it during {@link #completeAuthOnEventLoop}
+   * and passes it to the {@link DpopValidator}. May be {@code null} (or unset) when the worker did
+   * not send a DPoP proof — DpopValidator decides what to do based on whether the bearer JWT
+   * carries a {@code cnf.jkt} claim.
+   */
+  public static final AttributeKey<String> DPOP_HEADER_ATTR =
+      AttributeKey.valueOf("com.trading.engine.fixbridge.auth.JwtAuthHandler.DPOP_HEADER");
+
   private final FixClientBridgeConfig config;
   private final JwtValidator jwtValidator;
   private final JtiRevocationCache jtiCache;
@@ -106,6 +119,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
   private final Executor validationExecutor;
   private final BridgeFrameDispatcher dispatcher;
   private final AuditLogger auditLogger;
+  private final DpopValidator dpopValidator;
 
   /**
    * Per-channel writer used for cold-path Auth-failure {@code Error} frames. Created lazily on
@@ -158,6 +172,10 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
    * @param accountLimitsSource source of {@link BrowserEvent.AccountLimits} push frames emitted on
    *     AUTH_SUCCESS — use {@link AccountLimitsSource#NOOP} until the launcher's cluster client is
    *     wired (APP-40b)
+   * @param dpopValidator DPoP runtime validator (§3.3 / §B-r2-7) — invoked after JWT validation
+   *     passes and before JTI revocation check; runs against the {@code DPoP} HTTP header the
+   *     launcher captured into {@link #DPOP_HEADER_ATTR}. Use {@link DpopValidator#NOOP} for
+   *     deployments that don't enforce DPoP (the default).
    */
   public JwtAuthHandler(
       final FixClientBridgeConfig config,
@@ -170,7 +188,8 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       final BridgeFrameDispatcher dispatcher,
       final AuditLogger auditLogger,
       final BrowserEventWriter eventWriter,
-      final AccountLimitsSource accountLimitsSource) {
+      final AccountLimitsSource accountLimitsSource,
+      final DpopValidator dpopValidator) {
     this.config = Objects.requireNonNull(config, "config");
     this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
@@ -182,6 +201,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
     this.eventWriter = Objects.requireNonNull(eventWriter, "eventWriter");
     this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
+    this.dpopValidator = Objects.requireNonNull(dpopValidator, "dpopValidator");
   }
 
   @Override
@@ -313,6 +333,32 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     // NoSuchElementException. Re-check both flags inside the event loop and bail silently if the
     // channel has already gone inactive.
     if (authResolved || !ctx.channel().isActive()) {
+      return;
+    }
+
+    // 4c. DPoP runtime check (§3.3 / §B-r2-7). Validate the DPoP proof captured by the
+    // launcher's handshake handler against the bearer JWT's cnf.jkt claim. The validator's NOOP
+    // default returns VALID for every call (deployments without DPoP enforcement); production
+    // deployments that require DPoP bind a real cryptographic impl that returns STALE_DPOP on
+    // worker key rotation or INVALID on proof failure / replay.
+    final var dpopHeader = ctx.channel().attr(DPOP_HEADER_ATTR).get();
+    final var dpopResult = dpopValidator.validate(claims, dpopHeader);
+    if (dpopResult == DpopValidator.Result.STALE_DPOP) {
+      LOG.warn("Auth rejected: STALE_DPOP for sub={} (worker key rotation)", claims.sub());
+      authFailureTracker.recordFailure(remoteIp);
+      auditAuthFail(remoteIp, "stale-dpop");
+      // 4001 — taxonomy says STALE_DPOP is TRANSIENT; the worker silently re-mints token+DPoP
+      // pair instead of prompting the user (per §B-r2-7).
+      sendErrorAndClose(
+          ctx, OrderRejectReason.STALE_DPOP.wireValue(), BridgeCloseCodes.AUTH_EXPIRED);
+      return;
+    }
+    if (dpopResult == DpopValidator.Result.INVALID) {
+      LOG.warn("Auth rejected: DPoP proof INVALID for sub={}", claims.sub());
+      authFailureTracker.recordFailure(remoteIp);
+      auditAuthFail(remoteIp, "dpop-invalid");
+      // 4008 — single auth-failed error code (no oracle leak per §3.3).
+      sendErrorAndClose(ctx, "auth-failed", BridgeCloseCodes.POLICY_VIOLATION);
       return;
     }
 
