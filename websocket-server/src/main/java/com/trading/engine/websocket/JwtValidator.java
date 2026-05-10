@@ -506,13 +506,35 @@ public final class JwtValidator implements AutoCloseable {
       List<String> roles) {
 
     /**
+     * Canonical constructor. Defensively freezes {@code accounts} and {@code roles} via {@link
+     * List#copyOf} so any caller-side mutation after this record is constructed cannot leak into
+     * the validated state. CodeRabbit major finding on PR #70: prior implementation stored
+     * caller-provided lists by reference, allowing a misbehaving caller to mutate the entitled-
+     * accounts set after auth succeeded.
+     *
+     * @param sub the subject claim (user identifier)
+     * @param jti the JWT ID claim
+     * @param accounts the entitled accounts; defensively copied
+     * @param expiryEpochSec the token expiry as epoch seconds
+     * @param ipPinned whether the bridge must enforce remote-IP pinning
+     * @param roles the roles list; defensively copied
+     */
+    public ValidatedClaims {
+      // Compact constructor body — runs before the implicit field assignment.
+      // List.copyOf returns an unmodifiable copy; throws NPE on null elements which is the
+      // correct fail-fast for a malformed claims source.
+      accounts = List.copyOf(accounts);
+      roles = List.copyOf(roles);
+    }
+
+    /**
      * Backwards-compatible four-arg constructor used by code paths that pre-date the {@code
      * ip_pinned} / {@code roles} claims. Defaults to {@code ipPinned=true} (fail-secure) and an
      * empty roles list.
      *
      * @param sub the subject claim
      * @param jti the JWT ID claim
-     * @param accounts the entitled accounts
+     * @param accounts the entitled accounts (defensively copied by the canonical ctor)
      * @param expiryEpochSec the token expiry as epoch seconds
      */
     public ValidatedClaims(

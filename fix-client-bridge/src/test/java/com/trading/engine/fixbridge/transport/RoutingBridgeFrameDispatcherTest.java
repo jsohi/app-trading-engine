@@ -108,8 +108,8 @@ final class RoutingBridgeFrameDispatcherTest {
         final AuditAction action,
         final String symbol,
         final String side,
-        final String qtyStr,
-        final String priceStr,
+        final long qty,
+        final long price,
         final String ordType,
         final String tif,
         final String account,
@@ -149,7 +149,7 @@ final class RoutingBridgeFrameDispatcherTest {
     quoteIndex = new SessionQuoteIndex();
     dispatcher =
         new RoutingBridgeFrameDispatcher(
-            sink, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, "192.168.1.1");
+            sink, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, () -> "192.168.1.1");
 
     // Minimal BridgeSession.
     final var claims =
@@ -391,7 +391,7 @@ final class RoutingBridgeFrameDispatcherTest {
   void constructor_nullSink_throwsNullPointerException() {
     try {
       new RoutingBridgeFrameDispatcher(
-          null, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, "127.0.0.1");
+          null, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, () -> "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null sink");
     } catch (final NullPointerException e) {
       // expected
@@ -401,7 +401,8 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullQuoteIndex_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(sink, null, auditLogger, FIXED_EPOCH_CLOCK, "127.0.0.1");
+      new RoutingBridgeFrameDispatcher(
+          sink, null, auditLogger, FIXED_EPOCH_CLOCK, () -> "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null quoteIndex");
     } catch (final NullPointerException e) {
       // expected
@@ -411,7 +412,8 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullAuditLogger_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(sink, quoteIndex, null, FIXED_EPOCH_CLOCK, "127.0.0.1");
+      new RoutingBridgeFrameDispatcher(
+          sink, quoteIndex, null, FIXED_EPOCH_CLOCK, () -> "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null auditLogger");
     } catch (final NullPointerException e) {
       // expected
@@ -419,10 +421,10 @@ final class RoutingBridgeFrameDispatcherTest {
   }
 
   @Test
-  void constructor_nullRemoteIp_throwsNullPointerException() {
+  void constructor_nullRemoteIpSupplier_throwsNullPointerException() {
     try {
       new RoutingBridgeFrameDispatcher(sink, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, null);
-      throw new AssertionError("Expected NullPointerException for null remoteIp");
+      throw new AssertionError("Expected NullPointerException for null remoteIpSupplier");
     } catch (final NullPointerException e) {
       // expected
     }

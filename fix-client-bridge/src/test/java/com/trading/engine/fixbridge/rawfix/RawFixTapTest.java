@@ -15,6 +15,7 @@ import com.trading.engine.websocket.JwtValidator.ValidatedClaims;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -52,8 +53,8 @@ final class RawFixTapTest {
         final AuditAction action,
         final String symbol,
         final String side,
-        final String qtyStr,
-        final String priceStr,
+        final long qty,
+        final long price,
         final String ordType,
         final String tif,
         final String account,
@@ -84,6 +85,12 @@ final class RawFixTapTest {
   }
 
   // ─── Shared helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Test-only fixed-epoch clock — yields a stable epoch-ns value so the audit timestamp is
+   * predictable. Production binds {@code TradingClocks.epochNanoClock()}.
+   */
+  private static final EpochNanoClock FIXED_EPOCH_CLOCK = () -> 1_700_000_000_000_000_000L;
 
   private RecordingAuditLogger auditLogger;
   private RecordingDropCounter dropCounter;
@@ -131,7 +138,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            false /* bridgeDebug */);
+            false /* bridgeDebug */,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_IN, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
@@ -154,7 +162,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true /* bridgeDebug */);
+            true /* bridgeDebug */,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_OUT, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
@@ -177,7 +186,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_IN, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
@@ -200,7 +210,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_IN, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
@@ -232,7 +243,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_OUT, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 
@@ -256,7 +268,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     assertThrows(
         IllegalArgumentException.class,
@@ -277,7 +290,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     assertThrows(
         IndexOutOfBoundsException.class,
@@ -296,7 +310,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     assertThrows(
         IndexOutOfBoundsException.class,
@@ -317,7 +332,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     // maskScratch is 4096 bytes; supply exactly 4097.
     final var oversized = new byte[4097];
@@ -344,9 +360,10 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            false /* start disabled */);
+            false /* start disabled */,
+            FIXED_EPOCH_CLOCK);
 
-    tap.setBridgeDebug(true, 100_000L);
+    tap.setBridgeDebug(true);
 
     assertTrue(
         auditLogger.actions.contains(AuditAction.BRIDGE_DEBUG_TOGGLE),
@@ -366,9 +383,10 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true /* start enabled */);
+            true /* start enabled */,
+            FIXED_EPOCH_CLOCK);
 
-    tap.setBridgeDebug(true, 100_000L); // same value — no-op
+    tap.setBridgeDebug(true); // same value — no-op
 
     assertTrue(
         auditLogger.actions.isEmpty(),
@@ -397,7 +415,8 @@ final class RawFixTapTest {
             auditLogger,
             dropCounter,
             AUDIT_ROLE,
-            true);
+            true,
+            FIXED_EPOCH_CLOCK);
 
     tap.tap(RawFixTap.DIRECTION_IN, SAMPLE_FIX, 0, SAMPLE_FIX.length, 1_000_000L);
 

@@ -50,8 +50,9 @@ public interface AuditLogger {
    * @param action one of the bridge-side {@link AuditAction} values
    * @param symbol FIX {@code Symbol (55)} associated with the action, or {@code null} if N/A
    * @param side FIX {@code Side (54)} ({@code "Buy"}/{@code "Sell"}), or {@code null}
-   * @param qtyStr decimal-string quantity at fixed-point precision 10^-8, or {@code null}
-   * @param priceStr decimal-string price at fixed-point precision 10^-8, or {@code null}
+   * @param qty fixed-point quantity at scale 10^-8 ({@link
+   *     com.trading.engine.messages.FixedPointScale#PRICE_SCALE}); use 0L when N/A
+   * @param price fixed-point price at scale 10^-8; use 0L when N/A
    * @param ordType FIX {@code OrdType (40)} string, or {@code null}
    * @param tif FIX {@code TimeInForce (59)} string, or {@code null}
    * @param account FIX {@code Account (1)} string, or {@code null}
@@ -72,8 +73,8 @@ public interface AuditLogger {
       AuditAction action,
       String symbol,
       String side,
-      String qtyStr,
-      String priceStr,
+      long qty,
+      long price,
       String ordType,
       String tif,
       String account,
@@ -127,8 +128,8 @@ public interface AuditLogger {
         final AuditAction action,
         final String symbol,
         final String side,
-        final String qtyStr,
-        final String priceStr,
+        final long qty,
+        final long price,
         final String ordType,
         final String tif,
         final String account,

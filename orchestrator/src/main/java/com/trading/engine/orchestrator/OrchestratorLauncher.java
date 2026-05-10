@@ -18,6 +18,8 @@ import com.trading.engine.orchestrator.codec.OrchestratorMessageEncoder;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.AgentRunner;
@@ -91,11 +93,17 @@ public final class OrchestratorLauncher {
 
     LOG.info().append("Launching orchestrator: aeronDir=").append(aeronDir).commit();
 
+    // The boot counter file lives next to the Aeron CnC directory so it shares the same
+    // operator-visible filesystem path as the rest of the orchestrator's runtime state.
+    // OrchestratorIdGenerator.advanceBootCounter creates the file on first boot via
+    // tmp+ATOMIC_MOVE.
+    final var bootCounterFile = Paths.get(aeronDir, "orchestrator-boot-counter.dat");
+
     // --- Step 2: Connect to shared Media Driver ---
     final var aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
 
     try {
-      return launchWithAeron(aeron, idleStrategy, true);
+      return launchWithAeron(aeron, idleStrategy, true, bootCounterFile);
     } catch (final RuntimeException e) {
       CloseHelper.closeAll(aeron);
       throw e;
@@ -111,7 +119,10 @@ public final class OrchestratorLauncher {
    * @return a fully wired OrchestratorComponents
    */
   private static OrchestratorComponents launchWithAeron(
-      final Aeron aeron, final IdleStrategy idleStrategy, final boolean ownsAeron) {
+      final Aeron aeron,
+      final IdleStrategy idleStrategy,
+      final boolean ownsAeron,
+      final Path bootCounterFile) {
 
     // --- Step 3-6: Create Aeron IPC resources (atomic acquire-or-cleanup; see helper) ---
     final var ipc = acquireIpcResources(aeron);
@@ -120,14 +131,15 @@ public final class OrchestratorLauncher {
     final var pricingPublication = ipc.pricingPublication();
     final var pricingSubscription = ipc.pricingSubscription();
 
-    // --- Step 7: Get clocks (must precede Step 8 — APP-40a §3.2: OrchestratorIdGenerator is now
-    //     clock-injected so its restart-safe seed derives from the orchestrator's
-    //     EpochNanoClock, per CLAUDE.md §Clock Usage rule for out-of-cluster modules).
+    // --- Step 7: Get clocks ---
     final var epochClock = TradingClocks.epochNanoClock();
     final var nanoClock = TradingClocks.nanoClock();
 
-    // --- Step 8: Construct OrchestratorIdGenerator (seeded from epochClock — see §3.2) ---
-    final var quoteIdGenerator = new OrchestratorIdGenerator("QTE", epochClock);
+    // --- Step 8: Construct OrchestratorIdGenerator with durable boot counter (PR #70 CodeRabbit
+    //     critical fix). Each boot atomically advances the persistent counter file and reserves
+    //     OrchestratorIdGenerator.BOOT_HEADROOM (1B) IDs — guaranteeing no two live boots ever
+    //     share an ID range regardless of how fast the orchestrator restarts.
+    final var quoteIdGenerator = new OrchestratorIdGenerator("QTE", epochClock, bootCounterFile);
 
     // --- Step 9: Construct RfqStateMachine ---
     final var stateMachine =

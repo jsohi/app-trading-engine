@@ -53,6 +53,14 @@ public final class SessionId {
     return value;
   }
 
+  /**
+   * Value-equality comparison: two {@code SessionId} instances are equal iff their wrapped string
+   * values are equal. Used by {@link SessionQuoteIndex}'s Agrona maps to look up entries by
+   * session.
+   *
+   * @param o object to compare against
+   * @return {@code true} iff {@code o} is a {@code SessionId} with the same wrapped value
+   */
   @Override
   public boolean equals(final Object o) {
     if (this == o) {
@@ -64,11 +72,25 @@ public final class SessionId {
     return value.equals(other.value);
   }
 
+  /**
+   * Hash derived from the wrapped string value via {@link Objects#hashCode}. Stable for the
+   * lifetime of the instance (the wrapped value is immutable). Compatible with {@link #equals} —
+   * two equal instances always produce the same hash.
+   *
+   * @return the hash code of the wrapped string
+   */
   @Override
   public int hashCode() {
     return Objects.hashCode(value);
   }
 
+  /**
+   * Diagnostic representation. Format is {@code "SessionId[<value>]"} — suitable for log lines and
+   * assertion failure messages, NOT for protocol/wire serialisation (use {@link #value()} for
+   * that).
+   *
+   * @return the diagnostic representation
+   */
   @Override
   public String toString() {
     return "SessionId[" + value + "]";

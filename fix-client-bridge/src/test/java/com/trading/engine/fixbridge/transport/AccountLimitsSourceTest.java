@@ -96,17 +96,39 @@ final class AccountLimitsSourceTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void noop_pushFor_doesNotCallSink() {
+  void noop_pushFor_emitsPessimisticDefaultsPerClaimedAccount() {
+    // The "NOOP" source is misnamed for backward compatibility — it actually emits a fail-secure
+    // pessimistic-defaults AccountLimits per claimed account (zero qty, zero notional, zero
+    // deviation, zero OPS). This honours the pushFor contract that the UI relies on "at least one
+    // frame per claimed account so submit buttons remain disabled-by-default if the source has
+    // no data". (Pre-fix: NOOP was a true no-op, leaving submit buttons in an undefined state —
+    // flagged by CodeRabbit on PR #70.)
     final var sink = new RecordingSink(OutboundQueue.OfferResult.ACCEPTED);
-    final var claimsWithAccounts = claims(List.of("ACME-001", "ACME-002"));
+    final var accounts = List.of("ACME-001", "ACME-002");
+    final var claimsWithAccounts = claims(accounts);
+
     AccountLimitsSource.NOOP.pushFor(claimsWithAccounts, session(64), sink);
-    assertEquals(0, sink.received.size(), "NOOP must not call sink");
+
+    assertEquals(
+        accounts.size(),
+        sink.received.size(),
+        "NOOP must emit one pessimistic-default frame per claimed account");
+    for (int i = 0; i < accounts.size(); i++) {
+      final var event = sink.received.get(i);
+      assertEquals(accounts.get(i), event.account(), "account name must echo declared order");
+      assertEquals(0L, event.maxQtyInt64(), "pessimistic qty must be 0");
+      assertEquals(0L, event.maxNotionalInt64(), "pessimistic notional must be 0");
+      assertEquals(0, event.priceDeviationBps(), "pessimistic deviation must be 0");
+      assertEquals(0, event.maxOrdersPerSecond(), "pessimistic OPS rate must be 0");
+    }
   }
 
   @Test
-  void noop_pushFor_withNullClaims_doesNotThrow() {
-    // NOOP is a lambda; we only require it does not throw.
-    AccountLimitsSource.NOOP.pushFor(null, null, e -> OutboundQueue.OfferResult.ACCEPTED);
+  void noop_pushFor_emptyAccountsList_emitsNoFrames() {
+    final var sink = new RecordingSink(OutboundQueue.OfferResult.ACCEPTED);
+    final var emptyClaims = claims(List.of());
+    AccountLimitsSource.NOOP.pushFor(emptyClaims, session(64), sink);
+    assertEquals(0, sink.received.size(), "no claimed accounts → no frames emitted");
   }
 
   // ---------------------------------------------------------------------------

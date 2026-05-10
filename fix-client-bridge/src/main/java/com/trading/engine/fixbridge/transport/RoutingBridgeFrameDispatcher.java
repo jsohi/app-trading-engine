@@ -8,6 +8,7 @@ import com.trading.engine.fixbridge.json.OrderRejectReason;
 import com.trading.engine.fixbridge.quote.SessionQuoteIndex;
 import com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration;
 import java.util.Objects;
+import java.util.function.Supplier;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
@@ -56,7 +57,7 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
   private final SessionQuoteIndex quoteIndex;
   private final AuditLogger auditLogger;
   private final EpochNanoClock epochNanoClock;
-  private final String remoteIp;
+  private final Supplier<String> remoteIpSupplier;
 
   /**
    * Construct a routing dispatcher.
@@ -68,20 +69,22 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
    * @param epochNanoClock wall-clock used as the {@code tsNs} for {@link AuditLogger#record} — the
    *     audit-logger contract is epoch nanoseconds (not monotonic), so audit records correlate with
    *     wall-clock incident timelines
-   * @param remoteIp the remote IP captured at handshake (used as the {@code sourceIp} field on
-   *     every audit entry)
+   * @param remoteIpSupplier supplies the current remote IP — invoked once per audited dispatch so
+   *     audit entries reflect the current peer IP rather than a stale handshake-time snapshot.
+   *     Implementations MUST cache to avoid per-call String allocation (the launcher's binding
+   *     wraps the per-channel IP-pin enforcer's pre-resolved String reference).
    */
   public RoutingBridgeFrameDispatcher(
       final FixCommandSink sink,
       final SessionQuoteIndex quoteIndex,
       final AuditLogger auditLogger,
       final EpochNanoClock epochNanoClock,
-      final String remoteIp) {
+      final Supplier<String> remoteIpSupplier) {
     this.sink = Objects.requireNonNull(sink, "sink");
     this.quoteIndex = Objects.requireNonNull(quoteIndex, "quoteIndex");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
     this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
-    this.remoteIp = Objects.requireNonNull(remoteIp, "remoteIp");
+    this.remoteIpSupplier = Objects.requireNonNull(remoteIpSupplier, "remoteIpSupplier");
   }
 
   @Override
@@ -236,16 +239,23 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
     // tsNs uses the EpochNanoClock (wall-clock nanoseconds) — AuditLogger.record's contract is
     // epoch-ns so audit entries correlate with wall-clock incident timelines. The nowNs param
     // remains a monotonic dispatch timestamp from the listener and is unused here.
+    // qty: parsed.qty carries the eagerly-decoded fixed-point value (Long.MIN_VALUE when absent);
+    // normalise the absent sentinel to 0L per the AuditLogger#record contract. price: the parsed
+    // flyweight retains only the priceOff/priceLen ASCII slice (the wire avoids double-rounding
+    // through int64); routing audit entries pass 0L because surfacing the parsed price would
+    // require a fresh DecimalStringParser invocation on every dispatch — TODO(APP-40b): wire a
+    // shared zero-alloc parser if compliance demands the priced field on the audit row.
+    final long qty = parsed.qty == Long.MIN_VALUE ? 0L : parsed.qty;
     auditLogger.record(
         epochNanoClock.nanoTime(),
         session.claims().sub(),
         session.claims().jti(),
-        remoteIp,
+        remoteIpSupplier.get(),
         action,
         symbol,
         sideStringOrNull(parsed.side),
-        null,
-        null,
+        qty,
+        0L,
         ordTypeStringOrNull(parsed.ordType),
         tifStringOrNull(parsed.timeInForce),
         account,

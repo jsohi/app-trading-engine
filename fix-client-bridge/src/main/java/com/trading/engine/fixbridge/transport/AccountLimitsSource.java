@@ -57,8 +57,25 @@ public interface AccountLimitsSource {
   }
 
   /**
-   * No-op source used by tests and by the bootstrap until the launcher's real impl lands. {@link
-   * #pushFor} is a no-op; the auth path completes without emitting any AccountLimits.
+   * Pessimistic-default source used by tests and by the bootstrap until the launcher's real impl
+   * lands. Emits one {@link BrowserEvent.AccountLimits} per claimed account with all-zero limits
+   * (zero qty, zero notional, zero deviation, zero OPS rate) — honouring the {@link #pushFor}
+   * contract that says "the UI relies on at least one frame per claimed account so submit buttons
+   * remain disabled-by-default if the source has no data".
+   *
+   * <p>Renamed from a true no-op (which violated the contract by emitting nothing — flagged by
+   * CodeRabbit on PR #70) to a fail-secure default that keeps UI submit buttons disabled until the
+   * real launcher binding lands.
    */
-  AccountLimitsSource NOOP = (claims, session, sink) -> {};
+  AccountLimitsSource NOOP =
+      (claims, session, sink) -> {
+        // Index-based loop over the claims.accounts() list — no Iterator allocation. The cold
+        // path (once per AUTH_SUCCESS) tolerates the per-account record allocation since the
+        // OutboundQueue inherently boxes events.
+        final var accounts = claims.accounts();
+        for (int i = 0, n = accounts.size(); i < n; i++) {
+          final var account = accounts.get(i);
+          sink.emit(new BrowserEvent.AccountLimits(account, 0L, 0L, 0, 0));
+        }
+      };
 }
