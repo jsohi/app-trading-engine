@@ -1,6 +1,7 @@
 ---
 description: "Full review-test-fix-push-review loop until convergence with compliance report"
-allowed-tools: ["Bash", "Glob", "Grep", "Read", "Write", "Edit", "Agent", "Skill"]
+allowed-tools:
+    ["Bash", "Glob", "Grep", "Read", "Write", "Edit", "Agent", "Skill"]
 ---
 
 # Orchestrate — Automated Review-Fix-Push-Review Convergence Loop
@@ -16,7 +17,7 @@ These rules are non-negotiable and OVERRIDE any judgment about efficiency or sho
 3. **NEVER accept or defer ANY comment** — dev phase means fix everything. No "accepted," no "out of scope," no "good enough."
 4. **ALWAYS review ALL changes** — every iteration reviews the full diff `main...HEAD`, not just the delta since last review.
 5. **ALWAYS wait for and address Gemini review** — after push, wait 270s, poll, fix all findings.
-6. **NEVER terminate early** — loop until zero changes in a full pass, or hit max 10 iterations.
+6. **NEVER terminate early** — loop until zero changes in a full pass, or hit max 3 iterations.
 7. **ALWAYS produce the final report** — comment ledger + compliance dashboard + accepted/out-of-scope table (must be empty).
 8. **ALWAYS write the report to a file** — `docs/review-reports/{issue}-session-{date}.md` for persistence.
 
@@ -24,24 +25,25 @@ These rules are non-negotiable and OVERRIDE any judgment about efficiency or sho
 
 1. Determine the Linear issue number from the branch name or argument (e.g., `APP-35`).
 2. Initialize the comment ledger — an empty list that accumulates every finding across all iterations:
-   ```
-   commentLedger = []
-   iteration = 0
-   converged = false
-   startTime = now
-   agentsSpawned = 0
-   geminiRounds = 0
-   ```
+    ```
+    commentLedger = []
+    iteration = 0
+    converged = false
+    startTime = now
+    agentsSpawned = 0
+    geminiRounds = 0
+    ```
 3. Record the start time for the session report.
 4. **Record the rollback checkpoint** — save the current commit SHA so we can revert if the loop makes things worse:
-   ```bash
-   BASELINE_SHA=$(git rev-parse HEAD)
-   ```
-   If the loop hits max iterations without converging, offer to revert to this SHA.
+    ```bash
+    BASELINE_SHA=$(git rev-parse HEAD)
+    ```
+    If the loop hits max iterations without converging, offer to revert to this SHA.
 
 ## Step 1: Local Review (every iteration)
 
 Run these in parallel to gather context:
+
 ```bash
 git log --oneline main..HEAD
 git diff main...HEAD --stat
@@ -49,12 +51,14 @@ git diff main...HEAD --name-only
 ```
 
 Then invoke `/review` via the Skill tool. This spawns:
+
 - **Agent A**: Trading Engine Constraint Checker (10 blocking rules including `final var`)
 - **Agent B**: General Code Quality Review
 
 Both agents review ALL changes (`main...HEAD`), not just the delta.
 
 Collect all findings. For each finding, append to the comment ledger:
+
 ```
 { iteration, source: "LocalReview-AgentA" or "LocalReview-AgentB",
   severity: "blocking" or "critical" or "medium" or "low",
@@ -70,16 +74,19 @@ If there are findings: fix ALL of them (edit the files), then run `./gradlew spo
 ```bash
 ./gradlew test
 ```
+
 If failures: fix them, add to ledger (source: "UnitTest"), run `./gradlew spotlessApply`, commit, and **restart from Step 1**.
 
 ```bash
 ./gradlew :integration-tests:test
 ```
+
 If failures: fix them, add to ledger (source: "IntegrationTest"), run `./gradlew spotlessApply`, commit, and **restart from Step 1**.
 
 ```bash
 ./gradlew e2e
 ```
+
 If failures: first run `./gradlew e2eClean`, then retry. If still failing, fix, add to ledger (source: "E2E"), commit, and **restart from Step 1**.
 
 **NEVER skip any suite. NEVER claim a suite was "already run." Execute all three and report pass/fail with actual output.**
@@ -154,6 +161,7 @@ If `spotlessCheck` fails after `spotlessApply`, something is wrong — investiga
 ## Step 4: Commit and Push
 
 If there are any uncommitted changes from Steps 1-3:
+
 ```bash
 git add -u
 git commit -m "APP-{N}: orchestrate R{iteration} — review fixes"
@@ -162,6 +170,7 @@ git commit -m "APP-{N}: orchestrate R{iteration} — review fixes"
 **Hook interaction:** The post-commit hook will fire and demand 3 test suites. Since you already ran them in Step 2 this iteration, acknowledge the hook demand: "Tests were run in Step 2 above — all 3 suites passed." Proceed without re-running.
 
 Record the push timestamp with a 30s clock-skew buffer (for Gemini polling in Step 5), then push:
+
 ```bash
 PUSH_TIME=$(date -u -d '30 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30S +%Y-%m-%dT%H:%M:%SZ)  # portable 30s clock-skew buffer (GNU || BSD)
 LOCALLOOM_REVIEW_VERIFIED=1 LOCALLOOM_E2E_VERIFIED=1 git push origin HEAD
@@ -202,6 +211,7 @@ gh api --paginate "repos/${repo}/pulls/${pr}/reviews" --jq "
 If no Gemini review found, wait another 120 seconds and poll again. Maximum 3 polls (total ~8.5 min).
 
 Parse each Gemini comment's severity from SVG badges in the body:
+
 - `security-high-priority.svg` → severity: "security-high" (blocking)
 - `high-priority.svg` → severity: "high" (blocking)
 - `medium-priority.svg` → severity: "medium" (fix in dev phase)
@@ -213,6 +223,7 @@ Add ALL Gemini comments to the ledger (source: "GeminiReview").
 ## Step 6: Fix Gemini Comments
 
 If there are any high, security-high, medium, or low Gemini comments:
+
 1. Fix ALL of them (edit files)
 2. Run `./gradlew spotlessApply`
 3. Commit: `"APP-{N}: orchestrate R{iteration} — Gemini review fixes"`
@@ -234,6 +245,7 @@ Generate the full report and write it to `docs/review-reports/APP-{N}-session-{d
 # Session Report — APP-{N} — {date}
 
 ## Summary
+
 - **Branch:** `{branch_name}`
 - **Iterations:** {N} (converged | hit max)
 - **Total comments found:** {count}
@@ -242,10 +254,10 @@ Generate the full report and write it to `docs/review-reports/APP-{N}-session-{d
 
 ## Comment Ledger
 
-| # | Iter | Source | Severity | File:Line | Description | Status | Fix Commit |
-|---|------|--------|----------|-----------|-------------|--------|------------|
-| 1 | 1 | LocalReview-A | blocking | cluster/Foo.java:42 | new ArrayList in hot path | FIXED | abc1234 |
-| ... | ... | ... | ... | ... | ... | ... | ... |
+| #   | Iter | Source        | Severity | File:Line           | Description               | Status | Fix Commit |
+| --- | ---- | ------------- | -------- | ------------------- | ------------------------- | ------ | ---------- |
+| 1   | 1    | LocalReview-A | blocking | cluster/Foo.java:42 | new ArrayList in hot path | FIXED  | abc1234    |
+| ... | ...  | ...           | ...      | ...                 | ...                       | ...    | ...        |
 
 ## Compliance Dashboard
 
@@ -253,19 +265,19 @@ Generate the full report and write it to `docs/review-reports/APP-{N}-session-{d
 
 ## Accepted / Out-of-Scope / Not Prod-Ready
 
-| # | Source | Description | Reason | Status |
-|---|--------|-------------|--------|--------|
+| #                                        | Source | Description | Reason | Status |
+| ---------------------------------------- | ------ | ----------- | ------ | ------ |
 | (This table MUST be empty in dev phase.) |
 
 **TOTAL: 0 accepted, 0 out-of-scope, 0 subpar**
 
 ## Test Results
 
-| Suite | Status | Duration | Details |
-|-------|--------|----------|---------|
-| Unit Tests | {PASS/FAIL} | {time} | {count} tests, {failures} failures |
-| Integration Tests | {PASS/FAIL} | {time} | {count} tests, {failures} failures |
-| E2E | {PASS/FAIL} | {time} | 3-node cluster + FIX validation |
+| Suite             | Status      | Duration | Details                            |
+| ----------------- | ----------- | -------- | ---------------------------------- |
+| Unit Tests        | {PASS/FAIL} | {time}   | {count} tests, {failures} failures |
+| Integration Tests | {PASS/FAIL} | {time}   | {count} tests, {failures} failures |
+| E2E               | {PASS/FAIL} | {time}   | 3-node cluster + FIX validation    |
 ```
 
 ### 7c: Append to Session Report Index
@@ -282,6 +294,7 @@ Add to the session report:
 
 ```markdown
 ## Session Metrics
+
 - **Wall time:** {minutes}m {seconds}s
 - **Iterations:** {N}
 - **Agents spawned:** {count} (review: {N}, compliance: {N}, plan: {N})
@@ -307,6 +320,7 @@ Print the comment ledger and compliance dashboard to the conversation so the use
 ## Convergence Criteria
 
 The loop converges when a FULL pass through Steps 1-6 produces ZERO changes:
+
 - `/review` finds 0 blocking + 0 quality issues
 - All 3 test suites pass without any fixes needed
 - `spotlessCheck` passes
@@ -314,27 +328,29 @@ The loop converges when a FULL pass through Steps 1-6 produces ZERO changes:
 
 ## Hook Interaction Reference
 
-| Action | PreToolUse Hooks | PostToolUse Hooks | Your Response |
-|--------|-----------------|-------------------|---------------|
-| `git commit -m "APP-N: ..."` | pre-tool-use.sh validates prefix + branch | Post-commit hook demands 3 test suites | Tests already ran this iteration; acknowledge |
-| `git push origin HEAD` | enforce-review-before-push.sh checks env vars | Auto `@gemini review` on PR | Provide both env vars; leverage auto-trigger |
-| `/review` via Skill | None | None | Fresh agents spawned by review.md |
+| Action                       | PreToolUse Hooks                              | PostToolUse Hooks                      | Your Response                                 |
+| ---------------------------- | --------------------------------------------- | -------------------------------------- | --------------------------------------------- |
+| `git commit -m "APP-N: ..."` | pre-tool-use.sh validates prefix + branch     | Post-commit hook demands 3 test suites | Tests already ran this iteration; acknowledge |
+| `git push origin HEAD`       | enforce-review-before-push.sh checks env vars | Auto `@gemini review` on PR            | Provide both env vars; leverage auto-trigger  |
+| `/review` via Skill          | None                                          | None                                   | Fresh agents spawned by review.md             |
 
 ## Safety Limits
 
-- **Max iterations:** 10. If not converged after 10, produce the report with status "HIT MAX ITERATIONS" and list all unresolved items.
+- **Max iterations:** 3. If not converged after 3, produce the report with status "HIT MAX ITERATIONS" and list all unresolved items.
 - **Max commits per iteration:** 2 (one for local review fixes, one for Gemini fixes).
 - **E2E failure recovery:** Run `./gradlew e2eClean` before retrying E2E if the previous run failed (kills stale Aeron processes).
 - **Context management:** Keep the comment ledger as a compact markdown table. Summarize test output (pass/fail + failure count) rather than including raw logs.
 - **Rollback safety net:** If the loop hits max iterations without converging, show the user:
-  ```
-  ⚠ Orchestrator did not converge after 10 iterations.
-  Baseline: {BASELINE_SHA} ({baseline_commit_msg})
-  Current:  {HEAD_SHA}
-  Changes:  git diff {BASELINE_SHA}..HEAD --stat
 
-  Options:
-  1. Keep changes and review manually
-  2. Revert to baseline: git reset --hard {BASELINE_SHA}
-  ```
-  NEVER auto-revert — always ask the user. Show the diff stat so they can make an informed decision.
+    ```
+    ⚠ Orchestrator did not converge after 10 iterations.
+    Baseline: {BASELINE_SHA} ({baseline_commit_msg})
+    Current:  {HEAD_SHA}
+    Changes:  git diff {BASELINE_SHA}..HEAD --stat
+
+    Options:
+    1. Keep changes and review manually
+    2. Revert to baseline: git reset --hard {BASELINE_SHA}
+    ```
+
+    NEVER auto-revert — always ask the user. Show the diff stat so they can make an informed decision.
