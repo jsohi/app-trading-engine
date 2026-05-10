@@ -104,7 +104,16 @@ public final class BoundedAccountLimitsSource implements AccountLimitsSource {
                 PESSIMISTIC_DEVIATION_BPS,
                 PESSIMISTIC_MAX_OPS);
       }
-      sink.emit(limits);
+      final var result = sink.emit(limits);
+      if (result == OutboundQueue.OfferResult.TERMINAL) {
+        // The per-session outbound queue overflowed before we could push every account's limits.
+        // Caller (typically JwtAuthHandler.completeAuthOnEventLoop) is responsible for the §3.1
+        // step-5 escalation (fatal BridgeStatus + channel close); we just stop pushing because
+        // every subsequent emit would also return TERMINAL. Honouring the OutboundQueue contract
+        // per Gemini medium finding on PR #70 R3 — prior code silently swallowed the TERMINAL
+        // result and continued iterating, hiding the overflow from the operator.
+        return;
+      }
     }
   }
 }

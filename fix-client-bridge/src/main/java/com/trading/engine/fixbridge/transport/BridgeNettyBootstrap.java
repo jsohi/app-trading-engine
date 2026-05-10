@@ -104,7 +104,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
   private final EpochNanoClock epochNanoClock;
   private final NanoClock nanoClock;
   private final Executor jwtValidationExecutor;
-  private final BridgeFrameDispatcher dispatcher;
+  private final BridgeFrameDispatcher.Factory dispatcherFactory;
   private final AuditLogger auditLogger;
   private final AccountLimitsSource accountLimitsSource;
 
@@ -123,8 +123,11 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
    * @param nanoClock monotonic clock used for rate-limiter and audit timestamps
    * @param jwtValidationExecutor executor for async JWT validation (typically {@code
    *     ForkJoinPool.commonPool()})
-   * @param dispatcher post-auth frame dispatcher SAM (use {@link BridgeFrameDispatcher#NOOP} for
-   *     bring-up; the real dispatcher lands in subsequent days)
+   * @param dispatcherFactory per-session dispatcher factory invoked once per authenticated channel
+   *     (Gemini critical finding on PR #70 R3 — production dispatchers are per-session and NOT
+   *     thread-safe; sharing one instance across channels would corrupt per-session state). Use
+   *     {@link BridgeFrameDispatcher.Factory#NOOP_FACTORY} for bring-up tests until the launcher
+   *     binds the real per-session factory.
    * @param auditLogger audit sink
    * @param accountLimitsSource source of {@link
    *     com.trading.engine.fixbridge.json.BrowserEvent.AccountLimits} push frames emitted on
@@ -139,7 +142,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
       final EpochNanoClock epochNanoClock,
       final NanoClock nanoClock,
       final Executor jwtValidationExecutor,
-      final BridgeFrameDispatcher dispatcher,
+      final BridgeFrameDispatcher.Factory dispatcherFactory,
       final AuditLogger auditLogger,
       final AccountLimitsSource accountLimitsSource) {
     this.config = Objects.requireNonNull(config, "config");
@@ -150,7 +153,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     this.jwtValidationExecutor =
         Objects.requireNonNull(jwtValidationExecutor, "jwtValidationExecutor");
-    this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+    this.dispatcherFactory = Objects.requireNonNull(dispatcherFactory, "dispatcherFactory");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
     this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
   }
@@ -227,7 +230,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                         epochNanoClock,
                         nanoClock,
                         jwtValidationExecutor,
-                        dispatcher,
+                        dispatcherFactory,
                         auditLogger,
                         eventWriter,
                         accountLimitsSource,
