@@ -31,15 +31,21 @@ import org.agrona.concurrent.EpochNanoClock;
  * <p><b>Threading.</b> Per-session instance, owned by the channel's Netty event loop. Not
  * thread-safe.
  *
- * <p><b>Allocation.</b> Zero on the hot dispatch path <i>when audit is disabled</i> (the default
- * {@link AuditLogger.Noop} short-circuits via {@link AuditLogger#isWritable}). With audit enabled
- * the dispatcher allocates a small set of {@link String} slices per audited command: one for {@code
- * reqId} on QuoteRequest (the {@link SessionQuoteIndex#onQuoteRequest} key copy — sessions reqIds
- * need a stable hash key) and up to six in {@link #audit} for
- * symbol/clOrdId/origClOrdId/quoteId/account/traceparent. Sub/jti come from immutable session state
- * — no copy. The audit allocations are the documented price for a regulator-grade audit trail and
- * only fire when the launcher's eventual Log4j2 binding flips {@link AuditLogger#isWritable} to
- * {@code true}.
+ * <p><b>Allocation.</b> Two distinct allocation profiles:
+ *
+ * <ul>
+ *   <li><b>QuoteRequest path</b>: ALWAYS allocates one {@link String} per call (the {@code reqId}
+ *       slice copied for the {@link SessionQuoteIndex#onQuoteRequest} hash key). This is
+ *       unavoidable until the index API accepts {@code (byte[], off, len)} directly; it fires
+ *       regardless of audit-logger state because the index update is functional, not audit-only.
+ *   <li><b>All other dispatch paths</b>: zero allocation when audit is disabled (the default {@link
+ *       AuditLogger.Noop} short-circuits via {@link AuditLogger#isWritable}). With audit enabled
+ *       the dispatcher allocates up to six {@link String} slices per audited command in {@link
+ *       #audit} for symbol/clOrdId/origClOrdId/quoteId/account/traceparent. Sub/jti come from
+ *       immutable session state — no copy. The audit allocations are the documented price for a
+ *       regulator-grade audit trail and only fire when the launcher's eventual Log4j2 binding flips
+ *       {@link AuditLogger#isWritable} to {@code true}.
+ * </ul>
  */
 public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher {
 

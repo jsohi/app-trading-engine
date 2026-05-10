@@ -171,8 +171,9 @@ public final class SessionQuoteIndex {
       }
     }
     // Walk reqIdToOwner and remove every entry whose sessionId matches. Linear in map size; fine
-    // — typical session has tens of in-flight reqIds at most. Iteration uses the map's KeySet
-    // iterator which Agrona implements as an array scan (zero-alloc).
+    // — typical session has tens of in-flight reqIds at most. Iteration via entrySet().iterator()
+    // allocates one EntrySet wrapper + one EntryIterator per call — bounded to this cold per-
+    // session-close path so the alloc is paid once at WS close rather than per inbound frame.
     final var iter = reqIdToOwner.entrySet().iterator();
     while (iter.hasNext()) {
       final var entry = iter.next();
