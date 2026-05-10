@@ -238,15 +238,33 @@ public final class SessionQuoteIndex {
       throw new NullPointerException("sessionId must not be null");
     }
     final var existing = reqIdToOwner.get(reqId);
-    if (existing != null
-        && sessionId.equals(existing.sessionId)
-        && (nowNs - existing.registeredAtNs) < DUPLICATE_REQID_WINDOW_NANOS) {
-      return QuoteRequestRegistration.DUPLICATE_REQID;
+    if (existing != null) {
+      // Cross-session duplicate-reqId window per Gemini high-priority finding on PR #70 R4.
+      // Because the bridge multiplexes multiple browser sessions onto a SINGLE FIX connection
+      // to the exchange, the on-wire QuoteReqID (FIX tag 131 — sourced from this reqId) must be
+      // globally unique to ensure correct response routing. Allowing two sessions to share a
+      // reqId within the dedupe window would create ambiguous routing AND corrupt the index
+      // (closing session A would remove the entry now owned by session B). Strictly stronger
+      // than the prior same-session-only check.
+      if ((nowNs - existing.registeredAtNs) < DUPLICATE_REQID_WINDOW_NANOS) {
+        return QuoteRequestRegistration.DUPLICATE_REQID;
+      }
+      // Old entry outside the dedupe window — overwrite is allowed. Clean up the prior owner's
+      // reverse index entry so a later onSessionClosed for the OLD owner doesn't incorrectly
+      // remove the NEW owner's reqId from the global map.
+      final var oldBucket = sessionToReqIds.get(existing.sessionId);
+      if (oldBucket != null) {
+        oldBucket.remove(reqId);
+        if (oldBucket.isEmpty()) {
+          sessionToReqIds.remove(existing.sessionId);
+        }
+      }
+      // The old quoteId mapping (if Quote was emitted) is keyed on the old quoteId String, not
+      // on reqId — and quoteIds are globally unique per OrchestratorIdGenerator's restart-safe
+      // boot counter, so there's no collision risk and no further cleanup needed here.
     }
-    // Either no prior entry, an entry from a different session (allowed — different RFQ flows),
-    // or a same-session entry outside the dedupe window (allowed — old entry will be TTL-evicted).
     reqIdToOwner.put(reqId, new ReqIdEntry(sessionId, nowNs));
-    // Maintain the reverse index for O(K) session-close eviction (Gemini PR #70 fix).
+    // Maintain the reverse index for O(K) session-close eviction (Gemini PR #70 R1 fix).
     sessionToReqIds.computeIfAbsent(sessionId, k -> new ObjectHashSet<>()).add(reqId);
     return QuoteRequestRegistration.ACCEPTED;
   }
