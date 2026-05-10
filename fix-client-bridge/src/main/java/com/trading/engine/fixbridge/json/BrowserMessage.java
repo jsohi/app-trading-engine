@@ -22,18 +22,30 @@ package com.trading.engine.fixbridge.json;
  * <p><b>Wire protocol.</b>
  *
  * <pre>
- * Auth              : {"type":"Auth","token":"&lt;jwt&gt;"}
- * QuoteRequest      : {"type":"QuoteRequest","reqId":"&lt;id&gt;","symbol":"EURUSD",
- *                      "side":"Buy|Sell","qty":"&lt;decimal&gt;"}
- * AcceptQuote       : {"type":"AcceptQuote","quoteId":"&lt;qid&gt;","clOrdId":"&lt;cid&gt;"}
- * RejectQuote       : {"type":"RejectQuote","quoteId":"&lt;qid&gt;"}
- * NewOrderSingle    : {"type":"NewOrderSingle","clOrdId":"&lt;cid&gt;","symbol":"EURUSD",
- *                      "side":"Buy|Sell","qty":"&lt;dec&gt;","price":"&lt;dec&gt;",
- *                      "ordType":"Limit|Market","timeInForce":"GTC|IOC|FOK|DAY|GTD",
- *                      "account":"&lt;acct&gt;"}
- * CancelOrder       : {"type":"CancelOrder","clOrdId":"&lt;new&gt;","origClOrdId":"&lt;old&gt;",
- *                      "symbol":"EURUSD","side":"Buy|Sell"}
+ * Auth                : {"type":"Auth","token":"&lt;jwt&gt;"}
+ * QuoteRequest        : {"type":"QuoteRequest","reqId":"&lt;id&gt;","symbol":"EURUSD",
+ *                        "side":"Buy|Sell","qty":"&lt;decimal&gt;"}
+ * AcceptQuote         : {"type":"AcceptQuote","quoteId":"&lt;qid&gt;","clOrdId":"&lt;cid&gt;"}
+ * RejectQuote         : {"type":"RejectQuote","quoteId":"&lt;qid&gt;"}
+ * NewOrderSingle      : {"type":"NewOrderSingle","clOrdId":"&lt;cid&gt;","symbol":"EURUSD",
+ *                        "side":"Buy|Sell","qty":"&lt;dec&gt;","price":"&lt;dec&gt;",
+ *                        "ordType":"Limit|Market","timeInForce":"GTC|IOC|FOK|DAY|GTD",
+ *                        "account":"&lt;acct&gt;"}
+ * CancelOrder         : {"type":"CancelOrder","clOrdId":"&lt;new&gt;","origClOrdId":"&lt;old&gt;",
+ *                        "symbol":"EURUSD","side":"Buy|Sell"}
+ * OrderStatusRequest  : {"type":"OrderStatusRequest","clOrdId":"&lt;cid&gt;"}
  * </pre>
+ *
+ * <p>Every message MAY additionally carry an optional {@code "_meta"} envelope (§3.6) for trace
+ * propagation:
+ *
+ * <pre>
+ * "_meta": {"traceparent":"&lt;w3c-traceparent&gt;"}
+ * </pre>
+ *
+ * <p>The parser ignores other {@code _meta} fields via skip-balanced; only {@code traceparent} is
+ * extracted. {@code idempotencyKey} was removed in v4 (§B-r2-16) — {@code clOrdId} is the only
+ * idempotency key for order-issuing commands.
  *
  * <p>Decimal numerics ({@code qty}, {@code price}) are JSON strings — never JSON numbers — to avoid
  * IEEE-754 round-tripping. The parser rejects fractional precision finer than {@code 10^-8} (locked
@@ -50,7 +62,8 @@ public sealed interface BrowserMessage
         BrowserMessage.AcceptQuote,
         BrowserMessage.RejectQuote,
         BrowserMessage.NewOrderSingleCmd,
-        BrowserMessage.CancelOrder {
+        BrowserMessage.CancelOrder,
+        BrowserMessage.OrderStatusRequest {
 
   /**
    * First-frame authentication request. The bridge validates {@code token} via {@code
@@ -129,4 +142,15 @@ public sealed interface BrowserMessage
    */
   record CancelOrder(String clOrdId, String origClOrdId, String symbol, String side)
       implements BrowserMessage {}
+
+  /**
+   * Status query for an order whose UI state is STUCK or STUCK_LONG (§3.15 / §4.5). Recovery path
+   * — excluded from per-type rate limiter. Bridge forwards to the cluster's {@code
+   * OrderQueryByClOrdId} projection; the reply is emitted as {@link
+   * BrowserEvent.OrderStatusReply}. 5s server-side timeout produces a reply with {@code
+   * status="Unknown"}.
+   *
+   * @param clOrdId originating client order id (≤20 bytes, RFC4648 base32 per §4.14)
+   */
+  record OrderStatusRequest(String clOrdId) implements BrowserMessage {}
 }

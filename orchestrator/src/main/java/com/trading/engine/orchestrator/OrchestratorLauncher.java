@@ -130,10 +130,16 @@ public final class OrchestratorLauncher {
       throw e;
     }
 
-    // --- Step 7: Construct OrchestratorIdGenerator ---
-    final var quoteIdGenerator = new OrchestratorIdGenerator("QTE");
+    // --- Step 7: Get clocks (must precede Step 8 — APP-40a §3.2: OrchestratorIdGenerator is now
+    //     clock-injected so its restart-safe seed derives from the orchestrator's
+    //     EpochNanoClock, per CLAUDE.md §Clock Usage rule for out-of-cluster modules).
+    final var epochClock = TradingClocks.epochNanoClock();
+    final var nanoClock = TradingClocks.nanoClock();
 
-    // --- Step 8: Construct RfqStateMachine ---
+    // --- Step 8: Construct OrchestratorIdGenerator (seeded from epochClock — see §3.2) ---
+    final var quoteIdGenerator = new OrchestratorIdGenerator("QTE", epochClock);
+
+    // --- Step 9: Construct RfqStateMachine ---
     final var stateMachine =
         new RfqStateMachine(
             DEFAULT_MAX_ACTIVE_RFQS,
@@ -141,12 +147,8 @@ public final class OrchestratorLauncher {
             DEFAULT_QUOTED_TIMEOUT_NANOS,
             DEFAULT_PENDING_VALIDATION_TIMEOUT_NANOS);
 
-    // --- Step 9: Construct OrchestratorMessageEncoder ---
+    // --- Step 10: Construct OrchestratorMessageEncoder ---
     final var encoder = new OrchestratorMessageEncoder();
-
-    // --- Step 10: Get clocks ---
-    final var epochClock = TradingClocks.epochNanoClock();
-    final var nanoClock = TradingClocks.nanoClock();
 
     // --- Step 11: Construct OrchestratorService ---
     // Bind the publications as Publisher SAMs via method references — captured ONCE at

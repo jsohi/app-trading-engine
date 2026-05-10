@@ -2,6 +2,7 @@ package com.trading.engine.orchestrator;
 
 import java.nio.charset.StandardCharsets;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.EpochNanoClock;
 
 /**
  * Sequential ID generator for the orchestrator module. Produces IDs of the form {@code
@@ -10,9 +11,17 @@ import org.agrona.MutableDirectBuffer;
  *
  * <p>This is a simplified, snapshot-free version of the cluster's {@link
  * com.trading.engine.cluster.IdGenerator}. The orchestrator does not participate in Aeron Cluster
- * log replay, so snapshot save/load is unnecessary. If the orchestrator process restarts, the
- * counter resets to zero. In-flight RFQs expire (per-state timeouts) and clients retry, so
- * duplicate quoteIds across restarts are not a concern — the old IDs will never be matched.
+ * log replay, so snapshot save/load is unnecessary.
+ *
+ * <p><b>Restart safety (APP-40a §3.2 fix).</b> The counter is seeded at construction from {@code
+ * clock.nanoTime() &gt;&gt;&gt; 20} so post-restart sequences are mathematically disjoint from any
+ * pre-restart sequence still cached anywhere in the system (e.g. the bridge's {@code
+ * quoteIdToSessionId} map, which has a 120s TTL but does not cache-bust on orchestrator restart).
+ * The shift retains the high-order ~44 bits of the nanosecond clock — providing a unique seed per
+ * orchestrator boot at &lt;~1ms granularity — while leaving 20 low bits of headroom before the next
+ * boot's {@link #MAX_COUNTER} would collide with the previous boot's counter. {@code
+ * EpochNanoClock} is monotonic across restarts, guaranteeing the seed strictly increases boot to
+ * boot.
  *
  * <p>11 digits gives ~100 billion IDs per generator instance — sufficient headroom for a multi-year
  * orchestrator lifetime even at sustained million-RFQs-per-second peak load.
@@ -63,7 +72,10 @@ public final class OrchestratorIdGenerator {
   private long counter;
 
   /**
-   * Creates a new ID generator with the given prefix.
+   * Creates a deterministic ID generator with counter starting at zero. Test-friendly form — used
+   * exclusively by unit tests that assert specific ID sequences (e.g. {@code "QTE-00000000001"}).
+   * Production code MUST use the {@link #OrchestratorIdGenerator(String, EpochNanoClock)} clock-
+   * injected form so post-restart sequences are disjoint from any pre-restart cached state.
    *
    * @param prefix non-empty ASCII ID prefix, e.g., {@code "QTE"}. Stored verbatim — case is
    *     preserved.
@@ -73,6 +85,39 @@ public final class OrchestratorIdGenerator {
    *     QuoteID field
    */
   public OrchestratorIdGenerator(final String prefix) {
+    this(prefix, 0L);
+  }
+
+  /**
+   * Creates a new ID generator with the given prefix and a clock-derived initial seed.
+   *
+   * <p>Per CLAUDE.md §Clock Usage, out-of-cluster modules (orchestrator included) MUST take their
+   * clock from {@link com.trading.engine.messages.clock.TradingClocks#epochNanoClock()} via
+   * dependency injection rather than calling {@code System.currentTimeMillis()} directly. The
+   * counter is seeded from {@code clock.nanoTime() &gt;&gt;&gt; 20} so successive restarts of the
+   * orchestrator generate disjoint sequences (see class-level Javadoc for the restart-safety
+   * argument). The seed is clamped to {@code [0, MAX_COUNTER)} so {@link #renderNextId()}'s
+   * exhaustion check still applies even on a clock that returns a near-{@code Long.MAX_VALUE}
+   * value.
+   *
+   * @param prefix non-empty ASCII ID prefix, e.g., {@code "QTE"}
+   * @param clock injected epoch-nanosecond clock; used once at construction to seed the counter
+   * @throws NullPointerException if {@code prefix} or {@code clock} is null
+   * @throws IllegalArgumentException if prefix is invalid (see {@link #OrchestratorIdGenerator(String)})
+   */
+  public OrchestratorIdGenerator(final String prefix, final EpochNanoClock clock) {
+    this(prefix, computeRestartSafeSeed(clock));
+  }
+
+  /**
+   * Internal canonical constructor — both public ctors funnel through here.
+   *
+   * @param prefix non-empty ASCII ID prefix
+   * @param initialCounter starting counter value; rendered ID is for {@code initialCounter + 1}
+   * @throws NullPointerException if {@code prefix} is null
+   * @throws IllegalArgumentException if prefix is invalid or {@code initialCounter} negative
+   */
+  private OrchestratorIdGenerator(final String prefix, final long initialCounter) {
     if (prefix == null) {
       throw new NullPointerException("prefix must not be null");
     }
@@ -97,6 +142,9 @@ public final class OrchestratorIdGenerator {
                 + i);
       }
     }
+    if (initialCounter < 0L) {
+      throw new IllegalArgumentException("initialCounter must be >= 0, was " + initialCounter);
+    }
     final int totalLength = prefix.length() + 1 + DIGITS;
     if (totalLength > QUOTE_ID_SBE_LENGTH) {
       throw new IllegalArgumentException(
@@ -117,7 +165,27 @@ public final class OrchestratorIdGenerator {
     }
     this.bytes[prefix.length()] = (byte) '-';
     this.digitsStart = prefix.length() + 1;
-    this.counter = 0L;
+    this.counter = initialCounter;
+  }
+
+  /**
+   * Compute the restart-safe initial-counter seed from the supplied clock.
+   *
+   * <p>{@code clock.nanoTime() >>> 20} retains the high-order ~44 bits — providing a unique seed
+   * per orchestrator boot at &lt;~1ms granularity — and the result is clamped to {@code [0,
+   * MAX_COUNTER)} via {@link Math#floorMod} so the {@link #renderNextId()} exhaustion check still
+   * applies.
+   *
+   * @param clock injected epoch-nanosecond clock
+   * @return a counter seed in {@code [0, MAX_COUNTER)}
+   * @throws NullPointerException if {@code clock} is null
+   */
+  private static long computeRestartSafeSeed(final EpochNanoClock clock) {
+    if (clock == null) {
+      throw new NullPointerException("clock must not be null");
+    }
+    final long rawSeed = clock.nanoTime() >>> 20;
+    return Math.floorMod(rawSeed, MAX_COUNTER);
   }
 
   /**
