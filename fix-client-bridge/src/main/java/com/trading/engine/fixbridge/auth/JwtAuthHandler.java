@@ -20,7 +20,6 @@ import com.trading.engine.fixbridge.transport.OutboundQueue;
 import com.trading.engine.fixbridge.transport.WsListener;
 import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.JwtValidator;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
@@ -29,6 +28,7 @@ import io.netty.util.ReferenceCountUtil;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -80,6 +80,14 @@ import org.apache.logging.log4j.Logger;
  * <p><b>Allocation.</b> The flyweight {@link MutableParsedMessage} is per-instance and reused once.
  * UUID minting allocates one {@link SessionId} on success — cold path. Token byte→String decode
  * allocates one {@link String} per auth attempt; this is unavoidable with Nimbus.
+ *
+ * <p><b>JWT credential lifetime in heap.</b> The decoded JWT {@link String} resides on the heap
+ * until garbage collection — the standard JWT-validator pattern. Implementations that demand
+ * scrubbed credentials would need a {@code char[]} carrier and explicit zeroing after {@link
+ * JwtValidator#validate} returns; Nimbus's API does not expose that path, so the bridge accepts the
+ * residual-heap window as a known limitation. Audit and log paths NEVER print the token string (see
+ * {@link #channelRead0} — only its length and the validation failure reason are logged), so the
+ * heap residue is the only exposure.
  *
  * @see JwtValidator
  * @see JtiRevocationCache
@@ -189,7 +197,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
                     LOG.warn("Auth timeout ({}s) for {}", timeoutSeconds, remoteIp(ctx));
                     if (auditLogger.isWritable()) {
                       auditLogger.record(
-                          nanoClock.nanoTime(),
+                          epochNanoClock.nanoTime(),
                           null,
                           null,
                           remoteIp(ctx),
@@ -298,6 +306,16 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       final String remoteIp,
       final JwtValidator.ValidatedClaims claims) {
 
+    // 4b. Race-guard against channelInactive firing while the async JWT validation was in flight.
+    // The whenCompleteAsync callback at the call site already checks `authResolved` before entering
+    // here, but channelInactive could fire BETWEEN that check and this method's pipeline mutation,
+    // leaving ctx.name() unwired and causing pipeline.addAfter(ctx.name(), ...) to throw
+    // NoSuchElementException. Re-check both flags inside the event loop and bail silently if the
+    // channel has already gone inactive.
+    if (authResolved || !ctx.channel().isActive()) {
+      return;
+    }
+
     // 5. JTI revocation check.
     final long nowEpochNs = epochNanoClock.nanoTime();
     if (jtiCache.isRevoked(claims.jti(), nowEpochNs)) {
@@ -341,12 +359,25 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     //     callback so install order between gate & listener is moot for inbound traffic).
     //   - addAfter listener (after the gate; listener dispatches & invokes gate.onAfterDispatch)
     //   - remove self
+    // Wrap the pipeline mutation in a try/catch so a channelInactive that races with the success
+    // path (closing the channel between the isActive check at the top and the addAfter call here)
+    // doesn't surface a NoSuchElementException through exceptionCaught and into a recursive
+    // sendErrorAndClose on a dead channel. This is the residual-window guard for race M5.
     final var readGate = new InboundReadGate(outboundQueue);
-    final var listener = new WsListener(dispatcher, readGate, nanoClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, epochNanoClock, nanoClock, auditLogger);
     final var pipeline = ctx.pipeline();
-    pipeline.addAfter(ctx.name(), "ws-read-gate", readGate);
-    pipeline.addAfter("ws-read-gate", "ws-listener", listener);
-    pipeline.remove(this);
+    try {
+      pipeline.addAfter(ctx.name(), "ws-read-gate", readGate);
+      pipeline.addAfter("ws-read-gate", "ws-listener", listener);
+      pipeline.remove(this);
+    } catch (final NoSuchElementException ex) {
+      // Pipeline was torn down between the isActive check and here — the channel is gone.
+      // Mark resolved and exit; channelInactive's bookkeeping covers the rest.
+      LOG.debug("Pipeline torn down during auth completion (channel closed mid-handshake)");
+      authResolved = true;
+      return;
+    }
 
     // Per-channel outbound drainer (§3.1). Schedules a 1ms drain task on the channel event loop
     // that ships queued events through eventWriter → TextWebSocketFrame → channel.write, then
@@ -362,7 +393,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     authResolved = true;
     if (auditLogger.isWritable()) {
       auditLogger.record(
-          nanoClock.nanoTime(),
+          epochNanoClock.nanoTime(),
           claims.sub(),
           claims.jti(),
           remoteIp,
@@ -429,7 +460,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     // Cold path — Day 5 swapped the hand-rolled JSON for the real BrowserEventWriter so the
     // Error event uses the same writer-validated escaping rules as every other outbound frame.
     final var error = new BrowserEvent.Error(reason);
-    final ByteBuf buf = ctx.alloc().buffer();
+    final var buf = ctx.alloc().buffer();
     final TextWebSocketFrame text;
     try {
       eventWriter.writeError(error, buf);
@@ -467,7 +498,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       return;
     }
     auditLogger.record(
-        nanoClock.nanoTime(),
+        epochNanoClock.nanoTime(),
         null,
         null,
         remoteIp,

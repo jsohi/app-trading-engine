@@ -32,6 +32,12 @@ import java.util.Objects;
  * channel's event loop.
  *
  * <p><b>Allocation.</b> Zero post-construction.
+ *
+ * <p><b>Invariant.</b> No other handler in the channel pipeline may mutate {@code
+ * ctx.channel().config().setAutoRead(...)} on this channel. The gate caches its last-applied state
+ * in {@link #autoReadEnabled} for an idempotent flip; an external mutation would silently de-sync
+ * the cache from Netty's actual state and the gate would not re-pause until the queue depth crossed
+ * the pause threshold again. The bridge's pipeline owns autoRead exclusively.
  */
 public final class InboundReadGate extends ChannelInboundHandlerAdapter {
 

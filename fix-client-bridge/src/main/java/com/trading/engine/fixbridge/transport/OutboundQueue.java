@@ -126,7 +126,7 @@ public final class OutboundQueue {
     if (size == 0) {
       return null;
     }
-    final BrowserEvent e = ring[head];
+    final var e = ring[head];
     ring[head] = null;
     head = (head + 1) % capacity;
     size--;

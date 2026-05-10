@@ -15,9 +15,9 @@ import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.NanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -58,6 +58,7 @@ public final class WsListener extends SimpleChannelInboundHandler<WebSocketFrame
 
   private final BridgeFrameDispatcher dispatcher;
   private final InboundReadGate readGate;
+  private final EpochNanoClock epochNanoClock;
   private final NanoClock nanoClock;
   private final AuditLogger auditLogger;
 
@@ -73,18 +74,23 @@ public final class WsListener extends SimpleChannelInboundHandler<WebSocketFrame
    * @param dispatcher SAM hook invoked after parse + rate-limit admit (use {@link
    *     BridgeFrameDispatcher#NOOP} until the real dispatch path lands)
    * @param readGate the per-channel inbound read gate (post-dispatch backpressure check)
-   * @param nanoClock monotonic clock used both as the rate-limiter timestamp and as the audit event
-   *     timestamp (the listener never reads wall-clock time)
+   * @param epochNanoClock wall-clock used as the {@code tsNs} for {@link AuditLogger#record} —
+   *     {@link AuditLogger}'s contract is epoch nanoseconds (NOT monotonic), so audit entries are
+   *     correlatable with wall-clock incident timelines
+   * @param nanoClock monotonic clock used as the rate-limiter timestamp (separate from the audit
+   *     clock so monotonic rate semantics aren't broken by wall-clock NTP adjustments)
    * @param auditLogger audit sink — receives {@link AuditAction#RATE_LIMIT_HIT} entries when the
    *     per-type limiter rejects an inbound command
    */
   public WsListener(
       final BridgeFrameDispatcher dispatcher,
       final InboundReadGate readGate,
+      final EpochNanoClock epochNanoClock,
       final NanoClock nanoClock,
       final AuditLogger auditLogger) {
     this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
     this.readGate = Objects.requireNonNull(readGate, "readGate");
+    this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
   }
@@ -150,10 +156,13 @@ public final class WsListener extends SimpleChannelInboundHandler<WebSocketFrame
             outcome == PerTypeRateLimiter.Outcome.REJECTED_INITIAL_WINDOW
                 ? OrderRejectReason.RATE_LIMIT_INITIAL_WINDOW
                 : OrderRejectReason.RATE_LIMIT_EXCEEDED;
-        // Best-effort audit trail — auditLogger.Noop is the default until APP-40b binds Log4j2.
+        // Best-effort audit trail — auditLogger.Noop is the default until the launcher (tracked
+        // separately) binds Log4j2. Audit tsNs uses the EpochNanoClock (wall-clock nanoseconds)
+        // not the rate-limiter's monotonic nowNs — AuditLogger.record's contract is epoch-ns so
+        // entries correlate with wall-clock incident timelines.
         if (auditLogger.isWritable()) {
           auditLogger.record(
-              nowNs,
+              epochNanoClock.nanoTime(),
               session.claims().sub(),
               session.claims().jti(),
               remoteIp(ctx),
@@ -208,7 +217,7 @@ public final class WsListener extends SimpleChannelInboundHandler<WebSocketFrame
       // where remote addresses are always InetSocketAddress.
       return true;
     }
-    final InetAddress current = inet.getAddress();
+    final var current = inet.getAddress();
     if (!session.pinnedRemoteAddress().equals(current)) {
       LOG.warn(
           "IP-pin violation for sub={} session={}: pinned={} observed={}",

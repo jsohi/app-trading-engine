@@ -12,6 +12,7 @@ import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -52,8 +53,10 @@ final class RoutingBridgeFrameDispatcherAllocTest {
   void dispatch_allSixMessageTypes_roundRobin_zeroAlloc() {
     final var sink = FixCommandSink.NOOP;
     final var quoteIndex = new SessionQuoteIndex();
+    final EpochNanoClock fixedEpochClock = () -> 1_700_000_000_000_000_000L;
     final var dispatcher =
-        new RoutingBridgeFrameDispatcher(sink, quoteIndex, AuditLogger.Noop.INSTANCE, "127.0.0.1");
+        new RoutingBridgeFrameDispatcher(
+            sink, quoteIndex, AuditLogger.Noop.INSTANCE, fixedEpochClock, "127.0.0.1");
 
     final var claims =
         new ValidatedClaims("user-001", "jti-001", List.of(), Long.MAX_VALUE, true, List.of());

@@ -15,6 +15,7 @@ import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -132,6 +133,8 @@ final class RoutingBridgeFrameDispatcherTest {
   // Shared setup.
   // ---------------------------------------------------------------------------
 
+  private static final EpochNanoClock FIXED_EPOCH_CLOCK = () -> 1_700_000_000_000_000_000L;
+
   private RecordingFixCommandSink sink;
   private RecordingAuditLogger auditLogger;
   private SessionQuoteIndex quoteIndex;
@@ -144,7 +147,9 @@ final class RoutingBridgeFrameDispatcherTest {
     sink = new RecordingFixCommandSink();
     auditLogger = new RecordingAuditLogger();
     quoteIndex = new SessionQuoteIndex();
-    dispatcher = new RoutingBridgeFrameDispatcher(sink, quoteIndex, auditLogger, "192.168.1.1");
+    dispatcher =
+        new RoutingBridgeFrameDispatcher(
+            sink, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, "192.168.1.1");
 
     // Minimal BridgeSession.
     final var claims =
@@ -368,14 +373,14 @@ final class RoutingBridgeFrameDispatcherTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void dispatch_newOrderSingle_auditTimestampMatchesNowNs() {
+  void dispatch_newOrderSingle_auditTimestampMatchesEpochClock() {
     final long nowNs = 999_123_456_789L;
 
     dispatcher.dispatch(session, parsed, MutableParsedMessage.TYPE_NEW_ORDER_SINGLE, nowNs);
 
-    // The AuditLogger receives nowNs as its tsNs argument.
+    // AuditLogger.record tsNs comes from the EpochNanoClock, not from nowNs.
     assertEquals(1, auditLogger.timestamps.size());
-    assertEquals(nowNs, auditLogger.timestamps.get(0));
+    assertEquals(FIXED_EPOCH_CLOCK.nanoTime(), auditLogger.timestamps.get(0));
   }
 
   // ---------------------------------------------------------------------------
@@ -385,7 +390,8 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullSink_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(null, quoteIndex, auditLogger, "127.0.0.1");
+      new RoutingBridgeFrameDispatcher(
+          null, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null sink");
     } catch (final NullPointerException e) {
       // expected
@@ -395,7 +401,7 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullQuoteIndex_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(sink, null, auditLogger, "127.0.0.1");
+      new RoutingBridgeFrameDispatcher(sink, null, auditLogger, FIXED_EPOCH_CLOCK, "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null quoteIndex");
     } catch (final NullPointerException e) {
       // expected
@@ -405,7 +411,7 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullAuditLogger_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(sink, quoteIndex, null, "127.0.0.1");
+      new RoutingBridgeFrameDispatcher(sink, quoteIndex, null, FIXED_EPOCH_CLOCK, "127.0.0.1");
       throw new AssertionError("Expected NullPointerException for null auditLogger");
     } catch (final NullPointerException e) {
       // expected
@@ -415,7 +421,7 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void constructor_nullRemoteIp_throwsNullPointerException() {
     try {
-      new RoutingBridgeFrameDispatcher(sink, quoteIndex, auditLogger, null);
+      new RoutingBridgeFrameDispatcher(sink, quoteIndex, auditLogger, FIXED_EPOCH_CLOCK, null);
       throw new AssertionError("Expected NullPointerException for null remoteIp");
     } catch (final NullPointerException e) {
       // expected

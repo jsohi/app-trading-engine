@@ -23,6 +23,7 @@ import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.IdleStateHandler;
+import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.HashSet;
 import java.util.Objects;
@@ -55,8 +56,12 @@ import org.apache.logging.log4j.Logger;
  *
  * <p><b>TLS.</b> WSS-only per plan §3.1: any {@code ws://} URL is a misconfiguration and is caught
  * by the OS-level absence of any plaintext bind path here (the bootstrap unconditionally installs
- * {@link SslContext}). Production deployments supply a real cert/key via a future extension of
- * {@link FixClientBridgeConfig}; dev defaults to a {@link SelfSignedCertificate}.
+ * {@link SslContext}). Production deployments supply real cert/key paths via {@link
+ * FixClientBridgeConfig#tlsCertPath()} and {@link FixClientBridgeConfig#tlsKeyPath()}; dev runs
+ * default to a runtime-generated {@link SelfSignedCertificate} only when the operator opts in via
+ * {@link FixClientBridgeConfig#allowSelfSignedCert()}. Misconfiguration (no cert AND no self-signed
+ * flag) fails fast at {@link FixClientBridgeConfig}'s compact ctor — the bootstrap never reaches a
+ * fail-OPEN state.
  *
  * <p><b>Threading.</b> NOT thread-safe. {@link #start()} and {@link #close()} must be called from
  * the launcher thread only. Channel handlers are created per channel by the {@link
@@ -156,7 +161,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
    */
   public void start() throws Exception {
     transport = TransportDetector.detect();
-    final var sslCtx = buildSslContext();
+    final var sslCtx = buildSslContext(config);
     final var allowed = new HashSet<>(config.allowedOrigins());
     final var handshaker = new WebSocketHandshaker(allowed);
 
@@ -278,14 +283,41 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
   }
 
   /**
-   * Build the TLS context. Production wiring (real cert/key paths) lands when {@link
-   * FixClientBridgeConfig} grows the corresponding fields in APP-40b. Until then dev runs use a
-   * {@link SelfSignedCertificate} so end-to-end smoke tests work locally without the operator
-   * having to provision a cert.
+   * Build the TLS context. Three modes (compact-ctor validation rejects all other shapes):
+   *
+   * <ol>
+   *   <li>Real cert mode — {@code config.tlsCertPath()} and {@code config.tlsKeyPath()} both set.
+   *       Loads the PEM files via {@link SslContextBuilder#forServer(File, File)}. This is the only
+   *       acceptable production path.
+   *   <li>Self-signed dev mode — both cert/key paths null AND {@code allowSelfSignedCert=true}.
+   *       Generates a runtime {@link SelfSignedCertificate}. Permitted only when the operator has
+   *       explicitly opted in via the config flag; dev/test runs default here so contributors don't
+   *       need to provision a cert.
+   *   <li>Misconfiguration — both cert/key null AND {@code allowSelfSignedCert=false}. The compact
+   *       constructor of {@link FixClientBridgeConfig} rejects this with a fail-fast {@link
+   *       IllegalArgumentException}, so this method never sees that case.
+   * </ol>
+   *
+   * @param config the validated bridge configuration
+   * @return an SslContext ready for the Netty pipeline
+   * @throws Exception if the SelfSignedCertificate generator or the SslContext builder fails
    */
-  private static SslContext buildSslContext() throws Exception {
+  private static SslContext buildSslContext(final FixClientBridgeConfig config) throws Exception {
+    final var certPath = config.tlsCertPath();
+    final var keyPath = config.tlsKeyPath();
+    if (certPath != null && !certPath.isEmpty() && keyPath != null && !keyPath.isEmpty()) {
+      LOG.info("FIX client bridge TLS: real cert mode (cert={} key={})", certPath, keyPath);
+      return SslContextBuilder.forServer(new File(certPath), new File(keyPath))
+          .sslProvider(SslProvider.OPENSSL)
+          .protocols("TLSv1.3")
+          .build();
+    }
+    // Self-signed dev mode — compact ctor guarantees allowSelfSignedCert=true here, otherwise it
+    // would have thrown before we got this far.
     final var ssc = new SelfSignedCertificate();
-    LOG.warn("FIX client bridge using self-signed TLS cert — DEV ONLY (APP-40b adds real cert)");
+    LOG.warn(
+        "FIX client bridge TLS: self-signed dev cert (allowSelfSignedCert=true). "
+            + "Production deploys MUST set tlsCertPath/tlsKeyPath and allowSelfSignedCert=false.");
     return SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
         .sslProvider(SslProvider.OPENSSL)
         .protocols("TLSv1.3")

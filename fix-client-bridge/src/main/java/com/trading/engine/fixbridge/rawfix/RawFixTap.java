@@ -5,6 +5,7 @@ import com.trading.engine.fixbridge.audit.AuditLogger;
 import com.trading.engine.fixbridge.json.BrowserEvent;
 import com.trading.engine.fixbridge.transport.BridgeSession;
 import com.trading.engine.fixbridge.transport.OutboundQueue;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -230,8 +231,7 @@ public final class RawFixTap {
     // The String allocation here is per-emitted-frame and unavoidable until the writer learns to
     // accept (byte[], off, len) directly. APP-40a Day 5 swaps the BrowserEvent.RawFix carrier
     // for a flyweight slice once the writer overload exists.
-    final var fixString =
-        new String(maskScratch, 0, maskedLen, java.nio.charset.StandardCharsets.US_ASCII);
+    final var fixString = new String(maskScratch, 0, maskedLen, StandardCharsets.US_ASCII);
     final var event = new BrowserEvent.RawFix(direction == DIRECTION_IN ? "in" : "out", fixString);
 
     final var result = session.outboundQueue().offer(event);

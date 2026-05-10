@@ -126,11 +126,11 @@ public final class OutboundDrainer {
 
     int drained = 0;
     while (drained < DRAIN_BATCH_LIMIT && ch.isWritable()) {
-      final BrowserEvent event = queue.poll();
+      final var event = queue.poll();
       if (event == null) {
         break;
       }
-      final ByteBuf buf = ctx.alloc().buffer();
+      final var buf = ctx.alloc().buffer();
       try {
         writer.writeAny(event, buf);
         ctx.writeAndFlush(new TextWebSocketFrame(buf));
@@ -145,9 +145,16 @@ public final class OutboundDrainer {
             ex);
       }
       drained++;
+      // Re-check writability after each writeAndFlush — Netty flips writability synchronously
+      // when the outbound buffer crosses the high-water mark, and the drain loop must surface
+      // that backpressure mid-batch instead of optimistically pushing another DRAIN_BATCH_LIMIT
+      // events into the kernel send queue.
+      if (!ch.isWritable()) {
+        break;
+      }
     }
 
-    updateStallState(queue.size(), drained);
+    updateStallState(queue.size());
     readGate.onAfterDrain(ctx);
   }
 
@@ -161,10 +168,8 @@ public final class OutboundDrainer {
    * </ul>
    *
    * @param queueSize current outbound-queue depth (after the drain pass)
-   * @param drainedThisPass count drained on this pass — informational only, kept for future metrics
-   *     emission (APP-40b)
    */
-  private void updateStallState(final int queueSize, final int drainedThisPass) {
+  private void updateStallState(final int queueSize) {
     final long nowNs = nanoClock.nanoTime();
     if (queueSize < stallAtSize) {
       stallSinceNs = Long.MIN_VALUE;
@@ -195,7 +200,7 @@ public final class OutboundDrainer {
         stallAtSize);
     final var fatal =
         new BrowserEvent.BridgeStatus(true, true, "outbound-stall", false, false, 1, 0L);
-    final ByteBuf buf = ctx.alloc().buffer();
+    final var buf = ctx.alloc().buffer();
     try {
       writer.writeBridgeStatus(fatal, buf);
       ctx.writeAndFlush(new TextWebSocketFrame(buf))

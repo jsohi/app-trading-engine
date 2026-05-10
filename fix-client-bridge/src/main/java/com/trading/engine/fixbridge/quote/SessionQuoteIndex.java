@@ -1,7 +1,8 @@
 package com.trading.engine.fixbridge.quote;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
 import org.agrona.collections.Object2ObjectHashMap;
-import org.agrona.collections.ObjectHashSet;
 
 /**
  * Per-session quote correlation indexes for the bridge dispatcher.
@@ -37,8 +38,13 @@ import org.agrona.collections.ObjectHashSet;
  *
  * <p><b>Allocation.</b> Map insertion allocates the entry node (Agrona's {@link
  * Object2ObjectHashMap} uses open-addressing so no per-entry node allocation), plus a {@link
- * ReqIdEntry} per QuoteRequest and an {@link ObjectHashSet} per first-session-for-a-sub. Removal is
- * zero-alloc. Lookups are zero-alloc.
+ * ReqIdEntry} per QuoteRequest and a {@link LinkedHashSet} per first-session-for-a-sub. The inner
+ * {@code LinkedHashSet} is chosen over Agrona's {@code ObjectHashSet} because §3.2 orphan-routing
+ * relies on insertion-order iteration ("oldest-connected surviving session"), and Agrona's
+ * open-addressing hash set iterates in slot-probe order — which would break the routing contract.
+ * Session authentication is a cold path (once per WebSocket handshake), so the JDK collection
+ * allocation is acceptable. Removal is zero-alloc. Lookups are zero-alloc (the inner set is
+ * returned by reference, not copied).
  *
  * <p><b>Lifecycle.</b> One instance per bridge process (singleton owned by the dispatcher). Live
  * for the bridge JVM's lifetime.
@@ -82,9 +88,11 @@ public final class SessionQuoteIndex {
 
   /**
    * {@code sub -> ordered-set-of-sessionId}. Insertion order preserved for "oldest-connected
-   * surviving session" fan-out. Mutated on session authentication and on session close.
+   * surviving session" fan-out. Mutated on session authentication and on session close. The inner
+   * value is a JDK {@link LinkedHashSet} (NOT Agrona's {@code ObjectHashSet} — that one iterates in
+   * hash-probe order and would silently break the §3.2 routing contract).
    */
-  private final Object2ObjectHashMap<String, ObjectHashSet<SessionId>> subToSessions =
+  private final Object2ObjectHashMap<String, LinkedHashSet<SessionId>> subToSessions =
       new Object2ObjectHashMap<>();
 
   /**
@@ -127,7 +135,9 @@ public final class SessionQuoteIndex {
     var bucket = subToSessions.get(sub);
     if (bucket == null) {
       // A small initial capacity keeps the typical-case (1-2 sessions per user) tight.
-      bucket = new ObjectHashSet<>(4);
+      // LinkedHashSet preserves insertion order — required by §3.2 orphan-routing per the field
+      // declaration above.
+      bucket = new LinkedHashSet<>(4);
       subToSessions.put(sub, bucket);
     }
     bucket.add(sessionId);
@@ -168,7 +178,7 @@ public final class SessionQuoteIndex {
       final var entry = iter.next();
       if (sessionId.equals(entry.getValue().sessionId)) {
         // Also remove the corresponding quoteId mapping if Quote was emitted.
-        final String quoteId = entry.getValue().quoteId;
+        final var quoteId = entry.getValue().quoteId;
         if (quoteId != null) {
           quoteIdToSessionId.remove(quoteId);
         }
@@ -283,15 +293,18 @@ public final class SessionQuoteIndex {
    * stranded Quote to the oldest-connected surviving session of the same user) and by the {@code
    * SessionTerminated} fan-out path (close every other session of the user when one signs out).
    *
-   * <p>Iteration order is insertion order (the underlying {@link ObjectHashSet} preserves the
-   * iteration order corresponding to insertion sequence), so the caller iterates from oldest-to-
-   * newest.
+   * <p>Iteration order is insertion order — guaranteed by the inner {@link LinkedHashSet}. The
+   * caller iterates from oldest-to-newest. (The previous implementation backed this with Agrona's
+   * {@code ObjectHashSet}, which iterates in slot-probe order — silently violating the §3.2
+   * orphan-routing contract. Fixed in iteration 1 of /orchestrate.)
    *
    * @param sub JWT {@code sub} claim
    * @return the live session set for this sub, or {@code null} if the sub has no live sessions.
-   *     Caller MUST NOT mutate the returned set; this is a live view.
+   *     Caller MUST NOT mutate the returned set; this is a live view. Declared {@link
+   *     LinkedHashSet} (not {@link Set}) so the insertion-order contract is visible at the API
+   *     boundary.
    */
-  public ObjectHashSet<SessionId> sessionsForSub(final String sub) {
+  public LinkedHashSet<SessionId> sessionsForSub(final String sub) {
     if (sub == null) {
       return null;
     }
@@ -330,7 +343,7 @@ public final class SessionQuoteIndex {
     while (iter.hasNext()) {
       final var entry = iter.next();
       if (isExpired(entry.getValue(), nowNs)) {
-        final String quoteId = entry.getValue().quoteId;
+        final var quoteId = entry.getValue().quoteId;
         if (quoteId != null) {
           quoteIdToSessionId.remove(quoteId);
         }
