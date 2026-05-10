@@ -25,6 +25,7 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.NanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -111,11 +112,13 @@ final class WsListenerTest {
   // ─── Shared helpers ───────────────────────────────────────────────────────
 
   private RecordingAuditLogger auditLogger;
+  private EpochNanoClock fixedEpochClock;
   private NanoClock fixedClock;
 
   @BeforeEach
   void setUp() {
     auditLogger = new RecordingAuditLogger();
+    fixedEpochClock = () -> FIXED_NOW_NS;
     fixedClock = () -> FIXED_NOW_NS;
   }
 
@@ -151,7 +154,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -190,7 +194,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -231,7 +236,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -251,7 +257,11 @@ final class WsListenerTest {
   // ─── IP-pin violation → channel closed with 4008 ─────────────────────────
 
   @Test
-  void channelRead0_ipPinViolation_channelClosedWith4008() throws Exception {
+  void channelRead0_ipPinTrue_loopbackMatch_noClose() throws Exception {
+    // TODO(APP-40d): add a real-socket integration test for the actual ip-pin violation path
+    // (where the remote InetSocketAddress does NOT match the pinned IP). EmbeddedChannel uses
+    // LocalAddress so WsListener's checkIpPin short-circuits to fail-open; a violation cannot
+    // be triggered here without a real TCP socket.
     // Pin the session to 192.168.1.100; EmbeddedChannel's remote is loopback.
     final var queue = new OutboundQueue(64);
     final var limiter = new PerTypeRateLimiter(FIXED_NOW_NS);
@@ -260,7 +270,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     // Override remote address so it differs from the pinned IP.
@@ -283,7 +294,8 @@ final class WsListenerTest {
     final var limiter2 = new PerTypeRateLimiter(FIXED_NOW_NS);
     final var sessionMatch = buildSession(LOOPBACK, true, List.of(), queue2, limiter2);
     final var listener2 =
-        new WsListener(dispatcher, new InboundReadGate(queue2), fixedClock, auditLogger);
+        new WsListener(
+            dispatcher, new InboundReadGate(queue2), fixedEpochClock, fixedClock, auditLogger);
     final var channel2 = new EmbeddedChannel(listener2);
     channel2.attr(BridgeSession.ATTRIBUTE_KEY).set(sessionMatch);
 
@@ -307,7 +319,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -332,7 +345,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -361,7 +375,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -387,7 +402,8 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var readGate = new InboundReadGate(queue);
-    final var listener = new WsListener(dispatcher, readGate, fixedClock, auditLogger);
+    final var listener =
+        new WsListener(dispatcher, readGate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);
@@ -421,7 +437,7 @@ final class WsListenerTest {
 
     final var dispatcher = new RecordingDispatcher();
     final var gate = new InboundReadGate(queue, 80, 50);
-    final var listener = new WsListener(dispatcher, gate, fixedClock, auditLogger);
+    final var listener = new WsListener(dispatcher, gate, fixedEpochClock, fixedClock, auditLogger);
 
     final var channel = new EmbeddedChannel(listener);
     channel.attr(BridgeSession.ATTRIBUTE_KEY).set(session);

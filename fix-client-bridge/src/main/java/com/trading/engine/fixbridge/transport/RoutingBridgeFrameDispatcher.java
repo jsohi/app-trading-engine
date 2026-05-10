@@ -5,6 +5,7 @@ import com.trading.engine.fixbridge.audit.AuditLogger;
 import com.trading.engine.fixbridge.json.MutableParsedMessage;
 import com.trading.engine.fixbridge.quote.SessionQuoteIndex;
 import java.util.Objects;
+import org.agrona.concurrent.EpochNanoClock;
 
 /**
  * Per-session real implementation of {@link BridgeFrameDispatcher} (§3.13 / §3.15).
@@ -30,16 +31,22 @@ import java.util.Objects;
  * <p><b>Threading.</b> Per-session instance, owned by the channel's Netty event loop. Not
  * thread-safe.
  *
- * <p><b>Allocation.</b> Zero on the hot dispatch path. Audit field strings (sub, jti, sourceIp) are
- * sourced from immutable session state; the audit logger is the only place that may allocate (and
- * {@link AuditLogger.Noop} is zero-alloc). Per-session reqId/quoteId/clOrdId slices stay as scratch
- * slices on {@link MutableParsedMessage} — the dispatcher never copies them into a {@link String}.
+ * <p><b>Allocation.</b> Zero on the hot dispatch path <i>when audit is disabled</i> (the default
+ * {@link AuditLogger.Noop} short-circuits via {@link AuditLogger#isWritable}). With audit enabled
+ * the dispatcher allocates a small set of {@link String} slices per audited command: one for {@code
+ * reqId} on QuoteRequest (the {@link SessionQuoteIndex#onQuoteRequest} key copy — sessions reqIds
+ * need a stable hash key) and up to six in {@link #audit} for
+ * symbol/clOrdId/origClOrdId/quoteId/account/traceparent. Sub/jti come from immutable session state
+ * — no copy. The audit allocations are the documented price for a regulator-grade audit trail and
+ * only fire when the launcher's eventual Log4j2 binding flips {@link AuditLogger#isWritable} to
+ * {@code true}.
  */
 public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher {
 
   private final FixCommandSink sink;
   private final SessionQuoteIndex quoteIndex;
   private final AuditLogger auditLogger;
+  private final EpochNanoClock epochNanoClock;
   private final String remoteIp;
 
   /**
@@ -49,6 +56,9 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
    * @param quoteIndex the per-process session-quote correlation index (§3.2)
    * @param auditLogger audit sink — the dispatcher records action-level entries on every routed
    *     command
+   * @param epochNanoClock wall-clock used as the {@code tsNs} for {@link AuditLogger#record} — the
+   *     audit-logger contract is epoch nanoseconds (not monotonic), so audit records correlate with
+   *     wall-clock incident timelines
    * @param remoteIp the remote IP captured at handshake (used as the {@code sourceIp} field on
    *     every audit entry)
    */
@@ -56,10 +66,12 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
       final FixCommandSink sink,
       final SessionQuoteIndex quoteIndex,
       final AuditLogger auditLogger,
+      final EpochNanoClock epochNanoClock,
       final String remoteIp) {
     this.sink = Objects.requireNonNull(sink, "sink");
     this.quoteIndex = Objects.requireNonNull(quoteIndex, "quoteIndex");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
+    this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
     this.remoteIp = Objects.requireNonNull(remoteIp, "remoteIp");
   }
 
@@ -152,8 +164,11 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
     final var account = sliceOrNull(parsed.scratch, parsed.accountOff, parsed.accountLen);
     final var traceparent =
         sliceOrNull(parsed.scratch, parsed.traceparentOff, parsed.traceparentLen);
+    // tsNs uses the EpochNanoClock (wall-clock nanoseconds) — AuditLogger.record's contract is
+    // epoch-ns so audit entries correlate with wall-clock incident timelines. The nowNs param
+    // remains a monotonic dispatch timestamp from the listener and is unused here.
     auditLogger.record(
-        nowNs,
+        epochNanoClock.nanoTime(),
         session.claims().sub(),
         session.claims().jti(),
         remoteIp,

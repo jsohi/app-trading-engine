@@ -63,6 +63,19 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
  *     emits FIX-tap mirrors via {@code RawFixTap} (default {@code "audit_view"})
  * @param authFailureLockoutThreshold per-IP auth failures before lockout (default 5)
  * @param authFailureLockoutSeconds per-IP lockout duration in seconds (default 60)
+ * @param tlsCertPath filesystem path to the TLS certificate (PEM); {@code null} or empty means "no
+ *     real cert provided" — combined with {@code allowSelfSignedCert=true} this drops the bootstrap
+ *     into self-signed dev mode. Production deploys MUST set this together with {@code tlsKeyPath}.
+ * @param tlsKeyPath filesystem path to the TLS private key (PEM); paired with {@code tlsCertPath}.
+ *     Setting only one of cert/key is a configuration error and fails fast at the compact
+ *     constructor.
+ * @param allowSelfSignedCert {@code true} permits the bootstrap to fall back to a runtime-
+ *     generated {@link io.netty.handler.ssl.util.SelfSignedCertificate} when no real cert is
+ *     supplied. <b>Defaults to true so dev/test boots work without cert provisioning; production
+ *     deploys MUST flip this to {@code false}</b> and provide {@code tlsCertPath}/{@code
+ *     tlsKeyPath} so the compact ctor's TLS-mode validation surfaces a fail-fast {@link
+ *     IllegalArgumentException} on misconfiguration instead of fail-OPEN-to-MITM with a self-signed
+ *     cert.
  */
 public record FixClientBridgeConfig(
     int port,
@@ -91,7 +104,10 @@ public record FixClientBridgeConfig(
     List<String> allowedOrigins,
     String auditViewRole,
     int authFailureLockoutThreshold,
-    int authFailureLockoutSeconds) {
+    int authFailureLockoutSeconds,
+    String tlsCertPath,
+    String tlsKeyPath,
+    boolean allowSelfSignedCert) {
 
   /** Default identifier used when {@code -Dbridge.jwksUri} is set without an explicit registry. */
   public static final String DEV_ISSUER_KEY = "trading-engine-dev-issuer";
@@ -178,6 +194,29 @@ public record FixClientBridgeConfig(
     if (authFailureLockoutSeconds <= 0) {
       throw new IllegalArgumentException(
           "authFailureLockoutSeconds must be > 0: " + authFailureLockoutSeconds);
+    }
+    // TLS cert+key path validation — fail-fast on malformed combinations so a misconfigured
+    // production deploy can't silently start with a self-signed cert (fail-OPEN to MITM).
+    // Three accepted shapes:
+    //   (a) both tlsCertPath AND tlsKeyPath non-empty → real cert mode (overrides
+    //       allowSelfSignedCert)
+    //   (b) both null/empty AND allowSelfSignedCert=true → dev self-signed (default)
+    //   (c) both null/empty AND allowSelfSignedCert=false → IllegalArgumentException
+    //   (d) only one of cert/key set → IllegalArgumentException (malformed)
+    final var hasCertPath = tlsCertPath != null && !tlsCertPath.isEmpty();
+    final var hasKeyPath = tlsKeyPath != null && !tlsKeyPath.isEmpty();
+    if (hasCertPath != hasKeyPath) {
+      throw new IllegalArgumentException(
+          "tlsCertPath and tlsKeyPath must be set together — got cert="
+              + (hasCertPath ? "<set>" : "<empty>")
+              + " key="
+              + (hasKeyPath ? "<set>" : "<empty>"));
+    }
+    if (!hasCertPath && !allowSelfSignedCert) {
+      throw new IllegalArgumentException(
+          "TLS misconfiguration: neither tlsCertPath/tlsKeyPath provided nor "
+              + "allowSelfSignedCert=true — production deploys MUST supply real cert + key, "
+              + "dev deploys must explicitly opt in via allowSelfSignedCert=true");
     }
     // Defensive copy of the origin allowlist + null-rejecting validation. Empty allowlist is the
     // fail-safe default — origin-validation handler rejects every request when no origins are
@@ -302,7 +341,10 @@ public record FixClientBridgeConfig(
         overlaidOrigins,
         strProp(properties, "auditViewRole", auditViewRole),
         intProp(properties, "authFailureLockoutThreshold", authFailureLockoutThreshold),
-        intProp(properties, "authFailureLockoutSeconds", authFailureLockoutSeconds));
+        intProp(properties, "authFailureLockoutSeconds", authFailureLockoutSeconds),
+        strPropOrNull(properties, "tlsCertPath", tlsCertPath),
+        strPropOrNull(properties, "tlsKeyPath", tlsKeyPath),
+        boolProp(properties, "allowSelfSignedCert", allowSelfSignedCert));
   }
 
   // ===========================================================================
@@ -360,7 +402,16 @@ public record FixClientBridgeConfig(
         parseStringList(raw, "allowedOrigins"),
         strOr(raw, "auditViewRole", "audit_view"),
         intOr(raw, "authFailureLockoutThreshold", 5),
-        intOr(raw, "authFailureLockoutSeconds", 60));
+        intOr(raw, "authFailureLockoutSeconds", 60),
+        strOrNull(raw, "tlsCertPath"),
+        strOrNull(raw, "tlsKeyPath"),
+        // allowSelfSignedCert default: true so dev/test runs work without operator cert
+        // provisioning.
+        // Production deployments MUST flip this to `false` AND supply tlsCertPath/tlsKeyPath; the
+        // compact constructor's TLS-mode validation rejects (null cert + allowSelfSignedCert=false)
+        // at boot so a misconfigured prod deploy fails fast instead of fail-OPEN-to-MITM with the
+        // self-signed cert.
+        boolOr(raw, "allowSelfSignedCert", true));
   }
 
   /**
@@ -508,6 +559,17 @@ public record FixClientBridgeConfig(
   }
 
   private static String strProp(
+      final Properties properties, final String suffix, final String def) {
+    final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
+    return v == null ? def : v;
+  }
+
+  /**
+   * Same as {@link #strProp} but returns the override verbatim when set (including empty string,
+   * which the TLS-mode validation treats as "absent"). Used for nullable string fields like {@code
+   * tlsCertPath}/{@code tlsKeyPath} where {@code null} is a meaningful default.
+   */
+  private static String strPropOrNull(
       final Properties properties, final String suffix, final String def) {
     final var v = properties.getProperty(SYSPROP_PREFIX + suffix);
     return v == null ? def : v;

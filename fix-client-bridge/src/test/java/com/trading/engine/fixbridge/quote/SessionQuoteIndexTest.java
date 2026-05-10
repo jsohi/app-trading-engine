@@ -11,7 +11,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.agrona.collections.ObjectHashSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -52,7 +51,7 @@ final class SessionQuoteIndexTest {
     index.onSessionAuthenticated(s, "alice");
 
     assertEquals("alice", index.subFor(s));
-    final ObjectHashSet<SessionId> bucket = index.sessionsForSub("alice");
+    final var bucket = index.sessionsForSub("alice");
     assertNotNull(bucket);
     assertTrue(bucket.contains(s));
   }
@@ -378,7 +377,7 @@ final class SessionQuoteIndexTest {
     index.onSessionAuthenticated(s1, "alice");
     index.onSessionAuthenticated(s2, "alice");
 
-    final ObjectHashSet<SessionId> bucket = index.sessionsForSub("alice");
+    final var bucket = index.sessionsForSub("alice");
 
     assertNotNull(bucket);
     assertEquals(2, bucket.size());
@@ -405,7 +404,7 @@ final class SessionQuoteIndexTest {
 
     index.onSessionClosed(s1);
 
-    final ObjectHashSet<SessionId> bucket = index.sessionsForSub("alice");
+    final var bucket = index.sessionsForSub("alice");
     assertNotNull(bucket);
     assertEquals(1, bucket.size());
     assertTrue(bucket.contains(s2));

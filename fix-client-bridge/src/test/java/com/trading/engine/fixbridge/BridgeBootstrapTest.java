@@ -187,7 +187,10 @@ final class BridgeBootstrapTest {
                 java.util.List.of(),
                 "audit_view",
                 5,
-                60));
+                60,
+                null,
+                null,
+                true));
   }
 
   @Test
@@ -222,7 +225,10 @@ final class BridgeBootstrapTest {
                 java.util.List.of(),
                 "audit_view",
                 5,
-                60));
+                60,
+                null,
+                null,
+                true));
   }
 
   @Test
@@ -257,7 +263,10 @@ final class BridgeBootstrapTest {
                 java.util.List.of(),
                 "audit_view",
                 5,
-                60));
+                60,
+                null,
+                null,
+                true));
   }
 
   // --- allowedOrigins YAML parsing ---

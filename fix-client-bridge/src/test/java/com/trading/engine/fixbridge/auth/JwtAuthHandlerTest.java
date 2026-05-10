@@ -135,7 +135,10 @@ final class JwtAuthHandlerTest {
         List.of(),
         "audit_view",
         5,
-        60);
+        60,
+        null,
+        null,
+        true);
   }
 
   /** EpochNanoClock that returns the current wall time. */
@@ -280,10 +283,11 @@ final class JwtAuthHandlerTest {
     }
     assertTrue(sawClose4008, "Bad signature must produce close code 4008 (POLICY_VIOLATION)");
     assertTrue(auditLogger.actions.contains(AuditAction.AUTH_FAIL));
-    // tracker must have recorded at least one failure for the IP.
-    assertTrue(
-        tracker.trackedIpCount() >= 1 || true,
-        "AuthFailureTracker should record a failure (benign if EmbeddedChannel returns unknown)");
+    // Cannot assert tracker.trackedIpCount() here: EmbeddedChannel returns an "unknown"
+    // remoteAddress
+    // so AuthFailureTracker.recordFailure short-circuits without bookkeeping. Real-socket coverage
+    // of the tracker increment lives in the integration tests (TBD). Behavioral expectation:
+    // the channel was closed with the expected close code, which is asserted above.
 
     channel.finishAndReleaseAll();
   }

@@ -30,6 +30,14 @@ import org.agrona.collections.Object2LongHashMap;
  * expands by powers of two; pre-sized to {@code DEFAULT_MAX_ENTRIES} avoids growth in steady
  * state). {@link #isRevoked(String, long)} is zero-alloc.
  *
+ * <p><b>Capacity-budget caveat.</b> Lazy expiry in {@link #isRevoked(String, long)} removes the map
+ * entry but leaves the {@link #insertionRing} slot occupied with a stale reference until the next
+ * FIFO eviction overwrites it. Effective capacity is therefore "inserted-since-cleared count", not
+ * "live count" — under sustained sign-out + lazy-expiry pressure the ring's "full" trigger may fire
+ * while the live entry count is below {@link #DEFAULT_MAX_ENTRIES}. Compacting the ring on lazy
+ * expiry would be O(N) and adds no correctness value; the practical capacity headroom is more than
+ * sufficient for the documented 1100/min sign-out rate.
+ *
  * <p><b>Lifecycle.</b> Singleton in the bridge process; lives for the JVM's lifetime.
  *
  * <p><b>Dependencies.</b> Agrona collections only.
@@ -115,7 +123,7 @@ public final class JtiRevocationCache {
     }
     // Fresh insertion — make room if needed.
     if (ringSize >= maxEntries) {
-      final String evicted = insertionRing[ringWriteIndex];
+      final var evicted = insertionRing[ringWriteIndex];
       if (evicted != null) {
         jtiToExpNs.remove(evicted);
       }

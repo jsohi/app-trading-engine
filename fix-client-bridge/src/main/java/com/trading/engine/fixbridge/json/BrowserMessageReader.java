@@ -150,7 +150,6 @@ public final class BrowserMessageReader {
       throw JsonParseException.MALFORMED;
     }
     p++;
-    int depth = 1;
 
     boolean first = true;
     while (true) {
@@ -160,7 +159,6 @@ public final class BrowserMessageReader {
       }
       if (buf[p] == '}') {
         p++;
-        depth--;
         break;
       }
 
@@ -225,9 +223,6 @@ public final class BrowserMessageReader {
     // Trailing whitespace tolerated; trailing data is not.
     p = skipWs(buf, p, srcLen);
     if (p != srcLen) {
-      throw JsonParseException.MALFORMED;
-    }
-    if (depth != 0) {
       throw JsonParseException.MALFORMED;
     }
 
