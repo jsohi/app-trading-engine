@@ -15,11 +15,34 @@
       </Policies>
       <DefaultRolloverStrategy max="30"/>
     </RollingRandomAccessFile>
+    <!--
+      Tamper-evident audit JSONL stream emitted by Log4jAuditLogger. Each line is a self-contained
+      JSON object with a SHA-256 hash chain (see Log4jAuditLogger Javadoc). The pattern is bare
+      "%msg%n" because the logger does its own JSON formatting.
+    -->
+    <RollingRandomAccessFile name="AuditFile"
+                             fileName="logs/bridge/audit.jsonl"
+                             filePattern="logs/bridge/audit-%d{yyyy-MM-dd}-%i.jsonl"
+                             immediateFlush="false">
+      <PatternLayout pattern="%msg%n"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+        <SizeBasedTriggeringPolicy size="100MB"/>
+      </Policies>
+      <DefaultRolloverStrategy max="365"/>
+    </RollingRandomAccessFile>
   </Appenders>
   <Loggers>
     <AsyncLogger name="com.trading" level="info" includeLocation="false"/>
     <AsyncLogger name="io.aeron" level="warn" includeLocation="false"/>
     <AsyncLogger name="uk.co.real_logic.artio" level="info" includeLocation="false"/>
+    <!--
+      Dedicated audit logger — additivity=false so audit lines do NOT bleed into the general
+      bridge log. Bound by FixClientBridgeLauncher via LogManager.getLogger("audit").
+    -->
+    <AsyncLogger name="audit" level="info" includeLocation="false" additivity="false">
+      <AppenderRef ref="AuditFile"/>
+    </AsyncLogger>
     <AsyncRoot level="info" includeLocation="false">
       <AppenderRef ref="Console"/>
       <AppenderRef ref="File"/>

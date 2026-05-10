@@ -58,6 +58,10 @@ dependencies {
     implementation(libs.artio.core)
     implementation(libs.nimbus.jose.jwt)
     implementation(libs.snakeyaml)
+    // Metrics: Prometheus registry + core API. The bridge exposes per-session counters via the
+    // standard Micrometer abstraction so the launcher can swap the registry impl (Prometheus
+    // for prod, SimpleMeterRegistry for tests) without changing call sites.
+    implementation(libs.micrometer.registry.prometheus)
 
     testImplementation(project(":test-support"))
 
