@@ -117,7 +117,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
   private final EpochNanoClock epochNanoClock;
   private final NanoClock nanoClock;
   private final Executor validationExecutor;
-  private final BridgeFrameDispatcher dispatcher;
+  private final BridgeFrameDispatcher.Factory dispatcherFactory;
   private final AuditLogger auditLogger;
   private final DpopValidator dpopValidator;
 
@@ -164,8 +164,11 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
    * @param validationExecutor executor for the async JWT validation; use {@code
    *     ForkJoinPool.commonPool()} in production, {@code Runnable::run} in tests for deterministic
    *     synchronous behaviour without {@link Thread#sleep}
-   * @param dispatcher post-auth frame dispatcher SAM (use {@link BridgeFrameDispatcher#NOOP} for
-   *     APP-40a integration tests until the real translator + Artio wiring lands)
+   * @param dispatcherFactory per-session dispatcher factory invoked once per authenticated channel
+   *     (Gemini critical finding on PR #70 R3 — RoutingBridgeFrameDispatcher is per- session, NOT
+   *     thread-safe, and sharing one instance across channels would corrupt per- session state).
+   *     Use {@link BridgeFrameDispatcher.Factory#NOOP_FACTORY} for tests until the launcher wires
+   *     the real per-session factory.
    * @param auditLogger audit sink for AUTH_SUCCESS / AUTH_FAIL / AUTH_TIMEOUT events
    * @param eventWriter outbound JSON writer used for cold-path Auth-failure {@code Error} frames
    *     (replaces the hand-rolled JSON Day 4-c emitted)
@@ -185,7 +188,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       final EpochNanoClock epochNanoClock,
       final NanoClock nanoClock,
       final Executor validationExecutor,
-      final BridgeFrameDispatcher dispatcher,
+      final BridgeFrameDispatcher.Factory dispatcherFactory,
       final AuditLogger auditLogger,
       final BrowserEventWriter eventWriter,
       final AccountLimitsSource accountLimitsSource,
@@ -197,7 +200,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     this.validationExecutor = Objects.requireNonNull(validationExecutor, "validationExecutor");
-    this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+    this.dispatcherFactory = Objects.requireNonNull(dispatcherFactory, "dispatcherFactory");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
     this.eventWriter = Objects.requireNonNull(eventWriter, "eventWriter");
     this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
@@ -409,6 +412,16 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     // path (closing the channel between the isActive check at the top and the addAfter call here)
     // doesn't surface a NoSuchElementException through exceptionCaught and into a recursive
     // sendErrorAndClose on a dead channel. This is the residual-window guard for race M5.
+    // Per-session dispatcher: built by the launcher-supplied factory. RoutingBridgeFrameDispatcher
+    // is per-session (NOT thread-safe) — sharing across channels would corrupt per-session state
+    // and break ClOrdID uniqueness (Gemini critical finding on PR #70 R3). The remoteIpSupplier
+    // resolves to the captured handshake-time IP — for IP-pinned sessions this is stable; for
+    // non-pinned the dispatcher's audit row will reflect the handshake IP (per-frame re-resolution
+    // is a future enhancement when the launcher's IP-pin enforcer exposes a live reference).
+    final var dispatcherRemoteIp = remoteIp; // capture for Supplier (effectively final)
+    final BridgeFrameDispatcher dispatcher =
+        dispatcherFactory.create(session, () -> dispatcherRemoteIp);
+
     final var readGate = new InboundReadGate(outboundQueue);
     final var listener =
         new WsListener(dispatcher, readGate, epochNanoClock, nanoClock, auditLogger);
@@ -472,7 +485,41 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     // the read gate + listener are installed so the per-channel OutboundDrainer (scheduled by
     // BridgeNettyBootstrap on channelActive) can flush the limits frames before the user sees
     // the first interactive prompt.
-    accountLimitsSource.pushFor(claims, session, session.outboundQueue()::offer);
+    //
+    // The Sink wraps OutboundQueue.offer with a TERMINAL escalation per §3.1 step 5 — if the
+    // per-session queue is already saturated at auth time (highly unusual; only possible if a
+    // backpressured channel is racing with auth) the bridge MUST escalate to a fatal
+    // BridgeStatus and close the channel rather than silently dropping the AccountLimits frame
+    // (Gemini medium finding on PR #70 R3).
+    final var queue = session.outboundQueue();
+    final AccountLimitsSource.Sink sink =
+        event -> {
+          final var result = queue.offer(event);
+          if (result == OutboundQueue.OfferResult.TERMINAL) {
+            // Queue is full of critical events with no RawFix to drop. We cannot deliver
+            // AccountLimits — the UI would be left disabled-by-default with no way to know.
+            // Escalate per §3.1 step 5: emit a fatal BridgeStatus (which will itself be dropped
+            // by the same overflow, but the close-frame will still surface the failure) and
+            // close the channel. We log here too so the operator has an audit trail beyond the
+            // wire status.
+            LOG.error(
+                "AccountLimits push hit TERMINAL outbound overflow at AUTH_SUCCESS for sub={}"
+                    + " sessionId={} — closing channel",
+                claims.sub(),
+                sessionId);
+            ctx.channel()
+                .close()
+                .addListener(
+                    f ->
+                        LOG.warn(
+                            "Closed channel for sub={} sessionId={} after AccountLimits TERMINAL"
+                                + " overflow",
+                            claims.sub(),
+                            sessionId));
+          }
+          return result;
+        };
+    accountLimitsSource.pushFor(claims, session, sink);
   }
 
   @Override

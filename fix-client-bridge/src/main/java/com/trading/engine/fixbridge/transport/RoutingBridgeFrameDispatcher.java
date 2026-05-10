@@ -122,16 +122,29 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
 
   private void dispatchQuoteRequest(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
+    // Mandatory reqId check (Gemini medium finding on PR #70 R3). A QuoteRequest without a reqId
+    // cannot be correlated back to the originating session — forwarding to FIX would either omit
+    // a mandatory tag (FIX 35=R requires QuoteReqID 131) or, worse, silently allow the response
+    // Quote to fan out to the wrong session. Reject as MALFORMED rather than translate-and-fail.
+    if (parsed.reqIdOff < 0 || parsed.reqIdLen <= 0) {
+      session.enqueue(
+          new BrowserEvent.Error(
+              OrderRejectReason.MALFORMED.wireValue(), "QuoteRequest:missing-reqId"));
+      auditWithReqId(
+          session,
+          AuditAction.QUOTE_REQUEST_RECEIVED,
+          parsed,
+          null,
+          "rejected",
+          OrderRejectReason.MALFORMED.wireValue());
+      return;
+    }
     // Update the cross-session correlation index FIRST so a Quote arriving back on a different
-    // worker thread can find the originating session even if the FIX send race-loses. Capture
-    // reqId locally so the audit row carries the primary client-side RFQ identifier (Gemini
-    // high-priority finding on PR #70 R2 — prior audit row had clOrdId/quoteId both null for
-    // QuoteRequest, leaving no field that survived to a downstream RFQ correlation lookup).
-    final String reqId =
-        (parsed.reqIdOff >= 0 && parsed.reqIdLen > 0)
-            ? new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen)
-            : null;
-    if (reqId != null) {
+    // worker thread can find the originating session even if the FIX send race-loses. The reqId
+    // String allocation is documented in the class-level Allocation Javadoc — slated for the
+    // launcher follow-up PR (Bytes-keyed SessionQuoteIndex API).
+    final var reqId = new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen);
+    {
       final var registration = quoteIndex.onQuoteRequest(reqId, session.sessionId(), nowNs);
       if (registration == QuoteRequestRegistration.DUPLICATE_REQID) {
         // §3.2: same (reqId, sessionId) inside the dedupe window → reject without forwarding to
