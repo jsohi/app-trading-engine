@@ -80,6 +80,10 @@ public final class BrowserMessageReader {
   private static final byte[] K_ORD_TYPE = bytes("ordType");
   private static final byte[] K_TIME_IN_FORCE = bytes("timeInForce");
   private static final byte[] K_ACCOUNT = bytes("account");
+  /** Optional trace-context envelope (§3.6); value is a JSON object. */
+  private static final byte[] K_META = bytes("_meta");
+  /** Inner key inside {@link #K_META} carrying the W3C traceparent. */
+  private static final byte[] K_TRACEPARENT = bytes("traceparent");
 
   // Type values
   private static final byte[] V_AUTH = bytes("Auth");
@@ -88,6 +92,7 @@ public final class BrowserMessageReader {
   private static final byte[] V_REJECT_QUOTE = bytes("RejectQuote");
   private static final byte[] V_NEW_ORDER_SINGLE = bytes("NewOrderSingle");
   private static final byte[] V_CANCEL_ORDER = bytes("CancelOrder");
+  private static final byte[] V_ORDER_STATUS_REQUEST = bytes("OrderStatusRequest");
 
   // Side values
   private static final byte[] V_BUY = bytes("Buy");
@@ -182,14 +187,23 @@ public final class BrowserMessageReader {
       p++;
       p = skipWs(buf, p, srcLen);
 
-      // --- value: must be a JSON string for every supported field ---
+      // --- value: most fields require JSON strings, but the _meta envelope is the exception ---
       if (p >= srcLen) {
         throw JsonParseException.MALFORMED;
       }
+      // Special-case: optional _meta envelope (§3.6) — its value is a one-level-deep JSON object
+      // carrying an optional W3C `traceparent`. Unknown _meta fields skip-balanced (zero-alloc).
+      if (eq(buf, keyStart, keyEnd - keyStart, K_META)) {
+        if (buf[p] != '{') {
+          throw JsonParseException.MALFORMED;
+        }
+        p = parseMetaObject(buf, p, srcLen, out);
+        continue;
+      }
       if (buf[p] == '{' || buf[p] == '[') {
-        // No supported field is a nested structure — every field value is a JSON string. Nested
-        // objects/arrays exceed the wire-protocol contract (which enforces a max depth of 2 via
-        // top-level-object → primitive value) and are surfaced as malformed.
+        // No other supported field is a nested structure — every other field value is a JSON
+        // string. Nested objects/arrays exceed the wire-protocol contract and are surfaced as
+        // malformed.
         throw JsonParseException.MALFORMED;
       }
       if (buf[p] != '"') {
@@ -341,6 +355,10 @@ public final class BrowserMessageReader {
       case 'C':
         return eq(buf, off, len, V_CANCEL_ORDER)
             ? MutableParsedMessage.TYPE_CANCEL_ORDER
+            : badType();
+      case 'O':
+        return eq(buf, off, len, V_ORDER_STATUS_REQUEST)
+            ? MutableParsedMessage.TYPE_ORDER_STATUS_REQUEST
             : badType();
       default:
         return badType();
@@ -547,6 +565,164 @@ public final class BrowserMessageReader {
     if (!sawDigit) {
       throw JsonParseException.MALFORMED;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // _meta envelope (§3.6) — zero-alloc one-level-deep object with an optional
+  // traceparent value. Other fields skip-balanced. Position points at '{' on
+  // entry; returns the position immediately after the matching '}'.
+  // ---------------------------------------------------------------------------
+
+  private static int parseMetaObject(
+      final byte[] buf, final int start, final int srcLen, final MutableParsedMessage out) {
+    int p = start;
+    if (buf[p] != '{') {
+      throw JsonParseException.MALFORMED;
+    }
+    p++;
+    boolean first = true;
+    while (true) {
+      p = skipWs(buf, p, srcLen);
+      if (p >= srcLen) {
+        throw JsonParseException.MALFORMED;
+      }
+      if (buf[p] == '}') {
+        return p + 1;
+      }
+      if (!first) {
+        if (buf[p] != ',') {
+          throw JsonParseException.MALFORMED;
+        }
+        p++;
+        p = skipWs(buf, p, srcLen);
+      }
+      first = false;
+
+      // Inner key.
+      if (p >= srcLen || buf[p] != '"') {
+        throw JsonParseException.MALFORMED;
+      }
+      final int keyStart = p + 1;
+      final int keyEnd = scanStringEnd(buf, keyStart, srcLen);
+      p = keyEnd + 1;
+      p = skipWs(buf, p, srcLen);
+      if (p >= srcLen || buf[p] != ':') {
+        throw JsonParseException.MALFORMED;
+      }
+      p++;
+      p = skipWs(buf, p, srcLen);
+      if (p >= srcLen) {
+        throw JsonParseException.MALFORMED;
+      }
+
+      // Recognise traceparent only; everything else skip-balanced.
+      if (eq(buf, keyStart, keyEnd - keyStart, K_TRACEPARENT)) {
+        if (buf[p] != '"') {
+          // traceparent must be a string; structurally malformed (different from "value
+          // doesn't match W3C regex" which the dispatcher reports separately as
+          // Error{reason:"malformed-traceparent"}).
+          throw JsonParseException.MALFORMED;
+        }
+        final int valStart = p + 1;
+        final int valEnd = scanStringEnd(buf, valStart, srcLen);
+        out.traceparentOff = valStart;
+        out.traceparentLen = valEnd - valStart;
+        p = valEnd + 1;
+      } else {
+        // Unknown _meta key — skip its value (string, number, bool, null, object, or array).
+        p = skipBalancedValue(buf, p, srcLen);
+      }
+    }
+  }
+
+  /**
+   * Advance past a single JSON value (string, number, bool, null, object, or array) without
+   * allocating. Returns the position immediately after the value.
+   */
+  private static int skipBalancedValue(final byte[] buf, final int start, final int srcLen) {
+    int p = start;
+    if (p >= srcLen) {
+      throw JsonParseException.MALFORMED;
+    }
+    final byte b = buf[p];
+    if (b == '"') {
+      // String — find unescaped closing quote.
+      final int valEnd = scanStringEnd(buf, p + 1, srcLen);
+      return valEnd + 1;
+    }
+    if (b == '{' || b == '[') {
+      // Object or array — walk balanced. Loop scan pointer mutated across the depth walk
+      // (per CLAUDE.md carve-out for tight buffer scans).
+      int depth = 1;
+      p++;
+      while (p < srcLen && depth > 0) {
+        final byte c = buf[p];
+        if (c == '"') {
+          // Skip a string in its entirety so braces inside strings don't fool the depth count.
+          p = scanStringEnd(buf, p + 1, srcLen) + 1;
+          continue;
+        }
+        if (c == '{' || c == '[') {
+          depth++;
+        } else if (c == '}' || c == ']') {
+          depth--;
+        }
+        p++;
+      }
+      if (depth != 0) {
+        throw JsonParseException.MALFORMED;
+      }
+      return p;
+    }
+    // Number, boolean, or null — scan until a structural terminator (comma, closing brace,
+    // closing bracket, or whitespace).
+    while (p < srcLen) {
+      final byte c = buf[p];
+      if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+        return p;
+      }
+      p++;
+    }
+    throw JsonParseException.MALFORMED;
+  }
+
+  /**
+   * Validate that a {@code traceparent} slice matches the W3C trace-context v00 wire format:
+   * {@code <2-hex-version>-<32-hex-trace-id>-<16-hex-parent-id>-<2-hex-flags>} (total 55 bytes).
+   *
+   * <p>This is invoked by the dispatcher after parsing — the parser deliberately does not throw
+   * on a bad traceparent so the carrying command still processes (per §3.6). When this returns
+   * {@code false} the dispatcher MUST emit {@code Error{reason:"malformed-traceparent"}} for the
+   * client and drop the trace context (do NOT seed the downstream span).
+   *
+   * @param buf the scratch buffer
+   * @param off slice offset
+   * @param len slice length
+   * @return {@code true} iff the slice is a valid W3C traceparent
+   */
+  public static boolean isValidTraceparent(final byte[] buf, final int off, final int len) {
+    if (len != 55) {
+      return false;
+    }
+    // Layout: HH-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH-HHHHHHHHHHHHHHHH-HH
+    //         01 23                            34 35              51 52 53
+    if (buf[off + 2] != '-' || buf[off + 35] != '-' || buf[off + 52] != '-') {
+      return false;
+    }
+    return isHex(buf, off, 2)
+        && isHex(buf, off + 3, 32)
+        && isHex(buf, off + 36, 16)
+        && isHex(buf, off + 53, 2);
+  }
+
+  private static boolean isHex(final byte[] buf, final int off, final int len) {
+    for (int i = 0; i < len; i++) {
+      final byte c = buf[off + i];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------

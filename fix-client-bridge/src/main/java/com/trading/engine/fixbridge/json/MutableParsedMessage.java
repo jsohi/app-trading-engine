@@ -53,6 +53,8 @@ public final class MutableParsedMessage {
   public static final int TYPE_REJECT_QUOTE = 4;
   public static final int TYPE_NEW_ORDER_SINGLE = 5;
   public static final int TYPE_CANCEL_ORDER = 6;
+  /** {@code OrderStatusRequest} — recovery path for STUCK/STUCK_LONG quote rows (§3.15). */
+  public static final int TYPE_ORDER_STATUS_REQUEST = 7;
 
   // ---------------------------------------------------------------------------
   // Side, OrdType, and TimeInForce sentinels. Stored as bytes matching the FIX
@@ -129,6 +131,18 @@ public final class MutableParsedMessage {
   public int accountLen;
 
   /**
+   * W3C trace-context {@code traceparent} extracted from the optional inbound {@code _meta}
+   * envelope (§3.6). Slice into {@link #scratch}; {@code (-1, 0)} when absent. The parser
+   * accepts any string here; {@link BrowserMessageReader#isValidTraceparent} is a separate
+   * validator the dispatcher runs to gate emission of {@code Error{reason:"malformed-traceparent"}}
+   * — the parser deliberately does NOT throw on a malformed traceparent so the carrying command
+   * still processes (per §3.6 "drop the trace context but keep processing the command").
+   */
+  public int traceparentOff = -1;
+
+  public int traceparentLen;
+
+  /**
    * Eagerly-decoded {@code OrderQty (38)} as fixed-point int64 (scale {@code 10^-8}). Set to {@link
    * Long#MIN_VALUE} when absent — the translator uses this as the absent-sentinel because {@code
    * Long.MIN_VALUE} is also rejected by {@code DecimalStringEmitter} (Phase 3) so it cannot collide
@@ -178,6 +192,8 @@ public final class MutableParsedMessage {
     tokenLen = 0;
     accountOff = -1;
     accountLen = 0;
+    traceparentOff = -1;
+    traceparentLen = 0;
 
     qty = Long.MIN_VALUE;
     side = ABSENT;
