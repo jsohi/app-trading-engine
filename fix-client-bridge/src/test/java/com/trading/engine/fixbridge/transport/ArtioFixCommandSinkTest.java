@@ -52,6 +52,12 @@ final class ArtioFixCommandSinkTest {
   /** Bridge process tag used across tests (24-bit hex value for locked §4 ClOrdID). */
   private static final long INSTANCE_TAG = 0xABCDEFL;
 
+  /**
+   * Per-session token used across tests. Production code receives this from a launcher-owned {@code
+   * AtomicLong} sequence; tests pin a stable value so ClOrdID assertions are deterministic.
+   */
+  private static final long SESSION_TOKEN = 0x12345L;
+
   // ---------------------------------------------------------------------------
   // Test doubles.
   // ---------------------------------------------------------------------------
@@ -133,7 +139,8 @@ final class ArtioFixCommandSinkTest {
     adapter = new CapturingAdapter(42L); // default: success position 42
     cache = new MapQuoteSnapshotCache();
     final var translator = new JsonToFixTranslator(FIXED_CLOCK);
-    sink = new ArtioFixCommandSink(session, adapter, translator, cache, INSTANCE_TAG);
+    sink =
+        new ArtioFixCommandSink(session, adapter, translator, cache, INSTANCE_TAG, SESSION_TOKEN);
   }
 
   // ---------------------------------------------------------------------------
@@ -398,7 +405,8 @@ final class ArtioFixCommandSinkTest {
     final var translator = new JsonToFixTranslator(FIXED_CLOCK);
     org.junit.jupiter.api.Assertions.assertThrows(
         NullPointerException.class,
-        () -> new ArtioFixCommandSink(null, adapter, translator, cache, INSTANCE_TAG));
+        () ->
+            new ArtioFixCommandSink(null, adapter, translator, cache, INSTANCE_TAG, SESSION_TOKEN));
   }
 
   @Test
@@ -406,14 +414,15 @@ final class ArtioFixCommandSinkTest {
     final var translator = new JsonToFixTranslator(FIXED_CLOCK);
     org.junit.jupiter.api.Assertions.assertThrows(
         NullPointerException.class,
-        () -> new ArtioFixCommandSink(session, null, translator, cache, INSTANCE_TAG));
+        () ->
+            new ArtioFixCommandSink(session, null, translator, cache, INSTANCE_TAG, SESSION_TOKEN));
   }
 
   @Test
   void constructor_nullTranslator_throws() {
     org.junit.jupiter.api.Assertions.assertThrows(
         NullPointerException.class,
-        () -> new ArtioFixCommandSink(session, adapter, null, cache, INSTANCE_TAG));
+        () -> new ArtioFixCommandSink(session, adapter, null, cache, INSTANCE_TAG, SESSION_TOKEN));
   }
 
   @Test
@@ -421,6 +430,8 @@ final class ArtioFixCommandSinkTest {
     final var translator = new JsonToFixTranslator(FIXED_CLOCK);
     org.junit.jupiter.api.Assertions.assertThrows(
         NullPointerException.class,
-        () -> new ArtioFixCommandSink(session, adapter, translator, null, INSTANCE_TAG));
+        () ->
+            new ArtioFixCommandSink(
+                session, adapter, translator, null, INSTANCE_TAG, SESSION_TOKEN));
   }
 }

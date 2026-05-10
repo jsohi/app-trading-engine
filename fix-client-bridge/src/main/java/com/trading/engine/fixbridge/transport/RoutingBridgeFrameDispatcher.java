@@ -35,20 +35,29 @@ import org.agrona.concurrent.EpochNanoClock;
  * <p><b>Threading.</b> Per-session instance, owned by the channel's Netty event loop. Not
  * thread-safe.
  *
- * <p><b>Allocation.</b> Two distinct allocation profiles:
+ * <p><b>Allocation.</b> Three distinct allocation profiles:
  *
  * <ul>
  *   <li><b>QuoteRequest path</b>: ALWAYS allocates one {@link String} per call (the {@code reqId}
  *       slice copied for the {@link SessionQuoteIndex#onQuoteRequest} hash key). This is
- *       unavoidable until the index API accepts {@code (byte[], off, len)} directly; it fires
- *       regardless of audit-logger state because the index update is functional, not audit-only.
- *   <li><b>All other dispatch paths</b>: zero allocation when audit is disabled (the default {@link
- *       AuditLogger.Noop} short-circuits via {@link AuditLogger#isWritable}). With audit enabled
- *       the dispatcher allocates up to six {@link String} slices per audited command in {@link
- *       #audit} for symbol/clOrdId/origClOrdId/quoteId/account/traceparent. Sub/jti come from
- *       immutable session state — no copy. The audit allocations are the documented price for a
- *       regulator-grade audit trail and only fire when the launcher's eventual Log4j2 binding flips
- *       {@link AuditLogger#isWritable} to {@code true}.
+ *       unavoidable until the index API accepts a {@code (byte[], off, len)} key flyweight directly
+ *       — slated for the next APP-40 PR (the launcher-wiring follow-up). The allocation is bounded
+ *       by the per-type rate limiter and is not on the inbound-frame hot path proper; it fires once
+ *       per accepted QuoteRequest.
+ *   <li><b>AcceptQuote / RejectQuote path</b>: the ownership check ({@link
+ *       #isQuoteOwnedByCurrentSession}) ALWAYS allocates one {@link String} per call (the quoteId
+ *       slice copied for the {@link SessionQuoteIndex#isOwnedBy} hash key). Same allocation profile
+ *       and remediation timeline as the QuoteRequest path. The check now FAILS CLOSED on a missing
+ *       quoteId (Gemini high-priority finding on PR #70 R2) — prior behaviour was fail-open which
+ *       let the sink crash on a {@code -1} offset.
+ *   <li><b>All other dispatch paths</b> (NewOrderSingle / CancelOrder / OrderStatusRequest): zero
+ *       allocation when audit is disabled (the default {@link AuditLogger.Noop} short-circuits via
+ *       {@link AuditLogger#isWritable}). With audit enabled the dispatcher allocates up to six
+ *       {@link String} slices per audited command in {@link #audit} for
+ *       symbol/clOrdId/origClOrdId/quoteId/account/traceparent. Sub/jti come from immutable session
+ *       state — no copy. The audit allocations are the documented price for a regulator-grade audit
+ *       trail and only fire when the launcher's eventual Log4j2 binding flips {@link
+ *       AuditLogger#isWritable} to {@code true}.
  * </ul>
  */
 public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher {
@@ -114,11 +123,15 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
   private void dispatchQuoteRequest(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
     // Update the cross-session correlation index FIRST so a Quote arriving back on a different
-    // worker thread can find the originating session even if the FIX send race-loses.
-    if (parsed.reqIdOff >= 0 && parsed.reqIdLen > 0) {
-      // The flyweight slice is borrow-only; the index needs a stable key, so it copies internally.
-      // (SessionQuoteIndex was built to expect this contract.)
-      final var reqId = new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen);
+    // worker thread can find the originating session even if the FIX send race-loses. Capture
+    // reqId locally so the audit row carries the primary client-side RFQ identifier (Gemini
+    // high-priority finding on PR #70 R2 — prior audit row had clOrdId/quoteId both null for
+    // QuoteRequest, leaving no field that survived to a downstream RFQ correlation lookup).
+    final String reqId =
+        (parsed.reqIdOff >= 0 && parsed.reqIdLen > 0)
+            ? new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen)
+            : null;
+    if (reqId != null) {
       final var registration = quoteIndex.onQuoteRequest(reqId, session.sessionId(), nowNs);
       if (registration == QuoteRequestRegistration.DUPLICATE_REQID) {
         // §3.2: same (reqId, sessionId) inside the dedupe window → reject without forwarding to
@@ -128,27 +141,41 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
         session.enqueue(
             new BrowserEvent.Error(
                 OrderRejectReason.DUPLICATE_REQID.wireValue(), "QuoteRequest:" + reqId));
-        audit(session, AuditAction.QUOTE_REQUEST_RECEIVED, parsed, nowNs);
+        auditWithReqId(
+            session,
+            AuditAction.QUOTE_REQUEST_RECEIVED,
+            parsed,
+            reqId,
+            "rejected",
+            OrderRejectReason.DUPLICATE_REQID.wireValue());
         return;
       }
     }
     sink.sendQuoteRequest(parsed, nowNs);
-    audit(session, AuditAction.QUOTE_REQUEST_RECEIVED, parsed, nowNs);
+    auditWithReqId(session, AuditAction.QUOTE_REQUEST_RECEIVED, parsed, reqId, "ok", null);
   }
 
   private void dispatchAcceptQuote(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
     if (!isQuoteOwnedByCurrentSession(session, parsed)) {
-      // §3.2: cross-session quote-id steal. The owning session is either (a) gone, or (b) a
-      // different live session of the same/another sub. Either way the bridge MUST NOT forward to
-      // FIX — the trader who actually saw the quote could have a different intent. Reject with
-      // OrderReject{clOrdId, reason:"quote-not-owned"}.
+      // §3.2: cross-session quote-id steal OR malformed inbound with no quoteId at all. The
+      // owning session is either (a) gone, (b) a different live session of the same/another sub,
+      // or (c) the inbound carries no quoteId so we cannot correlate at all. In every case the
+      // bridge MUST NOT forward to FIX (the trader who actually saw the quote could have a
+      // different intent) and MUST NOT call sink.sendAcceptQuote (which would dereference
+      // parsed.quoteIdOff = -1 inside the quote cache lookup and crash). Reject with
+      // OrderReject{clOrdId, reason:"quote-not-owned"} — fail-closed.
       emitQuoteNotOwnedReject(session, parsed);
-      audit(session, AuditAction.ACCEPT_QUOTE_RECEIVED, parsed, nowNs);
+      auditQuoteAction(
+          session,
+          AuditAction.ACCEPT_QUOTE_RECEIVED,
+          parsed,
+          "rejected",
+          OrderRejectReason.QUOTE_NOT_OWNED.wireValue());
       return;
     }
     sink.sendAcceptQuote(parsed, nowNs);
-    audit(session, AuditAction.ACCEPT_QUOTE_RECEIVED, parsed, nowNs);
+    auditQuoteAction(session, AuditAction.ACCEPT_QUOTE_RECEIVED, parsed, "ok", null);
   }
 
   private void dispatchRejectQuote(
@@ -156,27 +183,39 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
     if (!isQuoteOwnedByCurrentSession(session, parsed)) {
       // §3.2: same protection as AcceptQuote — only the originating session can reject its own
       // quote. Forwarding a stranger's RejectQuote would let one tab evict another tab's pending
-      // quote silently.
+      // quote silently. Also fail-closed on missing quoteId — see dispatchAcceptQuote above.
       emitQuoteNotOwnedReject(session, parsed);
-      audit(session, AuditAction.REJECT_QUOTE_RECEIVED, parsed, nowNs);
+      auditQuoteAction(
+          session,
+          AuditAction.REJECT_QUOTE_RECEIVED,
+          parsed,
+          "rejected",
+          OrderRejectReason.QUOTE_NOT_OWNED.wireValue());
       return;
     }
     sink.handleRejectQuote(parsed, nowNs);
-    audit(session, AuditAction.REJECT_QUOTE_RECEIVED, parsed, nowNs);
+    auditQuoteAction(session, AuditAction.REJECT_QUOTE_RECEIVED, parsed, "ok", null);
   }
 
   /**
    * §3.2 ownership check. Returns {@code true} when {@code parsed.quoteId} is bound to the current
-   * session in {@link SessionQuoteIndex#isOwnedBy}. Allocates one {@link String} per call (the
-   * quoteId slice copy) regardless of audit state — same constraint as the QuoteRequest path
-   * (cross-session correlation needs a stable key). Returns {@code true} when the quoteId slice is
-   * absent so a malformed-but-quoteId-less inbound still falls through to the sink, where
-   * downstream validation (parser strictness) will surface the error appropriately.
+   * session in {@link SessionQuoteIndex#isOwnedBy}.
+   *
+   * <p><b>Fails CLOSED on missing quoteId (Gemini PR #70 R2 high-priority fix).</b> The previous
+   * implementation fail-OPENED — returning {@code true} when the slice was absent so a
+   * malformed-but-quoteId-less inbound fell through to the sink. The sink would then dereference
+   * {@code parsed.quoteIdOff = -1} inside the quote cache lookup and crash with a
+   * StringIndexOutOfBoundsException. Returning {@code false} here routes the missing-quoteId case
+   * through the same {@code emitQuoteNotOwnedReject} path as a cross-session-steal so the wire
+   * response is uniform ({@code OrderReject{quote-not-owned}}) and no sink crash is possible.
+   *
+   * <p>Allocates one {@link String} per call (the quoteId slice copy) regardless of audit state —
+   * see class-level Allocation Javadoc.
    */
   private boolean isQuoteOwnedByCurrentSession(
       final BridgeSession session, final MutableParsedMessage parsed) {
     if (parsed.quoteIdOff < 0 || parsed.quoteIdLen <= 0) {
-      return true;
+      return false;
     }
     final var quoteId = new String(parsed.scratch, parsed.quoteIdOff, parsed.quoteIdLen);
     return quoteIndex.isOwnedBy(quoteId, session.sessionId());
@@ -200,51 +239,108 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
   private void dispatchNewOrderSingle(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
     sink.sendNewOrderSingle(parsed, nowNs);
-    audit(session, AuditAction.NEW_ORDER_RECEIVED, parsed, nowNs);
+    auditCommand(session, AuditAction.NEW_ORDER_RECEIVED, parsed, "ok", null);
   }
 
   private void dispatchCancelOrder(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
     sink.sendCancelOrder(parsed, nowNs);
-    audit(session, AuditAction.CANCEL_ORDER_RECEIVED, parsed, nowNs);
+    auditCommand(session, AuditAction.CANCEL_ORDER_RECEIVED, parsed, "ok", null);
   }
 
   private void dispatchOrderStatusRequest(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
     sink.sendOrderStatusRequest(parsed, nowNs);
-    audit(session, AuditAction.ORDER_STATUS_REQUEST, parsed, nowNs);
+    auditCommand(session, AuditAction.ORDER_STATUS_REQUEST, parsed, "ok", null);
   }
 
   /**
-   * Emit one audit entry for the routed command. The audit fields are sliced from {@code parsed}
-   * via {@link AuditLogger#isWritable()}-gated calls so the {@link AuditLogger.Noop} default pays
-   * only one volatile read per dispatch.
+   * Audit emission specialised for QuoteRequest. Carries the {@code reqId} as the audit-row's
+   * {@code quoteId} field (the audit schema has no dedicated reqId column; quoteId is the closest
+   * semantic match — both are RFQ correlation tokens). Caller passes the result/failureReason so
+   * bridge-level rejections (DUPLICATE_REQID, future rate-limit hits) surface in the audit trail
+   * rather than being masked by a hardcoded {@code "received"} (Gemini PR #70 R2 high-priority).
+   *
+   * <p>The reqId slice is the one already allocated by {@link #dispatchQuoteRequest} for the
+   * SessionQuoteIndex insertion — passing it here avoids a second slice copy.
    */
-  private void audit(
+  private void auditWithReqId(
       final BridgeSession session,
       final AuditAction action,
       final MutableParsedMessage parsed,
-      final long nowNs) {
+      final String reqId,
+      final String result,
+      final String failureReason) {
     if (!auditLogger.isWritable()) {
       return;
     }
+    auditCommon(session, action, parsed, /* quoteIdOverride */ reqId, result, failureReason);
+  }
+
+  /**
+   * Audit emission specialised for AcceptQuote / RejectQuote. Uses the parsed {@code quoteId} slice
+   * directly. Caller passes the result/failureReason so quote-not-owned rejections surface properly
+   * in the audit row (Gemini PR #70 R2 high-priority).
+   */
+  private void auditQuoteAction(
+      final BridgeSession session,
+      final AuditAction action,
+      final MutableParsedMessage parsed,
+      final String result,
+      final String failureReason) {
+    if (!auditLogger.isWritable()) {
+      return;
+    }
+    final var quoteId = sliceOrNull(parsed.scratch, parsed.quoteIdOff, parsed.quoteIdLen);
+    auditCommon(session, action, parsed, quoteId, result, failureReason);
+  }
+
+  /**
+   * Audit emission for command-style dispatches (NewOrderSingle, CancelOrder, OrderStatusRequest).
+   * Reads the parsed quoteId slice if any (CancelOrder may carry one).
+   */
+  private void auditCommand(
+      final BridgeSession session,
+      final AuditAction action,
+      final MutableParsedMessage parsed,
+      final String result,
+      final String failureReason) {
+    if (!auditLogger.isWritable()) {
+      return;
+    }
+    final var quoteId = sliceOrNull(parsed.scratch, parsed.quoteIdOff, parsed.quoteIdLen);
+    auditCommon(session, action, parsed, quoteId, result, failureReason);
+  }
+
+  /**
+   * Common audit-row builder. The {@code quoteIdOverride} is used as the audit row's quoteId field
+   * — for QuoteRequest the dispatcher passes the parsed reqId (the audit schema lacks a dedicated
+   * reqId column); for other commands the parsed quoteId slice is used directly.
+   *
+   * <p>tsNs uses the EpochNanoClock (wall-clock nanoseconds) — AuditLogger.record's contract is
+   * epoch-ns so audit entries correlate with wall-clock incident timelines.
+   *
+   * <p>qty: parsed.qty carries the eagerly-decoded fixed-point value (Long.MIN_VALUE when absent);
+   * normalise the absent sentinel to 0L per the AuditLogger#record contract. price: the parsed
+   * flyweight retains only the priceOff/priceLen ASCII slice (the wire avoids double-rounding
+   * through int64); routing audit entries pass 0L because surfacing the parsed price would require
+   * a fresh DecimalStringParser invocation on every dispatch — slated for the launcher follow-up
+   * PR.
+   */
+  private void auditCommon(
+      final BridgeSession session,
+      final AuditAction action,
+      final MutableParsedMessage parsed,
+      final String quoteIdOverride,
+      final String result,
+      final String failureReason) {
     final var symbol = sliceOrNull(parsed.scratch, parsed.symbolOff, parsed.symbolLen);
     final var clOrdId = sliceOrNull(parsed.scratch, parsed.clOrdIdOff, parsed.clOrdIdLen);
     final var origClOrdId =
         sliceOrNull(parsed.scratch, parsed.origClOrdIdOff, parsed.origClOrdIdLen);
-    final var quoteId = sliceOrNull(parsed.scratch, parsed.quoteIdOff, parsed.quoteIdLen);
     final var account = sliceOrNull(parsed.scratch, parsed.accountOff, parsed.accountLen);
     final var traceparent =
         sliceOrNull(parsed.scratch, parsed.traceparentOff, parsed.traceparentLen);
-    // tsNs uses the EpochNanoClock (wall-clock nanoseconds) — AuditLogger.record's contract is
-    // epoch-ns so audit entries correlate with wall-clock incident timelines. The nowNs param
-    // remains a monotonic dispatch timestamp from the listener and is unused here.
-    // qty: parsed.qty carries the eagerly-decoded fixed-point value (Long.MIN_VALUE when absent);
-    // normalise the absent sentinel to 0L per the AuditLogger#record contract. price: the parsed
-    // flyweight retains only the priceOff/priceLen ASCII slice (the wire avoids double-rounding
-    // through int64); routing audit entries pass 0L because surfacing the parsed price would
-    // require a fresh DecimalStringParser invocation on every dispatch — TODO(APP-40b): wire a
-    // shared zero-alloc parser if compliance demands the priced field on the audit row.
     final long qty = parsed.qty == Long.MIN_VALUE ? 0L : parsed.qty;
     auditLogger.record(
         epochNanoClock.nanoTime(),
@@ -261,9 +357,9 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
         account,
         clOrdId,
         origClOrdId,
-        quoteId,
-        "received",
-        null,
+        quoteIdOverride,
+        result,
+        failureReason,
         traceparent);
   }
 

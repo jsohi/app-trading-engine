@@ -113,15 +113,20 @@ public final class ArtioFixCommandSink implements FixCommandSink {
    * @param translator per-session JSON-to-FIX translator (pre-warmed by caller)
    * @param quoteCache per-session quote snapshot cache
    * @param instanceTag 24-bit bridge process tag (locked §4); injected from boot clock
+   * @param sessionToken 28-bit per-session token assigned by the launcher's process-wide {@code
+   *     AtomicLong} sequence — guarantees ClOrdID uniqueness across concurrent sessions without
+   *     relying on {@link System#identityHashCode} which is birthday-paradox prone above ~19,000
+   *     concurrent sessions (Gemini high-priority finding on PR #70 R2).
    * @throws NullPointerException if any reference parameter is {@code null}
-   * @throws IllegalArgumentException if {@code instanceTag} is negative
+   * @throws IllegalArgumentException if {@code instanceTag} or {@code sessionToken} is negative
    */
   public ArtioFixCommandSink(
       final BridgeSession session,
       final FixSessionAdapter fixSession,
       final JsonToFixTranslator translator,
       final QuoteSnapshotCache quoteCache,
-      final long instanceTag) {
+      final long instanceTag,
+      final long sessionToken) {
     if (session == null) {
       throw new NullPointerException("session must not be null");
     }
@@ -137,14 +142,19 @@ public final class ArtioFixCommandSink implements FixCommandSink {
     if (instanceTag < 0L) {
       throw new IllegalArgumentException("instanceTag must be non-negative: " + instanceTag);
     }
+    if (sessionToken < 0L) {
+      throw new IllegalArgumentException("sessionToken must be non-negative: " + sessionToken);
+    }
     this.session = session;
     this.fixSession = fixSession;
     this.translator = translator;
     this.quoteCache = quoteCache;
     this.instanceTag = instanceTag;
-    // Derive a stable 28-bit session token from the SessionId object's identity hash. The mask
-    // keeps only the lower 28 bits to fit the locked §4 seven-hex-digit field without overflow.
-    this.sessionIdLong = System.identityHashCode(session.sessionId()) & 0xFFFFFFFL;
+    // Mask to 28 bits to fit the locked §4 seven-hex-digit ClOrdID field. The launcher's
+    // AtomicLong sequence is monotonic across process lifetime; modulo-2^28 wrapping is safe
+    // because no two LIVE sessions can hold the same modulo within the rate-limited bridge
+    // session population (~256 max per FixClientBridgeConfig).
+    this.sessionIdLong = sessionToken & 0xFFFFFFFL;
     this.clOrdIdCounter = 0L;
   }
 

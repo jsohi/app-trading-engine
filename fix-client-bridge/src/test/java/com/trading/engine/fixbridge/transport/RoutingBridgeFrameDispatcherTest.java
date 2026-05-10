@@ -173,6 +173,20 @@ final class RoutingBridgeFrameDispatcherTest {
     parsed.reqIdLen = bytes.length;
   }
 
+  /**
+   * Populate a valid quoteId slice into the parsed flyweight's scratch buffer at offset 32 (after
+   * the reqId region) and register the quoteId in {@link SessionQuoteIndex} as owned by the current
+   * session — so the dispatcher's fail-closed quoteId-ownership check passes.
+   */
+  private void setOwnedQuoteId(final String reqId, final String quoteId, final long nowNs) {
+    quoteIndex.onQuoteRequest(reqId, session.sessionId(), nowNs);
+    quoteIndex.onQuoteEmitted(reqId, quoteId, nowNs);
+    final byte[] bytes = quoteId.getBytes(StandardCharsets.UTF_8);
+    System.arraycopy(bytes, 0, parsed.scratch, 32, bytes.length);
+    parsed.quoteIdOff = 32;
+    parsed.quoteIdLen = bytes.length;
+  }
+
   // ---------------------------------------------------------------------------
   // QUOTE_REQUEST.
   // ---------------------------------------------------------------------------
@@ -221,6 +235,7 @@ final class RoutingBridgeFrameDispatcherTest {
   void dispatch_acceptQuote_callsSendAcceptQuoteExactlyOnce() {
     parsed.type = MutableParsedMessage.TYPE_ACCEPT_QUOTE;
     final long nowNs = 10_000_000L;
+    setOwnedQuoteId("R-AQ", "Q-AQ", nowNs);
 
     dispatcher.dispatch(session, parsed, MutableParsedMessage.TYPE_ACCEPT_QUOTE, nowNs);
 
@@ -233,6 +248,7 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void dispatch_acceptQuote_auditsAcceptQuoteReceived() {
     final long nowNs = 11_000_000L;
+    setOwnedQuoteId("R-AQ-2", "Q-AQ-2", nowNs);
 
     dispatcher.dispatch(session, parsed, MutableParsedMessage.TYPE_ACCEPT_QUOTE, nowNs);
 
@@ -248,6 +264,7 @@ final class RoutingBridgeFrameDispatcherTest {
   void dispatch_rejectQuote_callsHandleRejectQuoteExactlyOnce() {
     parsed.type = MutableParsedMessage.TYPE_REJECT_QUOTE;
     final long nowNs = 20_000_000L;
+    setOwnedQuoteId("R-RQ", "Q-RQ", nowNs);
 
     dispatcher.dispatch(session, parsed, MutableParsedMessage.TYPE_REJECT_QUOTE, nowNs);
 
@@ -260,6 +277,7 @@ final class RoutingBridgeFrameDispatcherTest {
   @Test
   void dispatch_rejectQuote_auditsRejectQuoteReceived() {
     final long nowNs = 21_000_000L;
+    setOwnedQuoteId("R-RQ-2", "Q-RQ-2", nowNs);
 
     dispatcher.dispatch(session, parsed, MutableParsedMessage.TYPE_REJECT_QUOTE, nowNs);
 

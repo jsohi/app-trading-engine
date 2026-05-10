@@ -198,26 +198,31 @@ public sealed interface BrowserEvent
    * Zero-String flyweight carrier for the FIX-tap hot path (§3.5 / APP-40a Day 5).
    *
    * <p><b>Purpose.</b> Replaces the per-tap-call {@link String} allocation in {@code RawFixTap.tap}
-   * with a thin slice descriptor that references the tap's pre-allocated {@code maskScratch} buffer
-   * directly. The SOH→{@code |} substitution and JSON-escaping are deferred to the queue consumer
-   * ({@link BrowserEventWriter#writeRawFixSlice}) which reads the byte slice at write time without
-   * an intermediate {@link String}.
+   * with a thin slice descriptor that owns its own backing {@code byte[]} sized to the masked FIX
+   * byte length. The SOH→{@code |} substitution and JSON-escaping are deferred to the queue
+   * consumer ({@link BrowserEventWriter#writeRawFixSlice}) which reads the byte slice at write time
+   * without an intermediate {@link String}.
    *
-   * <p><b>Single-threaded ownership invariant.</b> The {@code scratch} array is the {@code
-   * RawFixTap}'s per-instance {@code maskScratch} buffer. The queue consumer ({@code
-   * BrowserEventWriter.writeAny}) MUST serialise this record BEFORE the next {@code RawFixTap.tap}
-   * call mutates the buffer. This invariant is guaranteed because both the drainer and the tap run
-   * exclusively on the same channel event loop — no external synchronisation is required.
+   * <p><b>Per-event ownership.</b> Each queued {@code RawFixSlice} owns its own {@code byte[]}
+   * (allocated and {@code System.arraycopy}-populated by {@code RawFixTap.tap} per emitted frame).
+   * This eliminates the aliasing flaw of an earlier design where the slice referenced the tap's
+   * reusable {@code maskScratch} buffer directly — under back-to-back taps the second tap's mask
+   * write would overwrite the first event's bytes before the drainer serialised them (CodeRabbit
+   * major finding on PR #70 R1).
    *
    * <p><b>Threading.</b> NOT thread-safe — slice is owned by a single event-loop thread.
    *
-   * <p><b>Allocation.</b> One record allocation per emitted frame (unavoidable — the queue holds
-   * boxed {@link BrowserEvent} references). The {@code scratch} byte array is shared, not copied.
+   * <p><b>Allocation.</b> One record allocation plus one fresh {@code byte[]} (sized to the masked
+   * FIX length, ≤ {@code maskScratch.length}) per emitted frame. The {@code byte[]} copy is the
+   * price paid for the per-event ownership invariant; without it, the queue would alias a single
+   * shared buffer and lose all but the most recent frame under burst load. The wider
+   * "zero-allocation hot path" goal is satisfied for the BrowserEventWriter side (zero-alloc
+   * serialisation) and for the queue side (no boxing beyond the unavoidable record reference).
    *
    * @param inbound {@code true} if the FIX message was received from the exchange gateway
    *     (direction "in"); {@code false} for messages sent to the gateway (direction "out")
-   * @param scratch shared {@code maskScratch} byte array owned by the {@code RawFixTap}; MUST NOT
-   *     be null
+   * @param scratch the per-event byte array carrying the masked FIX bytes (NOT shared with the
+   *     tap's reusable {@code maskScratch}); MUST NOT be null
    * @param off start offset of the masked FIX bytes within {@code scratch}; must be {@code >= 0}
    * @param len byte length of the masked FIX bytes; must be {@code > 0} and {@code off + len <=
    *     scratch.length}
