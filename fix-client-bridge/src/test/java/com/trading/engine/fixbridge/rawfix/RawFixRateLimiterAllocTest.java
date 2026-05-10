@@ -16,8 +16,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * <p>Gated by {@code -DrunAllocTests=true} — opt-in only because GC counts can be advanced by
  * unrelated background processes on a shared CI host (locked §21, §23).
  *
- * <p>Threading: single-threaded. {@link RawFixRateLimiter} is not thread-safe per its contract;
- * the test owns the instance exclusively.
+ * <p>Threading: single-threaded. {@link RawFixRateLimiter} is not thread-safe per its contract; the
+ * test owns the instance exclusively.
  */
 @EnabledIfSystemProperty(named = "runAllocTests", matches = "true")
 final class RawFixRateLimiterAllocTest {
@@ -29,16 +29,16 @@ final class RawFixRateLimiterAllocTest {
   private static final long T0 = 1_000_000_000_000L; // 1000 s in nanos
 
   /**
-   * Advance 1 ms per iteration. At DEFAULT_RATE_PER_SEC = 1000 tokens/s and 1 ms steps,
-   * each step refills exactly 1.0 token. This keeps the bucket from depleting so every
-   * iteration takes the ALLOWED path — the hot path — throughout the measured phase.
+   * Advance 1 ms per iteration. At DEFAULT_RATE_PER_SEC = 1000 tokens/s and 1 ms steps, each step
+   * refills exactly 1.0 token. This keeps the bucket from depleting so every iteration takes the
+   * ALLOWED path — the hot path — throughout the measured phase.
    */
   private static final long STEP_NS = 1_000_000L; // 1 ms
 
   /**
-   * Run {@link RawFixRateLimiter#tryConsume} 100k times advancing the clock 1 ms per call
-   * (refills 1 token per step at 1000/s, keeping the ALLOWED path hot) and assert that no GC
-   * collection fires after JIT warmup. Confirms the zero-alloc guarantee documented on the class.
+   * Run {@link RawFixRateLimiter#tryConsume} 100k times advancing the clock 1 ms per call (refills
+   * 1 token per step at 1000/s, keeping the ALLOWED path hot) and assert that no GC collection
+   * fires after JIT warmup. Confirms the zero-alloc guarantee documented on the class.
    */
   @Test
   void tryConsume_repeatedAllowed_zeroAlloc() {

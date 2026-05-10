@@ -125,8 +125,8 @@ public sealed interface BrowserEvent
    *
    * @param clOrdId originating client order id (always present)
    * @param reason short-form textual reason — must NOT contain raw double-quote / backslash; the
-   *     writer copies it verbatim. Wire protocol: pure ASCII, ≤128 bytes. Production code MUST
-   *     pick from {@link OrderRejectReason}.
+   *     writer copies it verbatim. Wire protocol: pure ASCII, ≤128 bytes. Production code MUST pick
+   *     from {@link OrderRejectReason}.
    */
   record OrderReject(String clOrdId, String reason) implements BrowserEvent {
 
@@ -145,9 +145,9 @@ public sealed interface BrowserEvent
   /**
    * FIX session liveness + bridge feature-gate snapshot. Sent on AUTHENTICATED and on any change.
    *
-   * <p>The {@code newOrders} / {@code newQuotes} fields are the runtime kill-switch (§4.19);
-   * {@code protocolVersion} is the server-side bridge protocol version (§4.1 worker checks it
-   * against {@code MIN_SERVER_PROTOCOL_VERSION}); {@code serverOrderTimeoutMs} is the cluster's
+   * <p>The {@code newOrders} / {@code newQuotes} fields are the runtime kill-switch (§4.19); {@code
+   * protocolVersion} is the server-side bridge protocol version (§4.1 worker checks it against
+   * {@code MIN_SERVER_PROTOCOL_VERSION}); {@code serverOrderTimeoutMs} is the cluster's
    * order-state-timeout, used by the UI's STUCK_LONG transition (§4.5).
    *
    * @param fixSessionUp current Artio session state
@@ -275,11 +275,7 @@ public sealed interface BrowserEvent
    * @param avgPxInt64 average fill price, fixed-point int64
    */
   record OrderReconciled(
-      String clOrdId,
-      String status,
-      long cumQtyInt64,
-      long leavesQtyInt64,
-      long avgPxInt64)
+      String clOrdId, String status, long cumQtyInt64, long leavesQtyInt64, long avgPxInt64)
       implements BrowserEvent {}
 
   /**

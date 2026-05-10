@@ -58,6 +58,10 @@ final class BridgeBootstrapTest {
     assertEquals(10, cfg.heartbeatSeconds());
     assertEquals("trading-engine-dev", cfg.expectedAudience());
     assertTrue(cfg.jwtIssuerRegistry().isEmpty(), "issuer registry must default empty");
+    assertTrue(cfg.allowedOrigins().isEmpty(), "allowedOrigins must default empty (fail-safe)");
+    assertEquals("audit_view", cfg.auditViewRole());
+    assertEquals(5, cfg.authFailureLockoutThreshold());
+    assertEquals(60, cfg.authFailureLockoutSeconds());
   }
 
   // --- YAML round-trip ---
@@ -179,7 +183,11 @@ final class BridgeBootstrapTest {
                 32,
                 10,
                 600,
-                10));
+                10,
+                java.util.List.of(),
+                "audit_view",
+                5,
+                60));
   }
 
   @Test
@@ -210,7 +218,11 @@ final class BridgeBootstrapTest {
                 32,
                 10,
                 600,
-                10));
+                10,
+                java.util.List.of(),
+                "audit_view",
+                5,
+                60));
   }
 
   @Test
@@ -241,6 +253,62 @@ final class BridgeBootstrapTest {
                 32,
                 10,
                 600,
-                10));
+                10,
+                java.util.List.of(),
+                "audit_view",
+                5,
+                60));
+  }
+
+  // --- allowedOrigins YAML parsing ---
+
+  @Test
+  void fromYaml_allowedOriginsList_parsesEachEntry(@TempDir final Path tmp) throws IOException {
+    final var yaml = tmp.resolve("bridge.yaml");
+    Files.writeString(
+        yaml,
+        """
+        expectedAudience: "trading-engine-dev"
+        allowedOrigins:
+          - "https://a.test"
+          - "https://b.test"
+        """);
+
+    final var cfg = FixClientBridgeConfig.fromYaml(yaml);
+
+    assertEquals(2, cfg.allowedOrigins().size(), "Expected 2 allowed origins");
+    assertEquals("https://a.test", cfg.allowedOrigins().get(0));
+    assertEquals("https://b.test", cfg.allowedOrigins().get(1));
+  }
+
+  @Test
+  void fromYaml_allowedOriginsNonString_throws(@TempDir final Path tmp) throws IOException {
+    final var yaml = tmp.resolve("bridge.yaml");
+    Files.writeString(
+        yaml,
+        """
+        expectedAudience: "trading-engine-dev"
+        allowedOrigins:
+          - 42
+        """);
+
+    assertThrows(IllegalArgumentException.class, () -> FixClientBridgeConfig.fromYaml(yaml));
+  }
+
+  @Test
+  void withSystemPropertyOverrides_allowedOriginsCsv_replacesList(@TempDir final Path tmp)
+      throws IOException {
+    final var yaml = tmp.resolve("bridge.yaml");
+    Files.writeString(yaml, "expectedAudience: \"trading-engine-dev\"\n");
+
+    final var props = new Properties();
+    props.setProperty("bridge.allowedOrigins", "https://x.test, https://y.test");
+
+    final var base = FixClientBridgeConfig.fromYaml(yaml);
+    final var cfg = base.withSystemPropertyOverrides(props);
+
+    assertEquals(2, cfg.allowedOrigins().size(), "CSV override should produce 2 entries");
+    assertEquals("https://x.test", cfg.allowedOrigins().get(0));
+    assertEquals("https://y.test", cfg.allowedOrigins().get(1));
   }
 }

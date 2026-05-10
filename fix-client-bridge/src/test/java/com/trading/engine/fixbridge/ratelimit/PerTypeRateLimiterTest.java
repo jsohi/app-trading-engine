@@ -11,7 +11,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Covers: construction, initial-window enforcement (first-60s tighter buckets), normal-mode
  * enforcement (steady-state), the 60s boundary transition (strict less-than), bucket isolation, and
- * the no-clock-advance edge case. Test names follow {@code methodUnderTest_scenario_expectedBehavior}.
+ * the no-clock-advance edge case. Test names follow {@code
+ * methodUnderTest_scenario_expectedBehavior}.
  *
  * <p>Clock arithmetic: {@code authNanos = 0L}. All {@code nowNs} values are expressed as offsets
  * from zero so refill deltas are easy to compute manually.
@@ -19,8 +20,8 @@ import org.junit.jupiter.api.Test;
  * <p>Threading: not thread-safe per the class contract. Tests run serially on a single thread and
  * use independent limiter instances — no sharing.
  *
- * <p>Allocation: the hot path is zero-alloc; the tests themselves freely allocate (they are not
- * in the {@code *AllocTest} suite).
+ * <p>Allocation: the hot path is zero-alloc; the tests themselves freely allocate (they are not in
+ * the {@code *AllocTest} suite).
  */
 final class PerTypeRateLimiterTest {
 
@@ -31,8 +32,8 @@ final class PerTypeRateLimiterTest {
   private static final long WITHIN_WINDOW_NS = 1_000_000L; // 1 ms after auth
 
   /**
-   * Any timestamp strictly outside (>= 60s after auth) the first-60s window.
-   * Boundary = exactly 60 s → normal mode per the strict less-than.
+   * Any timestamp strictly outside (>= 60s after auth) the first-60s window. Boundary = exactly 60
+   * s → normal mode per the strict less-than.
    */
   private static final long AFTER_WINDOW_NS = PerTypeRateLimiter.FIRST_60S_WINDOW_NANOS; // = 60s
 
@@ -85,7 +86,8 @@ final class PerTypeRateLimiterTest {
    * refill = 0.2 s × 5/s = 1.0 token) and verify one more ALLOWED.
    */
   @Test
-  void tryConsume_quoteRequestSecondCallAtSameNanos_returnsAllowedThenRejectedInitialWindowAtThird_thenRefills() {
+  void
+      tryConsume_quoteRequestSecondCallAtSameNanos_returnsAllowedThenRejectedInitialWindowAtThird_thenRefills() {
     final var limiter = new PerTypeRateLimiter(AUTH_NANOS);
     // Drain burst.
     assertEquals(Outcome.ALLOWED, limiter.tryConsume(CommandType.QUOTE_REQUEST, WITHIN_WINDOW_NS));
@@ -104,8 +106,10 @@ final class PerTypeRateLimiterTest {
   @Test
   void tryConsume_newOrderSingleInitialBurst2_thirdRejected() {
     final var limiter = new PerTypeRateLimiter(AUTH_NANOS);
-    assertEquals(Outcome.ALLOWED, limiter.tryConsume(CommandType.NEW_ORDER_SINGLE, WITHIN_WINDOW_NS));
-    assertEquals(Outcome.ALLOWED, limiter.tryConsume(CommandType.NEW_ORDER_SINGLE, WITHIN_WINDOW_NS));
+    assertEquals(
+        Outcome.ALLOWED, limiter.tryConsume(CommandType.NEW_ORDER_SINGLE, WITHIN_WINDOW_NS));
+    assertEquals(
+        Outcome.ALLOWED, limiter.tryConsume(CommandType.NEW_ORDER_SINGLE, WITHIN_WINDOW_NS));
     assertEquals(
         Outcome.REJECTED_INITIAL_WINDOW,
         limiter.tryConsume(CommandType.NEW_ORDER_SINGLE, WITHIN_WINDOW_NS));
@@ -152,8 +156,8 @@ final class PerTypeRateLimiterTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * After the initial window, AcceptQuote uses the normal bucket (burst=10). First wave: 10 ALLOWED,
-   * 11th REJECTED_RATE_LIMIT (not REJECTED_INITIAL_WINDOW — the label changes).
+   * After the initial window, AcceptQuote uses the normal bucket (burst=10). First wave: 10
+   * ALLOWED, 11th REJECTED_RATE_LIMIT (not REJECTED_INITIAL_WINDOW — the label changes).
    */
   @Test
   void tryConsume_acceptQuoteAfterInitialWindow_usesNormalBurst10() {
@@ -165,9 +169,7 @@ final class PerTypeRateLimiterTest {
           limiter.tryConsume(CommandType.ACCEPT_QUOTE, nowNs),
           "call " + (i + 1) + " expected ALLOWED");
     }
-    assertEquals(
-        Outcome.REJECTED_RATE_LIMIT,
-        limiter.tryConsume(CommandType.ACCEPT_QUOTE, nowNs));
+    assertEquals(Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.ACCEPT_QUOTE, nowNs));
   }
 
   /**
@@ -188,7 +190,8 @@ final class PerTypeRateLimiterTest {
     final long t200ms = t0 + 200_000_000L;
     assertEquals(Outcome.ALLOWED, limiter.tryConsume(CommandType.QUOTE_REQUEST, t200ms));
     // Second call at same time — no further refill, bucket empty again.
-    assertEquals(Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.QUOTE_REQUEST, t200ms));
+    assertEquals(
+        Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.QUOTE_REQUEST, t200ms));
   }
 
   // ---------------------------------------------------------------------------
@@ -200,8 +203,8 @@ final class PerTypeRateLimiterTest {
    * bucket is consulted (REJECTED_RATE_LIMIT rather than REJECTED_INITIAL_WINDOW).
    *
    * <p>We drain the initial bucket down to zero first so that if the initial bucket were mistakenly
-   * consulted its empty state would give REJECTED_INITIAL_WINDOW, making the test correctly detect a
-   * wrong boundary.
+   * consulted its empty state would give REJECTED_INITIAL_WINDOW, making the test correctly detect
+   * a wrong boundary.
    */
   @Test
   void tryConsume_atExactly60sBoundary_switchesToNormalMode() {
@@ -215,7 +218,8 @@ final class PerTypeRateLimiterTest {
         limiter.tryConsume(CommandType.ACCEPT_QUOTE, WITHIN_WINDOW_NS));
 
     // At exactly 60s, the normal bucket (burst=10) is used — all 10 should be ALLOWED.
-    final long boundary = AUTH_NANOS + PerTypeRateLimiter.FIRST_60S_WINDOW_NANOS; // = 60_000_000_000L
+    final long boundary =
+        AUTH_NANOS + PerTypeRateLimiter.FIRST_60S_WINDOW_NANOS; // = 60_000_000_000L
     for (int i = 0; i < 10; i++) {
       assertEquals(
           Outcome.ALLOWED,
@@ -224,17 +228,14 @@ final class PerTypeRateLimiterTest {
     }
     // 11th: normal bucket exhausted → REJECTED_RATE_LIMIT (not INITIAL_WINDOW).
     assertEquals(
-        Outcome.REJECTED_RATE_LIMIT,
-        limiter.tryConsume(CommandType.ACCEPT_QUOTE, boundary));
+        Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.ACCEPT_QUOTE, boundary));
   }
 
   // ---------------------------------------------------------------------------
   // Bucket isolation.
   // ---------------------------------------------------------------------------
 
-  /**
-   * Exhausting the QuoteRequest initial bucket must NOT affect AcceptQuote.
-   */
+  /** Exhausting the QuoteRequest initial bucket must NOT affect AcceptQuote. */
   @Test
   void tryConsume_quoteRequestExhausted_acceptQuoteUnaffected() {
     final var limiter = new PerTypeRateLimiter(AUTH_NANOS);
@@ -274,7 +275,8 @@ final class PerTypeRateLimiterTest {
           limiter.tryConsume(CommandType.ACCEPT_QUOTE, normalNs),
           "normal call " + (i + 1) + " expected ALLOWED");
     }
-    assertEquals(Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.ACCEPT_QUOTE, normalNs));
+    assertEquals(
+        Outcome.REJECTED_RATE_LIMIT, limiter.tryConsume(CommandType.ACCEPT_QUOTE, normalNs));
   }
 
   // ---------------------------------------------------------------------------

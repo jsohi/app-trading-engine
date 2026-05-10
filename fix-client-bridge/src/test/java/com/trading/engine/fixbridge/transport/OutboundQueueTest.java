@@ -16,14 +16,13 @@ import org.junit.jupiter.api.Test;
  * (ACCEPTED_DROPPED_RAWFIX vs. TERMINAL), wrap-around correctness, and every "never-drop" event
  * type exercised at capacity to confirm TERMINAL is returned when no {@code RawFix} is present.
  *
- * <p><b>Threading.</b> Single-threaded; {@link OutboundQueue} is not thread-safe per its
- * contract.
+ * <p><b>Threading.</b> Single-threaded; {@link OutboundQueue} is not thread-safe per its contract.
  *
  * <p><b>Drop policy summary.</b> When full, {@link OutboundQueue#offer(BrowserEvent)} scans from
- * the head and removes the first {@link BrowserEvent.RawFix} found (ACCEPTED_DROPPED_RAWFIX).
- * If no {@code RawFix} is present, the event is rejected (TERMINAL). All other event subtypes
- * ({@code ExecutionReport}, {@code OrderReject}, {@code BridgeStatus}, {@code AuthExpired},
- * {@code Quote}, etc.) are never dropped.
+ * the head and removes the first {@link BrowserEvent.RawFix} found (ACCEPTED_DROPPED_RAWFIX). If no
+ * {@code RawFix} is present, the event is rejected (TERMINAL). All other event subtypes ({@code
+ * ExecutionReport}, {@code OrderReject}, {@code BridgeStatus}, {@code AuthExpired}, {@code Quote},
+ * etc.) are never dropped.
  */
 final class OutboundQueueTest {
 
@@ -132,7 +131,8 @@ final class OutboundQueueTest {
 
     final OfferResult result = queue.offer(EXEC1);
 
-    assertEquals(OfferResult.ACCEPTED_DROPPED_RAWFIX, result, "offer must return ACCEPTED_DROPPED_RAWFIX");
+    assertEquals(
+        OfferResult.ACCEPTED_DROPPED_RAWFIX, result, "offer must return ACCEPTED_DROPPED_RAWFIX");
     assertEquals(4, queue.size(), "size must stay at capacity after drop+insert");
 
     assertSame(RAW2, queue.poll(), "RAW1 dropped; RAW2 should be first");
@@ -235,8 +235,8 @@ final class OutboundQueueTest {
     queue.offer(EXEC1);
     queue.offer(EXEC2);
     assertSame(EXEC1, queue.poll()); // head advances, creating wrap-around opportunity
-    queue.offer(EXEC3);              // tail wraps to slot 0
-    queue.offer(EXEC4);              // tail at slot 1 — full again (head=1, tail=1, size=2)
+    queue.offer(EXEC3); // tail wraps to slot 0
+    queue.offer(EXEC4); // tail at slot 1 — full again (head=1, tail=1, size=2)
 
     assertEquals(2, queue.size());
     assertEquals(OfferResult.TERMINAL, queue.offer(EXEC1), "no RawFix, must be TERMINAL");
@@ -289,15 +289,18 @@ final class OutboundQueueTest {
     queue.poll(); // Exec2
 
     // Fill: head=2, tail=2.
-    queue.offer(RAW1);  // ring[2], tail=3
+    queue.offer(RAW1); // ring[2], tail=3
     queue.offer(EXEC3); // ring[3], tail=0
     queue.offer(EXEC4); // ring[0], tail=1
-    queue.offer(RAW2);  // ring[1], tail=2  → full (size=4)
+    queue.offer(RAW2); // ring[1], tail=2  → full (size=4)
 
     assertEquals(4, queue.size());
 
     final OfferResult result = queue.offer(QUOTE1);
-    assertEquals(OfferResult.ACCEPTED_DROPPED_RAWFIX, result, "oldest RawFix at wrap boundary must be dropped");
+    assertEquals(
+        OfferResult.ACCEPTED_DROPPED_RAWFIX,
+        result,
+        "oldest RawFix at wrap boundary must be dropped");
     assertEquals(4, queue.size());
 
     // RAW1 was oldest and dropped; remaining in order: Exec3, Exec4, Raw2, Quote1.

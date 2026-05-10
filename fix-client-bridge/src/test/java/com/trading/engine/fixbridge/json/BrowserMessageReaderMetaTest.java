@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link BrowserMessageReader} covering the three capabilities added in APP-40
  * phase-6: {@code OrderStatusRequest} type recognition, optional {@code _meta} envelope parsing,
- * and structural validation of the {@code _meta} object. Each test name follows the
- * {@code methodUnderTest_scenario_expectedBehavior} convention.
+ * and structural validation of the {@code _meta} object. Each test name follows the {@code
+ * methodUnderTest_scenario_expectedBehavior} convention.
  *
  * <p>Threading: stateless — all methods under test are {@code static}. Tests are independent.
  */
@@ -270,9 +270,9 @@ final class BrowserMessageReaderMetaTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * A JSON unicode escape sequence inside an inner _meta key value. The production
-   * {@code scanStringEnd} rejects ALL backslash bytes, so any escape sequence in a string
-   * results in {@link JsonParseException#MALFORMED}. This test confirms that behavior.
+   * A JSON unicode escape sequence inside an inner _meta key value. The production {@code
+   * scanStringEnd} rejects ALL backslash bytes, so any escape sequence in a string results in
+   * {@link JsonParseException#MALFORMED}. This test confirms that behavior.
    *
    * <p>The wire protocol is pure ASCII; JSON escape sequences are explicitly out of scope.
    */
@@ -286,16 +286,14 @@ final class BrowserMessageReaderMetaTest {
     final var ex =
         assertThrows(
             JsonParseException.class,
-            () ->
-                BrowserMessageReader.parse(
-                    io.netty.buffer.Unpooled.wrappedBuffer(frame), out));
+            () -> BrowserMessageReader.parse(io.netty.buffer.Unpooled.wrappedBuffer(frame), out));
     assertSame(JsonParseException.MALFORMED, ex);
   }
 
   /**
    * Builds a frame whose _meta inner value contains a literal backslash byte without relying on
-   * Java unicode escape processing. The shape is:
-   * {@code {"type":"QuoteRequest","reqId":"R","symbol":"E","side":"Buy","qty":"1",
+   * Java unicode escape processing. The shape is: {@code
+   * {"type":"QuoteRequest","reqId":"R","symbol":"E","side":"Buy","qty":"1",
    * "_meta":{"foo":"\_bar"}}} where {@code \_} represents a literal 0x5C byte.
    */
   private static byte[] buildFrameWithBackslashInMeta() {

@@ -263,7 +263,11 @@ public final class JwtValidator implements AutoCloseable {
             ? claims.getExpirationTime().toInstant().getEpochSecond()
             : 0L;
 
-    return new ValidatedClaims(sub, jti, List.copyOf(accounts), expiryEpochSec);
+    final boolean ipPinned = extractIpPinnedClaim(claims);
+    final var roles = extractRolesClaim(claims);
+
+    return new ValidatedClaims(
+        sub, jti, List.copyOf(accounts), expiryEpochSec, ipPinned, List.copyOf(roles));
   }
 
   @Override
@@ -405,6 +409,54 @@ public final class JwtValidator implements AutoCloseable {
       DefaultJWTProcessor<SecurityContext> processor, JWKSource<SecurityContext> jwkSource) {}
 
   /**
+   * Extract the optional {@code ip_pinned} boolean claim used by the FIX client bridge to enforce
+   * remote-IP pinning across the WebSocket session lifetime (§3.3 / §20.4c).
+   *
+   * <p><b>Fail-secure default.</b> The claim defaults to {@code true} (pinning enforced) when
+   * absent, malformed, or any non-boolean type. Only an explicit JSON {@code false} disables
+   * pinning. This is by design: a token that omits the claim, or that an attacker has tampered with
+   * to substitute a non-boolean, must not silently bypass pinning.
+   *
+   * @param claims the validated JWT claims set
+   * @return {@code true} unless the claim is explicitly the JSON literal {@code false}
+   */
+  private static boolean extractIpPinnedClaim(final JWTClaimsSet claims) {
+    final var raw = claims.getClaim("ip_pinned");
+    if (raw instanceof Boolean b) {
+      return b;
+    }
+    return true;
+  }
+
+  /**
+   * Extract the optional {@code roles} claim — used by the FIX client bridge to gate the RawFix tap
+   * (audit_view) and to drive UI feature flags. Accepts a JSON array of strings or a single string
+   * for compatibility with older IdPs.
+   *
+   * <p>An absent, malformed, or empty claim yields an empty list. Empty strings inside the array
+   * are dropped so consumers can rely on every element being a non-empty role identifier.
+   *
+   * @param claims the validated JWT claims set
+   * @return the list of role identifiers, or an empty list when the claim is missing/invalid
+   */
+  private static List<String> extractRolesClaim(final JWTClaimsSet claims) {
+    final var raw = claims.getClaim("roles");
+    if (raw instanceof List<?> list) {
+      final var result = new ArrayList<String>(list.size());
+      for (final var item : list) {
+        if (item instanceof String s && !s.isEmpty()) {
+          result.add(s);
+        }
+      }
+      return result;
+    }
+    if (raw instanceof String s && !s.isEmpty()) {
+      return List.of(s);
+    }
+    return List.of();
+  }
+
+  /**
    * Extract the {@code accounts} claim as a list of strings. Handles both {@code List<String>} and
    * single-value string formats for flexibility.
    *
@@ -431,13 +483,46 @@ public final class JwtValidator implements AutoCloseable {
   /**
    * Validated JWT claims extracted after successful token verification.
    *
+   * <p>Both {@code ipPinned} and {@code roles} were added for the FIX client bridge (APP-40a §3.3 /
+   * §3.5 / §20.4c). The legacy four-arg convenience constructor preserves source compatibility for
+   * tests and any in-process consumer that doesn't care about pinning or roles — it pins by default
+   * (fail-secure) and supplies an empty roles list.
+   *
    * @param sub the subject claim (user identifier)
    * @param jti the JWT ID claim (for revocation tracking)
    * @param accounts the list of entitled account codes from the custom {@code accounts} claim
    * @param expiryEpochSec the token expiration time as epoch seconds
+   * @param ipPinned whether the bridge must enforce remote-IP pinning for this session — defaults
+   *     to {@code true} unless the JWT carries an explicit {@code "ip_pinned": false}
+   * @param roles list of role identifiers from the optional {@code roles} claim; empty when the
+   *     claim is absent or malformed
    */
   public record ValidatedClaims(
-      String sub, String jti, List<String> accounts, long expiryEpochSec) {}
+      String sub,
+      String jti,
+      List<String> accounts,
+      long expiryEpochSec,
+      boolean ipPinned,
+      List<String> roles) {
+
+    /**
+     * Backwards-compatible four-arg constructor used by code paths that pre-date the {@code
+     * ip_pinned} / {@code roles} claims. Defaults to {@code ipPinned=true} (fail-secure) and an
+     * empty roles list.
+     *
+     * @param sub the subject claim
+     * @param jti the JWT ID claim
+     * @param accounts the entitled accounts
+     * @param expiryEpochSec the token expiry as epoch seconds
+     */
+    public ValidatedClaims(
+        final String sub,
+        final String jti,
+        final List<String> accounts,
+        final long expiryEpochSec) {
+      this(sub, jti, accounts, expiryEpochSec, true, List.of());
+    }
+  }
 
   /**
    * Thrown when JWT validation fails. The message contains only the failure reason — never the

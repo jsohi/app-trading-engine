@@ -53,6 +53,7 @@ public final class MutableParsedMessage {
   public static final int TYPE_REJECT_QUOTE = 4;
   public static final int TYPE_NEW_ORDER_SINGLE = 5;
   public static final int TYPE_CANCEL_ORDER = 6;
+
   /** {@code OrderStatusRequest} — recovery path for STUCK/STUCK_LONG quote rows (§3.15). */
   public static final int TYPE_ORDER_STATUS_REQUEST = 7;
 
@@ -132,11 +133,11 @@ public final class MutableParsedMessage {
 
   /**
    * W3C trace-context {@code traceparent} extracted from the optional inbound {@code _meta}
-   * envelope (§3.6). Slice into {@link #scratch}; {@code (-1, 0)} when absent. The parser
-   * accepts any string here; {@link BrowserMessageReader#isValidTraceparent} is a separate
-   * validator the dispatcher runs to gate emission of {@code Error{reason:"malformed-traceparent"}}
-   * — the parser deliberately does NOT throw on a malformed traceparent so the carrying command
-   * still processes (per §3.6 "drop the trace context but keep processing the command").
+   * envelope (§3.6). Slice into {@link #scratch}; {@code (-1, 0)} when absent. The parser accepts
+   * any string here; {@link BrowserMessageReader#isValidTraceparent} is a separate validator the
+   * dispatcher runs to gate emission of {@code Error{reason:"malformed-traceparent"}} — the parser
+   * deliberately does NOT throw on a malformed traceparent so the carrying command still processes
+   * (per §3.6 "drop the trace context but keep processing the command").
    */
   public int traceparentOff = -1;
 

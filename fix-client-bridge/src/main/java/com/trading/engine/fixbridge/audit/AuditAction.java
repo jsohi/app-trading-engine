@@ -1,8 +1,8 @@
 package com.trading.engine.fixbridge.audit;
 
 /**
- * Closed taxonomy of bridge-side audit-action types (§3.7). Each constant's {@link #wireValue()}
- * is the canonical string written to the audit JSONL stream.
+ * Closed taxonomy of bridge-side audit-action types (§3.7). Each constant's {@link #wireValue()} is
+ * the canonical string written to the audit JSONL stream.
  *
  * <p><b>Scope.</b> Bridge-side actions ONLY — events the {@code :fix-client-bridge} Netty
  * dispatcher directly observes. Cluster-side actions (e.g. {@code pre_trade_block}, {@code
@@ -38,13 +38,17 @@ public enum AuditAction {
   /** Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.RejectQuote} received. */
   REJECT_QUOTE_RECEIVED("reject_quote_received"),
 
-  /** Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.NewOrderSingleCmd} received. */
+  /**
+   * Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.NewOrderSingleCmd} received.
+   */
   NEW_ORDER_RECEIVED("new_order_received"),
 
   /** Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.CancelOrder} received. */
   CANCEL_ORDER_RECEIVED("cancel_order_received"),
 
-  /** Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.OrderStatusRequest} received. */
+  /**
+   * Inbound {@link com.trading.engine.fixbridge.json.BrowserMessage.OrderStatusRequest} received.
+   */
   ORDER_STATUS_REQUEST("order_status_request"),
 
   /** Cluster reconciliation forwarded to the originating session (§4.5 / OrderReconciled). */

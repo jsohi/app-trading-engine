@@ -1,6 +1,5 @@
 package com.trading.engine.fixbridge.rawfix;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,21 +10,22 @@ import org.junit.jupiter.api.Test;
  * Unit tests for {@link RawFixRateLimiter}.
  *
  * <p>Covers: construction with defaults (burst starts full), construction validation (non-positive
- * burst and rate rejected), token exhaustion ({@code tryConsume} returns false when empty),
- * refill arithmetic (token accumulation after clock advance), burst cap enforcement (refill never
- * exceeds burst capacity), and edge cases (no clock advance, backwards clock).
+ * burst and rate rejected), token exhaustion ({@code tryConsume} returns false when empty), refill
+ * arithmetic (token accumulation after clock advance), burst cap enforcement (refill never exceeds
+ * burst capacity), and edge cases (no clock advance, backwards clock).
  *
  * <p>All arithmetic is verified against the token-bucket formula:
+ *
  * <pre>
  *   tokens_added = elapsed_ns * (rate_per_sec / 1_000_000_000)
  *   tokens       = min(capacity, tokens + tokens_added)
  * </pre>
  *
- * <p>Threading: not thread-safe per the class contract. Each test constructs its own
- * {@link RawFixRateLimiter} instance — no sharing.
+ * <p>Threading: not thread-safe per the class contract. Each test constructs its own {@link
+ * RawFixRateLimiter} instance — no sharing.
  *
- * <p>Allocation: tests freely allocate — zero-alloc constraint is verified in
- * {@link RawFixRateLimiterAllocTest}.
+ * <p>Allocation: tests freely allocate — zero-alloc constraint is verified in {@link
+ * RawFixRateLimiterAllocTest}.
  */
 final class RawFixRateLimiterTest {
 
@@ -37,8 +37,8 @@ final class RawFixRateLimiterTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * The bucket starts full (capacity == DEFAULT_BURST = 1000). The first 1000 consecutive
-   * {@code tryConsume} calls at the construction timestamp must all return {@code true}.
+   * The bucket starts full (capacity == DEFAULT_BURST = 1000). The first 1000 consecutive {@code
+   * tryConsume} calls at the construction timestamp must all return {@code true}.
    */
   @Test
   void ctor_defaults_burstStartsFull() {
@@ -98,9 +98,9 @@ final class RawFixRateLimiterTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * burst=10, rate=10/sec. Exhaust the bucket, then advance 1 ms (1_000_000 ns).
-   * Tokens added = 1_000_000 × (10 / 1_000_000_000) = 0.01 — well below 1.0.
-   * The 11th consecutive call must return false.
+   * burst=10, rate=10/sec. Exhaust the bucket, then advance 1 ms (1_000_000 ns). Tokens added =
+   * 1_000_000 × (10 / 1_000_000_000) = 0.01 — well below 1.0. The 11th consecutive call must return
+   * false.
    */
   @Test
   void tryConsume_refillAt1msNanos_doesNotAddTokens() {
@@ -115,9 +115,8 @@ final class RawFixRateLimiterTest {
   }
 
   /**
-   * burst=10, rate=10/sec. Exhaust the bucket. Advance 200 ms (200_000_000 ns).
-   * Tokens added = 200_000_000 × (10 / 1_000_000_000) = 2.0.
-   * Next 2 {@code tryConsume} calls succeed; 3rd fails.
+   * burst=10, rate=10/sec. Exhaust the bucket. Advance 200 ms (200_000_000 ns). Tokens added =
+   * 200_000_000 × (10 / 1_000_000_000) = 2.0. Next 2 {@code tryConsume} calls succeed; 3rd fails.
    */
   @Test
   void tryConsume_refill200ms_addsTwoTokens() {
@@ -134,9 +133,9 @@ final class RawFixRateLimiterTest {
   }
 
   /**
-   * burst=10, rate=1000/sec. Consume 5 tokens, then advance 1 second.
-   * Without the cap: tokens = 5 + (1_000_000_000 × 1000 / 1_000_000_000) = 5 + 1000 = 1005.
-   * With cap: tokens = min(10, 1005) = 10. Only 10 more calls should succeed.
+   * burst=10, rate=1000/sec. Consume 5 tokens, then advance 1 second. Without the cap: tokens = 5 +
+   * (1_000_000_000 × 1000 / 1_000_000_000) = 5 + 1000 = 1005. With cap: tokens = min(10, 1005) =
+   * 10. Only 10 more calls should succeed.
    */
   @Test
   void tryConsume_refillSaturatesAtBurst() {
@@ -163,8 +162,8 @@ final class RawFixRateLimiterTest {
 
   /**
    * When the clock does not advance ({@code nowNs == lastRefillNs}), elapsed is 0 and the refill
-   * method returns immediately. The bucket can only drain. Exhaust it at T0, then confirm the
-   * very next call at T0 is also false.
+   * method returns immediately. The bucket can only drain. Exhaust it at T0, then confirm the very
+   * next call at T0 is also false.
    */
   @Test
   void tryConsume_clockDoesntAdvance_consumesUntilEmpty() {
@@ -177,17 +176,18 @@ final class RawFixRateLimiterTest {
   }
 
   /**
-   * A backwards clock call (nowNs < lastRefillNs) must not corrupt state. The refill guard
-   * treats elapsed ≤ 0 as a no-op and leaves {@code lastRefillNs} alone. A subsequent
-   * forward call must still correctly accumulate elapsed time from the previous {@code lastRefillNs}.
+   * A backwards clock call (nowNs < lastRefillNs) must not corrupt state. The refill guard treats
+   * elapsed ≤ 0 as a no-op and leaves {@code lastRefillNs} alone. A subsequent forward call must
+   * still correctly accumulate elapsed time from the previous {@code lastRefillNs}.
    *
    * <p>Sequence:
+   *
    * <ol>
-   *   <li>Exhaust burst=10 at T0.</li>
-   *   <li>Advance 100 ms (→ T0+100ms) — refill = 100ms × 10/s = 1.0 token. One consume succeeds.</li>
-   *   <li>Call with T0 (backwards) — no refill, state is unchanged.</li>
-   *   <li>Call again at T0+100ms — lastRefillNs was T0+100ms; elapsed=0 — false (empty).</li>
-   *   <li>Advance another 100 ms (→ T0+200ms) — refill another 1.0 token. Next call succeeds.</li>
+   *   <li>Exhaust burst=10 at T0.
+   *   <li>Advance 100 ms (→ T0+100ms) — refill = 100ms × 10/s = 1.0 token. One consume succeeds.
+   *   <li>Call with T0 (backwards) — no refill, state is unchanged.
+   *   <li>Call again at T0+100ms — lastRefillNs was T0+100ms; elapsed=0 — false (empty).
+   *   <li>Advance another 100 ms (→ T0+200ms) — refill another 1.0 token. Next call succeeds.
    * </ol>
    */
   @Test

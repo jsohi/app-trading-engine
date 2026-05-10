@@ -105,7 +105,7 @@ final class SessionIdTest {
   void toString_includesValue() {
     final var id = new SessionId("MY-SESSION-ID");
     final var str = id.toString();
-    assertTrue(str.contains("MY-SESSION-ID"),
-        "toString() should contain the wrapped value; got: " + str);
+    assertTrue(
+        str.contains("MY-SESSION-ID"), "toString() should contain the wrapped value; got: " + str);
   }
 }

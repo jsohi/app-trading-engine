@@ -17,8 +17,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * <p>Gated by {@code -DrunAllocTests=true} — opt-in only because GC counts can be advanced by
  * unrelated background processes on a shared CI host (locked §21, §23).
  *
- * <p>Threading: single-threaded. {@link PiiMask} is thread-safe per its contract but the test
- * owns the instance exclusively.
+ * <p>Threading: single-threaded. {@link PiiMask} is thread-safe per its contract but the test owns
+ * the instance exclusively.
  */
 @EnabledIfSystemProperty(named = "runAllocTests", matches = "true")
 final class PiiMaskAllocTest {
@@ -27,9 +27,9 @@ final class PiiMaskAllocTest {
   private static final int MEASURED_ITERATIONS = 100_000;
 
   /**
-   * A realistic 250-byte FIX NewOrderSingle message with Account (tag 1) and multiple
-   * non-masked fields. The Account value is 8 characters so the star replacement exercises
-   * the masking branch rather than the trivial empty-value path.
+   * A realistic 250-byte FIX NewOrderSingle message with Account (tag 1) and multiple non-masked
+   * fields. The Account value is 8 characters so the star replacement exercises the masking branch
+   * rather than the trivial empty-value path.
    */
   private static final byte[] SAMPLE_MESSAGE =
       ("8=FIX.4.4|9=187|35=D|49=BRIDGE01|56=EXCHANGE|34=42|52=20240410-12:00:00.000|"
@@ -38,16 +38,17 @@ final class PiiMaskAllocTest {
           .getBytes(StandardCharsets.US_ASCII);
 
   /**
-   * Pre-allocate src and dst outside the loop so the loop itself is zero-alloc. The src is
-   * a copy of the sample so repeated calls don't corrupt it (mask writes stars into dst, not
-   * src — but the in-place variant could; we use separate buffers to keep the loop clean).
+   * Pre-allocate src and dst outside the loop so the loop itself is zero-alloc. The src is a copy
+   * of the sample so repeated calls don't corrupt it (mask writes stars into dst, not src — but the
+   * in-place variant could; we use separate buffers to keep the loop clean).
    */
   private static final byte[] SRC = SAMPLE_MESSAGE.clone();
+
   private static final byte[] DST = new byte[SRC.length];
 
   /**
-   * Run {@link PiiMask#mask} 100k times on a realistic message and assert no GC collection
-   * fires after JIT warmup. Confirms the zero-alloc guarantee documented on the class.
+   * Run {@link PiiMask#mask} 100k times on a realistic message and assert no GC collection fires
+   * after JIT warmup. Confirms the zero-alloc guarantee documented on the class.
    */
   @Test
   void mask_repeatedFullMessage_zeroAlloc() {
@@ -73,9 +74,7 @@ final class PiiMaskAllocTest {
     final long afterGc = totalGcCount();
 
     assertEquals(
-        beforeGc,
-        afterGc,
-        "PiiMask.mask advanced GC count from " + beforeGc + " to " + afterGc);
+        beforeGc, afterGc, "PiiMask.mask advanced GC count from " + beforeGc + " to " + afterGc);
   }
 
   // ---------------------------------------------------------------------------

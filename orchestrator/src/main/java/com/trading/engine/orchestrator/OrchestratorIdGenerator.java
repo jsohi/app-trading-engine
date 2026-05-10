@@ -103,7 +103,8 @@ public final class OrchestratorIdGenerator {
    * @param prefix non-empty ASCII ID prefix, e.g., {@code "QTE"}
    * @param clock injected epoch-nanosecond clock; used once at construction to seed the counter
    * @throws NullPointerException if {@code prefix} or {@code clock} is null
-   * @throws IllegalArgumentException if prefix is invalid (see {@link #OrchestratorIdGenerator(String)})
+   * @throws IllegalArgumentException if prefix is invalid (see {@link
+   *     #OrchestratorIdGenerator(String)})
    */
   public OrchestratorIdGenerator(final String prefix, final EpochNanoClock clock) {
     this(prefix, computeRestartSafeSeed(clock));

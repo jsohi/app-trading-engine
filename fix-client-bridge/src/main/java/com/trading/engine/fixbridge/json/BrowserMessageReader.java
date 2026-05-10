@@ -80,8 +80,10 @@ public final class BrowserMessageReader {
   private static final byte[] K_ORD_TYPE = bytes("ordType");
   private static final byte[] K_TIME_IN_FORCE = bytes("timeInForce");
   private static final byte[] K_ACCOUNT = bytes("account");
+
   /** Optional trace-context envelope (§3.6); value is a JSON object. */
   private static final byte[] K_META = bytes("_meta");
+
   /** Inner key inside {@link #K_META} carrying the W3C traceparent. */
   private static final byte[] K_TRACEPARENT = bytes("traceparent");
 
@@ -687,13 +689,13 @@ public final class BrowserMessageReader {
   }
 
   /**
-   * Validate that a {@code traceparent} slice matches the W3C trace-context v00 wire format:
-   * {@code <2-hex-version>-<32-hex-trace-id>-<16-hex-parent-id>-<2-hex-flags>} (total 55 bytes).
+   * Validate that a {@code traceparent} slice matches the W3C trace-context v00 wire format: {@code
+   * <2-hex-version>-<32-hex-trace-id>-<16-hex-parent-id>-<2-hex-flags>} (total 55 bytes).
    *
-   * <p>This is invoked by the dispatcher after parsing — the parser deliberately does not throw
-   * on a bad traceparent so the carrying command still processes (per §3.6). When this returns
-   * {@code false} the dispatcher MUST emit {@code Error{reason:"malformed-traceparent"}} for the
-   * client and drop the trace context (do NOT seed the downstream span).
+   * <p>This is invoked by the dispatcher after parsing — the parser deliberately does not throw on
+   * a bad traceparent so the carrying command still processes (per §3.6). When this returns {@code
+   * false} the dispatcher MUST emit {@code Error{reason:"malformed-traceparent"}} for the client
+   * and drop the trace context (do NOT seed the downstream span).
    *
    * @param buf the scratch buffer
    * @param off slice offset

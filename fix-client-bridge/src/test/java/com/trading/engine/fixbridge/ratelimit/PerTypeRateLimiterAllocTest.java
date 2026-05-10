@@ -10,12 +10,12 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
  * Allocation regression tripwire for {@link PerTypeRateLimiter}. Mirrors the {@code
- * GarbageCollectorMXBean.getCollectionCount()} delta pattern from other {@code *AllocTest}s in
- * this module: warm the JIT, sample GC count, run {@link PerTypeRateLimiter#tryConsume} in a tight
- * loop, sample again, assert no GC advanced.
+ * GarbageCollectorMXBean.getCollectionCount()} delta pattern from other {@code *AllocTest}s in this
+ * module: warm the JIT, sample GC count, run {@link PerTypeRateLimiter#tryConsume} in a tight loop,
+ * sample again, assert no GC advanced.
  *
- * <p>Gated by {@code -DrunAllocTests=true} (locked §21, §23) — opt-in only because GC counts can
- * be advanced by unrelated background processes on a shared CI host.
+ * <p>Gated by {@code -DrunAllocTests=true} (locked §21, §23) — opt-in only because GC counts can be
+ * advanced by unrelated background processes on a shared CI host.
  *
  * <p>Threading: single-threaded. The {@link PerTypeRateLimiter} is not thread-safe per its
  * contract; the test owns it exclusively.
@@ -27,15 +27,15 @@ final class PerTypeRateLimiterAllocTest {
   private static final int MEASURED_ITERATIONS = 100_000;
 
   /**
-   * Auth anchor at a fixed offset to keep arithmetic deterministic.
-   * Using zero would risk underflow in nanosecond subtraction during warmup.
+   * Auth anchor at a fixed offset to keep arithmetic deterministic. Using zero would risk underflow
+   * in nanosecond subtraction during warmup.
    */
   private static final long AUTH_NANOS = 1_000_000_000_000L; // 1000 s in nanos
 
   /**
-   * Advance 200 ms per iteration — 0.2 s × 5 tokens/s = 1.0 token refilled per step.
-   * This keeps the QuoteRequest normal bucket from depleting, ensuring every iteration
-   * takes the ALLOWED path (the hot path).
+   * Advance 200 ms per iteration — 0.2 s × 5 tokens/s = 1.0 token refilled per step. This keeps the
+   * QuoteRequest normal bucket from depleting, ensuring every iteration takes the ALLOWED path (the
+   * hot path).
    */
   private static final long STEP_NS = 200_000_000L; // 200 ms
 

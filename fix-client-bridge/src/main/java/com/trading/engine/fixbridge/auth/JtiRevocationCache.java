@@ -5,17 +5,18 @@ import org.agrona.collections.Object2LongHashMap;
 /**
  * Bounded JTI ({@code JWT id}) revocation cache for the bridge auth handler (§3.3).
  *
- * <p><b>Purpose.</b> Tracks JWT identifiers that have been revoked by user sign-out so a
- * subsequent {@code Auth} frame carrying the same JTI is rejected (close 4001). Bounded at
- * {@link #DEFAULT_MAX_ENTRIES} entries with FIFO eviction; per-entry TTL = the JWT's remaining
- * {@code exp} so the entry naturally expires at the same time the underlying token would have.
+ * <p><b>Purpose.</b> Tracks JWT identifiers that have been revoked by user sign-out so a subsequent
+ * {@code Auth} frame carrying the same JTI is rejected (close 4001). Bounded at {@link
+ * #DEFAULT_MAX_ENTRIES} entries with FIFO eviction; per-entry TTL = the JWT's remaining {@code exp}
+ * so the entry naturally expires at the same time the underlying token would have.
  *
  * <p><b>Sign-out flow (§3.3 / §3.7 / §4.9).</b>
+ *
  * <ol>
- *   <li>Client calls {@code tokenProvider.signOut()} which issues an HTTPS request to the
- *       bridge's revocation endpoint.
- *   <li>Bridge {@link #revoke(String, long)}s the JTI with the JWT's {@code exp} as the TTL
- *       upper bound.
+ *   <li>Client calls {@code tokenProvider.signOut()} which issues an HTTPS request to the bridge's
+ *       revocation endpoint.
+ *   <li>Bridge {@link #revoke(String, long)}s the JTI with the JWT's {@code exp} as the TTL upper
+ *       bound.
  *   <li>Bridge looks up {@code subToSessionIds[sub]} (in {@code SessionQuoteIndex}) and emits
  *       {@code SessionTerminated} + WS close 4002 to every other session of that user.
  *   <li>Subsequent {@code Auth} frames presenting the same JTI are rejected (close 4001).
@@ -64,8 +65,8 @@ public final class JtiRevocationCache {
   /**
    * Construct a cache with a custom capacity.
    *
-   * @param maxEntries hard cap on resident entries; the (maxEntries+1)-th revoke evicts the
-   *     oldest insertion
+   * @param maxEntries hard cap on resident entries; the (maxEntries+1)-th revoke evicts the oldest
+   *     insertion
    * @throws IllegalArgumentException if {@code maxEntries <= 0}
    */
   public JtiRevocationCache(final int maxEntries) {
@@ -82,14 +83,14 @@ public final class JtiRevocationCache {
   }
 
   /**
-   * Mark {@code jti} as revoked until {@code expEpochNs}. Idempotent: re-revoking an existing
-   * entry refreshes its expiry (taking the later of the two if the new exp is further in the
-   * future) but does NOT count as a fresh insertion.
+   * Mark {@code jti} as revoked until {@code expEpochNs}. Idempotent: re-revoking an existing entry
+   * refreshes its expiry (taking the later of the two if the new exp is further in the future) but
+   * does NOT count as a fresh insertion.
    *
    * <p>If the cache is at capacity, the oldest insertion is evicted (FIFO). Eviction is silent —
-   * the cache makes no attempt to alert the operator. Practical reasoning: at the
-   * {@link #DEFAULT_MAX_ENTRIES} default and the JWT 15-min TTL convention, sustained sign-out
-   * rates above ~1100/min would be required to force eviction; well above any realistic load.
+   * the cache makes no attempt to alert the operator. Practical reasoning: at the {@link
+   * #DEFAULT_MAX_ENTRIES} default and the JWT 15-min TTL convention, sustained sign-out rates above
+   * ~1100/min would be required to force eviction; well above any realistic load.
    *
    * @param jti JWT id to revoke (non-null, non-empty)
    * @param expEpochNs JWT exp claim in epoch nanoseconds — used as the upper bound for {@link
@@ -127,9 +128,9 @@ public final class JtiRevocationCache {
   }
 
   /**
-   * Check whether {@code jti} is revoked at {@code nowEpochNs}. An entry is considered
-   * "revoked" iff present in the cache AND not yet past its recorded exp; expired entries are
-   * lazy-evicted on read so they do not consume the {@link #maxEntries} budget.
+   * Check whether {@code jti} is revoked at {@code nowEpochNs}. An entry is considered "revoked"
+   * iff present in the cache AND not yet past its recorded exp; expired entries are lazy-evicted on
+   * read so they do not consume the {@link #maxEntries} budget.
    *
    * @param jti JWT id to check (may be null — always returns false)
    * @param nowEpochNs current epoch-nanosecond time (from injected {@code EpochNanoClock})

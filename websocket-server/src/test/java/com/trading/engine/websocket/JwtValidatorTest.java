@@ -1,6 +1,7 @@
 package com.trading.engine.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -459,5 +460,79 @@ final class JwtValidatorTest {
     final var jwt = new SignedJWT(header, claims);
     jwt.sign(rsaSigner);
     return jwt.serialize();
+  }
+
+  // --- ip_pinned claim ---
+
+  @Test
+  void validate_ipPinnedClaimAbsent_defaultsToTrue() throws Exception {
+    final var validator = buildTestValidator();
+    // buildValidClaimsSet() does not add ip_pinned → claim absent → must default to true.
+    final var claims = signWithRs256(buildValidClaimsSet());
+
+    final var result = validator.validate(claims);
+
+    assertTrue(result.ipPinned(), "Absent ip_pinned claim must default to true (fail-secure)");
+  }
+
+  @Test
+  void validate_ipPinnedClaimFalse_returnsFalse() throws Exception {
+    final var validator = buildTestValidator();
+    final var claims =
+        new JWTClaimsSet.Builder(buildValidClaimsSet()).claim("ip_pinned", false).build();
+
+    final var result = validator.validate(signWithRs256(claims));
+
+    assertFalse(result.ipPinned(), "Explicit ip_pinned=false must be honoured");
+  }
+
+  @Test
+  void validate_ipPinnedClaimNonBoolean_defaultsToTrue() throws Exception {
+    final var validator = buildTestValidator();
+    // Non-boolean value "yes" → fail-secure → true.
+    final var claims =
+        new JWTClaimsSet.Builder(buildValidClaimsSet()).claim("ip_pinned", "yes").build();
+
+    final var result = validator.validate(signWithRs256(claims));
+
+    assertTrue(result.ipPinned(), "Non-boolean ip_pinned claim must default to true (fail-secure)");
+  }
+
+  // --- roles claim ---
+
+  @Test
+  void validate_rolesClaimList_returnsList() throws Exception {
+    final var validator = buildTestValidator();
+    final var claims =
+        new JWTClaimsSet.Builder(buildValidClaimsSet())
+            .claim("roles", List.of("audit_view", "trader"))
+            .build();
+
+    final var result = validator.validate(signWithRs256(claims));
+
+    assertEquals(List.of("audit_view", "trader"), result.roles());
+  }
+
+  @Test
+  void validate_rolesClaimSingleString_wrappedAsList() throws Exception {
+    final var validator = buildTestValidator();
+    final var claims =
+        new JWTClaimsSet.Builder(buildValidClaimsSet()).claim("roles", "audit_view").build();
+
+    final var result = validator.validate(signWithRs256(claims));
+
+    assertEquals(
+        List.of("audit_view"),
+        result.roles(),
+        "Single-string roles claim must be wrapped in a list");
+  }
+
+  @Test
+  void validate_rolesClaimAbsent_emptyList() throws Exception {
+    final var validator = buildTestValidator();
+    // buildValidClaimsSet() has no roles claim.
+    final var result = validator.validate(signWithRs256(buildValidClaimsSet()));
+
+    assertTrue(result.roles().isEmpty(), "Absent roles claim must yield an empty list");
   }
 }

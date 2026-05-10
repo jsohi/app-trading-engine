@@ -21,22 +21,19 @@ class AuditLoggerNoopTest {
 
   @Test
   void instance_isNotNull() {
-    assertNotNull(AuditLogger.Noop.INSTANCE,
-        "AuditLogger.Noop.INSTANCE must not be null");
+    assertNotNull(AuditLogger.Noop.INSTANCE, "AuditLogger.Noop.INSTANCE must not be null");
   }
 
   @Test
   void instance_isSingleton_sameReferenceEveryAccess() {
     final var first = AuditLogger.Noop.INSTANCE;
     final var second = AuditLogger.Noop.INSTANCE;
-    assertSame(first, second,
-        "INSTANCE must return the same object reference on every access");
+    assertSame(first, second, "INSTANCE must return the same object reference on every access");
   }
 
   @Test
   void instance_implementsAuditLogger() {
-    assertTrue(AuditLogger.Noop.INSTANCE instanceof AuditLogger,
-        "Noop must implement AuditLogger");
+    assertTrue(AuditLogger.Noop.INSTANCE instanceof AuditLogger, "Noop must implement AuditLogger");
   }
 
   // ===========================================================================
@@ -45,7 +42,8 @@ class AuditLoggerNoopTest {
 
   @Test
   void isWritable_returnsTrue() {
-    assertTrue(AuditLogger.Noop.INSTANCE.isWritable(),
+    assertTrue(
+        AuditLogger.Noop.INSTANCE.isWritable(),
         "Noop.isWritable() must return true — always-healthy stub for APP-40a");
   }
 
@@ -57,24 +55,24 @@ class AuditLoggerNoopTest {
   void record_allNullStrings_doesNotThrow() {
     // Verifies null-tolerance for every nullable string parameter.
     AuditLogger.Noop.INSTANCE.record(
-        0L,          // tsNs
-        null,        // userId (null for pre-auth)
-        null,        // jti
-        null,        // sourceIp
+        0L, // tsNs
+        null, // userId (null for pre-auth)
+        null, // jti
+        null, // sourceIp
         AuditAction.AUTH_FAIL, // action (non-null per contract)
-        null,        // symbol
-        null,        // side
-        null,        // qtyStr
-        null,        // priceStr
-        null,        // ordType
-        null,        // tif
-        null,        // account
-        null,        // clOrdId
-        null,        // origClOrdId
-        null,        // quoteId
-        null,        // result
-        null,        // failureReason
-        null);       // traceparent
+        null, // symbol
+        null, // side
+        null, // qtyStr
+        null, // priceStr
+        null, // ordType
+        null, // tif
+        null, // account
+        null, // clOrdId
+        null, // origClOrdId
+        null, // quoteId
+        null, // result
+        null, // failureReason
+        null); // traceparent
     // If we get here without exception the no-op contract is satisfied.
   }
 
@@ -111,8 +109,19 @@ class AuditLoggerNoopTest {
           "jti",
           "127.0.0.1",
           action,
-          null, null, null, null, null, null, null,
-          null, null, null, "ok", null, null);
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "ok",
+          null,
+          null);
     }
   }
 
@@ -125,9 +134,19 @@ class AuditLoggerNoopTest {
         null,
         "10.0.0.1",
         AuditAction.FRAME_OVERSIZED_DROP,
-        null, null, null, null, null, null, null,
-        null, null, null,
-        "dropped", "oversized", null);
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "dropped",
+        "oversized",
+        null);
   }
 
   @Test
@@ -139,7 +158,18 @@ class AuditLoggerNoopTest {
         "jti",
         "127.0.0.1",
         AuditAction.AUTH_SUCCESS,
-        null, null, null, null, null, null, null,
-        null, null, null, "ok", null, null);
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "ok",
+        null,
+        null);
   }
 }

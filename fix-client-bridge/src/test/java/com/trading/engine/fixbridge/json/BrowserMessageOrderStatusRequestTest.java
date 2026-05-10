@@ -20,8 +20,7 @@ class BrowserMessageOrderStatusRequestTest {
   @Test
   void orderStatusRequest_clOrdId_returnsConstructorArg() {
     final var msg = new BrowserMessage.OrderStatusRequest("C-1");
-    assertEquals("C-1", msg.clOrdId(),
-        "clOrdId() must return the string supplied at construction");
+    assertEquals("C-1", msg.clOrdId(), "clOrdId() must return the string supplied at construction");
   }
 
   @Test
@@ -37,9 +36,9 @@ class BrowserMessageOrderStatusRequestTest {
   @Test
   void orderStatusRequest_isBrowserMessage() {
     final BrowserMessage msg = new BrowserMessage.OrderStatusRequest("C-2");
-    assertTrue(msg instanceof BrowserMessage,
-        "OrderStatusRequest must be a BrowserMessage");
-    assertTrue(msg instanceof BrowserMessage.OrderStatusRequest,
+    assertTrue(msg instanceof BrowserMessage, "OrderStatusRequest must be a BrowserMessage");
+    assertTrue(
+        msg instanceof BrowserMessage.OrderStatusRequest,
         "object must be an instance of the concrete record type");
   }
 
@@ -51,7 +50,9 @@ class BrowserMessageOrderStatusRequestTest {
   void orderStatusRequest_equality_sameClOrdId_areEqual() {
     final var a = new BrowserMessage.OrderStatusRequest("C-1");
     final var b = new BrowserMessage.OrderStatusRequest("C-1");
-    assertEquals(a, b,
+    assertEquals(
+        a,
+        b,
         "two OrderStatusRequest records with the same clOrdId must be equal (record equality)");
   }
 
@@ -59,8 +60,7 @@ class BrowserMessageOrderStatusRequestTest {
   void orderStatusRequest_equality_differentClOrdId_notEqual() {
     final var a = new BrowserMessage.OrderStatusRequest("C-1");
     final var b = new BrowserMessage.OrderStatusRequest("C-2");
-    assertNotEquals(a, b,
-        "records with different clOrdId values must not be equal");
+    assertNotEquals(a, b, "records with different clOrdId values must not be equal");
   }
 
   @Test
@@ -77,7 +77,6 @@ class BrowserMessageOrderStatusRequestTest {
   void orderStatusRequest_hashCode_equalObjectsHaveSameHash() {
     final var a = new BrowserMessage.OrderStatusRequest("C-1");
     final var b = new BrowserMessage.OrderStatusRequest("C-1");
-    assertEquals(a.hashCode(), b.hashCode(),
-        "equal records must have the same hashCode");
+    assertEquals(a.hashCode(), b.hashCode(), "equal records must have the same hashCode");
   }
 }

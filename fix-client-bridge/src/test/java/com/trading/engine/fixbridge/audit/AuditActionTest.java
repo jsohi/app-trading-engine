@@ -3,7 +3,6 @@ package com.trading.engine.fixbridge.audit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.EnumSet;
 import java.util.HashSet;
 import org.junit.jupiter.api.Test;
 
@@ -24,8 +23,8 @@ class AuditActionTest {
     for (final var a : values) {
       wireValues.add(a.wireValue());
     }
-    assertEquals(values.length, wireValues.size(),
-        "every AuditAction must have a unique wireValue()");
+    assertEquals(
+        values.length, wireValues.size(), "every AuditAction must have a unique wireValue()");
   }
 
   // ===========================================================================
@@ -34,7 +33,9 @@ class AuditActionTest {
 
   @Test
   void values_exactlySeventeenConstants() {
-    assertEquals(17, AuditAction.values().length,
+    assertEquals(
+        17,
+        AuditAction.values().length,
         "AuditAction must have exactly 17 constants per §3.7 locked taxonomy");
   }
 
@@ -153,8 +154,8 @@ class AuditActionTest {
       actual.add(a.wireValue());
     }
 
-    assertEquals(expected, actual,
-        "AuditAction wire-value set must exactly match the locked §3.7 taxonomy");
+    assertEquals(
+        expected, actual, "AuditAction wire-value set must exactly match the locked §3.7 taxonomy");
   }
 
   // ===========================================================================

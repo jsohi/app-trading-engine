@@ -4,10 +4,10 @@ package com.trading.engine.fixbridge.rawfix;
  * Per-session token-bucket rate limiter for {@code RawFix} debug-event emission (§3.5).
  *
  * <p><b>Purpose.</b> Caps {@code RawFix} emission at {@link #DEFAULT_RATE_PER_SEC} frames per
- * second per session so a debug-toggled session cannot DoS the bridge's outbound queue. Drops
- * past the cap are surfaced via the {@code fixbridge_rawfix_dropped_total{session,reason}}
- * counter (the dispatcher increments on each rejected frame; this class only answers the
- * accept/reject question).
+ * second per session so a debug-toggled session cannot DoS the bridge's outbound queue. Drops past
+ * the cap are surfaced via the {@code fixbridge_rawfix_dropped_total{session,reason}} counter (the
+ * dispatcher increments on each rejected frame; this class only answers the accept/reject
+ * question).
  *
  * <p><b>Threading.</b> NOT thread-safe. Owned by the per-session Netty handler on the channel's
  * single-threaded event loop.
@@ -24,8 +24,8 @@ public final class RawFixRateLimiter {
 
   /**
    * Default sustained rate — 1000 frames per second per session. Locked from §3.5 wire-protocol
-   * concerns: at 1000/s/session × default 256 max sessions, the bridge's outbound queue (4096
-   * per session, §3.1) absorbs the worst-case fan-in without exceeding terminal-overflow.
+   * concerns: at 1000/s/session × default 256 max sessions, the bridge's outbound queue (4096 per
+   * session, §3.1) absorbs the worst-case fan-in without exceeding terminal-overflow.
    */
   public static final double DEFAULT_RATE_PER_SEC = 1000.0;
 
@@ -75,9 +75,9 @@ public final class RawFixRateLimiter {
   }
 
   /**
-   * Attempt to consume one token. Returns {@code true} iff a token was available (frame may
-   * proceed downstream), {@code false} if the rate limit was hit (frame must be dropped and the
-   * dispatcher MUST increment {@code fixbridge_rawfix_dropped_total}).
+   * Attempt to consume one token. Returns {@code true} iff a token was available (frame may proceed
+   * downstream), {@code false} if the rate limit was hit (frame must be dropped and the dispatcher
+   * MUST increment {@code fixbridge_rawfix_dropped_total}).
    *
    * @param nowNs current {@code System.nanoTime()}
    * @return {@code true} if a token was consumed; {@code false} if rate-limited

@@ -19,11 +19,11 @@ import java.util.Arrays;
  * {@code <digits>=<value>|<digits>=<value>|...|<digits>=<value>|} (terminating {@code |} optional
  * but produced by the RawFixTap path).
  *
- * <p><b>Output guarantee.</b> The destination buffer has the same byte length as the source.
- * Masked tag values are overwritten with {@code '*'} (0x2A), one star per source byte —
- * preserving byte-length for UTF-8 multibyte values too (an Account name with an umlaut still
- * masks correctly because we operate on bytes, not codepoints). Tag numbers, the {@code '='}
- * separator, and the {@code '|'} delimiter are preserved verbatim.
+ * <p><b>Output guarantee.</b> The destination buffer has the same byte length as the source. Masked
+ * tag values are overwritten with {@code '*'} (0x2A), one star per source byte — preserving
+ * byte-length for UTF-8 multibyte values too (an Account name with an umlaut still masks correctly
+ * because we operate on bytes, not codepoints). Tag numbers, the {@code '='} separator, and the
+ * {@code '|'} delimiter are preserved verbatim.
  *
  * <p><b>Threading.</b> {@link #mask(byte[], int, int, byte[], int)} is stateless w.r.t. instance
  * fields after construction (only reads the immutable {@link #sortedTagsToMask}), so a single
@@ -39,8 +39,8 @@ import java.util.Arrays;
 public final class PiiMask {
 
   /**
-   * Default FIX 4.4 PII masklist (sorted ascending). Sourced from §3.5 — covers regulated-PII
-   * tags from GDPR / FINRA / MiFID II.
+   * Default FIX 4.4 PII masklist (sorted ascending). Sourced from §3.5 — covers regulated-PII tags
+   * from GDPR / FINRA / MiFID II.
    */
   public static final int[] DEFAULT_MASK_TAGS = {
     1, // Account
@@ -120,9 +120,9 @@ public final class PiiMask {
    * overwrites masked-tag value bytes with {@code '*'}. Output length == input length.
    *
    * <p>Behaviour on malformed input: bytes that don't conform to the {@code <digits>=<value>|}
-   * shape are copied verbatim — this method does NOT validate FIX structure. Upstream code
-   * (Artio) is the authoritative parser; this method's contract is "do no worse than passthrough
-   * if the input is malformed."
+   * shape are copied verbatim — this method does NOT validate FIX structure. Upstream code (Artio)
+   * is the authoritative parser; this method's contract is "do no worse than passthrough if the
+   * input is malformed."
    *
    * @param src source buffer (with SOH already substituted for {@code '|'})
    * @param srcOff start offset in {@code src}
@@ -135,11 +135,7 @@ public final class PiiMask {
    * @throws IndexOutOfBoundsException if either slice falls outside its buffer
    */
   public int mask(
-      final byte[] src,
-      final int srcOff,
-      final int srcLen,
-      final byte[] dst,
-      final int dstOff) {
+      final byte[] src, final int srcOff, final int srcLen, final byte[] dst, final int dstOff) {
     if (src == null) {
       throw new NullPointerException("src must not be null");
     }
@@ -152,12 +148,7 @@ public final class PiiMask {
     }
     if (dstOff < 0 || dstOff + srcLen > dst.length) {
       throw new IndexOutOfBoundsException(
-          "dst slice ["
-              + dstOff
-              + ","
-              + (dstOff + srcLen)
-              + ") out of bounds, len="
-              + dst.length);
+          "dst slice [" + dstOff + "," + (dstOff + srcLen) + ") out of bounds, len=" + dst.length);
     }
 
     // Loop scan pointer p mutated across the field walk per CLAUDE.md carve-out for tight
