@@ -2,8 +2,11 @@ package com.trading.engine.fixbridge.transport;
 
 import com.trading.engine.fixbridge.audit.AuditAction;
 import com.trading.engine.fixbridge.audit.AuditLogger;
+import com.trading.engine.fixbridge.json.BrowserEvent;
 import com.trading.engine.fixbridge.json.MutableParsedMessage;
+import com.trading.engine.fixbridge.json.OrderRejectReason;
 import com.trading.engine.fixbridge.quote.SessionQuoteIndex;
+import com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration;
 import java.util.Objects;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -113,7 +116,18 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
       // The flyweight slice is borrow-only; the index needs a stable key, so it copies internally.
       // (SessionQuoteIndex was built to expect this contract.)
       final var reqId = new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen);
-      quoteIndex.onQuoteRequest(reqId, session.sessionId(), nowNs);
+      final var registration = quoteIndex.onQuoteRequest(reqId, session.sessionId(), nowNs);
+      if (registration == QuoteRequestRegistration.DUPLICATE_REQID) {
+        // §3.2: same (reqId, sessionId) inside the dedupe window → reject without forwarding to
+        // FIX. Surfaced as Error{reason:"duplicate-reqId", received:"QuoteRequest:<reqId>"} so the
+        // browser can correlate (QuoteRequest carries no clOrdId — Error is the right vehicle vs
+        // OrderReject which is clOrdId-scoped).
+        session.enqueue(
+            new BrowserEvent.Error(
+                OrderRejectReason.DUPLICATE_REQID.wireValue(), "QuoteRequest:" + reqId));
+        audit(session, AuditAction.QUOTE_REQUEST_RECEIVED, parsed, nowNs);
+        return;
+      }
     }
     sink.sendQuoteRequest(parsed, nowNs);
     audit(session, AuditAction.QUOTE_REQUEST_RECEIVED, parsed, nowNs);
@@ -121,14 +135,63 @@ public final class RoutingBridgeFrameDispatcher implements BridgeFrameDispatcher
 
   private void dispatchAcceptQuote(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
+    if (!isQuoteOwnedByCurrentSession(session, parsed)) {
+      // §3.2: cross-session quote-id steal. The owning session is either (a) gone, or (b) a
+      // different live session of the same/another sub. Either way the bridge MUST NOT forward to
+      // FIX — the trader who actually saw the quote could have a different intent. Reject with
+      // OrderReject{clOrdId, reason:"quote-not-owned"}.
+      emitQuoteNotOwnedReject(session, parsed);
+      audit(session, AuditAction.ACCEPT_QUOTE_RECEIVED, parsed, nowNs);
+      return;
+    }
     sink.sendAcceptQuote(parsed, nowNs);
     audit(session, AuditAction.ACCEPT_QUOTE_RECEIVED, parsed, nowNs);
   }
 
   private void dispatchRejectQuote(
       final BridgeSession session, final MutableParsedMessage parsed, final long nowNs) {
+    if (!isQuoteOwnedByCurrentSession(session, parsed)) {
+      // §3.2: same protection as AcceptQuote — only the originating session can reject its own
+      // quote. Forwarding a stranger's RejectQuote would let one tab evict another tab's pending
+      // quote silently.
+      emitQuoteNotOwnedReject(session, parsed);
+      audit(session, AuditAction.REJECT_QUOTE_RECEIVED, parsed, nowNs);
+      return;
+    }
     sink.handleRejectQuote(parsed, nowNs);
     audit(session, AuditAction.REJECT_QUOTE_RECEIVED, parsed, nowNs);
+  }
+
+  /**
+   * §3.2 ownership check. Returns {@code true} when {@code parsed.quoteId} is bound to the current
+   * session in {@link SessionQuoteIndex#isOwnedBy}. Allocates one {@link String} per call (the
+   * quoteId slice copy) regardless of audit state — same constraint as the QuoteRequest path
+   * (cross-session correlation needs a stable key). Returns {@code true} when the quoteId slice is
+   * absent so a malformed-but-quoteId-less inbound still falls through to the sink, where
+   * downstream validation (parser strictness) will surface the error appropriately.
+   */
+  private boolean isQuoteOwnedByCurrentSession(
+      final BridgeSession session, final MutableParsedMessage parsed) {
+    if (parsed.quoteIdOff < 0 || parsed.quoteIdLen <= 0) {
+      return true;
+    }
+    final var quoteId = new String(parsed.scratch, parsed.quoteIdOff, parsed.quoteIdLen);
+    return quoteIndex.isOwnedBy(quoteId, session.sessionId());
+  }
+
+  /**
+   * Build + enqueue {@link BrowserEvent.OrderReject} with reason {@code QUOTE_NOT_OWNED} for the
+   * current AcceptQuote/RejectQuote frame. Uses the parsed clOrdId slice when present (AcceptQuote
+   * carries one; RejectQuote does not, in which case the empty string is used as a placeholder
+   * matching the OrderReject record's non-null clOrdId contract).
+   */
+  private void emitQuoteNotOwnedReject(
+      final BridgeSession session, final MutableParsedMessage parsed) {
+    final var clOrdId =
+        parsed.clOrdIdOff >= 0 && parsed.clOrdIdLen > 0
+            ? new String(parsed.scratch, parsed.clOrdIdOff, parsed.clOrdIdLen)
+            : "";
+    session.enqueue(new BrowserEvent.OrderReject(clOrdId, OrderRejectReason.QUOTE_NOT_OWNED));
   }
 
   private void dispatchNewOrderSingle(
