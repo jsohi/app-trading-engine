@@ -554,7 +554,7 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     // Error event uses the same writer-validated escaping rules as every other outbound frame.
     final var error = new BrowserEvent.Error(reason);
     final var buf = ctx.alloc().buffer();
-    final TextWebSocketFrame text;
+    TextWebSocketFrame text = null;
     try {
       eventWriter.writeError(error, buf);
       text = new TextWebSocketFrame(buf);
@@ -570,12 +570,27 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       authResolved = true;
       return;
     }
-    ctx.writeAndFlush(text)
-        .addListener(
-            future -> {
-              final var close = new CloseWebSocketFrame(closeCode, reason);
-              ctx.writeAndFlush(close).addListener(closeFuture -> ctx.close());
-            });
+    // Track ownership transfer so a synchronous throw from ctx.writeAndFlush (rare but possible
+    // before the frame is accepted by the pipeline) doesn't leak the pooled buffer (Gemini
+    // medium finding on PR #70 R5).
+    final var frame = text;
+    text = null;
+    try {
+      ctx.writeAndFlush(frame)
+          .addListener(
+              future -> {
+                final var close = new CloseWebSocketFrame(closeCode, reason);
+                ctx.writeAndFlush(close).addListener(closeFuture -> ctx.close());
+              });
+    } catch (final RuntimeException ex) {
+      // writeAndFlush threw before accepting the frame — release it ourselves.
+      frame.release();
+      LOG.error("ctx.writeAndFlush failed for Error frame; closing channel", ex);
+      ctx.close();
+      cancelTimeout();
+      authResolved = true;
+      return;
+    }
     cancelTimeout();
     authResolved = true;
   }

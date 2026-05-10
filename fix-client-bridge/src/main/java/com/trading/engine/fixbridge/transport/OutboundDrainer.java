@@ -131,6 +131,13 @@ public final class OutboundDrainer {
         break;
       }
       final var buf = ctx.alloc().buffer();
+      // The frame variable tracks ownership transfer: while null, we own `buf` directly; once
+      // the TextWebSocketFrame is constructed, ownership of `buf` moves to the frame; once
+      // ctx.write returns, ownership moves to the pipeline. Setting to null after write proves
+      // ownership has been handed off so the catch block knows whether to release `buf` or
+      // `frame` (Gemini medium finding on PR #70 R5 — prior code only handled the
+      // writer-throws case where the buf was still pre-frame).
+      TextWebSocketFrame frame = null;
       try {
         writer.writeAny(event, buf);
         // ctx.write (NOT writeAndFlush) per event — accumulate queued frames in the outbound
@@ -138,14 +145,21 @@ public final class OutboundDrainer {
         // (64) syscalls into one when the queue is hot. Writability still flips synchronously
         // mid-batch because Netty's outbound buffer water-mark check fires on every write, so the
         // intra-batch isWritable() guard below remains effective for backpressure surfacing.
-        ctx.write(new TextWebSocketFrame(buf));
+        frame = new TextWebSocketFrame(buf);
+        ctx.write(frame);
+        frame = null; // ownership transferred to the pipeline
       } catch (final RuntimeException ex) {
-        // Writer rejected the event (e.g. forbidden character in a String field). The buffer
-        // hasn't been wrapped in a frame yet, so release it ourselves to avoid a leak. The event
-        // is dropped on the floor; logging is best-effort because the audit path is upstream.
-        buf.release();
+        // Writer rejected the event (e.g. forbidden character in a String field) OR ctx.write
+        // failed before accepting the frame. Release whichever owns the buffer right now (the
+        // frame if constructed, otherwise the bare buf) to avoid a leak. The event is dropped
+        // on the floor; logging is best-effort because the audit path is upstream.
+        if (frame != null) {
+          frame.release();
+        } else {
+          buf.release();
+        }
         LOG.error(
-            "OutboundDrainer: writer rejected event for session={}, dropping",
+            "OutboundDrainer: writer/write failed for session={}, dropping event",
             session.sessionId(),
             ex);
       }
