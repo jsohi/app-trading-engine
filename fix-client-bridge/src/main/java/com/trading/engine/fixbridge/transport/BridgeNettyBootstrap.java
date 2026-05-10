@@ -107,6 +107,8 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
   private final BridgeFrameDispatcher.Factory dispatcherFactory;
   private final AuditLogger auditLogger;
   private final AccountLimitsSource accountLimitsSource;
+  private final DpopValidator dpopValidator;
+  private final java.util.function.Supplier<HealthCheckHandler> healthCheckHandlerFactory;
 
   private TransportDetector.Result transport;
   private Channel serverChannel;
@@ -145,6 +147,57 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
       final BridgeFrameDispatcher.Factory dispatcherFactory,
       final AuditLogger auditLogger,
       final AccountLimitsSource accountLimitsSource) {
+    this(
+        config,
+        jwtValidator,
+        jtiCache,
+        authFailureTracker,
+        epochNanoClock,
+        nanoClock,
+        jwtValidationExecutor,
+        dispatcherFactory,
+        auditLogger,
+        accountLimitsSource,
+        DpopValidator.NOOP,
+        /* healthCheckHandlerFactory */ null);
+  }
+
+  /**
+   * Full constructor used by {@link FixClientBridgeLauncher} (the production composition entry
+   * point). Existing test sites continue to use the 10-arg overload above which delegates here with
+   * {@link DpopValidator#NOOP} and no health-check handler.
+   *
+   * @param config bridge configuration
+   * @param jwtValidator shared validator (preflight already invoked by caller)
+   * @param jtiCache shared JTI revocation cache
+   * @param authFailureTracker per-IP tarpit (shared across all channels)
+   * @param epochNanoClock wall-clock used for revocation TTL checks
+   * @param nanoClock monotonic clock used for rate-limiter and audit timestamps
+   * @param jwtValidationExecutor executor for async JWT validation
+   * @param dispatcherFactory per-session dispatcher factory invoked once per authenticated channel
+   * @param auditLogger audit sink
+   * @param accountLimitsSource source of {@link
+   *     com.trading.engine.fixbridge.json.BrowserEvent.AccountLimits} push frames
+   * @param dpopValidator DPoP runtime validator — use {@link DpopValidator#NOOP} for deployments
+   *     that don't enforce DPoP, or {@link com.trading.engine.fixbridge.auth.NimbusDpopValidator}
+   *     for production
+   * @param healthCheckHandlerFactory optional supplier of a {@link HealthCheckHandler} to install
+   *     BEFORE the WebSocket protocol handler (so {@code GET /health} short-circuits before any WS
+   *     upgrade). {@code null} skips health-check installation entirely.
+   */
+  public BridgeNettyBootstrap(
+      final FixClientBridgeConfig config,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final AuthFailureTracker authFailureTracker,
+      final EpochNanoClock epochNanoClock,
+      final NanoClock nanoClock,
+      final Executor jwtValidationExecutor,
+      final BridgeFrameDispatcher.Factory dispatcherFactory,
+      final AuditLogger auditLogger,
+      final AccountLimitsSource accountLimitsSource,
+      final DpopValidator dpopValidator,
+      final java.util.function.Supplier<HealthCheckHandler> healthCheckHandlerFactory) {
     this.config = Objects.requireNonNull(config, "config");
     this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
@@ -156,6 +209,8 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
     this.dispatcherFactory = Objects.requireNonNull(dispatcherFactory, "dispatcherFactory");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
     this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
+    this.dpopValidator = Objects.requireNonNull(dpopValidator, "dpopValidator");
+    this.healthCheckHandlerFactory = healthCheckHandlerFactory; // null permitted
   }
 
   /**
@@ -187,6 +242,11 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                 pipeline.addLast("http-codec", new HttpServerCodec());
                 pipeline.addLast(
                     "http-aggregator", new HttpObjectAggregator(config.maxJsonBytes()));
+                // Optional health-check handler installed BEFORE the origin validator + WS
+                // upgrade so GET /health short-circuits without traversing auth/upgrade.
+                if (healthCheckHandlerFactory != null) {
+                  pipeline.addLast("health-check", healthCheckHandlerFactory.get());
+                }
                 pipeline.addLast("origin-validator", handshaker);
                 // Netty 4.1 WebSocketServerProtocolHandler 7-arg ctor signature:
                 //   (String websocketPath, String subprotocols,
@@ -234,7 +294,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                         auditLogger,
                         eventWriter,
                         accountLimitsSource,
-                        DpopValidator.NOOP));
+                        dpopValidator));
               }
             });
 

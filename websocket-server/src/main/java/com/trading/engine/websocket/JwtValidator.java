@@ -265,9 +265,10 @@ public final class JwtValidator implements AutoCloseable {
 
     final boolean ipPinned = extractIpPinnedClaim(claims);
     final var roles = extractRolesClaim(claims);
+    final var cnfJkt = extractCnfJktClaim(claims);
 
     return new ValidatedClaims(
-        sub, jti, List.copyOf(accounts), expiryEpochSec, ipPinned, List.copyOf(roles));
+        sub, jti, List.copyOf(accounts), expiryEpochSec, ipPinned, List.copyOf(roles), cnfJkt);
   }
 
   @Override
@@ -457,6 +458,41 @@ public final class JwtValidator implements AutoCloseable {
   }
 
   /**
+   * Extract the optional {@code cnf.jkt} claim — the JWK SHA-256 thumbprint (RFC 7638) the bearer
+   * JWT is bound to under the RFC 7800 confirmation method. When present, the FIX client bridge
+   * MUST verify that the {@code DPoP} proof header presented during WebSocket upgrade was signed by
+   * the matching key (RFC 9449); see {@link com.trading.engine.fixbridge.auth.DpopValidator}.
+   *
+   * <p>Per RFC 7800, the {@code cnf} claim is a JSON object whose {@code jkt} member carries the
+   * base64url-encoded thumbprint. We accept either:
+   *
+   * <ul>
+   *   <li>{@code "cnf": {"jkt": "abc..."}} — RFC 7800 standard form.
+   *   <li>{@code "cnf.jkt": "abc..."} — flat-string convenience form for IdPs that emit a flattened
+   *       claim. Defensive support; logs no warning since both forms are spec-compliant in
+   *       practice.
+   * </ul>
+   *
+   * @param claims the validated JWT claims set
+   * @return the JWK thumbprint string, or {@code null} when neither form of the claim is present
+   *     (DPoP binding not required for this token)
+   */
+  private static String extractCnfJktClaim(final JWTClaimsSet claims) {
+    final var cnf = claims.getClaim("cnf");
+    if (cnf instanceof Map<?, ?> map) {
+      final var jkt = map.get("jkt");
+      if (jkt instanceof String s && !s.isEmpty()) {
+        return s;
+      }
+    }
+    final var flat = claims.getClaim("cnf.jkt");
+    if (flat instanceof String s && !s.isEmpty()) {
+      return s;
+    }
+    return null;
+  }
+
+  /**
    * Extract the {@code accounts} claim as a list of strings. Handles both {@code List<String>} and
    * single-value string formats for flexibility.
    *
@@ -484,9 +520,15 @@ public final class JwtValidator implements AutoCloseable {
    * Validated JWT claims extracted after successful token verification.
    *
    * <p>Both {@code ipPinned} and {@code roles} were added for the FIX client bridge (APP-40a §3.3 /
-   * §3.5 / §20.4c). The legacy four-arg convenience constructor preserves source compatibility for
-   * tests and any in-process consumer that doesn't care about pinning or roles — it pins by default
-   * (fail-secure) and supplies an empty roles list.
+   * §3.5 / §20.4c). The legacy convenience constructors preserve source compatibility for tests and
+   * any in-process consumer that doesn't care about pinning, roles, or DPoP — they pin by default
+   * (fail-secure), supply an empty roles list, and leave the DPoP binding {@code null} (no
+   * cnf.jkt).
+   *
+   * <p>The {@code cnfJkt} claim was added for DPoP support (RFC 9449 / RFC 7800). When non-null it
+   * is the base64url-encoded SHA-256 JWK thumbprint (RFC 7638) of the public key the worker MUST
+   * possess and demonstrate via the {@code DPoP} HTTP header. See {@link
+   * com.trading.engine.fixbridge.auth.DpopValidator}.
    *
    * @param sub the subject claim (user identifier)
    * @param jti the JWT ID claim (for revocation tracking)
@@ -496,6 +538,8 @@ public final class JwtValidator implements AutoCloseable {
    *     to {@code true} unless the JWT carries an explicit {@code "ip_pinned": false}
    * @param roles list of role identifiers from the optional {@code roles} claim; empty when the
    *     claim is absent or malformed
+   * @param cnfJkt RFC 7800 {@code cnf.jkt} JWK thumbprint binding the bearer token to a specific
+   *     DPoP key, or {@code null} when the token is not DPoP-bound
    */
   public record ValidatedClaims(
       String sub,
@@ -503,7 +547,8 @@ public final class JwtValidator implements AutoCloseable {
       List<String> accounts,
       long expiryEpochSec,
       boolean ipPinned,
-      List<String> roles) {
+      List<String> roles,
+      String cnfJkt) {
 
     /**
      * Canonical constructor. Defensively freezes {@code accounts} and {@code roles} via {@link
@@ -518,6 +563,7 @@ public final class JwtValidator implements AutoCloseable {
      * @param expiryEpochSec the token expiry as epoch seconds
      * @param ipPinned whether the bridge must enforce remote-IP pinning
      * @param roles the roles list; defensively copied
+     * @param cnfJkt the RFC 7800 cnf.jkt thumbprint, or null if the token is not DPoP-bound
      */
     public ValidatedClaims {
       // Compact constructor body — runs before the implicit field assignment.
@@ -529,8 +575,8 @@ public final class JwtValidator implements AutoCloseable {
 
     /**
      * Backwards-compatible four-arg constructor used by code paths that pre-date the {@code
-     * ip_pinned} / {@code roles} claims. Defaults to {@code ipPinned=true} (fail-secure) and an
-     * empty roles list.
+     * ip_pinned} / {@code roles} / {@code cnf.jkt} claims. Defaults to {@code ipPinned=true}
+     * (fail-secure), an empty roles list, and a {@code null} {@code cnfJkt} (no DPoP binding).
      *
      * @param sub the subject claim
      * @param jti the JWT ID claim
@@ -542,7 +588,28 @@ public final class JwtValidator implements AutoCloseable {
         final String jti,
         final List<String> accounts,
         final long expiryEpochSec) {
-      this(sub, jti, accounts, expiryEpochSec, true, List.of());
+      this(sub, jti, accounts, expiryEpochSec, true, List.of(), null);
+    }
+
+    /**
+     * Backwards-compatible six-arg constructor used by call sites that pre-date the {@code cnf.jkt}
+     * claim. Defaults {@code cnfJkt} to {@code null} (no DPoP binding required).
+     *
+     * @param sub the subject claim
+     * @param jti the JWT ID claim
+     * @param accounts the entitled accounts (defensively copied by the canonical ctor)
+     * @param expiryEpochSec the token expiry as epoch seconds
+     * @param ipPinned whether the bridge must enforce remote-IP pinning
+     * @param roles the roles list (defensively copied by the canonical ctor)
+     */
+    public ValidatedClaims(
+        final String sub,
+        final String jti,
+        final List<String> accounts,
+        final long expiryEpochSec,
+        final boolean ipPinned,
+        final List<String> roles) {
+      this(sub, jti, accounts, expiryEpochSec, ipPinned, roles, null);
     }
   }
 
