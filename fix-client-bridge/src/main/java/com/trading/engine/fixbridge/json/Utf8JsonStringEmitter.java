@@ -89,15 +89,18 @@ public final class Utf8JsonStringEmitter {
 
   /**
    * Append the ASCII bytes in {@code src[off..off+len)} into {@code dst} as a JSON-safe string
-   * value, substituting SOH (0x01) with {@code |} (0x7C) and rejecting embedded {@code "} (0x22) or
-   * {@code \\} (0x5C).
+   * value, substituting SOH (0x01) with {@code |} (0x7C) and JSON-escaping embedded {@code "}
+   * (0x22) as {@code \"} and {@code \\} (0x5C) as {@code \\\\}.
    *
    * <p>This is the zero-alloc hot-path variant used by {@link
    * com.trading.engine.fixbridge.json.BrowserEventWriter#writeRawFixSlice} to emit a {@link
    * com.trading.engine.fixbridge.json.BrowserEvent.RawFixSlice} without constructing an
-   * intermediate {@link String}. SOH bytes originate from the masked FIX wire; all other bytes must
-   * already be 7-bit ASCII printable (PiiMask guarantees this for masked fields; FIX field values
-   * are constrained to printable ASCII by the FIX 4.4 specification).
+   * intermediate {@link String}. SOH bytes originate from the masked FIX wire; quote and backslash
+   * characters are valid in FIX text fields ({@code Text 58}, {@code EncodedText 96}) and the debug
+   * tap MUST preserve them via JSON escapes rather than failing the entire frame (Gemini medium
+   * finding on PR #70 R4 — prior code threw, dropping the entire RawFix event). All other bytes
+   * must be 7-bit ASCII printable (PiiMask guarantees this for masked fields; FIX 4.4 protocol
+   * constrains every legitimate value to printable ASCII).
    *
    * <p>Zero allocation after construction.
    *
@@ -105,8 +108,8 @@ public final class Utf8JsonStringEmitter {
    * @param off start offset within {@code src}
    * @param len number of bytes to emit; must be {@code >= 0}
    * @param dst destination Netty {@link ByteBuf}; written at {@code dst.writerIndex()}
-   * @throws IllegalStateException if any byte is a forbidden JSON character ({@code "}, {@code \\},
-   *     or any control byte in {@code 0x00..0x1F} other than the SOH-substitution case 0x01)
+   * @throws IllegalStateException if any byte is a control byte in {@code 0x00..0x1F} other than
+   *     the SOH-substitution case 0x01, or a high-bit byte ({@code 0x80..0xFF})
    */
   public static void appendRawFixBytes(
       final byte[] src, final int off, final int len, final ByteBuf dst) {
@@ -115,9 +118,14 @@ public final class Utf8JsonStringEmitter {
       if (b == (byte) 0x01) {
         // SOH field delimiter → substitute with '|' as per the locked wire-format contract.
         dst.writeByte((byte) '|');
-      } else if (b == (byte) '"' || b == (byte) '\\') {
-        throw new IllegalStateException(
-            "FIX byte slice contains forbidden JSON character at index " + i + ": " + (int) b);
+      } else if (b == (byte) '"') {
+        // JSON-escape embedded quote so a debug tap of a FIX Text field with a quote survives.
+        dst.writeByte((byte) '\\');
+        dst.writeByte((byte) '"');
+      } else if (b == (byte) '\\') {
+        // JSON-escape embedded backslash for the same reason.
+        dst.writeByte((byte) '\\');
+        dst.writeByte((byte) '\\');
       } else if (b >= 0 && b < 0x20) {
         // Control byte (0x00, 0x02..0x1F) — JSON RFC 8259 forbids these unescaped in string
         // values. Mirrors the strict char-array path's validateCharStrict guard so a corrupted

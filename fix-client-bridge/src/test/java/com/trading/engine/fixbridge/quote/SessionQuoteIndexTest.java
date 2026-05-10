@@ -1,5 +1,6 @@
 package com.trading.engine.fixbridge.quote;
 
+import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.DUPLICATE_REQID_WINDOW_NANOS;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QUOTE_EMITTED_TTL_NANOS;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration.ACCEPTED;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration.DUPLICATE_REQID;
@@ -186,15 +187,45 @@ final class SessionQuoteIndexTest {
   }
 
   @Test
-  void onQuoteRequest_sameReqIdDifferentSession_returnsAccepted() {
+  void onQuoteRequest_sameReqIdDifferentSession_withinDedupeWindow_returnsDuplicate() {
     final var s1 = new SessionId("S-1");
     final var s2 = new SessionId("S-2");
     index.onQuoteRequest("R1", s1, T0);
 
-    // Different session re-using the same reqId is a different RFQ flow — must be accepted
+    // Cross-session reqId uniqueness per Gemini PR #70 R4 fix: because the bridge multiplexes
+    // multiple browser sessions onto a single FIX connection, the on-wire QuoteReqID (FIX 131)
+    // must be globally unique inside the dedupe window so the gateway response can be routed
+    // unambiguously. A different session re-using the same reqId within 60s is now rejected.
     final var result = index.onQuoteRequest("R1", s2, T0 + ONE_SEC);
 
+    assertEquals(DUPLICATE_REQID, result);
+    // The original session's reqId entry remains owned by s1.
+    assertEquals(1, index.reqIdCount());
+  }
+
+  @Test
+  void
+      onQuoteRequest_sameReqIdDifferentSession_outsideDedupeWindow_returnsAcceptedAndCleansOldOwnerReverseIndex() {
+    final var s1 = new SessionId("S-1");
+    final var s2 = new SessionId("S-2");
+    index.onQuoteRequest("R1", s1, T0);
+
+    // Outside the 60s window — overwrite is allowed. The prior owner's reverse index entry
+    // must be cleaned up so a later onSessionClosed for s1 doesn't incorrectly remove R1
+    // from the global map (Gemini PR #70 R4 fix).
+    final var afterWindow = T0 + DUPLICATE_REQID_WINDOW_NANOS + 1L;
+    final var result = index.onQuoteRequest("R1", s2, afterWindow);
+
     assertEquals(ACCEPTED, result);
+    assertEquals(1, index.reqIdCount(), "entry replaced, not duplicated");
+
+    // Closing s1 must NOT remove R1 — it's now owned by s2.
+    index.onSessionClosed(s1);
+    assertEquals(1, index.reqIdCount(), "R1 must survive s1 close because it's now owned by s2");
+
+    // Closing s2 SHOULD remove R1.
+    index.onSessionClosed(s2);
+    assertEquals(0, index.reqIdCount(), "R1 must be evicted on s2 close");
   }
 
   @Test

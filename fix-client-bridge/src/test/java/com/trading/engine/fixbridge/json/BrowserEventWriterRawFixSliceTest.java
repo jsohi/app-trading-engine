@@ -191,34 +191,36 @@ final class BrowserEventWriterRawFixSliceTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Forbidden JSON characters in slice → writer throws, writerIndex rolled back.
+  // JSON-escaping in slice (Gemini PR #70 R4 medium fix).
+  // The writer used to throw on '"' and '\\'; that dropped the entire RawFix event for any
+  // legitimate FIX message containing these chars (e.g. Text 58 / EncodedText 96). The new
+  // behaviour escapes inline so the debug tap survives.
   // ---------------------------------------------------------------------------
 
   @Test
-  void writeRawFixSlice_embeddedQuote_throwsAndRollsBackWriterIndex() {
-    // A '"' byte inside the FIX slice must cause the writer to throw and roll back.
+  void writeRawFixSlice_embeddedQuote_escapedAsBackslashQuote() {
     final byte[] scratch = "8=FIX.4.4\001\"oops".getBytes(StandardCharsets.US_ASCII);
     final var e = new BrowserEvent.RawFixSlice(true, scratch, 0, scratch.length);
     final var buf = fresh();
-    final int startIdx = buf.writerIndex();
-    assertThrows(
-        IllegalStateException.class,
-        () -> writer.writeRawFixSlice(e, buf),
-        "writeRawFixSlice must throw IllegalStateException on embedded double-quote");
-    assertEquals(startIdx, buf.writerIndex(), "writerIndex must be rolled back to start on error");
+    writer.writeRawFixSlice(e, buf);
+    final var json = buf.toString(StandardCharsets.UTF_8);
+    // The escaped quote appears as \" inside the JSON string field.
+    assertTrue(
+        json.contains("\\\""),
+        "writeRawFixSlice must JSON-escape embedded double-quote, got: " + json);
+    assertTrue(json.contains("|"), "SOH must still substitute to | as before");
   }
 
   @Test
-  void writeRawFixSlice_embeddedBackslash_throwsAndRollsBackWriterIndex() {
-    // A '\' byte inside the FIX slice must cause the writer to throw and roll back.
+  void writeRawFixSlice_embeddedBackslash_escapedAsDoubleBackslash() {
     final byte[] scratch = "8=FIX.4.4\001\\oops".getBytes(StandardCharsets.US_ASCII);
     final var e = new BrowserEvent.RawFixSlice(true, scratch, 0, scratch.length);
     final var buf = fresh();
-    final int startIdx = buf.writerIndex();
-    assertThrows(
-        IllegalStateException.class,
-        () -> writer.writeRawFixSlice(e, buf),
-        "writeRawFixSlice must throw IllegalStateException on embedded backslash");
-    assertEquals(startIdx, buf.writerIndex(), "writerIndex must be rolled back to start on error");
+    writer.writeRawFixSlice(e, buf);
+    final var json = buf.toString(StandardCharsets.UTF_8);
+    assertTrue(
+        json.contains("\\\\"),
+        "writeRawFixSlice must JSON-escape embedded backslash, got: " + json);
+    assertTrue(json.contains("|"), "SOH must still substitute to | as before");
   }
 }
