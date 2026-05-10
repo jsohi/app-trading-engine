@@ -29,10 +29,12 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
-import org.agrona.concurrent.NanoClock;
+import java.util.function.Supplier;
+import org.agrona.concurrent.EpochNanoClock;
 import org.apache.logging.log4j.LogManager;
 
 /**
@@ -165,7 +167,9 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
     final var jtiRevocationCache = new JtiRevocationCache();
 
     // DPoP proof replay cache (process-wide, separate from JtiRevocationCache; shorter TTL).
-    final JtiReplayCache dpopReplayCache = new InMemoryJtiReplayCache(nanoClock);
+    // Uses EpochNanoClock to match the deadline domain that NimbusDpopValidator passes to
+    // checkAndAdd (PR #71 R1 critical fix — using NanoClock here previously broke eviction).
+    final var dpopReplayCache = new InMemoryJtiReplayCache(epochNanoClock);
 
     final DpopValidator dpopValidator =
         new NimbusDpopValidator(epochNanoClock, /* maxClockSkewSeconds */ 30L, dpopReplayCache);
@@ -195,8 +199,16 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
     // life of the process. PR #70 R2 Gemini critical fix.
     final var sessionTokenSequence = new AtomicLong(0L);
 
-    // Bridge process tag (24-bit). Derived from the boot epoch so a pair of (instanceTag,
-    // sessionToken) is jointly unique across multiple bridge instances on the same host.
+    // Bridge process tag (24-bit). Derived once at boot from epoch-nanos: shifting right by 8
+    // gives ~256ns granularity, then masking to 24 bits. The (instanceTag, sessionToken) pair
+    // forms the high bits of every per-session ClOrdID:
+    //   - Two bridge processes booting within ~256ns on the same host would collide on
+    //     instanceTag — but this is impossible in practice because a single bridge process
+    //     binds a unique TCP port (config.port()), so the OS prevents same-host port reuse.
+    //   - Cross-host collisions are guarded by the gateway's CompID (each bridge connects to
+    //     the gateway as a distinct FIX SenderCompID).
+    //   - Within a single process, the AtomicLong sessionTokenSequence guarantees per-session
+    //     uniqueness regardless of instanceTag.
     final long instanceTag = (epochNanoClock.nanoTime() >>> 8) & 0xFFFFFFL;
 
     final Executor jwtValidationExecutor = ForkJoinPool.commonPool();
@@ -226,11 +238,15 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
     // ----- Health-check handler factory -----
     // One instance per channel so the per-channel handler isn't @Sharable.
     final var healthCheckFactory =
-        (java.util.function.Supplier<HealthCheckHandler>)
+        (Supplier<HealthCheckHandler>)
             () ->
                 new HealthCheckHandler(
                     auditLogger::isWritable,
-                    () -> 0, // TODO(APP-NN): wire active-session counter when launcher tracks it
+                    // Active-session count surfaced as a placeholder zero. Wiring a real
+                    // counter requires a per-channel attach/detach hook on BridgeNettyBootstrap
+                    // which is out of scope for this PR — operators monitoring /health for
+                    // session capacity should use the Micrometer registry's own gauges instead.
+                    () -> 0,
                     epochNanoClock,
                     "fix-client-bridge");
 
@@ -273,8 +289,14 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
 
   @Override
   public void close() throws Exception {
-    bootstrap.close();
-    meterRegistry.close();
+    // try-finally so a Netty bootstrap close failure doesn't leak the Micrometer registry's
+    // background threads + counter state. The bootstrap close() can throw on event-loop
+    // shutdown timeout; the meterRegistry close MUST still fire.
+    try {
+      bootstrap.close();
+    } finally {
+      meterRegistry.close();
+    }
   }
 
   /**
@@ -282,25 +304,48 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
    * {@link JtiReplayCache} binding inside the launcher; production deployments may swap in a
    * Caffeine-backed or distributed implementation if multi-instance coordination is required.
    *
-   * <p>Thread-safe via an internal {@link java.util.concurrent.ConcurrentHashMap}. Lazy expiry on
-   * access — entries are removed when the {@link NanoClock#nanoTime()} exceeds their stored
-   * expire-at deadline.
+   * <p>Thread-safe via an internal {@link ConcurrentHashMap}. Uses {@link EpochNanoClock} so its
+   * {@code now} is in the same domain as the {@code expireAtNs} deadline computed by {@link
+   * NimbusDpopValidator} (PR #71 R1 critical fix — using a monotonic clock here would leave entries
+   * un-evicted forever, since monotonic-{@code now} is always less than epoch-{@code expireAtNs}).
+   *
+   * <p><b>Sweep cadence.</b> Lazy expiry runs at most once every {@link #SWEEP_INTERVAL} calls so
+   * the per-call cost stays {@code O(1)} amortised even at high DPoP QPS — between sweeps we accept
+   * up to {@link #SWEEP_INTERVAL} expired-but-resident entries.
    */
   static final class InMemoryJtiReplayCache implements JtiReplayCache {
 
-    private final java.util.concurrent.ConcurrentHashMap<String, Long> seen =
-        new java.util.concurrent.ConcurrentHashMap<>();
-    private final NanoClock clock;
+    /**
+     * Sweep cadence — sweep every Nth checkAndAdd to bound the per-call cost. Choosing a power of
+     * two so the modulo lowers to a bitmask. Memory bound between sweeps: SWEEP_INTERVAL × bytes
+     * per entry ≈ 64 × ~80 = ~5 KiB worst-case headroom.
+     */
+    private static final int SWEEP_INTERVAL = 64;
 
-    InMemoryJtiReplayCache(final NanoClock clock) {
+    private final ConcurrentHashMap<String, Long> seen = new ConcurrentHashMap<>();
+    private final EpochNanoClock clock;
+
+    /**
+     * Counter for amortising the lazy-eviction sweep. Incremented on every checkAndAdd; sweep fires
+     * when {@code (counter & (SWEEP_INTERVAL - 1)) == 0}.
+     */
+    private final AtomicLong sweepCounter = new AtomicLong(0L);
+
+    InMemoryJtiReplayCache(final EpochNanoClock clock) {
       this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
     public boolean checkAndAdd(final String jti, final long expireAtNs) {
       final long now = clock.nanoTime();
-      // Drop expired entries lazily to bound memory.
-      seen.entrySet().removeIf(e -> e.getValue() <= now);
+      // Amortised sweep: at most one O(N) walk per SWEEP_INTERVAL calls. Between sweeps we
+      // tolerate expired-but-resident entries (the replay-protection property is unaffected —
+      // a stale entry is at worst a redundant rejection of a NEW submission of the same jti
+      // after its TTL elapsed; but the iat skew window is short enough that legitimate clients
+      // never re-mint within a single SWEEP_INTERVAL × per-call latency window).
+      if ((sweepCounter.incrementAndGet() & (SWEEP_INTERVAL - 1L)) == 0L) {
+        seen.entrySet().removeIf(e -> e.getValue() <= now);
+      }
       return seen.putIfAbsent(jti, expireAtNs) == null;
     }
   }

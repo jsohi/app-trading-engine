@@ -5,8 +5,10 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Objects;
-import org.agrona.collections.Object2ObjectHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Production {@link RawFixTap.DropCounter} backed by Micrometer.
@@ -22,14 +24,15 @@ import org.agrona.collections.Object2ObjectHashMap;
  * {@code session} tag is added per-session at increment time — bounded by the per-process
  * concurrent-session ceiling (~256) so cardinality stays sane.
  *
- * <p><b>Threading.</b> Thread-safe. Micrometer counters are lock-free (atomic-double-backed).
- * Multiple Netty event loops may concurrently increment.
+ * <p><b>Threading.</b> Thread-safe. The outer {@link ConcurrentHashMap} is concurrent; Micrometer
+ * counters are themselves lock-free (atomic-double-backed). Multiple Netty event loops may
+ * concurrently increment without contention on the steady-state path.
  *
- * <p><b>Allocation.</b> Per-increment: zero allocation IF the (session, reason) pair has been
- * registered before — the counter map lookup uses Agrona's {@link Object2ObjectHashMap} (no boxing)
- * and a hot-path {@link Counter#increment()} is itself zero-alloc. First-touch for a new (session,
- * reason) pair allocates the underlying counter + a {@link Tags} list — bounded to {@code 3 ×
- * max_concurrent_sessions} for the lifetime of the bridge process.
+ * <p><b>Allocation.</b> Per-increment on a (session, reason) pair that has been seen before: one
+ * {@link ConcurrentHashMap#get} + one {@link EnumMap#get} + one {@link Counter#increment} — all
+ * zero-alloc on the JIT-compiled path. First-touch for a session allocates one {@link EnumMap};
+ * first-touch for a (session, reason) pair allocates the underlying Counter via {@link
+ * Counter.Builder#register} — bounded to {@code 3 × max_concurrent_sessions} per process lifetime.
  *
  * <p><b>Lifecycle.</b> One instance per bridge process, injected at launcher boot. Counters live
  * for the JVM lifetime (no eviction on session close — operators may want to graph the cumulative
@@ -52,12 +55,15 @@ public final class MicrometerDropCounter implements RawFixTap.DropCounter {
   private final MeterRegistry registry;
 
   /**
-   * Per-(session, reason) counter cache. The composite key is built once on first touch and cached
-   * so the hot-path increment is a single map lookup + an atomic double add. Agrona's
-   * open-addressing map avoids per-call iterator/Entry allocation that the JDK {@link
-   * java.util.HashMap} would incur.
+   * Per-session map of {@link RawFixTap.DropReason} → Counter. Outer map is a {@link
+   * ConcurrentHashMap} for lock-free reads on the steady-state hot path; inner is an {@link
+   * EnumMap} (zero-overhead, array-backed for enum keys) populated lazily per reason via {@link
+   * Map#computeIfAbsent}. Avoids any String concatenation on the increment path (the prior
+   * implementation built a {@code "session:reason"} String per call AND took a monitor on every
+   * increment — both eliminated here).
    */
-  private final Object2ObjectHashMap<String, Counter> counterCache = new Object2ObjectHashMap<>();
+  private final ConcurrentHashMap<String, EnumMap<RawFixTap.DropReason, Counter>> counterCache =
+      new ConcurrentHashMap<>();
 
   /**
    * Construct the counter sink.
@@ -71,25 +77,31 @@ public final class MicrometerDropCounter implements RawFixTap.DropCounter {
   }
 
   @Override
-  public synchronized void incrementDrop(
-      final BridgeSession session, final RawFixTap.DropReason reason) {
-    // The cacheKey concatenates session + reason — one String alloc on first-touch per (session,
-    // reason) pair, zero on the steady-state hot path (cached lookup hit). The synchronized on
-    // `this` is paid only for the first-touch insertion path; subsequent hits short-circuit on
-    // the get() before reaching the synchronized block via the unsynchronised double-check below
-    // — but we keep the simple single-lock here since DropCounter is on the cold-error path
-    // (drops happen under backpressure or rate-limit, not steady state). If profiling later shows
-    // contention we can switch to ConcurrentHashMap.computeIfAbsent.
+  public void incrementDrop(final BridgeSession session, final RawFixTap.DropReason reason) {
     final var sessionId = session.sessionId().value();
-    final var cacheKey = sessionId + ":" + reason.name();
-    var counter = counterCache.get(cacheKey);
+    // computeIfAbsent on ConcurrentHashMap is lock-free for the lookup-hit path (just a volatile
+    // read); only first-touch per session pays the per-bin lock. EnumMap.computeIfAbsent is
+    // array-indexed (one ordinal lookup) — zero-alloc on hits.
+    final var perSession =
+        counterCache.computeIfAbsent(sessionId, k -> new EnumMap<>(RawFixTap.DropReason.class));
+    // EnumMap is NOT thread-safe so we synchronise on the per-session map for first-touch only.
+    // The synchronisation block is short (one EnumMap probe + at most one Counter.register call)
+    // and contention is per-session — different sessions have different per-session locks.
+    Counter counter = perSession.get(reason);
     if (counter == null) {
-      counter =
-          Counter.builder(METRIC_NAME)
-              .description("Count of RawFix events dropped, broken down by session and reason")
-              .tags(Tags.of(Tag.of(TAG_SESSION, sessionId), Tag.of(TAG_REASON, reasonTag(reason))))
-              .register(registry);
-      counterCache.put(cacheKey, counter);
+      synchronized (perSession) {
+        counter = perSession.get(reason);
+        if (counter == null) {
+          counter =
+              Counter.builder(METRIC_NAME)
+                  .description("Count of RawFix events dropped, broken down by session and reason")
+                  .tags(
+                      Tags.of(
+                          Tag.of(TAG_SESSION, sessionId), Tag.of(TAG_REASON, reasonTag(reason))))
+                  .register(registry);
+          perSession.put(reason, counter);
+        }
+      }
     }
     counter.increment();
   }

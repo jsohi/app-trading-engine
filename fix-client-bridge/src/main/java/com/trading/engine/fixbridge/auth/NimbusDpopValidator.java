@@ -1,10 +1,13 @@
 package com.trading.engine.fixbridge.auth;
 
 import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JWSVerifier;
 import com.nimbusds.jose.crypto.factories.DefaultJWSVerifierFactory;
 import com.nimbusds.jose.jwk.AsymmetricJWK;
 import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import com.trading.engine.websocket.JwtValidator.ValidatedClaims;
 import java.security.Key;
 import java.text.ParseException;
@@ -171,9 +174,9 @@ public final class NimbusDpopValidator implements DpopValidator {
     }
 
     // Parse + cryptographically verify the proof JWT.
-    final com.nimbusds.jwt.SignedJWT proof;
+    final SignedJWT proof;
     try {
-      proof = com.nimbusds.jwt.SignedJWT.parse(dpopProofHeader);
+      proof = SignedJWT.parse(dpopProofHeader);
     } catch (final ParseException e) {
       LOG.debug("Malformed DPoP proof JWT: {}", e.getMessage());
       return Result.INVALID;
@@ -198,7 +201,7 @@ public final class NimbusDpopValidator implements DpopValidator {
     }
 
     // Verify standard DPoP claims: htm, iat, jti, htu (when configured).
-    final com.nimbusds.jwt.JWTClaimsSet proofClaims;
+    final JWTClaimsSet proofClaims;
     try {
       proofClaims = proof.getJWTClaimsSet();
     } catch (final ParseException e) {
@@ -277,9 +280,7 @@ public final class NimbusDpopValidator implements DpopValidator {
    * @return {@code true} iff the signature is cryptographically valid
    */
   private boolean verifyProofSignature(
-      final com.nimbusds.jwt.SignedJWT proof,
-      final JWK embeddedJwk,
-      final com.nimbusds.jose.JWSHeader header) {
+      final SignedJWT proof, final JWK embeddedJwk, final JWSHeader header) {
     final Key publicKey;
     try {
       // RSAKey/ECKey/OctetKeyPair all implement AsymmetricJWK which exposes toPublicKey().
@@ -338,7 +339,7 @@ public final class NimbusDpopValidator implements DpopValidator {
    * @param name the claim name
    * @return the string value, or {@code null}
    */
-  private static String stringClaim(final com.nimbusds.jwt.JWTClaimsSet claims, final String name) {
+  private static String stringClaim(final JWTClaimsSet claims, final String name) {
     final var raw = claims.getClaim(name);
     return raw instanceof String s ? s : null;
   }

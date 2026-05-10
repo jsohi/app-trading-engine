@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.NanoClock;
 import org.apache.logging.log4j.LogManager;
@@ -108,7 +109,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
   private final AuditLogger auditLogger;
   private final AccountLimitsSource accountLimitsSource;
   private final DpopValidator dpopValidator;
-  private final java.util.function.Supplier<HealthCheckHandler> healthCheckHandlerFactory;
+  private final Supplier<HealthCheckHandler> healthCheckHandlerFactory;
 
   private TransportDetector.Result transport;
   private Channel serverChannel;
@@ -197,7 +198,7 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
       final AuditLogger auditLogger,
       final AccountLimitsSource accountLimitsSource,
       final DpopValidator dpopValidator,
-      final java.util.function.Supplier<HealthCheckHandler> healthCheckHandlerFactory) {
+      final Supplier<HealthCheckHandler> healthCheckHandlerFactory) {
     this.config = Objects.requireNonNull(config, "config");
     this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");

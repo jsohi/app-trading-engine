@@ -39,10 +39,12 @@ public interface JtiReplayCache {
    * Atomically check-and-insert a DPoP proof JTI.
    *
    * @param jti the {@code jti} claim from the DPoP proof JWT (non-null, non-empty per RFC 9449)
-   * @param expireAtNs absolute monotonic-nanosecond deadline at which this entry MAY be evicted by
-   *     the cache. Impls SHOULD treat values strictly less than the current clock as already-
-   *     expired (i.e., MUST NOT keep them resident). Caller computes via {@code clock.nanoTime() +
-   *     ttlNs}.
+   * @param expireAtNs absolute <b>epoch-nanosecond</b> deadline at which this entry MAY be evicted
+   *     by the cache. Both producer ({@link DpopValidator} impls) and consumer (cache impls) MUST
+   *     agree on the {@code EpochNanoClock} domain — using a monotonic-only clock on either side
+   *     breaks eviction (PR #71 R1 critical clock-mismatch fix). Impls SHOULD treat values strictly
+   *     less than the current epoch-clock as already-expired (i.e., MUST NOT keep them resident).
+   *     Caller computes via {@code epochNanoClock.nanoTime() + ttlNs}.
    * @return {@code true} if {@code jti} was not previously cached (fresh proof — auth proceeds);
    *     {@code false} if a non-expired entry for the same {@code jti} already existed (replay —
    *     auth MUST be rejected)

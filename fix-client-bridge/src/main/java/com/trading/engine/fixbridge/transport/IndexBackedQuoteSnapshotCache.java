@@ -47,7 +47,8 @@ import org.agrona.collections.Object2ObjectHashMap;
  *       path because AcceptQuote is rate-limited at the dispatcher (low-frequency human-driven
  *       action) and the alternative — a custom {@code byte[]}-keyed open-addressing map — would add
  *       ~200 LOC and a maintenance burden disproportionate to a couple-of-Hz call rate. Rationale
- *       documented for future profile-driven optimisation: see {@code AGENTS.md} (TODO when filed).
+ *       documented for future profile-driven optimisation if AcceptQuote rate ever crosses the
+ *       threshold where the per-call alloc dominates GC pressure.
  *   <li>{@link #evict(byte[], int, int)} allocates one {@code String} per call for the same reason.
  *       Same rate-limit rationale applies.
  *   <li>{@link #stash(String, QuoteSnapshot)} allocates zero — the caller already holds the {@code
@@ -60,7 +61,7 @@ import org.agrona.collections.Object2ObjectHashMap;
  * auth-success; released to GC when the channel closes. Internal map capacity is sized to the
  * typical concurrent-quotes-per-session ceiling ({@link #DEFAULT_INITIAL_CAPACITY}); the map grows
  * beyond that if needed (Agrona handles resize) — an unusual path that warrants a metrics counter
- * in production (TODO: APP-40 metrics phase).
+ * in production once the Micrometer registry is wired into this class.
  *
  * <p><b>Dependencies.</b> {@link SessionQuoteIndex}, {@link SessionId}, {@link QuoteSnapshot},
  * Agrona {@link Object2ObjectHashMap}.
