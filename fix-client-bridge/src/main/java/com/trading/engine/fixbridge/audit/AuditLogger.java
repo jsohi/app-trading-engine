@@ -7,8 +7,8 @@ package com.trading.engine.fixbridge.audit;
  * bridge: auth lifecycle, command receipt, kill-switch presses, rate-limit hits, quote orphans,
  * session terminations, and {@code RawFix} debug-flag toggles. APP-40a defines the interface and
  * ships a no-op default ({@link Noop}) so bridge dispatch code compiles. APP-40b binds the real
- * Log4j2-async implementation ({@code Log4jAuditLogger}) which writes the JSONL hash chain,
- * fans out via TLS-syslog, and trips the §3.7 two-stage circuit breaker.
+ * Log4j2-async implementation ({@code Log4jAuditLogger}) which writes the JSONL hash chain, fans
+ * out via TLS-syslog, and trips the §3.7 two-stage circuit breaker.
  *
  * <p><b>Threading.</b> Implementations MUST be safe for concurrent invocation by every Netty I/O
  * thread; the production binding uses a Log4j2 async appender backed by an LMAX Disruptor.
@@ -36,8 +36,8 @@ public interface AuditLogger {
    * production binding uses an async appender; failures are escalated through the §3.7 circuit
    * breaker rather than surfacing exceptions to the caller.
    *
-   * <p>The string fields ({@code userId}, {@code jti}, etc.) MUST be pre-sanitised by the caller
-   * — the implementation's pattern layout assumes ASCII-safe input. Newline characters in
+   * <p>The string fields ({@code userId}, {@code jti}, etc.) MUST be pre-sanitised by the caller —
+   * the implementation's pattern layout assumes ASCII-safe input. Newline characters in
    * user-supplied fields would break JSONL parsability and are rejected by the production binding
    * via {@link #escapeUserField(CharSequence)} (or its production equivalent).
    *
@@ -58,7 +58,8 @@ public interface AuditLogger {
    * @param clOrdId FIX {@code ClOrdID (11)} of the order action, or {@code null}
    * @param origClOrdId FIX {@code OrigClOrdID (41)} of a cancel target, or {@code null}
    * @param quoteId quote correlation id, or {@code null}
-   * @param result short-form result tag (e.g. {@code "ok"}, {@code "rejected"}, {@code "throttled"})
+   * @param result short-form result tag (e.g. {@code "ok"}, {@code "rejected"}, {@code
+   *     "throttled"})
    * @param failureReason taxonomy reason string for non-{@code ok} results, or {@code null}
    * @param traceparent W3C trace-context string ({@code 55} chars) sourced from the inbound {@code
    *     _meta.traceparent} field, or {@code null} when not present
@@ -84,10 +85,10 @@ public interface AuditLogger {
       String traceparent);
 
   /**
-   * Returns whether the underlying audit sink is currently writable. Implementations SHOULD
-   * answer in {@code O(1)} (cached health probe) — the Netty event loop polls this from the
-   * {@link com.trading.engine.fixbridge.audit.AuditLogger} contract perspective. A {@code false}
-   * answer triggers the §3.7 stage-1 warning {@code BridgeStatus{fatal:false,reason:"audit-degraded"}}
+   * Returns whether the underlying audit sink is currently writable. Implementations SHOULD answer
+   * in {@code O(1)} (cached health probe) — the Netty event loop polls this from the {@link
+   * com.trading.engine.fixbridge.audit.AuditLogger} contract perspective. A {@code false} answer
+   * triggers the §3.7 stage-1 warning {@code BridgeStatus{fatal:false,reason:"audit-degraded"}}
    * fan-out from the bridge's status emitter.
    *
    * @return {@code true} if writes have succeeded within the operational window (10s for the

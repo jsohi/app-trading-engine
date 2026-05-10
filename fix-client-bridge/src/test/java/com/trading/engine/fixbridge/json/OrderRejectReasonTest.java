@@ -4,10 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashSet;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -28,8 +26,8 @@ class OrderRejectReasonTest {
     for (final var r : values) {
       wireValues.add(r.wireValue());
     }
-    assertEquals(values.length, wireValues.size(),
-        "every OrderRejectReason must have a unique wireValue()");
+    assertEquals(
+        values.length, wireValues.size(), "every OrderRejectReason must have a unique wireValue()");
   }
 
   // ===========================================================================
@@ -39,8 +37,8 @@ class OrderRejectReasonTest {
   @Test
   void classification_allConstants_nonNull() {
     for (final var r : OrderRejectReason.values()) {
-      assertNotNull(r.classification(),
-          "classification() must not be null for constant " + r.name());
+      assertNotNull(
+          r.classification(), "classification() must not be null for constant " + r.name());
     }
   }
 
@@ -50,14 +48,15 @@ class OrderRejectReasonTest {
 
   @Test
   void classification_failureSet_exactlyLockedTaxonomy() {
-    final var expected = EnumSet.of(
-        OrderRejectReason.MALFORMED,
-        OrderRejectReason.INTERNAL,
-        OrderRejectReason.BRIDGE_DOWN,
-        OrderRejectReason.PRE_TRADE_LIMIT_EXCEEDED,
-        OrderRejectReason.QUOTE_NOT_OWNED,
-        OrderRejectReason.DUPLICATE_CLORD,
-        OrderRejectReason.DUPLICATE_REQID);
+    final var expected =
+        EnumSet.of(
+            OrderRejectReason.MALFORMED,
+            OrderRejectReason.INTERNAL,
+            OrderRejectReason.BRIDGE_DOWN,
+            OrderRejectReason.PRE_TRADE_LIMIT_EXCEEDED,
+            OrderRejectReason.QUOTE_NOT_OWNED,
+            OrderRejectReason.DUPLICATE_CLORD,
+            OrderRejectReason.DUPLICATE_REQID);
 
     final var actual = EnumSet.noneOf(OrderRejectReason.class);
     for (final var r : OrderRejectReason.values()) {
@@ -66,8 +65,7 @@ class OrderRejectReasonTest {
       }
     }
 
-    assertEquals(expected, actual,
-        "FAILURE set must exactly match the locked §B-r2-14 taxonomy");
+    assertEquals(expected, actual, "FAILURE set must exactly match the locked §B-r2-14 taxonomy");
   }
 
   // ===========================================================================
@@ -76,15 +74,16 @@ class OrderRejectReasonTest {
 
   @Test
   void classification_transientSet_exactlyLockedTaxonomy() {
-    final var expected = EnumSet.of(
-        OrderRejectReason.QUOTE_EXPIRED,
-        OrderRejectReason.QUOTE_NOT_FOUND,
-        OrderRejectReason.QUOTE_ALREADY_ACCEPTED,
-        OrderRejectReason.QUOTE_ALREADY_REJECTED,
-        OrderRejectReason.BACKPRESSURE,
-        OrderRejectReason.RATE_LIMIT_EXCEEDED,
-        OrderRejectReason.RATE_LIMIT_INITIAL_WINDOW,
-        OrderRejectReason.STALE_DPOP);
+    final var expected =
+        EnumSet.of(
+            OrderRejectReason.QUOTE_EXPIRED,
+            OrderRejectReason.QUOTE_NOT_FOUND,
+            OrderRejectReason.QUOTE_ALREADY_ACCEPTED,
+            OrderRejectReason.QUOTE_ALREADY_REJECTED,
+            OrderRejectReason.BACKPRESSURE,
+            OrderRejectReason.RATE_LIMIT_EXCEEDED,
+            OrderRejectReason.RATE_LIMIT_INITIAL_WINDOW,
+            OrderRejectReason.STALE_DPOP);
 
     final var actual = EnumSet.noneOf(OrderRejectReason.class);
     for (final var r : OrderRejectReason.values()) {
@@ -93,8 +92,7 @@ class OrderRejectReasonTest {
       }
     }
 
-    assertEquals(expected, actual,
-        "TRANSIENT set must exactly match the locked §B-r2-14 taxonomy");
+    assertEquals(expected, actual, "TRANSIENT set must exactly match the locked §B-r2-14 taxonomy");
   }
 
   // ===========================================================================
@@ -105,8 +103,8 @@ class OrderRejectReasonTest {
   void lookup_everyWireValue_roundTripsToSameConstant() {
     for (final var r : OrderRejectReason.values()) {
       final var found = OrderRejectReason.lookup(r.wireValue());
-      assertEquals(r, found,
-          "lookup(wireValue()) must round-trip to the same constant for " + r.name());
+      assertEquals(
+          r, found, "lookup(wireValue()) must round-trip to the same constant for " + r.name());
     }
   }
 
@@ -116,19 +114,19 @@ class OrderRejectReasonTest {
 
   @Test
   void lookup_null_returnsNull() {
-    assertNull(OrderRejectReason.lookup(null),
-        "lookup(null) must return null");
+    assertNull(OrderRejectReason.lookup(null), "lookup(null) must return null");
   }
 
   @Test
   void lookup_unknownString_returnsNull() {
-    assertNull(OrderRejectReason.lookup("unknown-reason"),
-        "lookup(unknown-reason) must return null");
+    assertNull(
+        OrderRejectReason.lookup("unknown-reason"), "lookup(unknown-reason) must return null");
   }
 
   @Test
   void lookup_emptyString_returnsNull() {
-    assertNull(OrderRejectReason.lookup(""),
+    assertNull(
+        OrderRejectReason.lookup(""),
         "lookup(\"\") must return null — no constant has an empty wire value");
   }
 }

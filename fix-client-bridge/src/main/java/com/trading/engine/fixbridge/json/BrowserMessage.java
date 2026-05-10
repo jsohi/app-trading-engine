@@ -144,11 +144,10 @@ public sealed interface BrowserMessage
       implements BrowserMessage {}
 
   /**
-   * Status query for an order whose UI state is STUCK or STUCK_LONG (§3.15 / §4.5). Recovery path
-   * — excluded from per-type rate limiter. Bridge forwards to the cluster's {@code
-   * OrderQueryByClOrdId} projection; the reply is emitted as {@link
-   * BrowserEvent.OrderStatusReply}. 5s server-side timeout produces a reply with {@code
-   * status="Unknown"}.
+   * Status query for an order whose UI state is STUCK or STUCK_LONG (§3.15 / §4.5). Recovery path —
+   * excluded from per-type rate limiter. Bridge forwards to the cluster's {@code
+   * OrderQueryByClOrdId} projection; the reply is emitted as {@link BrowserEvent.OrderStatusReply}.
+   * 5s server-side timeout produces a reply with {@code status="Unknown"}.
    *
    * @param clOrdId originating client order id (≤20 bytes, RFC4648 base32 per §4.14)
    */

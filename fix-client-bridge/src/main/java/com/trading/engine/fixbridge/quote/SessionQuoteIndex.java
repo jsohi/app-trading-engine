@@ -12,34 +12,33 @@ import org.agrona.collections.ObjectHashSet;
  * sub} on logout, and routes {@code Error{quote-orphaned}} to the oldest-connected surviving
  * session of a {@code sub} when a Quote arrives for a session that has gone away.
  *
- * <p>Fixes the round-1 BLOCKER "Quote broadcast to all authenticated sessions" by enforcing
- * strict per-session correlation. {@code quoteId} global uniqueness is now guaranteed by the
- * APP-40a edit to {@code OrchestratorIdGenerator} (clock-injected boot seed) — see plan §3.2.
+ * <p>Fixes the round-1 BLOCKER "Quote broadcast to all authenticated sessions" by enforcing strict
+ * per-session correlation. {@code quoteId} global uniqueness is now guaranteed by the APP-40a edit
+ * to {@code OrchestratorIdGenerator} (clock-injected boot seed) — see plan §3.2.
  *
  * <p><b>Three indexes</b> maintained:
  *
  * <ul>
  *   <li>{@code reqIdToOwner: reqId -> ReqIdEntry{sessionId, registeredAtNs, quoteEmittedAtNs}}
- *       populated on {@link #onQuoteRequest}; eagerly evicted on session close; also TTL-evicted
- *       at {@code 120s} from registration (or {@code 60s} after Quote emission, whichever is
- *       later, per §B-r2-24 / §3.2 lifecycle).
- *   <li>{@code quoteIdToSessionId: quoteId -> sessionId} populated on {@link #onQuoteEmitted};
- *       same TTL semantics as the parent {@code reqIdToOwner} entry.
- *   <li>{@code subToSessions: sub -> ordered-set-of-sessionId} maintained on session
- *       authentication and close; used for orphan-routing and {@code SessionTerminated} fan-out.
- *       Insertion order is preserved so "oldest-connected surviving session" lookup is O(1) on
- *       the iteration order.
+ *       populated on {@link #onQuoteRequest}; eagerly evicted on session close; also TTL-evicted at
+ *       {@code 120s} from registration (or {@code 60s} after Quote emission, whichever is later,
+ *       per §B-r2-24 / §3.2 lifecycle).
+ *   <li>{@code quoteIdToSessionId: quoteId -> sessionId} populated on {@link #onQuoteEmitted}; same
+ *       TTL semantics as the parent {@code reqIdToOwner} entry.
+ *   <li>{@code subToSessions: sub -> ordered-set-of-sessionId} maintained on session authentication
+ *       and close; used for orphan-routing and {@code SessionTerminated} fan-out. Insertion order
+ *       is preserved so "oldest-connected surviving session" lookup is O(1) on the iteration order.
  * </ul>
  *
- * <p><b>Threading.</b> NOT thread-safe by design. The bridge owns this index on its Netty
- * boss-loop thread (consistent with {@code :websocket-server} pattern). Mutation from any other
- * thread is forbidden. The single-event-loop invariant is enforced by inspection at PR review
- * time and by the dispatcher contract — there is no internal lock.
+ * <p><b>Threading.</b> NOT thread-safe by design. The bridge owns this index on its Netty boss-loop
+ * thread (consistent with {@code :websocket-server} pattern). Mutation from any other thread is
+ * forbidden. The single-event-loop invariant is enforced by inspection at PR review time and by the
+ * dispatcher contract — there is no internal lock.
  *
  * <p><b>Allocation.</b> Map insertion allocates the entry node (Agrona's {@link
  * Object2ObjectHashMap} uses open-addressing so no per-entry node allocation), plus a {@link
- * ReqIdEntry} per QuoteRequest and an {@link ObjectHashSet} per first-session-for-a-sub. Removal
- * is zero-alloc. Lookups are zero-alloc.
+ * ReqIdEntry} per QuoteRequest and an {@link ObjectHashSet} per first-session-for-a-sub. Removal is
+ * zero-alloc. Lookups are zero-alloc.
  *
  * <p><b>Lifecycle.</b> One instance per bridge process (singleton owned by the dispatcher). Live
  * for the bridge JVM's lifetime.
@@ -50,10 +49,10 @@ public final class SessionQuoteIndex {
 
   /**
    * Default TTL for an unused {@code reqId} entry — 120 seconds in nanoseconds. Per §B-r2-24:
-   * registration TTL is 120s; if a Quote is emitted, the entry retains for an additional 60s
-   * (total 120s+60s=180s) so late retransmissions still find a route. The §B-r2-24 wording says
-   * "additional 60s (total 120s)"; we model that as {@code REQ_ID_TTL_NANOS} from registration
-   * AND {@code QUOTE_EMITTED_TTL_NANOS} from emission, taking the later expiry.
+   * registration TTL is 120s; if a Quote is emitted, the entry retains for an additional 60s (total
+   * 120s+60s=180s) so late retransmissions still find a route. The §B-r2-24 wording says
+   * "additional 60s (total 120s)"; we model that as {@code REQ_ID_TTL_NANOS} from registration AND
+   * {@code QUOTE_EMITTED_TTL_NANOS} from emission, taking the later expiry.
    */
   static final long REQ_ID_TTL_NANOS = 120_000_000_000L;
 
@@ -74,7 +73,8 @@ public final class SessionQuoteIndex {
   // ---------------------------------------------------------------------------
 
   /** {@code reqId -> ReqIdEntry}. Mutated on QuoteRequest, Quote emission, and TTL sweep. */
-  private final Object2ObjectHashMap<String, ReqIdEntry> reqIdToOwner = new Object2ObjectHashMap<>();
+  private final Object2ObjectHashMap<String, ReqIdEntry> reqIdToOwner =
+      new Object2ObjectHashMap<>();
 
   /** {@code quoteId -> sessionId}. Mutated on Quote emission and TTL sweep. */
   private final Object2ObjectHashMap<String, SessionId> quoteIdToSessionId =
@@ -134,12 +134,11 @@ public final class SessionQuoteIndex {
   }
 
   /**
-   * Eagerly remove all index entries owned by {@code sessionId}. Caller MUST invoke from the
-   * Netty {@code channelInactive} hook regardless of whether the close was normal, abnormal, or
-   * forced (close codes 1001/1006/4001/4002/4008).
+   * Eagerly remove all index entries owned by {@code sessionId}. Caller MUST invoke from the Netty
+   * {@code channelInactive} hook regardless of whether the close was normal, abnormal, or forced
+   * (close codes 1001/1006/4001/4002/4008).
    *
-   * <p>Per §3.2: "On WS close, all entries for that session are eagerly evicted regardless of
-   * TTL."
+   * <p>Per §3.2: "On WS close, all entries for that session are eagerly evicted regardless of TTL."
    *
    * @param sessionId the session that just closed
    * @return the {@code sub} that owned the session, or {@code null} if the session was never
@@ -185,8 +184,8 @@ public final class SessionQuoteIndex {
 
   /**
    * Result of {@link #onQuoteRequest(String, SessionId, long)}. Either the registration succeeded
-   * ({@link #ACCEPTED}) or it was rejected as a duplicate within the §3.2 60-second window
-   * ({@link #DUPLICATE_REQID}).
+   * ({@link #ACCEPTED}) or it was rejected as a duplicate within the §3.2 60-second window ({@link
+   * #DUPLICATE_REQID}).
    */
   public enum QuoteRequestRegistration {
     /** {@code reqId} registered; the dispatcher should forward to the orchestrator. */
@@ -234,8 +233,8 @@ public final class SessionQuoteIndex {
    * quoteId} to the same session for downstream {@code AcceptQuote}/{@code RejectQuote} validation.
    *
    * <p>If the {@code reqId} entry has been evicted (session closed, TTL elapsed, or unknown reqId),
-   * this method returns {@code null} and emits no side effect — the caller (orphan-routing path)
-   * is expected to consult {@link #sessionsForSub(String)} to find a surviving sibling, or drop
+   * this method returns {@code null} and emits no side effect — the caller (orphan-routing path) is
+   * expected to consult {@link #sessionsForSub(String)} to find a surviving sibling, or drop
    * silently.
    *
    * @param reqId the originating request id
@@ -386,9 +385,9 @@ public final class SessionQuoteIndex {
   // ---------------------------------------------------------------------------
 
   /**
-   * One node in the {@code reqIdToOwner} map. Mutable: the {@code quoteId}/{@code
-   * quoteEmittedAtNs} fields flip from null/{@code 0L} to populated when {@code onQuoteEmitted} is
-   * called for this {@code reqId}.
+   * One node in the {@code reqIdToOwner} map. Mutable: the {@code quoteId}/{@code quoteEmittedAtNs}
+   * fields flip from null/{@code 0L} to populated when {@code onQuoteEmitted} is called for this
+   * {@code reqId}.
    */
   static final class ReqIdEntry {
 

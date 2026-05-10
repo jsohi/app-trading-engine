@@ -1,10 +1,9 @@
 package com.trading.engine.fixbridge.quote;
 
-import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.DUPLICATE_REQID_WINDOW_NANOS;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QUOTE_EMITTED_TTL_NANOS;
-import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.REQ_ID_TTL_NANOS;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration.ACCEPTED;
 import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.QuoteRequestRegistration.DUPLICATE_REQID;
+import static com.trading.engine.fixbridge.quote.SessionQuoteIndex.REQ_ID_TTL_NANOS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -21,12 +20,12 @@ import org.junit.jupiter.api.Test;
  * registration, Quote emission correlation, ownership validation, TTL sweep, sub-bucket fan-out,
  * and the combined orphan-routing scenario described in plan §3.2.
  *
- * <p><b>Time model.</b> All timestamps are nanoseconds from an arbitrary epoch base
- * ({@code T0 = 1_000_000_000_000L}). Offsets are expressed as multiples of named constants so
- * the intent is clear at each callsite.
+ * <p><b>Time model.</b> All timestamps are nanoseconds from an arbitrary epoch base ({@code T0 =
+ * 1_000_000_000_000L}). Offsets are expressed as multiples of named constants so the intent is
+ * clear at each callsite.
  *
- * <p><b>Threading.</b> Single-threaded test execution; {@link SessionQuoteIndex} is not
- * thread-safe by design.
+ * <p><b>Threading.</b> Single-threaded test execution; {@link SessionQuoteIndex} is not thread-safe
+ * by design.
  */
 final class SessionQuoteIndexTest {
 

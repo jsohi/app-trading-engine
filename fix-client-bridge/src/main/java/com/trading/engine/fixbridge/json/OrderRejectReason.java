@@ -80,8 +80,8 @@ public enum OrderRejectReason {
   QUOTE_ALREADY_REJECTED("quote-already-rejected", Classification.TRANSIENT),
 
   /**
-   * Outbound queue overflowed; per-command soft throttle. UI re-enables submit if quote TTL has
-   * not expired. See §3.1 + §4.5.
+   * Outbound queue overflowed; per-command soft throttle. UI re-enables submit if quote TTL has not
+   * expired. See §3.1 + §4.5.
    */
   BACKPRESSURE("backpressure", Classification.TRANSIENT),
 

@@ -5,8 +5,8 @@ package com.trading.engine.fixbridge.ratelimit;
  *
  * <p><b>Purpose (locked plan §3.13).</b> Enforce the per-type burst + sustained limits for every
  * inbound command type, plus a tighter "first-60s after Auth" anti-flood window for the
- * stolen-token threat model. Numbers are mirrored exactly between this server-side enforcer and
- * the UI-side client RateLimiter (UX guard) per the §3.13 table:
+ * stolen-token threat model. Numbers are mirrored exactly between this server-side enforcer and the
+ * UI-side client RateLimiter (UX guard) per the §3.13 table:
  *
  * <pre>
  *   Command         | Sustained | Burst | First-60s-after-Auth
@@ -24,17 +24,17 @@ package com.trading.engine.fixbridge.ratelimit;
  *
  * <p><b>Clock source.</b> {@code System.nanoTime()} server-monotonic — captured as {@code
  * authNanos} at AUTHENTICATED transition; the first-60s window expires when {@code
- * System.nanoTime() - authNanos >= 60s}. Tamper-resistant against server wall-clock adjustments
- * per §3.13 / §B-r2-15.
+ * System.nanoTime() - authNanos >= 60s}. Tamper-resistant against server wall-clock adjustments per
+ * §3.13 / §B-r2-15.
  *
  * <p><b>Threading.</b> NOT thread-safe. Owned by the per-session Netty handler on the channel's
  * single-threaded event loop. One {@code PerTypeRateLimiter} instance per session.
  *
- * <p><b>Allocation.</b> Zero on the hot path. Five {@link TokenBucket} fields are pre-allocated
- * at construction; each {@code tryConsume} mutates only primitive bucket state.
+ * <p><b>Allocation.</b> Zero on the hot path. Five {@link TokenBucket} fields are pre-allocated at
+ * construction; each {@code tryConsume} mutates only primitive bucket state.
  *
- * <p><b>Lifecycle.</b> Per-session — created in {@code JwtAuthHandler} on AUTHENTICATED
- * transition and discarded on channel close.
+ * <p><b>Lifecycle.</b> Per-session — created in {@code JwtAuthHandler} on AUTHENTICATED transition
+ * and discarded on channel close.
  *
  * <p><b>Dependencies.</b> JDK only.
  */
@@ -146,9 +146,9 @@ public final class PerTypeRateLimiter {
   /**
    * Attempt to consume a token for the given command type at {@code nowNs}.
    *
-   * <p>During the first-60s window the tighter "initial" bucket is consulted first; if it
-   * rejects, the result is {@link Outcome#REJECTED_INITIAL_WINDOW}. Outside the window the
-   * normal bucket is consulted; if it rejects the result is {@link Outcome#REJECTED_RATE_LIMIT}.
+   * <p>During the first-60s window the tighter "initial" bucket is consulted first; if it rejects,
+   * the result is {@link Outcome#REJECTED_INITIAL_WINDOW}. Outside the window the normal bucket is
+   * consulted; if it rejects the result is {@link Outcome#REJECTED_RATE_LIMIT}.
    *
    * <p>Note: only the relevant bucket (initial OR normal) is consumed — the other bucket is left
    * untouched so it accumulates tokens during the off-window. This keeps the model simple and

@@ -3,8 +3,10 @@ package com.trading.engine.fixbridge;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -55,6 +57,12 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
  * @param fatalAfterFailures consecutive failures before a {@code BridgeStatus(fatal=true)}
  * @param fatalAfterSeconds time-window since first failure before declaring fatal
  * @param heartbeatSeconds {@code BridgeStatus} heartbeat interval
+ * @param allowedOrigins exact-match WebSocket {@code Origin} header allowlist (CSWSH defence; empty
+ *     list rejects all origins — operators MUST configure)
+ * @param auditViewRole role identifier required in the JWT {@code roles} claim before the bridge
+ *     emits FIX-tap mirrors via {@code RawFixTap} (default {@code "audit_view"})
+ * @param authFailureLockoutThreshold per-IP auth failures before lockout (default 5)
+ * @param authFailureLockoutSeconds per-IP lockout duration in seconds (default 60)
  */
 public record FixClientBridgeConfig(
     int port,
@@ -79,7 +87,11 @@ public record FixClientBridgeConfig(
     int reconnectBackoffSecondsCap,
     int fatalAfterFailures,
     int fatalAfterSeconds,
-    int heartbeatSeconds) {
+    int heartbeatSeconds,
+    List<String> allowedOrigins,
+    String auditViewRole,
+    int authFailureLockoutThreshold,
+    int authFailureLockoutSeconds) {
 
   /** Default identifier used when {@code -Dbridge.jwksUri} is set without an explicit registry. */
   public static final String DEV_ISSUER_KEY = "trading-engine-dev-issuer";
@@ -103,6 +115,8 @@ public record FixClientBridgeConfig(
     Objects.requireNonNull(sessionsPath, "sessionsPath");
     Objects.requireNonNull(jwtIssuerRegistry, "jwtIssuerRegistry");
     Objects.requireNonNull(expectedAudience, "expectedAudience");
+    Objects.requireNonNull(allowedOrigins, "allowedOrigins");
+    Objects.requireNonNull(auditViewRole, "auditViewRole");
 
     if (port <= 0 || port > 65535) {
       throw new IllegalArgumentException("port out of range 1-65535: " + port);
@@ -154,6 +168,28 @@ public record FixClientBridgeConfig(
     if (heartbeatSeconds <= 0) {
       throw new IllegalArgumentException("heartbeatSeconds must be > 0: " + heartbeatSeconds);
     }
+    if (auditViewRole.isEmpty()) {
+      throw new IllegalArgumentException("auditViewRole must not be empty");
+    }
+    if (authFailureLockoutThreshold <= 0) {
+      throw new IllegalArgumentException(
+          "authFailureLockoutThreshold must be > 0: " + authFailureLockoutThreshold);
+    }
+    if (authFailureLockoutSeconds <= 0) {
+      throw new IllegalArgumentException(
+          "authFailureLockoutSeconds must be > 0: " + authFailureLockoutSeconds);
+    }
+    // Defensive copy of the origin allowlist + null-rejecting validation. Empty allowlist is the
+    // fail-safe default — origin-validation handler rejects every request when no origins are
+    // configured. Operators are expected to populate this for prod.
+    final var originsCopy = new ArrayList<String>(allowedOrigins.size());
+    for (final var origin : allowedOrigins) {
+      if (origin == null || origin.isEmpty()) {
+        throw new IllegalArgumentException("allowedOrigins entries must be non-empty strings");
+      }
+      originsCopy.add(origin);
+    }
+    allowedOrigins = Collections.unmodifiableList(originsCopy);
 
     // Defensive copy + immutable wrapper — protects the runtime from operator code mutating the
     // registry map after construction.
@@ -228,6 +264,17 @@ public record FixClientBridgeConfig(
       registry.put(DEV_ISSUER_KEY, singleJwks);
     }
 
+    // -Dbridge.allowedOrigins accepts a comma-separated list. Empty string clears the allowlist
+    // (fail-safe — origin handler will then reject every request). Absent property leaves the
+    // YAML-derived list intact.
+    final var originsOverride = properties.getProperty(SYSPROP_PREFIX + "allowedOrigins");
+    final List<String> overlaidOrigins;
+    if (originsOverride == null) {
+      overlaidOrigins = allowedOrigins;
+    } else {
+      overlaidOrigins = parseCommaList(originsOverride);
+    }
+
     return new FixClientBridgeConfig(
         intProp(properties, "port", port),
         strProp(properties, "bindAddress", bindAddress),
@@ -251,7 +298,11 @@ public record FixClientBridgeConfig(
         intProp(properties, "reconnectBackoffSecondsCap", reconnectBackoffSecondsCap),
         intProp(properties, "fatalAfterFailures", fatalAfterFailures),
         intProp(properties, "fatalAfterSeconds", fatalAfterSeconds),
-        intProp(properties, "heartbeatSeconds", heartbeatSeconds));
+        intProp(properties, "heartbeatSeconds", heartbeatSeconds),
+        overlaidOrigins,
+        strProp(properties, "auditViewRole", auditViewRole),
+        intProp(properties, "authFailureLockoutThreshold", authFailureLockoutThreshold),
+        intProp(properties, "authFailureLockoutSeconds", authFailureLockoutSeconds));
   }
 
   // ===========================================================================
@@ -305,7 +356,61 @@ public record FixClientBridgeConfig(
         intOr(raw, "reconnectBackoffSecondsCap", 32),
         intOr(raw, "fatalAfterFailures", 10),
         intOr(raw, "fatalAfterSeconds", 600),
-        intOr(raw, "heartbeatSeconds", 10));
+        intOr(raw, "heartbeatSeconds", 10),
+        parseStringList(raw, "allowedOrigins"),
+        strOr(raw, "auditViewRole", "audit_view"),
+        intOr(raw, "authFailureLockoutThreshold", 5),
+        intOr(raw, "authFailureLockoutSeconds", 60));
+  }
+
+  /**
+   * Parse a YAML field that should be a list of strings. Missing key returns an empty list (the
+   * fail-safe default for {@code allowedOrigins}); any non-list value or non-string element
+   * surfaces a clear {@link IllegalArgumentException} rather than a {@link ClassCastException}.
+   *
+   * @param raw parsed YAML map
+   * @param key the field name
+   * @return validated list of strings
+   */
+  private static List<String> parseStringList(final Map<String, Object> raw, final String key) {
+    final var v = raw.get(key);
+    if (v == null) {
+      return List.of();
+    }
+    if (!(v instanceof List<?> list)) {
+      throw new IllegalArgumentException(
+          key + " must be a YAML list of strings, got: " + v.getClass().getName());
+    }
+    final var typed = new ArrayList<String>(list.size());
+    for (final var item : list) {
+      if (!(item instanceof String s)) {
+        throw new IllegalArgumentException(
+            key
+                + " entries must be strings, got: "
+                + (item == null ? "null" : item.getClass().getName()));
+      }
+      typed.add(s);
+    }
+    return typed;
+  }
+
+  /**
+   * Parse a comma-separated list from a system-property override. Empty string yields an empty list
+   * (i.e. operator explicitly cleared the allowlist); whitespace around tokens is trimmed.
+   */
+  private static List<String> parseCommaList(final String raw) {
+    if (raw.isEmpty()) {
+      return List.of();
+    }
+    final var parts = raw.split(",");
+    final var out = new ArrayList<String>(parts.length);
+    for (final var p : parts) {
+      final var trimmed = p.trim();
+      if (!trimmed.isEmpty()) {
+        out.add(trimmed);
+      }
+    }
+    return out;
   }
 
   /**

@@ -9,13 +9,13 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 /**
  * Allocation regression tripwire for {@link JtiRevocationCache#isRevoked(String, long)}.
  *
- * <p>Asserts {@code GarbageCollectorMXBean.getCollectionCount()} does not advance during
- * {@code 100_000} steady-state iterations of {@code isRevoked} on a pre-revoked JTI. The
- * production hot path ({@code isRevoked}) is documented as zero-alloc; this test enforces that
- * invariant after JIT warm-up.
+ * <p>Asserts {@code GarbageCollectorMXBean.getCollectionCount()} does not advance during {@code
+ * 100_000} steady-state iterations of {@code isRevoked} on a pre-revoked JTI. The production hot
+ * path ({@code isRevoked}) is documented as zero-alloc; this test enforces that invariant after JIT
+ * warm-up.
  *
- * <p>Gated by {@code -DrunAllocTests=true} so the regular {@code test} task skips it (locked
- * §21, §23).
+ * <p>Gated by {@code -DrunAllocTests=true} so the regular {@code test} task skips it (locked §21,
+ * §23).
  *
  * <p><b>Threading.</b> Single-threaded. {@link JtiRevocationCache} is not thread-safe per its
  * contract; the test owns it exclusively.

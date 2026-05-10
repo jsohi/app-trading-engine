@@ -10,22 +10,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
- * Allocation regression tripwire for {@link OutboundQueue#offer(BrowserEvent)} and
- * {@link OutboundQueue#poll()}.
+ * Allocation regression tripwire for {@link OutboundQueue#offer(BrowserEvent)} and {@link
+ * OutboundQueue#poll()}.
  *
- * <p>Asserts {@code GarbageCollectorMXBean.getCollectionCount()} does not advance during
- * {@code 100_000} steady-state iterations of offer+poll on a small ring (capacity=8) with
- * stable, pre-constructed {@link BrowserEvent} references. The production hot path is documented
- * as zero-alloc; this test enforces that invariant after JIT warm-up.
+ * <p>Asserts {@code GarbageCollectorMXBean.getCollectionCount()} does not advance during {@code
+ * 100_000} steady-state iterations of offer+poll on a small ring (capacity=8) with stable,
+ * pre-constructed {@link BrowserEvent} references. The production hot path is documented as
+ * zero-alloc; this test enforces that invariant after JIT warm-up.
  *
  * <p>The queue is sized at 8 and events are alternately offered and polled so the queue never
  * fills. Stable references are used to avoid allocation in the loop body itself.
  *
- * <p>Gated by {@code -DrunAllocTests=true} so the regular {@code test} task skips it (locked
- * §21, §23).
+ * <p>Gated by {@code -DrunAllocTests=true} so the regular {@code test} task skips it (locked §21,
+ * §23).
  *
- * <p><b>Threading.</b> Single-threaded. {@link OutboundQueue} is not thread-safe per its
- * contract; the test owns it exclusively.
+ * <p><b>Threading.</b> Single-threaded. {@link OutboundQueue} is not thread-safe per its contract;
+ * the test owns it exclusively.
  */
 @EnabledIfSystemProperty(named = "runAllocTests", matches = "true")
 final class OutboundQueueAllocTest {

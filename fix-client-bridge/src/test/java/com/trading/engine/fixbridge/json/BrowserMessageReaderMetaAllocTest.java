@@ -12,11 +12,11 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 /**
  * Allocation regression tripwire for {@link BrowserMessageReader} when parsing the {@code _meta}
  * envelope (§3.6). Mirrors the {@code GarbageCollectorMXBean.getCollectionCount()} delta pattern
- * from other {@code *AllocTest}s in this module: warm the JIT, sample GC count, run the parser in
- * a tight loop, sample again, assert no GC advanced.
+ * from other {@code *AllocTest}s in this module: warm the JIT, sample GC count, run the parser in a
+ * tight loop, sample again, assert no GC advanced.
  *
- * <p>Gated by {@code -DrunAllocTests=true} (locked §21, §23) — opt-in only because GC counts can
- * be advanced by unrelated background processes on a shared CI host.
+ * <p>Gated by {@code -DrunAllocTests=true} (locked §21, §23) — opt-in only because GC counts can be
+ * advanced by unrelated background processes on a shared CI host.
  *
  * <p>Threading: single-threaded. The {@link MutableParsedMessage} flyweight and {@link
  * io.netty.buffer.ByteBuf} are not shared across threads.

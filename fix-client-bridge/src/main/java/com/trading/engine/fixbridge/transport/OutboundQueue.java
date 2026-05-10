@@ -7,25 +7,24 @@ import com.trading.engine.fixbridge.json.BrowserEvent;
  *
  * <p><b>Purpose.</b> Decouples the bridge's command-handling thread from the slower browser-side
  * Netty write path. When the WebSocket peer falls behind (a slow consumer or a backpressured
- * channel), this queue buffers up to {@link #DEFAULT_CAPACITY} events; once that bound is hit
- * the priority-aware drop policy preserves order-critical events at the cost of debug-only
- * {@code RawFix} frames.
+ * channel), this queue buffers up to {@link #DEFAULT_CAPACITY} events; once that bound is hit the
+ * priority-aware drop policy preserves order-critical events at the cost of debug-only {@code
+ * RawFix} frames.
  *
  * <p><b>Drop policy (§3.1 step 5).</b>
  *
  * <ul>
  *   <li>{@code ExecutionReport}, {@code OrderReject}, {@code BridgeStatus}, {@code AuthExpired},
- *       {@code Error}, {@code AccountLimits}, {@code SessionTerminated},
- *       {@code OrderReconciled}, {@code OrderStatusReply}, {@code Quote} — <b>never dropped</b>.
- *       These carry order/quote semantics or session-state signals; the trader's correctness
- *       depends on them.
+ *       {@code Error}, {@code AccountLimits}, {@code SessionTerminated}, {@code OrderReconciled},
+ *       {@code OrderStatusReply}, {@code Quote} — <b>never dropped</b>. These carry order/quote
+ *       semantics or session-state signals; the trader's correctness depends on them.
  *   <li>{@code RawFix} — dropped first when capacity is exhausted (oldest-first). The drop is
  *       silent at the queue layer; the {@code RawFixTap} caller increments the {@code
  *       fixbridge_rawfix_dropped_total} counter on each rejection.
- *   <li>If the queue is full AND no {@code RawFix} entries can be dropped (worst case — every
- *       slot is critical), {@link #offer(BrowserEvent)} returns {@link OfferResult#TERMINAL},
- *       which the caller MUST escalate to {@code BridgeStatus{fatal:true,reason:"outbound-
- *       overflow"}} and channel close (§3.1 step 5).
+ *   <li>If the queue is full AND no {@code RawFix} entries can be dropped (worst case — every slot
+ *       is critical), {@link #offer(BrowserEvent)} returns {@link OfferResult#TERMINAL}, which the
+ *       caller MUST escalate to {@code BridgeStatus{fatal:true,reason:"outbound- overflow"}} and
+ *       channel close (§3.1 step 5).
  * </ul>
  *
  * <p><b>Threading.</b> NOT thread-safe. Owned by the per-session Netty handler on the channel's
@@ -48,14 +47,14 @@ public final class OutboundQueue {
     /** Event accepted and enqueued. */
     ACCEPTED,
     /**
-     * Event accepted, but the queue was full and an older {@code RawFix} entry was dropped to
-     * make room. Caller MUST increment {@code fixbridge_rawfix_dropped_total}.
+     * Event accepted, but the queue was full and an older {@code RawFix} entry was dropped to make
+     * room. Caller MUST increment {@code fixbridge_rawfix_dropped_total}.
      */
     ACCEPTED_DROPPED_RAWFIX,
     /**
      * Queue full and no {@code RawFix} entries available to drop. Caller MUST escalate to
-     * terminal-overflow {@code BridgeStatus{fatal:true,reason:"outbound-overflow"}} and close
-     * the channel.
+     * terminal-overflow {@code BridgeStatus{fatal:true,reason:"outbound-overflow"}} and close the
+     * channel.
      */
     TERMINAL
   }
@@ -145,8 +144,8 @@ public final class OutboundQueue {
   }
 
   /**
-   * Drop the oldest {@code RawFix} entry if any exists. Compacts the ring around the dropped
-   * slot. O(N) worst case — fine because RawFix dropouts are rare and N is bounded by capacity.
+   * Drop the oldest {@code RawFix} entry if any exists. Compacts the ring around the dropped slot.
+   * O(N) worst case — fine because RawFix dropouts are rare and N is bounded by capacity.
    *
    * @return {@code true} iff a RawFix entry was found and removed
    */

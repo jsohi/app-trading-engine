@@ -1,13 +1,12 @@
 package com.trading.engine.orchestrator;
 
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.agrona.MutableDirectBuffer;
-import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.EpochNanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -28,7 +27,8 @@ class OrchestratorIdGeneratorRestartTest {
 
   @Test
   void restartSafety_differentClockValues_firstIdsAreNotEqual() {
-    // Two fake EpochNanoClock lambdas with different nanosecond values simulate successive restarts.
+    // Two fake EpochNanoClock lambdas with different nanosecond values simulate successive
+    // restarts.
     // Seed1 = Math.floorMod(1_000_000_000_000L >>> 20, MAX_COUNTER) = 953_674
     // Seed2 = Math.floorMod(2_000_000_000_000L >>> 20, MAX_COUNTER) = 1_907_348
     final EpochNanoClock clock1 = () -> 1_000_000_000_000L;
@@ -47,9 +47,14 @@ class OrchestratorIdGeneratorRestartTest {
     final var id1 = buf1.getStringWithoutLengthAscii(0, len1);
     final var id2 = buf2.getStringWithoutLengthAscii(0, len2);
 
-    assertNotEquals(id1, id2,
+    assertNotEquals(
+        id1,
+        id2,
         "generators seeded from different clock values must produce different first IDs; "
-            + "id1=" + id1 + " id2=" + id2);
+            + "id1="
+            + id1
+            + " id2="
+            + id2);
   }
 
   @Test
@@ -81,7 +86,8 @@ class OrchestratorIdGeneratorRestartTest {
         break;
       }
     }
-    assertTrue(anyDiffers,
+    assertTrue(
+        anyDiffers,
         "byte arrays of IDs from different-clock generators must differ at at least one position");
   }
 
@@ -95,7 +101,9 @@ class OrchestratorIdGeneratorRestartTest {
     final var buf = new UnsafeBuffer(new byte[BUF_CAPACITY]);
     final int len = gen.nextInto(buf, 0);
     final var id = buf.getStringWithoutLengthAscii(0, len);
-    assertEquals("QTE-00000000001", id,
+    assertEquals(
+        "QTE-00000000001",
+        id,
         "single-arg (deterministic) ctor must produce QTE-00000000001 as its first ID");
   }
 
@@ -107,7 +115,9 @@ class OrchestratorIdGeneratorRestartTest {
     final var buf = new UnsafeBuffer(new byte[BUF_CAPACITY]);
     final int len = gen.nextInto(buf, 0);
     final var id = buf.getStringWithoutLengthAscii(0, len);
-    assertNotEquals("QTE-00000000001", id,
+    assertNotEquals(
+        "QTE-00000000001",
+        id,
         "clock-seeded ctor with non-zero clock must produce a different first ID than the deterministic ctor");
   }
 
@@ -117,7 +127,8 @@ class OrchestratorIdGeneratorRestartTest {
 
   @Test
   void clockInjectedCtor_nullClock_throwsNullPointerException() {
-    assertThrows(NullPointerException.class,
+    assertThrows(
+        NullPointerException.class,
         () -> new OrchestratorIdGenerator("QTE", (EpochNanoClock) null),
         "null clock must throw NullPointerException");
   }
@@ -132,9 +143,11 @@ class OrchestratorIdGeneratorRestartTest {
     final EpochNanoClock clock = () -> Long.MAX_VALUE;
     final var gen = new OrchestratorIdGenerator("QTE", clock);
     // Counter must be in [0, MAX_COUNTER) immediately after construction.
-    assertTrue(gen.currentCounter() >= 0L,
+    assertTrue(
+        gen.currentCounter() >= 0L,
         "counter must be non-negative after construction with Long.MAX_VALUE clock");
-    assertTrue(gen.currentCounter() < OrchestratorIdGenerator.MAX_COUNTER,
+    assertTrue(
+        gen.currentCounter() < OrchestratorIdGenerator.MAX_COUNTER,
         "counter must be < MAX_COUNTER after construction with Long.MAX_VALUE clock");
   }
 
@@ -158,7 +171,9 @@ class OrchestratorIdGeneratorRestartTest {
     // 0L >>> 20 = 0; Math.floorMod(0, MAX_COUNTER) = 0 → counter = 0.
     final EpochNanoClock clock = () -> 0L;
     final var gen = new OrchestratorIdGenerator("QTE", clock);
-    assertEquals(0L, gen.currentCounter(),
+    assertEquals(
+        0L,
+        gen.currentCounter(),
         "clock returning 0 must seed counter=0, same as the deterministic single-arg ctor");
   }
 
@@ -177,7 +192,9 @@ class OrchestratorIdGeneratorRestartTest {
     final var idClocked = bufClocked.getStringWithoutLengthAscii(0, len);
     final var idDet = bufDet.getStringWithoutLengthAscii(0, len);
 
-    assertEquals(idDet, idClocked,
+    assertEquals(
+        idDet,
+        idClocked,
         "clock returning 0L must produce the same first ID as the deterministic single-arg ctor");
   }
 }

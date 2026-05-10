@@ -9,20 +9,20 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 /**
  * Allocation regression tripwire for the read-only hot-path methods of {@link SessionQuoteIndex}.
  *
- * <p><b>Scope.</b> Only truly read-only, zero-allocating methods are covered here:
- * {@link SessionQuoteIndex#isOwnedBy}, {@link SessionQuoteIndex#subFor}, and
- * {@link SessionQuoteIndex#sessionsForSub}. Methods that allocate by design
- * ({@link SessionQuoteIndex#onQuoteRequest}, {@link SessionQuoteIndex#onQuoteEmitted},
- * {@link SessionQuoteIndex#onSessionAuthenticated}) are explicitly excluded.
+ * <p><b>Scope.</b> Only truly read-only, zero-allocating methods are covered here: {@link
+ * SessionQuoteIndex#isOwnedBy}, {@link SessionQuoteIndex#subFor}, and {@link
+ * SessionQuoteIndex#sessionsForSub}. Methods that allocate by design ({@link
+ * SessionQuoteIndex#onQuoteRequest}, {@link SessionQuoteIndex#onQuoteEmitted}, {@link
+ * SessionQuoteIndex#onSessionAuthenticated}) are explicitly excluded.
  *
  * <p><b>Gating.</b> Enabled only when the JVM system property {@code runAllocTests=true} is set
  * (set automatically by the {@code allocTest} Gradle task; absent from the default {@code test}
- * task). This matches the pattern used by {@code JsonToFixTranslatorAllocTest} and other
- * {@code *AllocTest} suites in this module.
+ * task). This matches the pattern used by {@code JsonToFixTranslatorAllocTest} and other {@code
+ * *AllocTest} suites in this module.
  *
  * <p><b>Measurement.</b> Uses total GC collection count across all collectors as the zero-alloc
- * proxy, identical to the existing alloc-test pattern in this module. Warmup drives JIT
- * compilation before measurement begins so JIT-internal allocations do not pollute the count.
+ * proxy, identical to the existing alloc-test pattern in this module. Warmup drives JIT compilation
+ * before measurement begins so JIT-internal allocations do not pollute the count.
  *
  * <p><b>Threading.</b> Single-threaded; {@link SessionQuoteIndex} is not thread-safe by design.
  */
@@ -58,8 +58,13 @@ final class SessionQuoteIndexAllocTest {
     }
     final long afterGc = totalGcCount();
 
-    assertEquals(beforeGc, afterGc,
-        "isOwnedBy advanced GC count " + beforeGc + " -> " + afterGc
+    assertEquals(
+        beforeGc,
+        afterGc,
+        "isOwnedBy advanced GC count "
+            + beforeGc
+            + " -> "
+            + afterGc
             + "; indicates unexpected allocation on the hot path");
   }
 
@@ -84,8 +89,13 @@ final class SessionQuoteIndexAllocTest {
     }
     final long afterGc = totalGcCount();
 
-    assertEquals(beforeGc, afterGc,
-        "subFor advanced GC count " + beforeGc + " -> " + afterGc
+    assertEquals(
+        beforeGc,
+        afterGc,
+        "subFor advanced GC count "
+            + beforeGc
+            + " -> "
+            + afterGc
             + "; indicates unexpected allocation on the hot path");
   }
 
@@ -110,8 +120,13 @@ final class SessionQuoteIndexAllocTest {
     }
     final long afterGc = totalGcCount();
 
-    assertEquals(beforeGc, afterGc,
-        "sessionsForSub advanced GC count " + beforeGc + " -> " + afterGc
+    assertEquals(
+        beforeGc,
+        afterGc,
+        "sessionsForSub advanced GC count "
+            + beforeGc
+            + " -> "
+            + afterGc
             + "; indicates unexpected allocation on the hot path");
   }
 

@@ -11,19 +11,18 @@ import org.junit.jupiter.api.Test;
  * Unit tests for {@link JtiRevocationCache}.
  *
  * <p><b>Coverage.</b> Construction validation, revoke semantics (fresh insertion, idempotent
- * refresh with expiry update, NPE/IAE guards), FIFO eviction at capacity, and lazy-expiry
- * behaviour in {@link JtiRevocationCache#isRevoked(String, long)}.
+ * refresh with expiry update, NPE/IAE guards), FIFO eviction at capacity, and lazy-expiry behaviour
+ * in {@link JtiRevocationCache#isRevoked(String, long)}.
  *
  * <p><b>Threading.</b> Single-threaded; {@link JtiRevocationCache} is not thread-safe per its
  * contract.
  *
- * <p><b>Design note.</b> The lazy-eviction test ({@code
- * isRevoked_lazyEvictedDoesNotConsumeBudget}) verifies that after a lazy-eviction clears the
- * underlying map entry, the {@code insertionRing} slot remains occupied with a stale reference.
- * The ring slot is overwritten only on the next FIFO-eviction cycle, so a fresh revoke at
- * capacity still triggers FIFO eviction even though the live map size is below {@code maxEntries}.
- * Tests assert what the code actually does, not what would be intuitive from the public contract
- * summary alone.
+ * <p><b>Design note.</b> The lazy-eviction test ({@code isRevoked_lazyEvictedDoesNotConsumeBudget})
+ * verifies that after a lazy-eviction clears the underlying map entry, the {@code insertionRing}
+ * slot remains occupied with a stale reference. The ring slot is overwritten only on the next
+ * FIFO-eviction cycle, so a fresh revoke at capacity still triggers FIFO eviction even though the
+ * live map size is below {@code maxEntries}. Tests assert what the code actually does, not what
+ * would be intuitive from the public contract summary alone.
  */
 final class JtiRevocationCacheTest {
 
