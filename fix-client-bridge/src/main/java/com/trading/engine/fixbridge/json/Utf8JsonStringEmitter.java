@@ -28,6 +28,12 @@ import io.netty.buffer.ByteBuf;
  *       upstream is expected to have sanitised these (e.g. FIX text fields with {@code SOH}
  *       stripped).
  *   <li>Rejects code points in {@code 0x00..0x1F} (control bytes) which JSON forbids unescaped.
+ *       <b>Exception:</b> {@link #appendRawFixBytes} substitutes SOH (0x01) with {@code '|'} inline
+ *       (the FIX-on-the-wire field-delimiter contract) — every other control byte {@code 0x00,
+ *       0x02..0x1F} is still rejected with {@link IllegalStateException}.
+ *   <li>Rejects high-bit / non-ASCII bytes (signed-negative {@code 0x80..0xFF}) on the byte path —
+ *       FIX 4.4 field values are constrained to 7-bit printable ASCII so a high-bit byte indicates
+ *       either a corrupted Artio buffer or a PiiMask bypass and must fail fast.
  *   <li>Rejects unpaired surrogate code units — the wire protocol is ASCII-only so surrogates
  *       cannot legitimately appear.
  *   <li>The multi-byte UTF-8 branches are present for defence-in-depth; the locked wire protocol
@@ -119,9 +125,19 @@ public final class Utf8JsonStringEmitter {
         // invalid JSON that the browser would reject silently.
         throw new IllegalStateException(
             "FIX byte slice contains forbidden control byte at index " + i + ": " + (int) b);
+      } else if (b < 0) {
+        // High-bit byte (signed-negative 0x80..0xFF). FIX 4.4 field values are constrained to
+        // 7-bit printable ASCII; a high-bit byte signals either a corrupted Artio buffer or a
+        // PiiMask bypass that admitted a multi-byte UTF-8 sequence. Fail fast — emitting raw
+        // high-bit bytes verbatim would produce invalid UTF-8 on the wire (the browser would
+        // either reject the JSON frame or display U+FFFD replacement characters, masking the
+        // upstream defect). Symmetric to the strict char-array path which is unsigned-typed.
+        throw new IllegalStateException(
+            "FIX byte slice contains non-ASCII byte at index " + i + ": " + (b & 0xFF));
       } else {
-        // All other bytes are written verbatim; PiiMask + FIX 4.4 protocol constrain the input
-        // to 7-bit printable ASCII, so no multi-byte UTF-8 branching is needed here.
+        // All other bytes (0x20..0x7F printable ASCII) are written verbatim; PiiMask + FIX 4.4
+        // protocol constrain the input to 7-bit printable ASCII, so no multi-byte UTF-8
+        // branching is needed here.
         dst.writeByte(b);
       }
     }

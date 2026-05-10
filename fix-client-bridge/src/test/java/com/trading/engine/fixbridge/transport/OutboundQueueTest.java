@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.trading.engine.fixbridge.json.BrowserEvent;
 import com.trading.engine.fixbridge.transport.OutboundQueue.OfferResult;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -45,7 +46,7 @@ final class OutboundQueueTest {
 
   // Fixed scratch buffer for RawFixSlice fixtures — content is irrelevant to the queue's drop
   // policy (it inspects only the event's runtime type), so all slices can share one backing array.
-  private static final byte[] SLICE_SCRATCH = "8=FIX.4.41=A".getBytes();
+  private static final byte[] SLICE_SCRATCH = "8=FIX.4.41=A".getBytes(StandardCharsets.US_ASCII);
   private static final BrowserEvent.RawFixSlice SLICE1 =
       new BrowserEvent.RawFixSlice(true, SLICE_SCRATCH, 0, SLICE_SCRATCH.length);
   private static final BrowserEvent.RawFixSlice SLICE2 =
