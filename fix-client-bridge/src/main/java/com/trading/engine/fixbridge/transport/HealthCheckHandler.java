@@ -139,7 +139,7 @@ public final class HealthCheckHandler extends SimpleChannelInboundHandler<FullHt
     json.append(",\"sessions\":").append(sessions);
     json.append('}');
 
-    final ByteBuf body = Unpooled.wrappedBuffer(json.toString().getBytes(StandardCharsets.UTF_8));
+    final var body = Unpooled.wrappedBuffer(json.toString().getBytes(StandardCharsets.UTF_8));
     final var response =
         new DefaultFullHttpResponse(request.protocolVersion(), HttpResponseStatus.OK, body);
     response

@@ -150,7 +150,7 @@ public final class Log4jAuditLogger implements AuditLogger {
     // depending on encoding.
     final var bodyBytes = buffer.toString().getBytes(StandardCharsets.UTF_8);
     digest.reset();
-    final byte[] hash = digest.digest(bodyBytes);
+    final var hash = digest.digest(bodyBytes);
     final var hashHex = toHex(hash);
 
     appendString("sha256", hashHex, false);
