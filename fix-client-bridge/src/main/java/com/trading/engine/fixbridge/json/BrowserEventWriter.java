@@ -45,6 +45,10 @@ public final class BrowserEventWriter {
   private static final byte[] HDR_RAW_FIX = ascii("{\"type\":\"RawFix\"");
   private static final byte[] HDR_AUTH_EXPIRED = ascii("{\"type\":\"AuthExpired\"}");
   private static final byte[] HDR_ERROR = ascii("{\"type\":\"Error\"");
+  private static final byte[] HDR_ACCOUNT_LIMITS = ascii("{\"type\":\"AccountLimits\"");
+  private static final byte[] HDR_SESSION_TERMINATED = ascii("{\"type\":\"SessionTerminated\"}");
+  private static final byte[] HDR_ORDER_RECONCILED = ascii("{\"type\":\"OrderReconciled\"");
+  private static final byte[] HDR_ORDER_STATUS_REPLY = ascii("{\"type\":\"OrderStatusReply\"");
 
   private static final byte[] K_REQ_ID = ascii(",\"reqId\":\"");
   private static final byte[] K_QUOTE_ID = ascii(",\"quoteId\":\"");
@@ -66,6 +70,17 @@ public final class BrowserEventWriter {
   private static final byte[] K_DIRECTION = ascii(",\"direction\":\"");
   private static final byte[] K_FIX = ascii(",\"fix\":\"");
   private static final byte[] K_RECEIVED = ascii(",\"received\":\"");
+  private static final byte[] K_NEW_ORDERS = ascii(",\"newOrders\":");
+  private static final byte[] K_NEW_QUOTES = ascii(",\"newQuotes\":");
+  private static final byte[] K_PROTOCOL_VERSION = ascii(",\"protocolVersion\":");
+  private static final byte[] K_SERVER_ORDER_TIMEOUT_MS = ascii(",\"serverOrderTimeoutMs\":");
+  private static final byte[] K_ACCOUNT = ascii(",\"account\":\"");
+  private static final byte[] K_MAX_QTY = ascii(",\"maxQty\":\"");
+  private static final byte[] K_MAX_NOTIONAL = ascii(",\"maxNotional\":\"");
+  private static final byte[] K_PRICE_DEVIATION_BPS = ascii(",\"priceDeviationBps\":");
+  private static final byte[] K_MAX_ORDERS_PER_SECOND = ascii(",\"maxOrdersPerSecond\":");
+  private static final byte[] K_STATUS = ascii(",\"status\":\"");
+  private static final byte[] K_LAST_EXEC_ID = ascii(",\"lastExecId\":\"");
 
   private static final byte[] V_TRUE = ascii("true");
   private static final byte[] V_FALSE = ascii("false");
@@ -216,7 +231,10 @@ public final class BrowserEventWriter {
   }
 
   /**
-   * Serialise a {@link BrowserEvent.BridgeStatus}.
+   * Serialise a {@link BrowserEvent.BridgeStatus} including all 7 fields (the runtime kill-switch
+   * gates {@code newOrders}/{@code newQuotes}, the worker's {@code protocolVersion} probe, and the
+   * cluster's {@code serverOrderTimeoutMs} for the UI's STUCK_LONG transition — Day 1 added these
+   * to the record but Day 4-c left the writer emitting only the legacy 3-field form).
    *
    * @param e event to serialise
    * @param dst destination buffer
@@ -233,12 +251,193 @@ public final class BrowserEventWriter {
       dst.writeBytes(K_REASON);
       writeJsonStringValue(e.reason(), dst);
       dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_NEW_ORDERS);
+      dst.writeBytes(e.newOrders() ? V_TRUE : V_FALSE);
+      dst.writeBytes(K_NEW_QUOTES);
+      dst.writeBytes(e.newQuotes() ? V_TRUE : V_FALSE);
+      dst.writeBytes(K_PROTOCOL_VERSION);
+      writeLong(e.protocolVersion(), dst);
+      dst.writeBytes(K_SERVER_ORDER_TIMEOUT_MS);
+      writeLong(e.serverOrderTimeoutMs(), dst);
       dst.writeByte(CLOSE_BRACE);
       return dst.writerIndex() - start;
     } catch (final RuntimeException ex) {
       dst.writerIndex(start);
       throw ex;
     }
+  }
+
+  /**
+   * Serialise an {@link BrowserEvent.AccountLimits} push frame (§3.14). Server-authoritative
+   * pre-trade limits the UI uses to gate submit buttons.
+   *
+   * @param e event to serialise
+   * @param dst destination buffer
+   * @return number of bytes appended
+   */
+  public int writeAccountLimits(final BrowserEvent.AccountLimits e, final ByteBuf dst) {
+    final int start = dst.writerIndex();
+    try {
+      dst.writeBytes(HDR_ACCOUNT_LIMITS);
+      dst.writeBytes(K_ACCOUNT);
+      writeJsonStringValue(e.account(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_MAX_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.maxQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_MAX_NOTIONAL);
+      decimalEmitter.emitInt64FixedPoint(e.maxNotionalInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_PRICE_DEVIATION_BPS);
+      writeLong(e.priceDeviationBps(), dst);
+      dst.writeBytes(K_MAX_ORDERS_PER_SECOND);
+      writeLong(e.maxOrdersPerSecond(), dst);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
+  }
+
+  /**
+   * Serialise the singleton {@link BrowserEvent.SessionTerminated} event — sent immediately before
+   * WS close 4002 when {@code signOut()} fires on a sibling session of the same {@code sub} (§3.3 /
+   * §3.7 / §4.9).
+   *
+   * @param dst destination buffer
+   * @return number of bytes appended
+   */
+  public int writeSessionTerminated(final ByteBuf dst) {
+    final int start = dst.writerIndex();
+    try {
+      dst.writeBytes(HDR_SESSION_TERMINATED);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
+  }
+
+  /**
+   * Serialise an {@link BrowserEvent.OrderReconciled} event — emitted when the cluster's TTL fires
+   * on a STUCK / STUCK_LONG order (§4.5) and the bridge forwards the authoritative final state.
+   *
+   * @param e event to serialise
+   * @param dst destination buffer
+   * @return number of bytes appended
+   */
+  public int writeOrderReconciled(final BrowserEvent.OrderReconciled e, final ByteBuf dst) {
+    final int start = dst.writerIndex();
+    try {
+      dst.writeBytes(HDR_ORDER_RECONCILED);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringValue(e.clOrdId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_STATUS);
+      writeJsonStringValue(e.status(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CUM_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.cumQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_LEAVES_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.leavesQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_AVG_PX);
+      decimalEmitter.emitInt64FixedPoint(e.avgPxInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
+  }
+
+  /**
+   * Serialise an {@link BrowserEvent.OrderStatusReply} — synthesised from the cluster's {@code
+   * OrderQueryByClOrdId} projection result (§3.15). Emits the optional {@code lastExecId} key only
+   * when non-null.
+   *
+   * @param e event to serialise
+   * @param dst destination buffer
+   * @return number of bytes appended
+   */
+  public int writeOrderStatusReply(final BrowserEvent.OrderStatusReply e, final ByteBuf dst) {
+    final int start = dst.writerIndex();
+    try {
+      dst.writeBytes(HDR_ORDER_STATUS_REPLY);
+      dst.writeBytes(K_CL_ORD_ID);
+      writeJsonStringValue(e.clOrdId(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_STATUS);
+      writeJsonStringValue(e.status(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_CUM_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.cumQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_LEAVES_QTY);
+      decimalEmitter.emitInt64FixedPoint(e.leavesQtyInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      dst.writeBytes(K_AVG_PX);
+      decimalEmitter.emitInt64FixedPoint(e.avgPxInt64(), dst);
+      dst.writeByte(CLOSE_QUOTE);
+      if (e.lastExecId() != null) {
+        dst.writeBytes(K_LAST_EXEC_ID);
+        writeJsonStringValue(e.lastExecId(), dst);
+        dst.writeByte(CLOSE_QUOTE);
+      }
+      dst.writeByte(CLOSE_BRACE);
+      return dst.writerIndex() - start;
+    } catch (final RuntimeException ex) {
+      dst.writerIndex(start);
+      throw ex;
+    }
+  }
+
+  /**
+   * Polymorphic dispatch to the type-specific {@code write*} method. Used by the outbound drainer
+   * which holds {@link BrowserEvent} references generically rather than per concrete subtype.
+   *
+   * @param e event to serialise
+   * @param dst destination buffer
+   * @return number of bytes appended
+   */
+  public int writeAny(final BrowserEvent e, final ByteBuf dst) {
+    if (e instanceof BrowserEvent.Quote q) {
+      return writeQuote(q, dst);
+    }
+    if (e instanceof BrowserEvent.ExecutionReport r) {
+      return writeExecutionReport(r, dst);
+    }
+    if (e instanceof BrowserEvent.OrderReject r) {
+      return writeOrderReject(r, dst);
+    }
+    if (e instanceof BrowserEvent.BridgeStatus s) {
+      return writeBridgeStatus(s, dst);
+    }
+    if (e instanceof BrowserEvent.RawFix r) {
+      return writeRawFix(r, dst);
+    }
+    if (e instanceof BrowserEvent.AuthExpired) {
+      return writeAuthExpired(dst);
+    }
+    if (e instanceof BrowserEvent.Error err) {
+      return writeError(err, dst);
+    }
+    if (e instanceof BrowserEvent.AccountLimits a) {
+      return writeAccountLimits(a, dst);
+    }
+    if (e instanceof BrowserEvent.SessionTerminated) {
+      return writeSessionTerminated(dst);
+    }
+    if (e instanceof BrowserEvent.OrderReconciled r) {
+      return writeOrderReconciled(r, dst);
+    }
+    if (e instanceof BrowserEvent.OrderStatusReply r) {
+      return writeOrderStatusReply(r, dst);
+    }
+    throw new IllegalArgumentException("unknown BrowserEvent: " + e.getClass().getName());
   }
 
   /**

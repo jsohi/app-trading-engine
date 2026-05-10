@@ -4,19 +4,23 @@ import com.trading.engine.fixbridge.FixClientBridgeConfig;
 import com.trading.engine.fixbridge.audit.AuditAction;
 import com.trading.engine.fixbridge.audit.AuditLogger;
 import com.trading.engine.fixbridge.json.BrowserEvent;
+import com.trading.engine.fixbridge.json.BrowserEventWriter;
 import com.trading.engine.fixbridge.json.BrowserMessageReader;
 import com.trading.engine.fixbridge.json.JsonParseException;
 import com.trading.engine.fixbridge.json.MutableParsedMessage;
 import com.trading.engine.fixbridge.quote.SessionId;
 import com.trading.engine.fixbridge.ratelimit.PerTypeRateLimiter;
+import com.trading.engine.fixbridge.transport.AccountLimitsSource;
 import com.trading.engine.fixbridge.transport.BridgeCloseCodes;
 import com.trading.engine.fixbridge.transport.BridgeFrameDispatcher;
 import com.trading.engine.fixbridge.transport.BridgeSession;
 import com.trading.engine.fixbridge.transport.InboundReadGate;
+import com.trading.engine.fixbridge.transport.OutboundDrainer;
 import com.trading.engine.fixbridge.transport.OutboundQueue;
 import com.trading.engine.fixbridge.transport.WsListener;
 import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.JwtValidator;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
@@ -96,6 +100,20 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
   private final AuditLogger auditLogger;
 
   /**
+   * Per-channel writer used for cold-path Auth-failure {@code Error} frames. Created lazily on
+   * first use because failure responses are vanishingly rare on a healthy connection — keeps the
+   * per-channel allocation footprint at zero for the common (success) path.
+   */
+  private final BrowserEventWriter eventWriter;
+
+  /**
+   * Pull source for {@link BrowserEvent.AccountLimits} push frames emitted on AUTH_SUCCESS (§3.14).
+   * Defaults to {@link AccountLimitsSource#NOOP} when the launcher has not yet wired the cluster
+   * client (Day 5+ soft-dependency).
+   */
+  private final AccountLimitsSource accountLimitsSource;
+
+  /**
    * Per-channel parser flyweight reused if the first frame is malformed (we still close the channel
    * after one rejection — there's no retry — but the field is held for symmetry with {@link
    * WsListener} and to keep the parser's allocation contract zero on the cold path).
@@ -127,6 +145,11 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
    * @param dispatcher post-auth frame dispatcher SAM (use {@link BridgeFrameDispatcher#NOOP} for
    *     APP-40a integration tests until the real translator + Artio wiring lands)
    * @param auditLogger audit sink for AUTH_SUCCESS / AUTH_FAIL / AUTH_TIMEOUT events
+   * @param eventWriter outbound JSON writer used for cold-path Auth-failure {@code Error} frames
+   *     (replaces the hand-rolled JSON Day 4-c emitted)
+   * @param accountLimitsSource source of {@link BrowserEvent.AccountLimits} push frames emitted on
+   *     AUTH_SUCCESS — use {@link AccountLimitsSource#NOOP} until the launcher's cluster client is
+   *     wired (APP-40b)
    */
   public JwtAuthHandler(
       final FixClientBridgeConfig config,
@@ -137,7 +160,9 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       final NanoClock nanoClock,
       final Executor validationExecutor,
       final BridgeFrameDispatcher dispatcher,
-      final AuditLogger auditLogger) {
+      final AuditLogger auditLogger,
+      final BrowserEventWriter eventWriter,
+      final AccountLimitsSource accountLimitsSource) {
     this.config = Objects.requireNonNull(config, "config");
     this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
@@ -147,6 +172,8 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     this.validationExecutor = Objects.requireNonNull(validationExecutor, "validationExecutor");
     this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
     this.auditLogger = Objects.requireNonNull(auditLogger, "auditLogger");
+    this.eventWriter = Objects.requireNonNull(eventWriter, "eventWriter");
+    this.accountLimitsSource = Objects.requireNonNull(accountLimitsSource, "accountLimitsSource");
   }
 
   @Override
@@ -321,6 +348,15 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
     pipeline.addAfter("ws-read-gate", "ws-listener", listener);
     pipeline.remove(this);
 
+    // Per-channel outbound drainer (§3.1). Schedules a 1ms drain task on the channel event loop
+    // that ships queued events through eventWriter → TextWebSocketFrame → channel.write, then
+    // notifies readGate.onAfterDrain so the inbound auto-read gate releases when the queue
+    // recedes below 50% of capacity. Stop on close-future so the worker loop doesn't keep
+    // ticking against a dead channel.
+    final var drainer = new OutboundDrainer(ctx, session, readGate, eventWriter, nanoClock);
+    drainer.start();
+    ctx.channel().closeFuture().addListener(f -> drainer.stop());
+
     // 11. Cancel the timeout, mark resolved, audit, log.
     cancelTimeout();
     authResolved = true;
@@ -352,6 +388,14 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
         remoteIp,
         claims.ipPinned(),
         claims.roles().size());
+
+    // 12. AccountLimits push (§3.14). One frame per entitled account; the source impl pushes
+    // pessimistic defaults when a particular account cannot be resolved so the UI's
+    // disabled-by-default submit gating still receives a frame per claim. Ordering: pushed AFTER
+    // the read gate + listener are installed so the per-channel OutboundDrainer (scheduled by
+    // BridgeNettyBootstrap on channelActive) can flush the limits frames before the user sees
+    // the first interactive prompt.
+    accountLimitsSource.pushFor(claims, session, session.outboundQueue()::offer);
   }
 
   @Override
@@ -382,13 +426,26 @@ public final class JwtAuthHandler extends SimpleChannelInboundHandler<TextWebSoc
       authResolved = true;
       return;
     }
+    // Cold path — Day 5 swapped the hand-rolled JSON for the real BrowserEventWriter so the
+    // Error event uses the same writer-validated escaping rules as every other outbound frame.
     final var error = new BrowserEvent.Error(reason);
-    // Cold path: we don't have a per-channel BrowserEventWriter wired in yet (Day 5 work). For
-    // now emit a hand-rolled minimal JSON object — taxonomy strings are pure ASCII and bounded
-    // by the closed enum, so naive concatenation is safe. NOTE: replaced with the real writer in
-    // APP-40a Day 5 once the writer's BrowserEvent.Error overload is exercised.
-    final var json = "{\"type\":\"Error\",\"reason\":\"" + error.reason() + "\"}";
-    final var text = new TextWebSocketFrame(json);
+    final ByteBuf buf = ctx.alloc().buffer();
+    final TextWebSocketFrame text;
+    try {
+      eventWriter.writeError(error, buf);
+      text = new TextWebSocketFrame(buf);
+    } catch (final RuntimeException ex) {
+      // Writer rejected the reason string (forbidden character / control byte). The buffer
+      // hasn't been wrapped in a frame yet, so release it to avoid a leak; force the close
+      // without the friendly Error frame so the channel still terminates promptly.
+      buf.release();
+      LOG.error("Auth error writer rejected reason='{}' — closing without Error frame", reason, ex);
+      final var close = new CloseWebSocketFrame(closeCode, reason);
+      ctx.writeAndFlush(close).addListener(closeFuture -> ctx.close());
+      cancelTimeout();
+      authResolved = true;
+      return;
+    }
     ctx.writeAndFlush(text)
         .addListener(
             future -> {

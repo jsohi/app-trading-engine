@@ -132,23 +132,29 @@ final class BrowserEventWriterTest {
 
   @Test
   void writeBridgeStatus_fixUpAndNonFatal_emitsByteExactJson() {
+    // 3-arg ctor defaults: newOrders=true, newQuotes=true, protocolVersion=1,
+    // serverOrderTimeoutMs=0. Day 5 extended writeBridgeStatus to emit all 7 fields.
     final var e = new BrowserEvent.BridgeStatus(true, false, "ready");
-    final var buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeBridgeStatus(e, buf);
     assertEquals(
         "{\"type\":\"BridgeStatus\",\"fixSessionUp\":true,\"fatal\":false,"
-            + "\"reason\":\"ready\"}",
+            + "\"reason\":\"ready\",\"newOrders\":true,\"newQuotes\":true,"
+            + "\"protocolVersion\":1,\"serverOrderTimeoutMs\":0}",
         drain(buf, n));
   }
 
   @Test
   void writeBridgeStatus_fatalShutdown_emitsByteExactJson() {
+    // 3-arg ctor defaults: newOrders=true, newQuotes=true, protocolVersion=1,
+    // serverOrderTimeoutMs=0. Day 5 extended writeBridgeStatus to emit all 7 fields.
     final var e = new BrowserEvent.BridgeStatus(false, true, "shutdown");
-    final var buf = Unpooled.buffer(128);
+    final var buf = Unpooled.buffer(256);
     final int n = writer.writeBridgeStatus(e, buf);
     assertEquals(
         "{\"type\":\"BridgeStatus\",\"fixSessionUp\":false,\"fatal\":true,"
-            + "\"reason\":\"shutdown\"}",
+            + "\"reason\":\"shutdown\",\"newOrders\":true,\"newQuotes\":true,"
+            + "\"protocolVersion\":1,\"serverOrderTimeoutMs\":0}",
         drain(buf, n));
   }
 
