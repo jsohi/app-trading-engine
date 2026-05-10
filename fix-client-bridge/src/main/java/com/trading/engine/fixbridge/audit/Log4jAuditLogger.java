@@ -179,6 +179,14 @@ public final class Log4jAuditLogger implements AuditLogger {
     // context). We return true unless logging is wholly disabled — the production launcher wraps
     // this with a §3.7 circuit-breaker that escalates on observed write failures via the Log4j2
     // status logger.
+    // The project keeps log4j-core off the compile classpath (runtime-only) so we can't probe
+    // appender state directly. The level filter check catches a fatally misconfigured context
+    // (no destination → INFO disabled). Real-time appender-failure detection (disk full,
+    // external file-rotator, etc.) requires the launcher's external observer to read Log4j2's
+    // StatusLogger and call into a MutableBoolean shim that this method consults — slated for
+    // the §3.7 circuit-breaker work in a follow-up PR. The Gemini PR #71 R1 review noted this
+    // honestly; remediation lives outside this PR's scope to avoid forcing log4j-core onto the
+    // compile-time classpath of every consumer.
     return logger.isInfoEnabled();
   }
 
