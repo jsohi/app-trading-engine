@@ -19,8 +19,11 @@ import com.trading.engine.fixbridge.translator.JsonToFixTranslator;
  * <p><b>ClOrdID minting (locked §4).</b> Each send method that produces a FIX order increments a
  * per-session monotonic counter and delegates to {@link JsonToFixTranslator#mintClOrdId} using the
  * bridge process {@code instanceTag} (clock-derived at boot) and a {@code sessionIdLong} derived
- * from the {@code SessionId} string's identity hash code masked to 28 bits. This produces the
- * {@code <6-hex>-<7-hex>-<5-digit>} format required by the locked §4 spec.
+ * from the launcher-supplied 28-bit {@code sessionToken} (process-wide {@code AtomicLong}
+ * sequence). This produces the {@code <6-hex>-<7-hex>-<5-digit>} format required by the locked §4
+ * spec while guaranteeing uniqueness across concurrent sessions (PR #70 R2 Gemini fix — earlier
+ * {@link System#identityHashCode}-based scheme was birthday-paradox prone above ~19,000 concurrent
+ * sessions).
  *
  * <p><b>AcceptQuote two-phase commit (locked §2).</b> {@link #sendAcceptQuote} first looks up the
  * {@link QuoteSnapshotCache}. On a cache miss it immediately enqueues an {@link
@@ -102,11 +105,12 @@ public final class ArtioFixCommandSink implements FixCommandSink {
   /**
    * Constructs a production command sink for one browser session.
    *
-   * <p>The {@code sessionIdLong} is derived as {@code System.identityHashCode(session.sessionId())
-   * & 0xFFFFFFFL} — a stable, heap-address-derived 28-bit value. This avoids parsing the {@code
-   * SessionId} string on every ClOrdID mint while still producing a session-unique tag within the
-   * 28-bit field (collisions extremely rare for fewer than {@code 2^14} concurrent sessions per
-   * process).
+   * <p>The {@code sessionIdLong} is derived from the {@code sessionToken} parameter — a 28-bit
+   * masked view of the launcher's process-wide {@code AtomicLong} sequence. This guarantees
+   * uniqueness across concurrent sessions without relying on {@link System#identityHashCode} (which
+   * is birthday-paradox prone above ~19,000 concurrent sessions; see PR #70 R2 Gemini high-priority
+   * finding). The launcher binds the sessionToken at session creation; this constructor just
+   * consumes it.
    *
    * @param session the freshly-authenticated bridge session; owns the outbound queue
    * @param fixSession Artio-session adapter; method-reference to {@code Session::trySend} in prod

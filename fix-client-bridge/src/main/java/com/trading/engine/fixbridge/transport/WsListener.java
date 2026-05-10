@@ -181,14 +181,25 @@ public final class WsListener extends SimpleChannelInboundHandler<WebSocketFrame
               null,
               null);
         }
-        // RATE_LIMIT_* applies to order-issuing commands; clOrdId comes from the parsed flyweight
-        // when present (NewOrderSingle/CancelOrder/AcceptQuote always carry one). Otherwise the
-        // taxonomy reason is the only field surfaced.
-        final var clOrdId =
-            parsed.clOrdIdOff >= 0
-                ? new String(parsed.scratch, parsed.clOrdIdOff, parsed.clOrdIdLen)
-                : "";
-        session.enqueue(new BrowserEvent.OrderReject(clOrdId, reason));
+        // QuoteRequest is an RFQ message and carries no clOrdId — surface the rejection as
+        // BrowserEvent.Error{reason, received} with the reqId in the "received" slot so the
+        // browser can correlate (Gemini medium finding on PR #70 R5; an OrderReject
+        // {clOrdId="", reason} would be ambiguous on the wire). Other order-issuing commands
+        // (NewOrderSingle/CancelOrder/AcceptQuote) always carry a clOrdId — emit OrderReject
+        // with that.
+        if (messageType == MutableParsedMessage.TYPE_QUOTE_REQUEST) {
+          final var reqId =
+              parsed.reqIdOff >= 0
+                  ? new String(parsed.scratch, parsed.reqIdOff, parsed.reqIdLen)
+                  : "";
+          session.enqueue(new BrowserEvent.Error(reason.wireValue(), "QuoteRequest:" + reqId));
+        } else {
+          final var clOrdId =
+              parsed.clOrdIdOff >= 0
+                  ? new String(parsed.scratch, parsed.clOrdIdOff, parsed.clOrdIdLen)
+                  : "";
+          session.enqueue(new BrowserEvent.OrderReject(clOrdId, reason));
+        }
         readGate.onAfterInboundDispatch(ctx);
         return;
       }
