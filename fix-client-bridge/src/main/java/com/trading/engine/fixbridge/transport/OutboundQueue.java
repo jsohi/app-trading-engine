@@ -158,7 +158,8 @@ public final class OutboundQueue {
     int idx = head;
     int searched = 0;
     while (searched < size) {
-      if (ring[idx] instanceof BrowserEvent.RawFix) {
+      if (ring[idx] instanceof BrowserEvent.RawFix
+          || ring[idx] instanceof BrowserEvent.RawFixSlice) {
         // Found one. Compact: shift every later element left by one slot.
         compactOut(idx);
         return true;

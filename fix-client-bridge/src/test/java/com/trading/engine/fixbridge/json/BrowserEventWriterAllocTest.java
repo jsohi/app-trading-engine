@@ -85,6 +85,39 @@ final class BrowserEventWriterAllocTest {
         });
   }
 
+  /**
+   * Asserts that {@link BrowserEventWriter#writeRawFixSlice} does not advance the GC count in
+   * steady state. The {@link BrowserEvent.RawFixSlice} fixture is pre-allocated once before the
+   * measured loop; the writer reads from the shared {@code maskScratch} byte array without
+   * constructing a {@link String}, so no heap allocation occurs on the hot path.
+   */
+  @Test
+  void writeRawFixSlice_steadyState_doesNotAdvanceGcCount() {
+    final var writer = new BrowserEventWriter(new DecimalStringEmitter());
+    final var dst = Unpooled.buffer(256);
+    // Pre-build a SOH-delimited FIX byte slice (0x01 field terminators). This array is the shared
+    // maskScratch analogue — allocated once, reused across all iterations.
+    final byte[] scratch = buildSohFixBytes();
+    // Pre-allocate the RawFixSlice record once — the measured loop reuses the same record.
+    final var slice = new BrowserEvent.RawFixSlice(true, scratch, 0, scratch.length);
+    runLoop(
+        () -> {
+          dst.clear();
+          writer.writeRawFixSlice(slice, dst);
+        });
+  }
+
+  /** Build a SOH-delimited FIX byte array for the alloc test fixture. */
+  private static byte[] buildSohFixBytes() {
+    final var fields =
+        new String[] {"8=FIX.4.4", "35=D", "49=BRIDGE", "56=EXCH", "11=ORD-001", "55=EUR/USD"};
+    final var sb = new StringBuilder();
+    for (final var f : fields) {
+      sb.append(f).append((char) 0x01);
+    }
+    return sb.toString().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  }
+
   private static void runLoop(final Runnable body) {
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
       body.run();

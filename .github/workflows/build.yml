@@ -3,6 +3,21 @@ name: Build
 on:
   push:
     branches: [main]
+  # Branch-protection gate per APP-40 plan §3.7 / §0. Without `pull_request`
+  # in the trigger block, the existing build/test/spotless/e2e jobs run only
+  # AFTER merge to main — the CLAUDE.md "no direct pushes to main; all
+  # changes via PRs" rule combined with the prior push-only trigger meant
+  # quality gates fired post-merge instead of pre-merge. Adding the
+  # pull_request trigger gates every PR into main with the same job graph.
+  #
+  # Required GitHub repo setting (admin-only, NOT in this file): in
+  # Settings → Branches → Branch protection rules for `main`, enable
+  # "Require status checks to pass before merging" and select the `build`,
+  # `web-ui-e2e`, and `security` jobs from this workflow as required checks.
+  # Re-running this workflow on a re-pushed feature branch satisfies the
+  # gate after fixes.
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read

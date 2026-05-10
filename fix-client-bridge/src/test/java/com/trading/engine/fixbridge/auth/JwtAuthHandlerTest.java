@@ -173,7 +173,8 @@ final class JwtAuthHandlerTest {
         BridgeFrameDispatcher.NOOP,
         logger,
         new BrowserEventWriter(new DecimalStringEmitter()),
-        AccountLimitsSource.NOOP);
+        AccountLimitsSource.NOOP,
+        DpopValidator.NOOP);
   }
 
   /** Build an Auth JSON frame with the given token value. */
@@ -534,7 +535,8 @@ final class JwtAuthHandlerTest {
             BridgeFrameDispatcher.NOOP,
             auditLogger,
             new BrowserEventWriter(new DecimalStringEmitter()),
-            limitsSource);
+            limitsSource,
+            DpopValidator.NOOP);
     final var channel = new EmbeddedChannel(handler);
 
     // TestJwtFixture mints tokens with accounts=["ACME-001"] (always 1 account).

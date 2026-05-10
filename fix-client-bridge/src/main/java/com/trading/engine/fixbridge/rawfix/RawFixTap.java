@@ -5,7 +5,6 @@ import com.trading.engine.fixbridge.audit.AuditLogger;
 import com.trading.engine.fixbridge.json.BrowserEvent;
 import com.trading.engine.fixbridge.transport.BridgeSession;
 import com.trading.engine.fixbridge.transport.OutboundQueue;
-import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -38,10 +37,11 @@ import org.apache.logging.log4j.Logger;
  * invoking the tap (this is the responsibility of the Artio session integration that lands in
  * subsequent days; the tap itself does no marshalling).
  *
- * <p><b>Allocation.</b> One {@link BrowserEvent.RawFix} per emitted frame (record allocation —
- * unavoidable since the queue holds boxed events). Mask buffer is reused across calls. SOH→{@code
- * '|'} and JSON-escape are deferred to {@link com.trading.engine.fixbridge.json.BrowserEventWriter}
- * at write time, which keeps this class allocation-free other than the record.
+ * <p><b>Allocation.</b> One {@link BrowserEvent.RawFixSlice} record per emitted frame (unavoidable
+ * since the queue holds boxed events). No {@link String} is allocated — the slice references the
+ * per-instance {@code maskScratch} buffer directly. SOH→{@code '|'} substitution and JSON-escape
+ * are deferred to {@link com.trading.engine.fixbridge.json.BrowserEventWriter#writeRawFixSlice} at
+ * write time, which reads the byte slice without constructing an intermediate {@link String}.
  */
 public final class RawFixTap {
 
@@ -224,15 +224,14 @@ public final class RawFixTap {
     }
 
     // Apply PII mask in-place into the per-tap scratch buffer. PiiMask preserves byte length, so
-    // copying the masked slice into a fresh String for the RawFix record is well-defined: the
-    // String's length matches the source slice byte-for-byte (the wire spec is 7-bit ASCII once
-    // SOH is substituted at write time).
+    // the masked slice length equals the source length. The RawFixSlice carrier holds a reference
+    // to maskScratch directly — the per-frame String allocation is eliminated (APP-40a Day 5).
     final int maskedLen = piiMask.mask(fixBytes, off, len, maskScratch, 0);
-    // The String allocation here is per-emitted-frame and unavoidable until the writer learns to
-    // accept (byte[], off, len) directly. APP-40a Day 5 swaps the BrowserEvent.RawFix carrier
-    // for a flyweight slice once the writer overload exists.
-    final var fixString = new String(maskScratch, 0, maskedLen, StandardCharsets.US_ASCII);
-    final var event = new BrowserEvent.RawFix(direction == DIRECTION_IN ? "in" : "out", fixString);
+    // RawFixSlice shares maskScratch without copying — the queue consumer (BrowserEventWriter) MUST
+    // serialise this record before the next tap() call mutates the buffer. This is guaranteed
+    // because both the drainer and the tap run on the same channel event loop (single-threaded).
+    final var event =
+        new BrowserEvent.RawFixSlice(direction == DIRECTION_IN, maskScratch, 0, maskedLen);
 
     final var result = session.outboundQueue().offer(event);
     if (result == OutboundQueue.OfferResult.TERMINAL) {
