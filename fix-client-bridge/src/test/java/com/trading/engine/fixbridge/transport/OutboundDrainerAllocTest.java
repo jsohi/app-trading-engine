@@ -64,7 +64,7 @@ final class OutboundDrainerAllocTest {
     final var gate = new InboundReadGate(queue);
     channel.pipeline().addFirst("read-gate", gate);
     final var ctx = channel.pipeline().context("read-gate");
-    final NanoClock clock = System::nanoTime;
+    final var clock = (NanoClock) System::nanoTime;
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
     final var drainer = new OutboundDrainer(ctx, session, gate, writer, clock);
 
@@ -99,7 +99,7 @@ final class OutboundDrainerAllocTest {
     final var gate = new InboundReadGate(queue);
     channel.pipeline().addFirst("read-gate", gate);
     final var ctx = channel.pipeline().context("read-gate");
-    final NanoClock clock = System::nanoTime;
+    final var clock = (NanoClock) System::nanoTime;
     final var writer = new BrowserEventWriter(new DecimalStringEmitter());
     final var drainer = new OutboundDrainer(ctx, session, gate, writer, clock);
 

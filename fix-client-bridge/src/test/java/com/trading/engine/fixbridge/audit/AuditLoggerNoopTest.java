@@ -9,9 +9,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link AuditLogger.Noop}. Covers the singleton contract, {@link
  * AuditLogger.Noop#isWritable()} semantics, and {@link AuditLogger.Noop#record(long, String,
- * String, String, AuditAction, String, String, String, String, String, String, String, String,
- * String, String, String, String, String)} no-op contract — including null-tolerance for every
- * nullable argument and passing a real {@link AuditAction} value.
+ * String, String, AuditAction, String, String, long, long, String, String, String, String, String,
+ * String, String, String, String)} no-op contract — including null-tolerance for every nullable
+ * argument and passing a real {@link AuditAction} value.
  */
 class AuditLoggerNoopTest {
 
@@ -62,8 +62,8 @@ class AuditLoggerNoopTest {
         AuditAction.AUTH_FAIL, // action (non-null per contract)
         null, // symbol
         null, // side
-        null, // qtyStr
-        null, // priceStr
+        0L, // qty (0L when N/A)
+        0L, // price (0L when N/A)
         null, // ordType
         null, // tif
         null, // account
@@ -86,8 +86,8 @@ class AuditLoggerNoopTest {
         AuditAction.NEW_ORDER_RECEIVED,
         "EURUSD",
         "Buy",
-        "1.00000000",
-        "1.08000000",
+        100_000_000L,
+        108_000_000L,
         "Limit",
         "GTC",
         "ACCT-1",
@@ -111,8 +111,8 @@ class AuditLoggerNoopTest {
           action,
           null,
           null,
-          null,
-          null,
+          0L,
+          0L,
           null,
           null,
           null,
@@ -136,8 +136,8 @@ class AuditLoggerNoopTest {
         AuditAction.FRAME_OVERSIZED_DROP,
         null,
         null,
-        null,
-        null,
+        0L,
+        0L,
         null,
         null,
         null,
@@ -160,8 +160,8 @@ class AuditLoggerNoopTest {
         AuditAction.AUTH_SUCCESS,
         null,
         null,
-        null,
-        null,
+        0L,
+        0L,
         null,
         null,
         null,

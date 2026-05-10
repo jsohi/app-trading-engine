@@ -91,7 +91,7 @@ final class SessionQuoteIndexTest {
     final var s = new SessionId("S-1");
     index.onSessionAuthenticated(s, "alice");
 
-    final String sub = index.onSessionClosed(s);
+    final var sub = index.onSessionClosed(s);
 
     assertEquals("alice", sub);
     assertNull(index.subFor(s));
@@ -217,7 +217,7 @@ final class SessionQuoteIndexTest {
     final var s = new SessionId("S-1");
     index.onQuoteRequest("R1", s, T0);
 
-    final SessionId owner = index.onQuoteEmitted("R1", "Q1", T0 + 5L * ONE_SEC);
+    final var owner = index.onQuoteEmitted("R1", "Q1", T0 + 5L * ONE_SEC);
 
     assertEquals(s, owner);
     assertEquals(1, index.quoteIdCount());

@@ -6,6 +6,7 @@ import com.trading.engine.fixbridge.json.BrowserEvent;
 import com.trading.engine.fixbridge.transport.BridgeSession;
 import com.trading.engine.fixbridge.transport.OutboundQueue;
 import java.util.Objects;
+import org.agrona.concurrent.EpochNanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -37,11 +38,12 @@ import org.apache.logging.log4j.Logger;
  * invoking the tap (this is the responsibility of the Artio session integration that lands in
  * subsequent days; the tap itself does no marshalling).
  *
- * <p><b>Allocation.</b> One {@link BrowserEvent.RawFixSlice} record per emitted frame (unavoidable
- * since the queue holds boxed events). No {@link String} is allocated — the slice references the
- * per-instance {@code maskScratch} buffer directly. SOH→{@code '|'} substitution and JSON-escape
- * are deferred to {@link com.trading.engine.fixbridge.json.BrowserEventWriter#writeRawFixSlice} at
- * write time, which reads the byte slice without constructing an intermediate {@link String}.
+ * <p><b>Allocation.</b> One {@link BrowserEvent.RawFixSlice} record per emitted frame plus a fresh
+ * {@code byte[]} (sized to {@code maskedLen <= maskScratch.length}) per emitted frame to satisfy
+ * the queue's per-event ownership invariant. No {@link String} is allocated. SOH→{@code '|'}
+ * substitution and JSON-escape are deferred to {@link
+ * com.trading.engine.fixbridge.json.BrowserEventWriter#writeRawFixSlice} at write time, which reads
+ * the byte slice without constructing an intermediate {@link String}.
  */
 public final class RawFixTap {
 
@@ -88,6 +90,7 @@ public final class RawFixTap {
   private final AuditLogger auditLogger;
   private final DropCounter dropCounter;
   private final String auditViewRole;
+  private final EpochNanoClock epochNanoClock;
 
   /**
    * {@code volatile} so the bridge's reload endpoint can flip the flag from any thread and the
@@ -112,11 +115,15 @@ public final class RawFixTap {
    * @param piiMask mask configuration (typically {@link PiiMask#withDefaultMask()})
    * @param rateLimiter per-session token-bucket limiter
    * @param auditLogger audit sink (BRIDGE_DEBUG_TOGGLE entries on each {@link
-   *     #setBridgeDebug(boolean, long)})
+   *     #setBridgeDebug(boolean)})
    * @param dropCounter metrics hook for drops
    * @param auditViewRole role identifier required in the session's JWT before frames are emitted
    * @param initialBridgeDebug initial value of the {@code bridgeDebug} flag (typically from {@code
    *     FixClientBridgeConfig.bridgeDebug()})
+   * @param epochNanoClock wall-clock used as the {@code tsNs} for {@link AuditLogger#record} on
+   *     each {@link #setBridgeDebug(boolean)} transition — the audit-logger contract is epoch
+   *     nanoseconds (not monotonic), so audit entries correlate with wall-clock incident timelines.
+   *     Trailing position so existing positional callers do not shift.
    */
   public RawFixTap(
       final BridgeSession session,
@@ -125,7 +132,8 @@ public final class RawFixTap {
       final AuditLogger auditLogger,
       final DropCounter dropCounter,
       final String auditViewRole,
-      final boolean initialBridgeDebug) {
+      final boolean initialBridgeDebug,
+      final EpochNanoClock epochNanoClock) {
     this.session = Objects.requireNonNull(session, "session");
     this.piiMask = Objects.requireNonNull(piiMask, "piiMask");
     this.rateLimiter = Objects.requireNonNull(rateLimiter, "rateLimiter");
@@ -133,17 +141,19 @@ public final class RawFixTap {
     this.dropCounter = Objects.requireNonNull(dropCounter, "dropCounter");
     this.auditViewRole = Objects.requireNonNull(auditViewRole, "auditViewRole");
     this.bridgeDebug = initialBridgeDebug;
+    this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
   }
 
   /**
    * Toggle the {@code bridgeDebug} flag at runtime. Every transition records a {@link
    * AuditAction#BRIDGE_DEBUG_TOGGLE} entry so the audit trail captures every operator action that
-   * could expose tap output (per §3.5 audit-log requirement).
+   * could expose tap output (per §3.5 audit-log requirement). The audit timestamp is sourced from
+   * the injected {@link EpochNanoClock} (epoch nanoseconds) — {@link AuditLogger#record}'s contract
+   * requires wall-clock nanos so audit rows correlate with incident timelines.
    *
    * @param newValue desired flag state
-   * @param nowNs monotonic timestamp (audit log clock source)
    */
-  public void setBridgeDebug(final boolean newValue, final long nowNs) {
+  public void setBridgeDebug(final boolean newValue) {
     final boolean prior = this.bridgeDebug;
     if (prior == newValue) {
       return;
@@ -151,15 +161,15 @@ public final class RawFixTap {
     this.bridgeDebug = newValue;
     if (auditLogger.isWritable()) {
       auditLogger.record(
-          nowNs,
+          epochNanoClock.nanoTime(),
           session.claims().sub(),
           session.claims().jti(),
           null,
           AuditAction.BRIDGE_DEBUG_TOGGLE,
           null,
           null,
-          null,
-          null,
+          0L,
+          0L,
           null,
           null,
           null,
@@ -224,14 +234,20 @@ public final class RawFixTap {
     }
 
     // Apply PII mask in-place into the per-tap scratch buffer. PiiMask preserves byte length, so
-    // the masked slice length equals the source length. The RawFixSlice carrier holds a reference
-    // to maskScratch directly — the per-frame String allocation is eliminated (APP-40a Day 5).
+    // the masked slice length equals the source length. The RawFixSlice carrier owns a fresh
+    // copy of the masked bytes (per-event byte[]) so the drainer can serialise on its own
+    // schedule without aliasing concerns.
     final int maskedLen = piiMask.mask(fixBytes, off, len, maskScratch, 0);
-    // RawFixSlice shares maskScratch without copying — the queue consumer (BrowserEventWriter) MUST
-    // serialise this record before the next tap() call mutates the buffer. This is guaranteed
-    // because both the drainer and the tap run on the same channel event loop (single-threaded).
+    // Per-event byte[] copy: queued RawFixSlice events MUST own their own backing storage so a
+    // subsequent tap() does not overwrite an unconsumed earlier frame (CodeRabbit major finding
+    // on PR #70: previously the queue shared the per-tap maskScratch buffer by reference,
+    // causing aliasing under back-to-back taps before drainer drain).
+    final byte[] eventBuffer = new byte[maskedLen];
+    System.arraycopy(maskScratch, 0, eventBuffer, 0, maskedLen);
+    // RawFixSlice now owns its own backing byte[] (per-event copy from maskScratch) so the
+    // drainer can safely serialise on its own schedule without aliasing concerns.
     final var event =
-        new BrowserEvent.RawFixSlice(direction == DIRECTION_IN, maskScratch, 0, maskedLen);
+        new BrowserEvent.RawFixSlice(direction == DIRECTION_IN, eventBuffer, 0, maskedLen);
 
     final var result = session.outboundQueue().offer(event);
     if (result == OutboundQueue.OfferResult.TERMINAL) {

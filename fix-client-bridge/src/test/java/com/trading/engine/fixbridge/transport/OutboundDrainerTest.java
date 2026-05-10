@@ -93,7 +93,7 @@ final class OutboundDrainerTest {
     final var msg = ch.readOutbound();
     if (msg instanceof TextWebSocketFrame frame) {
       final var buf = frame.content();
-      final byte[] bytes = new byte[buf.readableBytes()];
+      final var bytes = new byte[buf.readableBytes()];
       buf.readBytes(bytes);
       frame.release();
       return new String(bytes, StandardCharsets.UTF_8);
@@ -321,7 +321,7 @@ final class OutboundDrainerTest {
     while ((out = stallChannel.readOutbound()) != null && maxReads-- > 0) {
       if (out instanceof TextWebSocketFrame twf) {
         final var buf = twf.content();
-        final byte[] bytes = new byte[buf.readableBytes()];
+        final var bytes = new byte[buf.readableBytes()];
         buf.readBytes(bytes);
         final var text = new String(bytes, StandardCharsets.UTF_8);
         twf.release();

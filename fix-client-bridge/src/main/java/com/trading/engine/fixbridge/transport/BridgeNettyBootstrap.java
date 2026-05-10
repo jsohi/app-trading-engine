@@ -185,17 +185,27 @@ public final class BridgeNettyBootstrap implements AutoCloseable {
                 pipeline.addLast(
                     "http-aggregator", new HttpObjectAggregator(config.maxJsonBytes()));
                 pipeline.addLast("origin-validator", handshaker);
+                // Netty 4.1 WebSocketServerProtocolHandler 7-arg ctor signature:
+                //   (String websocketPath, String subprotocols,
+                //    boolean allowExtensions, int maxFrameSize,
+                //    boolean allowMaskMismatch, boolean checkStartsWith,
+                //    long handshakeTimeoutMillis)
                 // allowExtensions=false: CRIME/BREACH prevention. Subprotocol is pinned so the
                 // browser can hard-assert on the upgrade response (§3.1 / APP-36 §A3).
+                // checkStartsWith=false: HARD-MATCH the path (only "/ws", not "/wsfoo" or
+                // "/ws/admin") — security regression fix per CodeRabbit critical finding on
+                // PR #70 (prior arg order had checkStartsWith=true accidentally).
+                // allowMaskMismatch=true: tolerate browser quirks where the client mask handling
+                // diverges from RFC 6455 §5.3 (rare in modern browsers but defensive).
                 pipeline.addLast(
                     "ws-protocol",
                     new WebSocketServerProtocolHandler(
                         WS_PATH,
                         SUBPROTOCOL,
-                        /* checkStartsWith */ false,
-                        config.maxJsonBytes(),
                         /* allowExtensions */ false,
+                        config.maxJsonBytes(),
                         /* allowMaskMismatch */ true,
+                        /* checkStartsWith */ false,
                         config.handshakeTimeoutMillis()));
                 pipeline.addLast(
                     "idle",

@@ -3,6 +3,7 @@ package com.trading.engine.fixbridge.quote;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import org.agrona.collections.Object2ObjectHashMap;
+import org.agrona.collections.ObjectHashSet;
 
 /**
  * Per-session quote correlation indexes for the bridge dispatcher.
@@ -101,6 +102,17 @@ public final class SessionQuoteIndex {
    */
   private final Object2ObjectHashMap<SessionId, String> sessionToSub = new Object2ObjectHashMap<>();
 
+  /**
+   * Reverse map: {@code sessionId -> set-of-reqIds-owned-by-session}. Lets {@link #onSessionClosed}
+   * evict in O(K) where K is the per-session reqId count instead of O(N) over the global {@link
+   * #reqIdToOwner} map (Gemini medium-priority finding on PR #70). The Agrona {@code ObjectHashSet}
+   * is preferred over a JDK collection here because the per-session count can be large (a user can
+   * have hundreds of in-flight QuoteRequests) and Agrona's open-addressing implementation has
+   * tighter memory locality for the typical small-set case.
+   */
+  private final Object2ObjectHashMap<SessionId, ObjectHashSet<String>> sessionToReqIds =
+      new Object2ObjectHashMap<>();
+
   // ---------------------------------------------------------------------------
   // Session-lifecycle hooks.
   // ---------------------------------------------------------------------------
@@ -132,14 +144,12 @@ public final class SessionQuoteIndex {
           "sessionId " + sessionId + " already registered with sub=" + existing);
     }
     sessionToSub.put(sessionId, sub);
-    var bucket = subToSessions.get(sub);
-    if (bucket == null) {
-      // A small initial capacity keeps the typical-case (1-2 sessions per user) tight.
-      // LinkedHashSet preserves insertion order — required by §3.2 orphan-routing per the field
-      // declaration above.
-      bucket = new LinkedHashSet<>(4);
-      subToSessions.put(sub, bucket);
-    }
+    // computeIfAbsent keeps the bucket-ref local final per CLAUDE.md (was a mutable `var bucket`
+    // pre-fix per CodeRabbit). The lambda allocation is once-per-session-auth (cold path).
+    // A small initial capacity (4) keeps the typical-case (1-2 sessions per user) tight.
+    // LinkedHashSet preserves insertion order — required by §3.2 orphan-routing per the field
+    // declaration above.
+    final var bucket = subToSessions.computeIfAbsent(sub, k -> new LinkedHashSet<>(4));
     bucket.add(sessionId);
   }
 
@@ -170,20 +180,20 @@ public final class SessionQuoteIndex {
         }
       }
     }
-    // Walk reqIdToOwner and remove every entry whose sessionId matches. Linear in map size; fine
-    // — typical session has tens of in-flight reqIds at most. Iteration via entrySet().iterator()
-    // allocates one EntrySet wrapper + one EntryIterator per call — bounded to this cold per-
-    // session-close path so the alloc is paid once at WS close rather than per inbound frame.
-    final var iter = reqIdToOwner.entrySet().iterator();
-    while (iter.hasNext()) {
-      final var entry = iter.next();
-      if (sessionId.equals(entry.getValue().sessionId)) {
-        // Also remove the corresponding quoteId mapping if Quote was emitted.
-        final var quoteId = entry.getValue().quoteId;
-        if (quoteId != null) {
-          quoteIdToSessionId.remove(quoteId);
+    // O(K) eviction per Gemini medium-priority finding on PR #70 — was O(N) over the global
+    // reqIdToOwner map (full entrySet scan). The sessionToReqIds reverse-index lets us touch
+    // only the reqIds owned by THIS session.
+    final var ownedReqIds = sessionToReqIds.remove(sessionId);
+    if (ownedReqIds != null) {
+      for (final var reqId : ownedReqIds) {
+        final var entry = reqIdToOwner.remove(reqId);
+        if (entry != null) {
+          // Also remove the corresponding quoteId mapping if Quote was emitted.
+          final var quoteId = entry.quoteId;
+          if (quoteId != null) {
+            quoteIdToSessionId.remove(quoteId);
+          }
         }
-        iter.remove();
       }
     }
     return sub;
@@ -236,6 +246,8 @@ public final class SessionQuoteIndex {
     // Either no prior entry, an entry from a different session (allowed — different RFQ flows),
     // or a same-session entry outside the dedupe window (allowed — old entry will be TTL-evicted).
     reqIdToOwner.put(reqId, new ReqIdEntry(sessionId, nowNs));
+    // Maintain the reverse index for O(K) session-close eviction (Gemini PR #70 fix).
+    sessionToReqIds.computeIfAbsent(sessionId, k -> new ObjectHashSet<>()).add(reqId);
     return QuoteRequestRegistration.ACCEPTED;
   }
 
@@ -347,6 +359,17 @@ public final class SessionQuoteIndex {
         final var quoteId = entry.getValue().quoteId;
         if (quoteId != null) {
           quoteIdToSessionId.remove(quoteId);
+        }
+        // Keep sessionToReqIds in sync — drop the reqId from its owning session's bucket so
+        // a later session-close doesn't try to re-evict it (and so the reverse-index size
+        // remains bounded by live reqIds, not lifetime reqIds).
+        final var ownerSession = entry.getValue().sessionId;
+        final var ownerBucket = sessionToReqIds.get(ownerSession);
+        if (ownerBucket != null) {
+          ownerBucket.remove(entry.getKey());
+          if (ownerBucket.isEmpty()) {
+            sessionToReqIds.remove(ownerSession);
+          }
         }
         iter.remove();
         evicted++;

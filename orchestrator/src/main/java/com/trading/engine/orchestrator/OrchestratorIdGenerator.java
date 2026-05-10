@@ -1,6 +1,11 @@
 package com.trading.engine.orchestrator;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -13,18 +18,33 @@ import org.agrona.concurrent.EpochNanoClock;
  * com.trading.engine.cluster.IdGenerator}. The orchestrator does not participate in Aeron Cluster
  * log replay, so snapshot save/load is unnecessary.
  *
- * <p><b>Restart safety (APP-40a §3.2 fix).</b> The counter is seeded at construction from {@code
- * clock.nanoTime() &gt;&gt;&gt; 20} so post-restart sequences are mathematically disjoint from any
- * pre-restart sequence still cached anywhere in the system (e.g. the bridge's {@code
- * quoteIdToSessionId} map, which has a 120s TTL but does not cache-bust on orchestrator restart).
- * The shift retains the high-order ~44 bits of the nanosecond clock — providing a unique seed per
- * orchestrator boot at &lt;~1ms granularity — while leaving 20 low bits of headroom before the next
- * boot's {@link #MAX_COUNTER} would collide with the previous boot's counter. {@code
- * EpochNanoClock} is monotonic across restarts, guaranteeing the seed strictly increases boot to
- * boot.
+ * <p><b>Restart safety (PR #70 CodeRabbit critical fix).</b> Production callers MUST use the
+ * file-backed {@link #OrchestratorIdGenerator(String, EpochNanoClock, Path)} constructor, which
+ * atomically advances a durable per-process boot counter on each restart. Each boot reserves {@link
+ * #BOOT_HEADROOM} IDs from the global counter range, guaranteeing two LIVE boots can never share an
+ * ID range — regardless of how fast the orchestrator restarts.
  *
- * <p>11 digits gives ~100 billion IDs per generator instance — sufficient headroom for a multi-year
- * orchestrator lifetime even at sustained million-RFQs-per-second peak load.
+ * <p>Why the durable file? An earlier {@code clock.nanoTime() >>> 20}-derived seed advanced the
+ * seed by only ~953 per second of wall-clock time, while the per-boot counter could advance up to
+ * ~1,000,000 per second under peak load. After a fast restart the new boot's seed could land inside
+ * the prior boot's still-cached ID range — silently violating the "mathematically disjoint" claim
+ * and corrupting the bridge's quoteId-to-session map (CodeRabbit critical finding on PR #70). The
+ * durable file replaces "trust the wall-clock advance rate" with "claim a contiguous slice of the
+ * namespace per boot, atomically".
+ *
+ * <p>The clock-only constructor {@link #OrchestratorIdGenerator(String, EpochNanoClock)} is
+ * retained for unit tests that assert specific deterministic sequences but is NOT restart-safe;
+ * production code paths that need restart-disjointness MUST use the file-backed constructor.
+ *
+ * <p>11 digits gives ~100 billion IDs per generator instance. With a {@link #BOOT_HEADROOM} of one
+ * billion IDs per boot, the file-backed counter wraps after ~100 boots — at which point a boot may
+ * re-use a seed range from a prior boot. This is safe because the bridge's {@code
+ * quoteIdToSessionId} cache evicts entries after a maximum TTL of 180s (registration 120s +
+ * post-emission 60s), and 100 successive boots (each consuming a fresh {@link #BOOT_HEADROOM} slice
+ * within ~1000s at peak load) implies many minutes of elapsed wall time between any two boots that
+ * share a seed range. For production deployments expecting more than 100 lifetime boots before
+ * bridge-cache eviction completes, increase {@link #MAX_COUNTER} (and the rendered ID's digit
+ * count) or shrink {@link #BOOT_HEADROOM}.
  *
  * <p><b>Hot-path API:</b> {@link #nextInto(MutableDirectBuffer, int)}. Zero allocation — increments
  * the counter and writes the rendered ID ASCII bytes directly into a caller-provided buffer.
@@ -44,6 +64,13 @@ public final class OrchestratorIdGenerator {
    * lifetime per generator instance.
    */
   public static final long MAX_COUNTER = 99_999_999_999L;
+
+  /**
+   * IDs reserved per boot from the durable counter file. One billion gives each boot ~1000s of
+   * runtime at the documented peak rate (1,000,000 RFQs/second). Larger values give more per- boot
+   * headroom at the cost of fewer total boots before file-counter wraparound.
+   */
+  public static final long BOOT_HEADROOM = 1_000_000_000L;
 
   private static final int DIGITS = 11;
 
@@ -89,16 +116,18 @@ public final class OrchestratorIdGenerator {
   }
 
   /**
-   * Creates a new ID generator with the given prefix and a clock-derived initial seed.
+   * Creates a new ID generator with the given prefix and a clock-derived initial seed. <b>Test-
+   * only — NOT restart-safe. Production code MUST use {@link #OrchestratorIdGenerator(String,
+   * EpochNanoClock, Path)}.</b>
    *
    * <p>Per CLAUDE.md §Clock Usage, out-of-cluster modules (orchestrator included) MUST take their
    * clock from {@link com.trading.engine.messages.clock.TradingClocks#epochNanoClock()} via
-   * dependency injection rather than calling {@code System.currentTimeMillis()} directly. The
-   * counter is seeded from {@code clock.nanoTime() &gt;&gt;&gt; 20} so successive restarts of the
-   * orchestrator generate disjoint sequences (see class-level Javadoc for the restart-safety
-   * argument). The seed is clamped to {@code [0, MAX_COUNTER)} so {@link #renderNextId()}'s
-   * exhaustion check still applies even on a clock that returns a near-{@code Long.MAX_VALUE}
-   * value.
+   * dependency injection. The counter is seeded from {@code clock.nanoTime() &gt;&gt;&gt; 20} which
+   * provides {@code ~1ms} seed granularity — adequate for tests that mint a handful of IDs
+   * post-restart, but inadequate to guarantee disjointness in production where the per-boot counter
+   * advances {@code 1000×} faster than the seed under peak load (see class Javadoc for the
+   * CodeRabbit critical finding on PR #70). Production callers MUST use the file-backed {@link
+   * #OrchestratorIdGenerator(String, EpochNanoClock, Path)} constructor.
    *
    * @param prefix non-empty ASCII ID prefix, e.g., {@code "QTE"}
    * @param clock injected epoch-nanosecond clock; used once at construction to seed the counter
@@ -108,6 +137,38 @@ public final class OrchestratorIdGenerator {
    */
   public OrchestratorIdGenerator(final String prefix, final EpochNanoClock clock) {
     this(prefix, computeRestartSafeSeed(clock));
+  }
+
+  /**
+   * Production constructor — restart-safe via a durable boot counter file.
+   *
+   * <p>On every construction this atomically reads the persisted high-watermark from {@code
+   * bootCounterFile}, claims a contiguous {@link #BOOT_HEADROOM}-sized slice for this boot, and
+   * writes the new high-watermark back via {@link Files#move} with {@link
+   * StandardCopyOption#ATOMIC_MOVE} so a process crash mid-write cannot leave the file in a
+   * partially-written state. The starting counter for THIS boot is the OLD high-watermark (modulo
+   * {@link #MAX_COUNTER} so the rendered-ID range invariant holds).
+   *
+   * <p>If the file does not exist on first boot, it is treated as containing zero. If the file
+   * exists but contains malformed data, {@link IllegalStateException} is thrown — fail-fast rather
+   * than silently re-using a seed that may collide with a prior boot.
+   *
+   * <p>The {@code clock} parameter is currently unused by the file-backed path (the boot counter
+   * fully determines the seed). It is retained in the signature so future evolutions (e.g. a hybrid
+   * clock+file scheme that uses the clock to detect non-monotonic file rollback) do not require an
+   * API break.
+   *
+   * @param prefix non-empty ASCII ID prefix, e.g., {@code "QTE"}
+   * @param clock injected epoch-nanosecond clock; reserved for future use, may not be null
+   * @param bootCounterFile path to the durable boot counter file; the parent directory MUST exist
+   *     and be writable. The file is created atomically on first boot if absent.
+   * @throws NullPointerException if any argument is null
+   * @throws IllegalArgumentException if {@code prefix} is invalid
+   * @throws IllegalStateException if the file is unreadable, malformed, or cannot be persisted
+   */
+  public OrchestratorIdGenerator(
+      final String prefix, final EpochNanoClock clock, final Path bootCounterFile) {
+    this(prefix, advanceBootCounter(bootCounterFile, BOOT_HEADROOM, clock));
   }
 
   /**
@@ -187,6 +248,82 @@ public final class OrchestratorIdGenerator {
     }
     final long rawSeed = clock.nanoTime() >>> 20;
     return Math.floorMod(rawSeed, MAX_COUNTER);
+  }
+
+  /**
+   * Atomically advance the durable boot counter and return the previous value (this boot's starting
+   * counter, modulo {@link #MAX_COUNTER}).
+   *
+   * <p>Read the current file content as a base-10 long (zero if file absent), compute {@code
+   * newNext = current + headroom}, write {@code newNext} to a sibling tmp file, then {@link
+   * Files#move} the tmp file over the target with {@link StandardCopyOption#ATOMIC_MOVE}. If the
+   * filesystem does not support atomic move, the move falls back to {@link
+   * StandardCopyOption#REPLACE_EXISTING} alone — leaving a small race window where two concurrent
+   * processes could read the same value. Single-process orchestrator deployments (the supported
+   * topology) avoid this entirely.
+   *
+   * @param file path to the boot counter file; parent directory must exist
+   * @param headroom number of IDs to reserve for this boot
+   * @param clock reserved (validated non-null only); see {@link #OrchestratorIdGenerator(String,
+   *     EpochNanoClock, Path)} Javadoc for rationale
+   * @return the prior file content modulo {@link #MAX_COUNTER}, suitable as this boot's starting
+   *     counter
+   * @throws NullPointerException if {@code file} or {@code clock} is null
+   * @throws IllegalStateException if the file is unreadable, malformed, or cannot be persisted
+   */
+  private static long advanceBootCounter(
+      final Path file, final long headroom, final EpochNanoClock clock) {
+    if (file == null) {
+      throw new NullPointerException("bootCounterFile must not be null");
+    }
+    if (clock == null) {
+      throw new NullPointerException("clock must not be null");
+    }
+    final long currentNext;
+    if (Files.exists(file)) {
+      try {
+        final var contents = Files.readString(file, StandardCharsets.US_ASCII).trim();
+        if (contents.isEmpty()) {
+          currentNext = 0L;
+        } else {
+          currentNext = Long.parseLong(contents);
+        }
+      } catch (final IOException e) {
+        throw new IllegalStateException("Failed to read boot counter file: " + file, e);
+      } catch (final NumberFormatException e) {
+        throw new IllegalStateException(
+            "Boot counter file " + file + " contains malformed long value (refusing to start)", e);
+      }
+    } else {
+      currentNext = 0L;
+    }
+    if (currentNext < 0L) {
+      throw new IllegalStateException(
+          "Boot counter file " + file + " contains negative value (refusing to start)");
+    }
+    final long newNext = currentNext + headroom;
+    final var tmp = file.resolveSibling(file.getFileName().toString() + ".tmp");
+    try {
+      Files.writeString(
+          tmp,
+          Long.toString(newNext),
+          StandardCharsets.US_ASCII,
+          StandardOpenOption.CREATE,
+          StandardOpenOption.TRUNCATE_EXISTING,
+          StandardOpenOption.WRITE);
+      try {
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final java.nio.file.AtomicMoveNotSupportedException atomicEx) {
+        // Filesystem does not support atomic move (rare on POSIX; can occur on cross-fs tmpdirs).
+        // Fall back to non-atomic replace — single-process deployments are unaffected; multi-
+        // process startup races on the same file are out of scope (the orchestrator is a
+        // single-process component per CLAUDE.md §Architecture).
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to persist boot counter to: " + file, e);
+    }
+    return Math.floorMod(currentNext, MAX_COUNTER);
   }
 
   /**

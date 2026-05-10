@@ -54,9 +54,13 @@ final class RoutingBridgeFrameDispatcherAllocTest {
     final var sink = FixCommandSink.NOOP;
     final var quoteIndex = new SessionQuoteIndex();
     final EpochNanoClock fixedEpochClock = () -> 1_700_000_000_000_000_000L;
+    // Pre-resolve the IP literal to a single String reference and bind it via a method-reference
+    // supplier so the per-dispatch get() returns the same interned reference (no allocation on
+    // the hot path — required to keep this alloc tripwire valid).
+    final var pinnedRemoteIp = "127.0.0.1";
     final var dispatcher =
         new RoutingBridgeFrameDispatcher(
-            sink, quoteIndex, AuditLogger.Noop.INSTANCE, fixedEpochClock, "127.0.0.1");
+            sink, quoteIndex, AuditLogger.Noop.INSTANCE, fixedEpochClock, () -> pinnedRemoteIp);
 
     final var claims =
         new ValidatedClaims("user-001", "jti-001", List.of(), Long.MAX_VALUE, true, List.of());

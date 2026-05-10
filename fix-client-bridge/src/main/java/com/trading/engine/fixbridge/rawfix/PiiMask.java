@@ -79,6 +79,15 @@ public final class PiiMask {
    */
   private static final byte SOH = (byte) 0x01;
 
+  /**
+   * Maximum decimal digits in a FIX 4.4 / FIXT.1.1 tag number. The protocol's maximum standard tag
+   * number is 4999999 (7 digits) and the user-defined range tops out at 9999999 (also 7 digits).
+   * The digit-parser caps at this length to prevent an unbounded attacker-supplied digit run from
+   * overflowing the int accumulator (signed wrap at ~10 digits) and silently changing the masking
+   * decision (a `tag % 2^31` collision against a PII tag would leak data).
+   */
+  private static final int MAX_TAG_DIGITS = 7;
+
   private final int[] sortedTagsToMask;
 
   /**
@@ -176,7 +185,13 @@ public final class PiiMask {
       int tag = 0;
       boolean sawDigit = false;
       int digitsEnd = p;
-      while (digitsEnd < end) {
+      // FIX 4.4 / FIXT.1.1 tag numbers are <= 7 decimal digits (FIX SLT max tag is 4999999;
+      // user-defined range tops out at 9999999 = 7 digits). Capping here prevents an attacker-
+      // supplied unbounded digit run from overflowing the int accumulator (signed wrap at
+      // ~10 digits) and silently changing the masking decision (tag % 2^31 might match a PII
+      // tag even though the on-wire tag clearly does not). Beyond MAX_TAG_DIGITS we treat the
+      // field as malformed and passthrough — strict parse, fail-secure.
+      while (digitsEnd < end && (digitsEnd - p) < MAX_TAG_DIGITS) {
         final byte b = src[digitsEnd];
         if (b == EQUALS) {
           break;
@@ -189,6 +204,11 @@ public final class PiiMask {
         sawDigit = true;
         digitsEnd++;
       }
+      // If we hit the digit cap and the next byte is still a digit, treat as malformed
+      // (passthrough). Without this guard a 7-digit tag followed by another digit would be
+      // mis-parsed as the 7-digit tag with the 8th digit treated as part of the value, leading
+      // to incorrect masking. The check below for `src[digitsEnd] != EQUALS` already covers
+      // this — but make the intent explicit.
 
       // Find the field terminator (next '|' OR SOH, or end-of-buffer). Accepting both
       // terminators lets the masker run on raw Artio bytes (SOH-delimited) as well as
