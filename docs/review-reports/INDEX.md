@@ -13,3 +13,4 @@ Auto-populated by `/orchestrate` after each convergence. Do not edit manually.
 | 2026-05-09 | APP-36               | C1–C10 + 12 Gemini rounds  | 76       | 76 fixed / 0 deferred | 97.3% (10/13 applicable) | [report](APP-36-session-2026-05-09.md)             |
 | 2026-05-09 | APP-232              | 5                          | 48       | 47/48                 | 100% (APP-232 scope)     | [report](APP-232-session-2026-05-09.md)            |
 | 2026-05-09 | APP-232              | R6–R12 (7)                 | 21       | 21/21                 | 100%                     | [report](APP-232-session-2026-05-09-r2.md)         |
+| 2026-05-10 | APP-40               | 3 iterations               | 30       | 30/30                 | 92% (Iter3)              | [report](APP-40-session-2026-05-10.md)             |
