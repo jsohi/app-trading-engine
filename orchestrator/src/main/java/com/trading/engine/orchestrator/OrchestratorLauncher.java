@@ -113,22 +113,12 @@ public final class OrchestratorLauncher {
   private static OrchestratorComponents launchWithAeron(
       final Aeron aeron, final IdleStrategy idleStrategy, final boolean ownsAeron) {
 
-    // --- Step 3-6: Create Aeron IPC resources ---
-    Subscription gatewaySubscription = null;
-    ExclusivePublication gatewayPublication = null;
-    ExclusivePublication pricingPublication = null;
-    Subscription pricingSubscription = null;
-
-    try {
-      gatewaySubscription = aeron.addSubscription(IPC_CHANNEL, GATEWAY_REQUEST_STREAM_ID);
-      gatewayPublication = aeron.addExclusivePublication(IPC_CHANNEL, GATEWAY_RESPONSE_STREAM_ID);
-      pricingPublication = aeron.addExclusivePublication(IPC_CHANNEL, PRICING_REQUEST_STREAM_ID);
-      pricingSubscription = aeron.addSubscription(IPC_CHANNEL, PRICING_RESPONSE_STREAM_ID);
-    } catch (final RuntimeException e) {
-      CloseHelper.closeAll(
-          gatewaySubscription, gatewayPublication, pricingPublication, pricingSubscription);
-      throw e;
-    }
+    // --- Step 3-6: Create Aeron IPC resources (atomic acquire-or-cleanup; see helper) ---
+    final var ipc = acquireIpcResources(aeron);
+    final var gatewaySubscription = ipc.gatewaySubscription();
+    final var gatewayPublication = ipc.gatewayPublication();
+    final var pricingPublication = ipc.pricingPublication();
+    final var pricingSubscription = ipc.pricingSubscription();
 
     // --- Step 7: Get clocks (must precede Step 8 — APP-40a §3.2: OrchestratorIdGenerator is now
     //     clock-injected so its restart-safe seed derives from the orchestrator's
@@ -194,6 +184,54 @@ public final class OrchestratorLauncher {
     // --- Step 14: Return components (publications now owned by OrchestratorComponents.close()) ---
     return new OrchestratorComponents(
         agentRunner, gatewayPublication, pricingPublication, aeron, ownsAeron);
+  }
+
+  /**
+   * Carrier record for the four Aeron IPC resources owned by the orchestrator. Lets {@link
+   * #launchWithAeron} use {@code final var} for every reference local instead of the four nullable
+   * mutable locals required by the historical acquire-or-cleanup pattern.
+   *
+   * <p>Component ownership transfers to {@link OrchestratorComponents} on the success path; the
+   * orchestrator is responsible for closing them in {@link OrchestratorComponents#close()}.
+   */
+  private record IpcResources(
+      Subscription gatewaySubscription,
+      ExclusivePublication gatewayPublication,
+      ExclusivePublication pricingPublication,
+      Subscription pricingSubscription) {}
+
+  /**
+   * Atomically acquire all four Aeron IPC resources. If any acquisition throws, all
+   * partially-acquired resources are closed before re-throwing — preventing the launcher from
+   * leaking Aeron client-side counters on a failed startup.
+   *
+   * <p><b>CLAUDE.md §Local Variable Style carve-out.</b> The four mutable nullable locals below are
+   * required by the standard "acquire-multiple-or-cleanup" idiom for non-AutoCloseable-friendly
+   * Aeron resources (try-with-resources would auto-close on the success path too, which is wrong
+   * here). Containing the carve-out to this single helper lets {@link #launchWithAeron} stay 100%
+   * {@code final var}.
+   *
+   * @param aeron live Aeron client
+   * @return record carrying the four acquired resources
+   * @throws RuntimeException if any acquisition fails (after closing successfully-acquired peers)
+   */
+  private static IpcResources acquireIpcResources(final Aeron aeron) {
+    Subscription gatewaySubscription = null;
+    ExclusivePublication gatewayPublication = null;
+    ExclusivePublication pricingPublication = null;
+    Subscription pricingSubscription = null;
+    try {
+      gatewaySubscription = aeron.addSubscription(IPC_CHANNEL, GATEWAY_REQUEST_STREAM_ID);
+      gatewayPublication = aeron.addExclusivePublication(IPC_CHANNEL, GATEWAY_RESPONSE_STREAM_ID);
+      pricingPublication = aeron.addExclusivePublication(IPC_CHANNEL, PRICING_REQUEST_STREAM_ID);
+      pricingSubscription = aeron.addSubscription(IPC_CHANNEL, PRICING_RESPONSE_STREAM_ID);
+      return new IpcResources(
+          gatewaySubscription, gatewayPublication, pricingPublication, pricingSubscription);
+    } catch (final RuntimeException e) {
+      CloseHelper.closeAll(
+          gatewaySubscription, gatewayPublication, pricingPublication, pricingSubscription);
+      throw e;
+    }
   }
 
   private static void requireNonBlank(final String value, final String name) {

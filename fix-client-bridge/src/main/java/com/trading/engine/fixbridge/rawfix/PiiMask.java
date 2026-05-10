@@ -28,7 +28,8 @@ import java.util.Arrays;
  * tag values are overwritten with {@code '*'} (0x2A), one star per source byte — preserving
  * byte-length for UTF-8 multibyte values too (an Account name with an umlaut still masks correctly
  * because we operate on bytes, not codepoints). Tag numbers, the {@code '='} separator, and the
- * {@code '|'} delimiter are preserved verbatim.
+ * field terminator (either {@code '|'} 0x7C or SOH 0x01) are preserved verbatim — the source
+ * terminator byte is echoed unchanged into the destination.
  *
  * <p><b>Threading.</b> {@link #mask(byte[], int, int, byte[], int)} is stateless w.r.t. instance
  * fields after construction (only reads the immutable {@link #sortedTagsToMask}), so a single
