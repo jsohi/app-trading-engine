@@ -84,26 +84,41 @@ public final class MicrometerDropCounter implements RawFixTap.DropCounter {
     // array-indexed (one ordinal lookup) — zero-alloc on hits.
     final var perSession =
         counterCache.computeIfAbsent(sessionId, k -> new EnumMap<>(RawFixTap.DropReason.class));
-    // EnumMap is NOT thread-safe so we synchronise on the per-session map for first-touch only.
-    // The synchronisation block is short (one EnumMap probe + at most one Counter.register call)
-    // and contention is per-session — different sessions have different per-session locks.
-    Counter counter = perSession.get(reason);
-    if (counter == null) {
-      synchronized (perSession) {
-        counter = perSession.get(reason);
-        if (counter == null) {
-          counter =
-              Counter.builder(METRIC_NAME)
-                  .description("Count of RawFix events dropped, broken down by session and reason")
-                  .tags(
-                      Tags.of(
-                          Tag.of(TAG_SESSION, sessionId), Tag.of(TAG_REASON, reasonTag(reason))))
-                  .register(registry);
-          perSession.put(reason, counter);
-        }
-      }
-    }
+    // Fast path: array-indexed EnumMap lookup. EnumMap reference reads are atomic per JLS §17.7
+    // so the unsynchronised read is safe — worst case observe null and fall through to the slow
+    // path which double-checks under the per-session lock.
+    final var fastHit = perSession.get(reason);
+    final var counter = fastHit != null ? fastHit : registerCounter(perSession, sessionId, reason);
     counter.increment();
+  }
+
+  /**
+   * First-touch slow path: register a new {@link Counter} for {@code (sessionId, reason)} under the
+   * per-session monitor. Double-checks the EnumMap inside the synchronized block so two threads
+   * racing the same first-touch produce exactly one Counter registration.
+   *
+   * @param perSession the per-session reason→Counter map (also serves as the lock object)
+   * @param sessionId the session id used as the {@code session} metric tag
+   * @param reason the drop reason used as the {@code reason} metric tag
+   * @return the {@link Counter} that should be incremented (never null)
+   */
+  private Counter registerCounter(
+      final EnumMap<RawFixTap.DropReason, Counter> perSession,
+      final String sessionId,
+      final RawFixTap.DropReason reason) {
+    synchronized (perSession) {
+      final var existing = perSession.get(reason);
+      if (existing != null) {
+        return existing;
+      }
+      final var counter =
+          Counter.builder(METRIC_NAME)
+              .description("Count of RawFix events dropped, broken down by session and reason")
+              .tags(Tags.of(Tag.of(TAG_SESSION, sessionId), Tag.of(TAG_REASON, reasonTag(reason))))
+              .register(registry);
+      perSession.put(reason, counter);
+      return counter;
+    }
   }
 
   /**
