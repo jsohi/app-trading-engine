@@ -99,8 +99,8 @@ public final class Utf8JsonStringEmitter {
    * @param off start offset within {@code src}
    * @param len number of bytes to emit; must be {@code >= 0}
    * @param dst destination Netty {@link ByteBuf}; written at {@code dst.writerIndex()}
-   * @throws IllegalStateException if any byte is a forbidden JSON character ({@code "} or {@code
-   *     \\})
+   * @throws IllegalStateException if any byte is a forbidden JSON character ({@code "}, {@code \\},
+   *     or any control byte in {@code 0x00..0x1F} other than the SOH-substitution case 0x01)
    */
   public static void appendRawFixBytes(
       final byte[] src, final int off, final int len, final ByteBuf dst) {
@@ -112,6 +112,13 @@ public final class Utf8JsonStringEmitter {
       } else if (b == (byte) '"' || b == (byte) '\\') {
         throw new IllegalStateException(
             "FIX byte slice contains forbidden JSON character at index " + i + ": " + (int) b);
+      } else if (b >= 0 && b < 0x20) {
+        // Control byte (0x00, 0x02..0x1F) — JSON RFC 8259 forbids these unescaped in string
+        // values. Mirrors the strict char-array path's validateCharStrict guard so a corrupted
+        // Artio buffer or upstream PiiMask bypass fails fast on the wire instead of producing
+        // invalid JSON that the browser would reject silently.
+        throw new IllegalStateException(
+            "FIX byte slice contains forbidden control byte at index " + i + ": " + (int) b);
       } else {
         // All other bytes are written verbatim; PiiMask + FIX 4.4 protocol constrain the input
         // to 7-bit printable ASCII, so no multi-byte UTF-8 branching is needed here.

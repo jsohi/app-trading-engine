@@ -42,6 +42,18 @@ final class OutboundQueueTest {
   private static final BrowserEvent.RawFix RAW2 = new BrowserEvent.RawFix("in", "8=FIX.4.4|1=B");
   private static final BrowserEvent.RawFix RAW3 = new BrowserEvent.RawFix("in", "8=FIX.4.4|1=C");
   private static final BrowserEvent.RawFix RAW4 = new BrowserEvent.RawFix("in", "8=FIX.4.4|1=D");
+
+  // Fixed scratch buffer for RawFixSlice fixtures — content is irrelevant to the queue's drop
+  // policy (it inspects only the event's runtime type), so all slices can share one backing array.
+  private static final byte[] SLICE_SCRATCH = "8=FIX.4.41=A".getBytes();
+  private static final BrowserEvent.RawFixSlice SLICE1 =
+      new BrowserEvent.RawFixSlice(true, SLICE_SCRATCH, 0, SLICE_SCRATCH.length);
+  private static final BrowserEvent.RawFixSlice SLICE2 =
+      new BrowserEvent.RawFixSlice(true, SLICE_SCRATCH, 0, SLICE_SCRATCH.length);
+  private static final BrowserEvent.RawFixSlice SLICE3 =
+      new BrowserEvent.RawFixSlice(true, SLICE_SCRATCH, 0, SLICE_SCRATCH.length);
+  private static final BrowserEvent.RawFixSlice SLICE4 =
+      new BrowserEvent.RawFixSlice(true, SLICE_SCRATCH, 0, SLICE_SCRATCH.length);
   private static final BrowserEvent.Quote QUOTE1 =
       new BrowserEvent.Quote("R1", "Q1", "AAPL", "Buy", 100L, 15000_00000000L, Long.MAX_VALUE);
   private static final BrowserEvent.OrderReject REJECT1 =
@@ -182,6 +194,59 @@ final class OutboundQueueTest {
     assertSame(EXEC2, queue.poll(), "EXEC2 shifts left after RAW1 dropped");
     assertSame(RAW2, queue.poll(), "RAW2 survives (newer)");
     assertSame(QUOTE1, queue.poll());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Capacity full path — RawFixSlice drop (item 7 zero-alloc raw-fix path)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void offer_fullWithRawFixSlicesAvailable_dropsOldestSliceAndAccepts() {
+    // capacity=4; fill with 4 RawFixSlice events. Offer 1 ExecutionReport →
+    // ACCEPTED_DROPPED_RAWFIX. The oldest slice (SLICE1) is dropped; SLICE2/3/4 + EXEC1 remain.
+    // This regression-tests the dropOldestRawFix detection arm for RawFixSlice (item 7); a
+    // future refactor accidentally removing the `instanceof RawFixSlice` branch would deadlock
+    // the queue under load with the legacy RawFix-only test suite still green.
+    final var queue = new OutboundQueue(4);
+    queue.offer(SLICE1);
+    queue.offer(SLICE2);
+    queue.offer(SLICE3);
+    queue.offer(SLICE4);
+
+    final OfferResult result = queue.offer(EXEC1);
+
+    assertEquals(
+        OfferResult.ACCEPTED_DROPPED_RAWFIX,
+        result,
+        "RawFixSlice must be droppable just like legacy RawFix");
+    assertEquals(4, queue.size(), "size must stay at capacity after drop+insert");
+
+    assertSame(SLICE2, queue.poll(), "SLICE1 dropped; SLICE2 should be first");
+    assertSame(SLICE3, queue.poll());
+    assertSame(SLICE4, queue.poll());
+    assertSame(EXEC1, queue.poll(), "newly offered ExecutionReport must be last");
+  }
+
+  @Test
+  void offer_fullMixedRawFixAndRawFixSlice_dropsOldestRegardlessOfVariant() {
+    // capacity=4; fill with RAW1 (legacy), SLICE1, EXEC1, SLICE2 — full. Offer EXEC2 → drops
+    // RAW1 (oldest droppable, regardless of legacy vs slice variant). Resulting order:
+    // SLICE1, EXEC1, SLICE2, EXEC2.
+    final var queue = new OutboundQueue(4);
+    queue.offer(RAW1);
+    queue.offer(SLICE1);
+    queue.offer(EXEC1);
+    queue.offer(SLICE2);
+
+    final OfferResult result = queue.offer(EXEC2);
+
+    assertEquals(OfferResult.ACCEPTED_DROPPED_RAWFIX, result);
+    assertEquals(4, queue.size());
+
+    assertSame(SLICE1, queue.poll(), "SLICE1 promoted to head after RAW1 dropped");
+    assertSame(EXEC1, queue.poll());
+    assertSame(SLICE2, queue.poll(), "newer slice survives");
+    assertSame(EXEC2, queue.poll());
   }
 
   // ---------------------------------------------------------------------------

@@ -13,11 +13,16 @@ import java.util.Arrays;
  * (ContraBroker), {@code 106} (Issuer), {@code 95}/{@code 96} (EncodedText). The masklist is
  * config-driven; jurisdictions add or override at deployment time.
  *
- * <p><b>Wire input.</b> A FIX message with the {@code SOH} (0x01) separator <em>already
- * substituted</em> for {@code '|'} (0x7C) — matches the existing {@link
- * com.trading.engine.fixbridge.json.BrowserEvent.RawFix} payload contract. Tag/value structure:
- * {@code <digits>=<value>|<digits>=<value>|...|<digits>=<value>|} (terminating {@code |} optional
- * but produced by the RawFixTap path).
+ * <p><b>Wire input.</b> A FIX message delimited EITHER by raw {@code SOH} (0x01) bytes from Artio
+ * OR by {@code '|'} (0x7C) bytes (the JSON-friendly substitution used in the {@link
+ * com.trading.engine.fixbridge.json.BrowserEvent.RawFix} string payload). The field-terminator scan
+ * accepts both bytes interchangeably so the masker can be invoked at any point in the RawFixTap →
+ * BrowserEventWriter pipeline regardless of whether SOH→{@code '|'} substitution has already been
+ * applied. The terminator byte is preserved verbatim in the output (an SOH-delimited input produces
+ * an SOH-delimited output; the writer applies SOH→{@code '|'} substitution at serialisation time
+ * per {@link com.trading.engine.fixbridge.json.Utf8JsonStringEmitter#appendRawFixBytes}). Tag/value
+ * structure: {@code <digits>=<value><term><digits>=<value><term>...<digits>=<value><term>} where
+ * {@code <term>} is either 0x01 or 0x7C; trailing terminator optional.
  *
  * <p><b>Output guarantee.</b> The destination buffer has the same byte length as the source. Masked
  * tag values are overwritten with {@code '*'} (0x2A), one star per source byte — preserving
@@ -62,8 +67,16 @@ public final class PiiMask {
   /** Equals byte separating tag from value. */
   private static final byte EQUALS = (byte) '=';
 
-  /** Pipe byte used as the SOH-replacement field separator. */
+  /** Pipe byte used as the SOH-replacement field separator (post-substitution input). */
   private static final byte PIPE = (byte) '|';
+
+  /**
+   * Raw FIX SOH field separator (pre-substitution input from Artio). The masker accepts both {@link
+   * #PIPE} and {@link #SOH} as field terminators so it can run on either pre- or post-substitution
+   * buffers — preventing the §3.5 PII-redaction regression where raw Artio bytes (SOH-delimited)
+   * were treated as one un-masked field.
+   */
+  private static final byte SOH = (byte) 0x01;
 
   private final int[] sortedTagsToMask;
 
@@ -124,7 +137,8 @@ public final class PiiMask {
    * is the authoritative parser; this method's contract is "do no worse than passthrough if the
    * input is malformed."
    *
-   * @param src source buffer (with SOH already substituted for {@code '|'})
+   * @param src source buffer; field terminators may be either raw SOH (0x01) or {@code '|'} (0x7C)
+   *     — both are recognised, and the source terminator byte is preserved verbatim in the output
    * @param srcOff start offset in {@code src}
    * @param srcLen number of bytes to read from {@code src}
    * @param dst destination buffer; MUST have at least {@code srcLen} bytes available from {@code
@@ -175,12 +189,14 @@ public final class PiiMask {
         digitsEnd++;
       }
 
-      // Find the field terminator (next '|', or end-of-buffer).
+      // Find the field terminator (next '|' OR SOH, or end-of-buffer). Accepting both
+      // terminators lets the masker run on raw Artio bytes (SOH-delimited) as well as
+      // post-substitution bytes (pipe-delimited) — see class Javadoc.
       int fieldEnd = digitsEnd;
-      while (fieldEnd < end && src[fieldEnd] != PIPE) {
+      while (fieldEnd < end && src[fieldEnd] != PIPE && src[fieldEnd] != SOH) {
         fieldEnd++;
       }
-      // Include the trailing pipe if present so the next iteration starts on the next field.
+      // Include the trailing terminator if present so the next iteration starts on the next field.
       final int nextStart = (fieldEnd < end) ? fieldEnd + 1 : fieldEnd;
 
       if (!sawDigit || digitsEnd >= end || src[digitsEnd] != EQUALS) {
@@ -205,9 +221,11 @@ public final class PiiMask {
         copy(src, valStart, dst, dstOff + (valStart - srcOff), valLen);
       }
 
-      // Copy the trailing pipe if it exists.
+      // Copy the trailing terminator (SOH or PIPE) verbatim if it exists. Preserving the source
+      // terminator byte lets the writer apply SOH→'|' substitution at serialisation time without
+      // double-substitution.
       if (fieldEnd < end) {
-        dst[dstOff + (fieldEnd - srcOff)] = PIPE;
+        dst[dstOff + (fieldEnd - srcOff)] = src[fieldEnd];
       }
       p = nextStart;
     }
