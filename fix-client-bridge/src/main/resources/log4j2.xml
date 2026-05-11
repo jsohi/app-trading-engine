@@ -20,10 +20,18 @@
       JSON object with a SHA-256 hash chain (see Log4jAuditLogger Javadoc). The pattern is bare
       "%msg%n" because the logger does its own JSON formatting.
     -->
+    <!--
+      AuditFile uses immediateFlush="true" so each tamper-evident JSONL hash-chain record is
+      synced to disk before the writer returns. Without it, a JVM crash / OOM-kill / host
+      failure could lose records that live only in the Disruptor ring + OS page cache —
+      the SHA-256 hash chain detects deletion after the fact but cannot recover lost entries
+      (CodeRabbit PR #71 R2 finding). The throughput cost is small because audit volume is low
+      relative to the bridge's general log.
+    -->
     <RollingRandomAccessFile name="AuditFile"
                              fileName="logs/bridge/audit.jsonl"
                              filePattern="logs/bridge/audit-%d{yyyy-MM-dd}-%i.jsonl"
-                             immediateFlush="false">
+                             immediateFlush="true">
       <PatternLayout pattern="%msg%n"/>
       <Policies>
         <TimeBasedTriggeringPolicy interval="1" modulate="true"/>

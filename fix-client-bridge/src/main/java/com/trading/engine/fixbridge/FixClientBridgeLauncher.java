@@ -127,6 +127,7 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
   private final FixClientBridgeConfig config;
   private final BridgeNettyBootstrap bootstrap;
   private final PrometheusMeterRegistry meterRegistry;
+  private final RawFixTap.DropCounter dropCounter;
 
   /**
    * Construct the launcher with default cross-module bindings (NOOP Artio + NOOP cluster lookup).
@@ -191,25 +192,30 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
     final var clusterProvider = new ClusterAccountLimitsProvider(accountLimitsLookup);
     final AccountLimitsSource accountLimitsSource = new BoundedAccountLimitsSource(clusterProvider);
 
-    // Drop-counter sink for RawFixTap. The launcher binds Micrometer; tests use NOOP.
-    final RawFixTap.DropCounter dropCounter = new MicrometerDropCounter(meterRegistry);
+    // Drop-counter sink for RawFixTap. The launcher binds Micrometer; tests use NOOP. Exposed
+    // via {@link #dropCounter()} so the operator's ArtioSessionConnector binding (which owns
+    // RawFixTap creation per-session) can plumb it into each tap. Without that wire-up the
+    // dropCounter is constructed but unused in production (Gemini/CodeRabbit PR #71 R2 finding).
+    this.dropCounter = new MicrometerDropCounter(meterRegistry);
 
     // Per-session ClOrdID prefix sequence (process-wide AtomicLong) — guarantees the per-session
     // 28-bit token used in the §4 ClOrdID layout is unique across concurrent sessions for the
     // life of the process. PR #70 R2 Gemini critical fix.
     final var sessionTokenSequence = new AtomicLong(0L);
 
-    // Bridge process tag (24-bit). Derived once at boot from epoch-nanos: shifting right by 8
-    // gives ~256ns granularity, then masking to 24 bits. The (instanceTag, sessionToken) pair
-    // forms the high bits of every per-session ClOrdID:
-    //   - Two bridge processes booting within ~256ns on the same host would collide on
-    //     instanceTag — but this is impossible in practice because a single bridge process
-    //     binds a unique TCP port (config.port()), so the OS prevents same-host port reuse.
-    //   - Cross-host collisions are guarded by the gateway's CompID (each bridge connects to
-    //     the gateway as a distinct FIX SenderCompID).
+    // Bridge process tag (24-bit). Derived once at boot from epoch SECONDS so the value wraps
+    // every 2^24 seconds (~194 days) instead of every ~4.29 seconds with the prior >>>8 shift
+    // (Gemini PR #71 critical finding — short wrap dramatically increased restart-collision
+    // probability and could violate FIX ClOrdID uniqueness when paired with sessionTokenSequence
+    // resetting to 0 on restart). The (instanceTag, sessionToken) pair forms the high bits of
+    // every per-session ClOrdID:
+    //   - At seconds granularity two restarts within the same wall-clock second collide. In
+    //     practice the bridge takes >1s to bind the TCP port + connect Aeron + run JWT preflight,
+    //     so consecutive restarts of the same process are at least seconds apart. Cross-host
+    //     instances are guarded by distinct FIX SenderCompID.
     //   - Within a single process, the AtomicLong sessionTokenSequence guarantees per-session
     //     uniqueness regardless of instanceTag.
-    final long instanceTag = (epochNanoClock.nanoTime() >>> 8) & 0xFFFFFFL;
+    final long instanceTag = (epochNanoClock.nanoTime() / 1_000_000_000L) & 0xFFFFFFL;
 
     final Executor jwtValidationExecutor = ForkJoinPool.commonPool();
 
@@ -280,11 +286,27 @@ public final class FixClientBridgeLauncher implements AutoCloseable {
   /**
    * Returns the Micrometer registry so the operator can scrape Prometheus metrics. Production
    * deployments wire this to a sidecar HTTP server or to the JVM's existing /actuator endpoint.
+   * Returns the concrete {@link PrometheusMeterRegistry} type (not the {@link MeterRegistry}
+   * supertype) so callers can invoke {@code scrape()} directly without a downcast (CodeRabbit PR
+   * #71 R2 finding).
    *
    * @return the bridge's Prometheus meter registry
    */
-  public MeterRegistry meterRegistry() {
+  public PrometheusMeterRegistry meterRegistry() {
     return meterRegistry;
+  }
+
+  /**
+   * Exposes the launcher's {@link RawFixTap.DropCounter} so the operator's {@link
+   * ArtioSessionConnector} binding can plumb it into each per-session {@link RawFixTap} when
+   * constructing the Artio session integration. Without this exposure, the launcher-bound
+   * Micrometer counter would be unreachable from the per-session tap created by the
+   * operator-supplied connector.
+   *
+   * @return the bridge's Micrometer-backed drop counter (never null)
+   */
+  public RawFixTap.DropCounter dropCounter() {
+    return dropCounter;
   }
 
   @Override

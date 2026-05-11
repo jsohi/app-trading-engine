@@ -90,7 +90,7 @@ final class RawFixTapAllocTest {
     assertTrue(
         rawBean instanceof ThreadMXBean,
         "HotSpot ThreadMXBean.getThreadAllocatedBytes is required (running on non-HotSpot JVM?)");
-    final ThreadMXBean threadBean = (ThreadMXBean) rawBean;
+    final var threadBean = (ThreadMXBean) rawBean;
     assertTrue(threadBean.isThreadAllocatedMemorySupported(), "Thread alloc tracking unsupported");
     if (!threadBean.isThreadAllocatedMemoryEnabled()) {
       threadBean.setThreadAllocatedMemoryEnabled(true);
