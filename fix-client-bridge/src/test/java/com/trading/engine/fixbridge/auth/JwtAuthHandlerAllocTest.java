@@ -22,9 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -227,15 +227,24 @@ final class JwtAuthHandlerAllocTest {
         true);
   }
 
+  /**
+   * Fixed epoch clock so per-iteration allocation stays deterministic — wall-time drift across
+   * iterations would add measurement noise to the budget assertion (CodeRabbit PR #71 R2 fix for
+   * the prior {@code System.currentTimeMillis()} call).
+   */
   private static EpochNanoClock nowEpochClock() {
-    return () -> TimeUnit.MILLISECONDS.toNanos(System.currentTimeMillis());
+    return () -> 1_700_000_000_000_000_000L;
   }
 
+  /**
+   * Project-mandated monotonic clock per CLAUDE.md §Clock Usage. Replaces the prior bare {@code
+   * System::nanoTime} method-reference (CodeRabbit PR #71 R2 fix).
+   */
   private static NanoClock systemNanoClock() {
-    return System::nanoTime;
+    return SystemNanoClock.INSTANCE;
   }
 
   private static AuthFailureTracker noLockoutTracker() {
-    return new AuthFailureTracker(1000, 60, System::nanoTime);
+    return new AuthFailureTracker(1000, 60, SystemNanoClock.INSTANCE);
   }
 }
