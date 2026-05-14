@@ -63,6 +63,14 @@ val webUiTest by tasks.registering(NpmTask::class) {
     args.set(listOf("run", "-w", "web-ui", "test"))
 }
 
+val webUiBrowserTest by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Vitest @vitest/browser suite (Playwright/Chromium) for the web-ui workspace."
+    dependsOn(webUiInstall)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    args.set(listOf("run", "-w", "web-ui", "test:browser"))
+}
+
 val webUiBuild by tasks.registering(NpmTask::class) {
     group = "build"
     description = "Vite production build."

@@ -62,6 +62,27 @@ export interface FillUpdate {
   readonly serverNanos: bigint;
 }
 
+/**
+ * Net position per symbol — locally aggregated from `FillUpdate` events by
+ * `positionStream` (APP-37). NOT a worker-emitted message; computed in the
+ * main thread for display. Server-side `PositionProjection` (APP-25) is the
+ * authoritative source on reconnect; APP-37 ships local aggregation only.
+ *
+ * - `netQty` is SIGNED (BUY adds, SELL subtracts).
+ * - `avgPx` is the running VWAP of the OPEN side (resets to 0n when flat).
+ * - `lastFillNanos` is the most recent fill's `serverNanos`.
+ *
+ * Plan reference: APP-37 §Scope item 2.
+ */
+export interface NetPosition {
+  readonly symbol: string;
+  /** Signed net quantity (fixed-point, scale 1e8). */
+  readonly netQty: bigint;
+  /** Running VWAP of the OPEN side (fixed-point, scale 1e8). 0n when flat. */
+  readonly avgPx: bigint;
+  readonly lastFillNanos: bigint;
+}
+
 export interface EventUpdate {
   readonly type: "event";
   /** Cluster sequence number — uint64 → bigint. */

@@ -15,6 +15,7 @@
 
 import {
   type FillUpdate,
+  type NetPosition,
   type OrderUpdate,
   type PriceUpdate,
 } from "@/shared/transport/MessageShape";
@@ -22,3 +23,4 @@ import {
 export const getOrderRowId = (data: OrderUpdate): string => data.clOrdId;
 export const getPriceRowId = (data: PriceUpdate): string => data.symbol;
 export const getFillRowId = (data: FillUpdate): string => data.execId;
+export const getPositionRowId = (data: NetPosition): string => data.symbol;

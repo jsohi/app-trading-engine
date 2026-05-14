@@ -2,9 +2,16 @@
  * 2-column responsive layout shell that renders panels in their
  * registered slot. Layout matches docs/web-ui.md lines 97–132.
  *
+ * As of APP-37 the shell also renders a `top-bar` slot inside the
+ * existing `<header className="app-header">` so status widgets (e.g.
+ * `ConnectionIndicator`) register normally via the panel registry —
+ * no per-widget shell edit needed for future status panels.
+ *
  * Threading model: main thread.
  * Allocation: trivial — re-renders only when the panel list changes
  * (which is once per app boot since the registry is module-scoped).
+ *
+ * Plan reference: APP-37 §Files to modify (PanelGrid.tsx).
  */
 import { type JSX } from "react";
 
@@ -15,6 +22,7 @@ interface PanelGridProps {
 }
 
 const SLOT_LABELS: Record<PanelSlot, string> = {
+  "top-bar": "Status",
   "left-top": "Orders",
   "left-bottom": "Positions",
   "right-top": "RFQ",
@@ -68,12 +76,29 @@ function PanelChrome({
   );
 }
 
+/**
+ * Top-bar slot rendered inside the app-header. Unlike grid slots, an
+ * empty top-bar slot renders NOTHING (no chrome, no "unregistered"
+ * placeholder) — status widgets are optional and an empty header
+ * shouldn't show negative space.
+ */
+function TopBarSlot({ panel }: { readonly panel: PanelRegistration | undefined }): JSX.Element {
+  if (!panel) return <></>;
+  const Body = panel.component;
+  return (
+    <div className="app-header__right" data-slot="top-bar" aria-label={panel.title}>
+      <Body />
+    </div>
+  );
+}
+
 export function PanelGrid({ panels }: PanelGridProps): JSX.Element {
   return (
     <main className="app-shell">
       <header className="app-header">
         <h1>Trading Engine</h1>
         <span className="app-mode">dev</span>
+        <TopBarSlot panel={findPanel(panels, "top-bar")} />
       </header>
       <div className="panel-grid">
         <div className="panel-column panel-column-left">

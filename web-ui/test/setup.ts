@@ -2,39 +2,105 @@
  * Global Vitest setup. Runs once per worker before any test file.
  *
  * Responsibilities:
- *   - Initialise the OTel test tracer (in-memory exporter) so
- *     individual tests can assert span emission without re-bootstrapping.
+ *   - Initialise the OTel test tracer (in-memory exporter) — jsdom path
+ *     only; gated so the browser project (where node_modules-only OTel
+ *     transitive deps may not bundle to ESM cleanly) stays unaffected.
+ *   - Register AG Grid v33+ modules globally so blotter mounts under
+ *     jsdom (`App.test.tsx`, `PanelGrid.test.tsx`) don't trip the
+ *     missing-module `console.error` that would break the existing
+ *     `errorSpy.not.toHaveBeenCalled()` invariant.
+ *   - Install an empty AG Grid Enterprise license key — takes the
+ *     watermark-fallback path silently. WITHOUT this, the unset path
+ *     writes a `console.error("****  AG Grid Enterprise License ****")`
+ *     at runtime that would trip the same errorSpy invariant.
+ *   - Register `afterEach` cleanup IN STRICT ORDER (Vitest runs them in
+ *     registration order):
+ *       (1) `cleanup` (React Testing Library) — unmounts the React tree
+ *           FIRST so blotter `useEffect` subscriptions are torn down
+ *           before module singletons get reset.
+ *       (2) `__resetMessageSourceForTests` — swaps the private
+ *           `_messages` ReplaySubject; completes the old one.
+ *       (3) `__resetConnectionStreamForTests` — swaps the private
+ *           `_subject` BehaviorSubject in connection-stream.
+ *       (4) `__resetConnectionStoreForTests` — re-seeds the store's
+ *           closure-local snapshot back to "CONNECTING".
+ *     Reverse order would fire singleton resets while React subscribers
+ *     are still alive → blotters log to `console.error` mid-teardown.
  *   - Stub browser globals not provided by jsdom but expected by
- *     production code (e.g. `Worker` is patched per-test only —
- *     not here).
+ *     production code (e.g. `Worker` is patched per-test only — not here).
+ *
+ * Plan reference: APP-37 §Files to modify (test/setup.ts).
  */
 import { afterEach, beforeAll, beforeEach } from "vitest";
+import { cleanup } from "@testing-library/react";
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { LicenseManager } from "ag-grid-enterprise";
 
 import { __installTestTracerProvider, __resetTelemetryForTests } from "@/shared/telemetry/otel";
+import { __resetMessageSourceForTests } from "@/main-thread/messageSource";
+import { __resetConnectionStreamForTests } from "@/streams/connection-stream";
+import { __resetConnectionStoreForTests } from "@/stores/connection-store";
+
+// Side-effect: register AG Grid v33+ modules globally for the test runner.
+import "@/shared/grid/registerAgGridModules";
+
+// Empty key → AG Grid Enterprise takes the watermark fallback silently.
+// Without this, mounting <AgGridReact> writes a console.error that trips
+// `App.test.tsx`'s long-standing `errorSpy.not.toHaveBeenCalled()` check.
+LicenseManager.setLicenseKey("");
 
 export const TEST_SPAN_EXPORTER = new InMemorySpanExporter();
 
-beforeAll(() => {
-  const provider = new BasicTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(TEST_SPAN_EXPORTER)],
-  });
-  __installTestTracerProvider(provider);
-});
+// Detect jsdom vs @vitest/browser Chromium. jsdom has `process` AND lacks
+// a browser-real `window` shape; Chromium polyfills `process` for npm-pkg
+// compat, so the `typeof window` check (jsdom defines window) is the
+// reliable side.
+const IS_JSDOM_ENV: boolean =
+  typeof globalThis.process !== "undefined" && typeof window !== "undefined";
 
-beforeEach(() => {
-  TEST_SPAN_EXPORTER.reset();
-});
-
-afterEach(() => {
-  __resetTelemetryForTests();
-  __installTestTracerProvider(
-    new BasicTracerProvider({
+if (IS_JSDOM_ENV) {
+  beforeAll(() => {
+    const provider = new BasicTracerProvider({
       spanProcessors: [new SimpleSpanProcessor(TEST_SPAN_EXPORTER)],
-    }),
-  );
+    });
+    __installTestTracerProvider(provider);
+  });
+
+  beforeEach(() => {
+    TEST_SPAN_EXPORTER.reset();
+  });
+}
+
+// afterEach order is LOAD-BEARING — see file header.
+// (1) Unmount React tree first.
+afterEach(() => {
+  cleanup();
 });
+// (2) Reset messageSource singleton.
+afterEach(() => {
+  __resetMessageSourceForTests();
+});
+// (3) Reset connection-stream singleton.
+afterEach(() => {
+  __resetConnectionStreamForTests();
+});
+// (4) Reset connection-store snapshot.
+afterEach(() => {
+  __resetConnectionStoreForTests();
+});
+
+// OTel reset (jsdom-only).
+if (IS_JSDOM_ENV) {
+  afterEach(() => {
+    __resetTelemetryForTests();
+    __installTestTracerProvider(
+      new BasicTracerProvider({
+        spanProcessors: [new SimpleSpanProcessor(TEST_SPAN_EXPORTER)],
+      }),
+    );
+  });
+}

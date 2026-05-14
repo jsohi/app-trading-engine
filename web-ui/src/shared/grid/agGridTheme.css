@@ -1,0 +1,66 @@
+/*
+ * AG Grid cell colour overrides for APP-37 blotter columns.
+ *
+ * Token-based — actual colour values live as CSS custom properties so a
+ * future light theme can rebind via :root or [data-theme=light]. The
+ * Theming API (agGridTheme.ts) handles surface/header/border colours;
+ * this file only handles per-cell semantic colours (side, status,
+ * position sign).
+ *
+ * Imported once from main.tsx AND from .storybook/preview.ts (preview
+ * does NOT chain through main.tsx, so the explicit import is required).
+ *
+ * Plan reference: APP-37 §agGridTheme.css.
+ */
+
+:root {
+  --side-buy-fg: #5fc36b;
+  --side-sell-fg: #e06464;
+  --status-open-fg: #d6dde6;
+  --status-partial-fg: #f0c060;
+  --status-filled-fg: #5fa4ff;
+  --status-cancelled-fg: #888d96;
+  --status-rejected-fg: #e06464;
+  --pos-long-fg: #5fc36b;
+  --pos-short-fg: #e06464;
+  --conn-green: #5fc36b;
+  --conn-amber: #f0c060;
+  --conn-red: #e06464;
+}
+
+.ag-cell.side-buy {
+  color: var(--side-buy-fg);
+  font-weight: 600;
+}
+
+.ag-cell.side-sell {
+  color: var(--side-sell-fg);
+  font-weight: 600;
+}
+
+.ag-cell.status-OPEN {
+  color: var(--status-open-fg);
+}
+.ag-cell.status-PARTIAL {
+  color: var(--status-partial-fg);
+}
+.ag-cell.status-FILLED {
+  color: var(--status-filled-fg);
+}
+.ag-cell.status-CANCELLED {
+  color: var(--status-cancelled-fg);
+}
+.ag-cell.status-REJECTED {
+  color: var(--status-rejected-fg);
+  font-weight: 600;
+}
+
+.ag-cell.pos-long {
+  color: var(--pos-long-fg);
+  font-weight: 600;
+}
+
+.ag-cell.pos-short {
+  color: var(--pos-short-fg);
+  font-weight: 600;
+}

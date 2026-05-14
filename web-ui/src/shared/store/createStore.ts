@@ -57,13 +57,37 @@ export interface ExternalStore<T> {
 }
 
 /**
+ * Test-only augmentation: the store returned by `createStore` exposes a
+ * `__resetSnapshot()` escape hatch that the public `ExternalStore<T>`
+ * interface deliberately does NOT carry. Consumers typed as `ExternalStore<T>`
+ * literally cannot see this method (TypeScript structural typing), so the
+ * hatch never leaks into application code. Only test-isolation helpers
+ * (e.g. `__resetConnectionStoreForTests`) import the augmented return type.
+ *
+ * @internal
+ */
+export type CreatedStore<T> = ExternalStore<T> & {
+  /**
+   * @internal — re-seed the closure-local snapshot back to `options.initial`.
+   * Used by test-isolation `afterEach` helpers; production code MUST NOT
+   * call this. Listeners are NOT notified (afterEach runs after `cleanup()`
+   * has unmounted the React tree, so `listeners.size === 0` by contract).
+   * The next test's first `useStore` mount calls `getSnapshot()` and reads
+   * the freshly-reset initial.
+   */
+  readonly __resetSnapshot: () => void;
+};
+
+/**
  * Build an external store from an RxJS Observable.
  *
  * @param source the upstream observable (emits whole snapshots).
  * @param options store name + initial snapshot.
- * @return an `ExternalStore<T>` ready to feed `useSyncExternalStore`.
+ * @return a `CreatedStore<T>` (= `ExternalStore<T>` + test-only `__resetSnapshot`).
+ *   Production consumers should annotate as `ExternalStore<T>` so the
+ *   escape hatch is invisible.
  */
-export function createStore<T>(source: Observable<T>, options: StoreOptions<T>): ExternalStore<T> {
+export function createStore<T>(source: Observable<T>, options: StoreOptions<T>): CreatedStore<T> {
   let snapshot: T = options.initial;
   const listeners = new Set<() => void>();
   let subscription: Subscription | null = null;
@@ -203,6 +227,13 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
     },
     getSnapshot(): T {
       return snapshot;
+    },
+    __resetSnapshot(): void {
+      // @internal — see CreatedStore<T> JSDoc. Re-seeds the closure-local
+      // snapshot back to `options.initial`. Listeners are intentionally NOT
+      // notified — by the time afterEach runs this, React has been unmounted
+      // by the prior `cleanup()` call and `listeners.size === 0`.
+      snapshot = options.initial;
     },
   };
 }

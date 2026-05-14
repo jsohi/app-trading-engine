@@ -17,6 +17,7 @@
     "e2e": "npm run e2e:install && playwright test",
     "e2e:smoke": "npm run e2e:install && playwright test --grep-invert @licensed",
     "e2e:licensed": "npm run e2e:install && playwright test --grep @licensed",
+    "test:browser": "npm run e2e:install && vitest --config vitest.config.browser.ts run",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },

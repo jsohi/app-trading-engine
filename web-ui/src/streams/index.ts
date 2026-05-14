@@ -23,5 +23,11 @@ export {
 export { connectionStream$ } from "@/streams/connection-stream";
 export { eventLogStream } from "@/streams/event-log-stream";
 export { orderStream } from "@/streams/order-stream";
+export { positionStream } from "@/streams/position-stream";
 export { priceStream } from "@/streams/price-stream";
-export { getFillRowId, getOrderRowId, getPriceRowId } from "@/streams/agGridResolvers";
+export {
+  getFillRowId,
+  getOrderRowId,
+  getPositionRowId,
+  getPriceRowId,
+} from "@/streams/agGridResolvers";

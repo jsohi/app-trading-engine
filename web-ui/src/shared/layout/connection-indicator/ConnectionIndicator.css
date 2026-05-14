@@ -1,0 +1,42 @@
+/*
+ * ConnectionIndicator dot + label styling. Colour tokens are defined in
+ * agGridTheme.css's :root block so they share a single source of truth
+ * with the AG Grid cell colours.
+ *
+ * Plan reference: APP-37 §ConnectionIndicator.
+ */
+
+.conn-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--panel-empty-fg);
+}
+
+.conn-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--conn-red);
+}
+
+.conn-dot.conn-green {
+  background: var(--conn-green);
+  box-shadow: 0 0 4px var(--conn-green);
+}
+
+.conn-dot.conn-amber {
+  background: var(--conn-amber);
+}
+
+.conn-dot.conn-red {
+  background: var(--conn-red);
+}
+
+.conn-label {
+  font-variant-numeric: tabular-nums;
+}

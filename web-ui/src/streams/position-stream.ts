@@ -1,0 +1,157 @@
+/**
+ * position-stream — locally-aggregated net position per symbol from `FillUpdate` events.
+ *
+ * Filters `WorkerMessage → FillUpdate` then scans into an in-place
+ * `Map<symbol, NetPosition>` keyed by symbol. Throttled rAF-aligned so
+ * downstream `applyTransactionAsync` calls coalesce to one paint frame.
+ *
+ * VWAP rule (mirrors LMAX/Goldman position-tracker convention):
+ *   - Same-side fill (or first fill from flat):
+ *       newQty   = netQty ± fillQty                           (signed)
+ *       newAvgPx = (avgPx * |netQty| + fillPx * fillQty)
+ *                  / (|netQty| + fillQty)
+ *   - Opposite-side fill that does NOT flip sign: reduces open qty,
+ *     `avgPx` is preserved (closing trade realises P&L, not displayed here).
+ *   - Opposite-side fill that flips sign: residual opens fresh, `avgPx`
+ *     reset to `fillPx`.
+ *   - Exactly flat (`netQty === 0n`): `avgPx = 0n`.
+ *
+ * Server-side `PositionProjection` (APP-25, Done) is the authoritative
+ * source on reconnect; APP-37 ships local aggregation only. APP-38 covers
+ * the real-WebSocket E2E with server resync.
+ *
+ * Rationale: matches the in-place-Map / reference-equality projection
+ * contract established by `price-stream.ts` so PositionsBlotter can reuse
+ * the same delta-diff loop shape as PriceBlotter.
+ *
+ * Threading: main thread.
+ * Allocation: zero per emission after the initial Map allocation (the same
+ * Map identity is emitted every throttled tick; values are replaced on
+ * change). New `NetPosition` object per changed symbol per fill — bounded
+ * by symbol cardinality.
+ *
+ * Dependencies:
+ *   - `@/shared/transport/MessageShape` — peer: `FillUpdate`, `NetPosition`.
+ *   - `priceStream` — peer: same in-place Map shape, used by `PriceBlotter`.
+ *
+ * @see price-stream — peer, same Map/projection contract.
+ * @see PositionsBlotter — downstream consumer.
+ *
+ * Plan reference: APP-37 §Scope item 2 / §position-stream.ts.
+ */
+
+import {
+  animationFrameScheduler,
+  type Observable,
+  type OperatorFunction,
+  filter,
+  scan,
+  throttleTime,
+} from "rxjs";
+
+import {
+  type FillUpdate,
+  type NetPosition,
+  type WorkerMessage,
+} from "@/shared/transport/MessageShape";
+
+const THROTTLE_NOMINAL_MS = 100;
+const THROTTLE_BACKPRESSURE_MS = 250;
+
+/**
+ * Apply a single `FillUpdate` to the running `NetPosition` for its symbol.
+ * Returns a new `NetPosition` object — the caller replaces the Map entry.
+ *
+ * Pure function; no side effects. Exposed for unit testing.
+ *
+ * VWAP rules (industry-standard position-tracker semantics):
+ *   - Opening / adding to the open side (priorIsFlat OR same-sign INCREASE):
+ *     `avgPx` is the volume-weighted average across all opening fills.
+ *   - Reducing the open side (same-sign DECREASE, position not flat):
+ *     `avgPx` is PRESERVED — the closing trade realises P&L but does not
+ *     change the cost basis of the remaining open quantity.
+ *   - Sign flip (close + reopen on the opposite side): the residual qty
+ *     is fresh open exposure; `avgPx` resets to `fillPrice`.
+ *   - Exactly flat (`newNetQty === 0n`): `avgPx = 0n`.
+ */
+export function applyFill(prior: NetPosition | undefined, fill: FillUpdate): NetPosition {
+  const signedDelta: bigint = fill.side === "BUY" ? fill.fillQty : -fill.fillQty;
+  const priorNetQty: bigint = prior?.netQty ?? 0n;
+  const priorAvgPx: bigint = prior?.avgPx ?? 0n;
+  const newNetQty: bigint = priorNetQty + signedDelta;
+
+  // Flat after this fill — reset VWAP.
+  if (newNetQty === 0n) {
+    return {
+      symbol: fill.symbol,
+      netQty: 0n,
+      avgPx: 0n,
+      lastFillNanos: fill.serverNanos,
+    };
+  }
+
+  const priorIsFlat: boolean = priorNetQty === 0n;
+  const sameSign: boolean = !priorIsFlat && priorNetQty > 0n === newNetQty > 0n;
+
+  const priorAbs: bigint = priorNetQty > 0n ? priorNetQty : -priorNetQty;
+  const newAbs: bigint = newNetQty > 0n ? newNetQty : -newNetQty;
+  const increasingOpenSide: boolean = sameSign && newAbs > priorAbs;
+  const reducingOpenSide: boolean = sameSign && newAbs < priorAbs;
+
+  let newAvgPx: bigint;
+  if (priorIsFlat) {
+    // First fill from flat — VWAP is just the fill price.
+    newAvgPx = fill.fillPrice;
+  } else if (reducingOpenSide) {
+    // Closing trade: PRESERVE avgPx. P&L realised elsewhere; remaining
+    // open qty keeps its original cost basis.
+    newAvgPx = priorAvgPx;
+  } else if (increasingOpenSide) {
+    // Adding to the open side — VWAP-weight by absolute quantities.
+    const totalAbs: bigint = priorAbs + fill.fillQty;
+    newAvgPx = (priorAvgPx * priorAbs + fill.fillPrice * fill.fillQty) / totalAbs;
+  } else {
+    // Sign flipped (close + reopen): residual is fresh exposure; reset.
+    newAvgPx = fill.fillPrice;
+  }
+
+  return {
+    symbol: fill.symbol,
+    netQty: newNetQty,
+    avgPx: newAvgPx,
+    lastFillNanos: fill.serverNanos,
+  };
+}
+
+/**
+ * RxJS operator: aggregate per-symbol `FillUpdate` emissions into a shared
+ * `Map<symbol, NetPosition>` and emit the (mutated-in-place) map per
+ * throttled tick. Map identity is stable; consumers MUST diff via reference
+ * equality of the entries (matches `priceStream` semantics).
+ *
+ * @param backpressure widens the throttle to 250 ms under BACKPRESSURE.
+ *   APP-37 hard-codes `false`; APP-248 wires the toggle.
+ */
+export function positionStream(
+  backpressure = false,
+): OperatorFunction<WorkerMessage, ReadonlyMap<string, NetPosition>> {
+  const interval = backpressure ? THROTTLE_BACKPRESSURE_MS : THROTTLE_NOMINAL_MS;
+  return (source: Observable<WorkerMessage>) =>
+    source.pipe(
+      filter((m): m is FillUpdate => m.type === "fill"),
+      // scan FIRST, throttle AFTER — fills must NOT be dropped (each fill
+      // mutates the aggregate). Unlike priceStream (where individual price
+      // updates are last-write-wins per symbol so pre-throttle drop is
+      // acceptable), every fill changes the running netQty/avgPx and
+      // dropping one corrupts the position permanently.
+      scan<FillUpdate, Map<string, NetPosition>>((acc, fill) => {
+        // In-place mutation — same Map identity emitted every tick.
+        acc.set(fill.symbol, applyFill(acc.get(fill.symbol), fill));
+        return acc;
+      }, new Map<string, NetPosition>()),
+      throttleTime(interval, animationFrameScheduler, {
+        leading: true,
+        trailing: true,
+      }),
+    );
+}
