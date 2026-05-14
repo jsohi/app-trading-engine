@@ -250,15 +250,33 @@ export function useGridStreamSink<TRow>(
       // AG Grid v33+ `RowDataTransaction` types these fields as
       // `TRow[] | null` (not `| undefined`) under `exactOptionalPropertyTypes`.
       // Map missing fields to `null`. AG Grid accepts `Partial<TRow>` on the
-      // `remove` path at runtime (matched by getRowId); the narrow type at
-      // the hook boundary documents this.
+      // `remove` path at runtime (matched by getRowId — see Gemini R3
+      // comment on PR #72): only the `getRowId`-relevant field is read. The
+      // dev-mode assertion below catches partial-row callers that
+      // accidentally omit the id field; production strips the assertion
+      // via the `import.meta.env.DEV` guard (Vite transform).
+      if (import.meta.env.DEV && tx.remove !== undefined) {
+        for (const r of tx.remove) {
+          const id: unknown = getRowId(r as TRow);
+          if (typeof id !== "string" || id === "") {
+            throw new Error(
+              panelName +
+                ".applyDirect.remove item missing or empty getRowId field — " +
+                "AG Grid would silently drop the remove",
+            );
+          }
+        }
+      }
       api.applyTransactionAsync({
         add: tx.add ?? null,
         update: tx.update ?? null,
+        // AG Grid reads only `getRowId(item)` on the remove path; the
+        // `Partial<TRow>` → `TRow[]` widening is safe at runtime and
+        // enforced at dev time by the assertion above.
         remove: (tx.remove as TRow[] | undefined) ?? null,
       });
     },
-    [panelName],
+    [getRowId, panelName],
   );
 
   const markInserted = useCallback((id: string): void => {

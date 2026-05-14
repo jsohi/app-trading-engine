@@ -194,6 +194,51 @@ describe("OrderBlotter", () => {
     expect(call.update[0]!.clOrdId).toBe("DUP-ID");
   });
 
+  it("rowCap_evictsOldestAndInsertsNewWhenFifoFull", () => {
+    // Coverage for Agent B R3 finding (MED): the OrderBlotter eviction
+    // path uses `applyDirect({remove, add})` once `fifoRef.size >= MAX_ROWS`,
+    // but no prior test exercised it. This test pre-fills the FIFO to
+    // MAX_ROWS by emitting that many unique clOrdIds, then emits one
+    // more — the eviction must fire with the oldest clOrdId in
+    // `remove[]` and the new one in `add[]`.
+    //
+    // Uses a small synthetic MAX_ROWS substitute (we can't reach into
+    // OrderBlotter to change MAX_ROWS, so we exercise the real cap by
+    // emitting MAX_ROWS+1 orders). At 10_000 entries this still runs in
+    // <1s in jsdom because applyTransactionAsync is a vi.fn no-op.
+    render(<OrderBlotter />);
+    act(() => {
+      fireFakeOnGridReady();
+    });
+
+    const MAX_ROWS = 10_000;
+    act(() => {
+      for (let i = 0; i < MAX_ROWS; i++) {
+        _messagesSubject.next(makeOrder("ORD-" + String(i).padStart(6, "0")));
+      }
+    });
+
+    // After pre-fill: MAX_ROWS calls (each a one-row add) — no eviction yet.
+    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(MAX_ROWS);
+
+    // Emit one MORE unique order — FIFO is full, must trigger eviction.
+    act(() => {
+      _messagesSubject.next(makeOrder("ORD-OVERFLOW"));
+    });
+
+    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(MAX_ROWS + 1);
+    const evictionCall = _fakeApi.applyTransactionAsync.mock.calls[MAX_ROWS]![0] as {
+      add?: OrderUpdate[];
+      remove?: Array<Pick<OrderUpdate, "clOrdId">>;
+    };
+    // Oldest clOrdId is the first one pre-filled (Map preserves insertion order).
+    expect(evictionCall.remove).toHaveLength(1);
+    expect(evictionCall.remove![0]!.clOrdId).toBe("ORD-" + String(0).padStart(6, "0"));
+    // New order lands in add[].
+    expect(evictionCall.add).toHaveLength(1);
+    expect(evictionCall.add![0]!.clOrdId).toBe("ORD-OVERFLOW");
+  });
+
   it("applyTransactionAsync_pendingOverflow_warnsOnceAndDropsRest", () => {
     // Override the mock so onGridReady is never called (apiRef stays null).
     _onGridReady = undefined;
