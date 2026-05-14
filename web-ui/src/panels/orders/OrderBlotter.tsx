@@ -5,12 +5,14 @@
  * into the grid via the shared `useGridStreamSink` hook (handles the
  * `add`-vs-`update` partition + buffering until `onGridReady`).
  *
- * Dev-mode row cap: `fakeStream` mints orders with monotonically-increasing
- * `clOrdId`, so every dev tick is a fresh row → unbounded growth at
- * ~360 rows/min. Cap at DEV_ROW_CAP via FIFO; when full, evict oldest +
- * insert new in a paired `applyDirect({ remove, add })` transaction.
- * Gated on `import.meta.env.DEV` — production (clOrdIds repeat per
- * amend/cancel) is unaffected.
+ * Row cap (always-on, not dev-only): even in production where clOrdIds
+ * repeat via amend/cancel, a long-running session accumulates orders
+ * over time (every NEW order is a real new row). Cap at MAX_ROWS via
+ * FIFO; when full, evict oldest + insert new in a paired
+ * `applyDirect({ remove, add })` transaction so the grid never
+ * accumulates beyond a bounded working set. The threshold is sized
+ * generously for prod (10_000) and trims dev `fakeStream` chatter the
+ * same way.
  *
  * Threading: main thread.
  * Allocation: per-emission single-element batch handed to `sink.applyBatch`;
@@ -40,7 +42,9 @@ import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getOrderRowId } from "@/streams/agGridResolvers";
 import { orderStream } from "@/streams/order-stream";
 
-const DEV_ROW_CAP = 500;
+// Always-on row cap. Sized for prod (long-running sessions); same value
+// applies in dev so the cap is tested end-to-end with fakeStream.
+const MAX_ROWS = 10_000;
 
 const STATUS_CELL_CLASS_RULES: Record<string, (p: { value: unknown }) => boolean> = {
   "status-OPEN": (p) => p.value === "OPEN",
@@ -105,23 +109,22 @@ export function OrderBlotter(): JSX.Element {
     panelName: "OrderBlotter",
     getRowId,
   });
-  // Dev-only FIFO of clOrdIds. Gated by import.meta.env.DEV so prod is
-  // unaffected (prod clOrdIds repeat via amend/cancel — natural cap).
-  const devFifoRef = useRef<string[]>([]);
-  const isDev: boolean = import.meta.env.DEV;
+  // FIFO of clOrdIds in insertion order. Same code path runs in dev and
+  // prod — the cap is sized for prod's long-running sessions; in dev with
+  // fakeStream's monotonic clOrdIds it just trims chatter the same way.
+  const fifoRef = useRef<string[]>([]);
 
   useEffect(() => {
     const sub = messages$.pipe(orderStream()).subscribe((order) => {
-      // Dev-row-cap fast path: evict-oldest + insert-new as a paired
+      // Row-cap fast path: evict-oldest + insert-new as a paired
       // transaction. Bypasses the shared `applyBatch` to keep the remove
       // and add in a single AG Grid call (no flicker).
       if (
-        isDev &&
         sink.apiRef.current !== null &&
         !sink.hasInserted(order.clOrdId) &&
-        devFifoRef.current.length >= DEV_ROW_CAP
+        fifoRef.current.length >= MAX_ROWS
       ) {
-        const fifo = devFifoRef.current;
+        const fifo = fifoRef.current;
         const oldest = fifo.shift();
         if (oldest !== undefined) {
           // AG Grid remove[] matches by getRowId; only clOrdId is read.
@@ -140,11 +143,11 @@ export function OrderBlotter(): JSX.Element {
       }
 
       sink.applyBatch([order]);
-      if (isDev && sink.hasInserted(order.clOrdId)) {
+      if (sink.hasInserted(order.clOrdId)) {
         // Track in FIFO only on first insert; subsequent updates to the
         // same clOrdId don't re-enter the FIFO. `hasInserted` is true now
         // because applyBatch just added it.
-        const fifo = devFifoRef.current;
+        const fifo = fifoRef.current;
         if (!fifo.includes(order.clOrdId)) {
           fifo.push(order.clOrdId);
         }
@@ -154,7 +157,7 @@ export function OrderBlotter(): JSX.Element {
     return () => {
       sub.unsubscribe();
     };
-  }, [isDev, sink]);
+  }, [sink]);
 
   return (
     <div style={{ height: "100%", width: "100%" }}>

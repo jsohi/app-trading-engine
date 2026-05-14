@@ -5,14 +5,11 @@
  *   - Initialise the OTel test tracer (in-memory exporter) — jsdom path
  *     only; gated so the browser project (where node_modules-only OTel
  *     transitive deps may not bundle to ESM cleanly) stays unaffected.
- *   - Register AG Grid v33+ modules globally so blotter mounts under
- *     jsdom (`App.test.tsx`, `PanelGrid.test.tsx`) don't trip the
+ *   - Register AG Grid v33+ Community modules globally so blotter mounts
+ *     under jsdom (`App.test.tsx`, `PanelGrid.test.tsx`) don't trip the
  *     missing-module `console.error` that would break the existing
- *     `errorSpy.not.toHaveBeenCalled()` invariant.
- *   - Install an empty AG Grid Enterprise license key — takes the
- *     watermark-fallback path silently. WITHOUT this, the unset path
- *     writes a `console.error("****  AG Grid Enterprise License ****")`
- *     at runtime that would trip the same errorSpy invariant.
+ *     `errorSpy.not.toHaveBeenCalled()` invariant. APP-37 dropped AG Grid
+ *     Enterprise entirely, so no `LicenseManager` stub is needed any more.
  *   - Register `afterEach` cleanup IN STRICT ORDER (Vitest runs them in
  *     registration order):
  *       (1) `cleanup` (React Testing Library) — unmounts the React tree
@@ -38,20 +35,14 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { LicenseManager } from "ag-grid-enterprise";
-
 import { __installTestTracerProvider, __resetTelemetryForTests } from "@/shared/telemetry/otel";
 import { __resetMessageSourceForTests } from "@/main-thread/messageSource";
 import { __resetConnectionStreamForTests } from "@/streams/connection-stream";
 import { __resetConnectionStoreForTests } from "@/stores/connection-store";
 
-// Side-effect: register AG Grid v33+ modules globally for the test runner.
+// Side-effect: register AG Grid v33+ Community modules globally so blotter
+// mounts under jsdom don't trip a missing-module console.error.
 import "@/shared/grid/registerAgGridModules";
-
-// Empty key → AG Grid Enterprise takes the watermark fallback silently.
-// Without this, mounting <AgGridReact> writes a console.error that trips
-// `App.test.tsx`'s long-standing `errorSpy.not.toHaveBeenCalled()` check.
-LicenseManager.setLicenseKey("");
 
 export const TEST_SPAN_EXPORTER = new InMemorySpanExporter();
 
