@@ -53,6 +53,24 @@ import { pushConnectionState } from "@/streams/connection-stream";
 // Module-private; `let` so `__resetMessageSourceForTests()` can swap.
 // Public binding stays stable across resets via the `defer(...)` wrapper —
 // avoids the `export const` reassignment trap (ESM bindings are immutable).
+//
+// **ReplaySubject(1) scope** (Gemini R1 review of PR #72):
+// The single-message buffer solves ONE specific problem — the boot-race
+// where a panel mounts AFTER the first fakeStream tick has fired. With a
+// plain `Subject`, that first tick would be lost and `messages$.subscribe`
+// would see nothing until the next 250ms tick (flaky e2e). The replay of 1
+// guarantees the most-recent message is replayed to late subscribers.
+//
+// What ReplaySubject(1) does NOT solve: a panel mounting hours into a
+// session that needs the CURRENT state of every entity (all open orders,
+// all current prices, all net positions) cannot reconstruct that from one
+// replayed `WorkerMessage`. A larger buffer would help only marginally
+// (still lossy beyond N messages). The correct architecture for full-state
+// backfill is **APP-160's snapshot-on-connect frame**: the worker emits a
+// snapshot of every active entity at the start of the stream so panels
+// (or any subscriber) prime their local state from it. APP-37 ships before
+// APP-160, so all panels are guaranteed-mount-at-boot in this build —
+// the late-mount-full-state scenario is not yet a real user path.
 let _messages = new ReplaySubject<WorkerMessage>(1);
 
 /**

@@ -122,13 +122,22 @@ export function useGridStreamSink<TRow>(
       const toAdd: TRow[] = [];
       const toUpdate: TRow[] = [];
       const toMark: string[] = [];
+      // Track ids already promoted to `toAdd` IN THIS BATCH so a second
+      // occurrence of the same id (within the same emission) lands in
+      // `update[]` instead of duplicating into `add[]`. Without this,
+      // AG Grid would receive two rows with the same getRowId AND
+      // `onInsert` would fire twice for the same id — corrupting
+      // external trackers like OrderBlotter's FIFO. (Found by Gemini
+      // R1 review of PR #72.)
+      const batchSeenNewIds = new Set<string>();
       for (const row of batch) {
         const id = getRowId(row);
-        if (inserted.has(id)) {
+        if (inserted.has(id) || batchSeenNewIds.has(id)) {
           toUpdate.push(row);
         } else {
           toAdd.push(row);
           toMark.push(id);
+          batchSeenNewIds.add(id);
         }
       }
       if (toAdd.length === 0 && toUpdate.length === 0) return;
