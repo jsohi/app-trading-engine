@@ -144,13 +144,46 @@ describe("messageSource", () => {
     warnSpy.mockRestore();
   });
 
-  it("messages$_subscriptionContract_subscribeInsideIt", () => {
-    // This test documents the subscription contract — no behavioural assertion.
-    // See file header: ALWAYS subscribe inside it() body, NEVER in beforeAll.
-    // The defer(…) wrapper picks up the current _messages at subscribe time.
-    // A subscription captured before __resetMessageSourceForTests() runs would
-    // hold a stale handle to the OLD subject — it will receive complete() then
-    // nothing. This is the same pattern as connection-stream tests.
-    expect(true).toBe(true);
+  it("__resetMessageSourceForTests_completesOldSubjectAndFreshSubscriberSeesNewSubject", async () => {
+    // Behavioural assertion of the defer-and-swap contract documented in
+    // this file's header. Replaces an earlier placeholder `expect(true)`.
+    //
+    // Contract: subscribers MUST subscribe inside `it()` (the per-test
+    // afterEach swaps `_messages`). A subscription captured BEFORE the
+    // swap receives `complete` and then nothing; a NEW subscription
+    // (after the swap) connects to the fresh subject.
+
+    const oldEvents: Array<"next" | "complete" | "error"> = [];
+    const newEvents: Array<"next" | "complete" | "error"> = [];
+
+    // Capture the OLD subscription before reset.
+    const oldSub = _messages$.subscribe({
+      next: () => oldEvents.push("next"),
+      complete: () => oldEvents.push("complete"),
+      error: () => oldEvents.push("error"),
+    });
+
+    // Swap the inner subject.
+    __resetMessageSourceForTests();
+
+    // OLD subscription should have seen `complete` (and nothing else).
+    expect(oldEvents).toEqual(["complete"]);
+
+    // A NEW subscription after the swap subscribes to the FRESH subject.
+    // It must not receive the OLD subject's `complete` (would mean defer
+    // captured the stale ref).
+    const newSub = _messages$.subscribe({
+      next: () => newEvents.push("next"),
+      complete: () => newEvents.push("complete"),
+      error: () => newEvents.push("error"),
+    });
+
+    // Allow microtasks to flush; assert no spurious events delivered to
+    // the new subscriber from the swap itself.
+    await Promise.resolve();
+    expect(newEvents).toEqual([]);
+
+    oldSub.unsubscribe();
+    newSub.unsubscribe();
   });
 });
