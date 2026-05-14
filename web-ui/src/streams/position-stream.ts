@@ -44,6 +44,7 @@ import {
   animationFrameScheduler,
   type Observable,
   type OperatorFunction,
+  defer,
   filter,
   scan,
   throttleTime,
@@ -161,21 +162,29 @@ export function positionStream(
 ): OperatorFunction<WorkerMessage, ReadonlyMap<string, NetPosition>> {
   const interval = backpressure ? THROTTLE_BACKPRESSURE_MS : THROTTLE_NOMINAL_MS;
   return (source: Observable<WorkerMessage>) =>
-    source.pipe(
-      filter((m): m is FillUpdate => m.type === "fill"),
-      // scan FIRST, throttle AFTER — fills must NOT be dropped (each fill
-      // mutates the aggregate). Unlike priceStream (where individual price
-      // updates are last-write-wins per symbol so pre-throttle drop is
-      // acceptable), every fill changes the running netQty/avgPx and
-      // dropping one corrupts the position permanently.
-      scan<FillUpdate, Map<string, NetPosition>>((acc, fill) => {
-        // In-place mutation — same Map identity emitted every tick.
-        acc.set(fill.symbol, applyFill(acc.get(fill.symbol), fill));
-        return acc;
-      }, new Map<string, NetPosition>()),
-      throttleTime(interval, animationFrameScheduler, {
-        leading: true,
-        trailing: true,
-      }),
+    // defer(...) wraps the pipe so the `scan` seed Map (line 138) is
+    // constructed PER SUBSCRIBER, not once at operator-factory time.
+    // Without defer, a multi-subscriber pipe (or accidental re-pipe) would
+    // share the seed Map across subscribers and leak fills between them.
+    // PositionsBlotter is single-subscriber today, but the per-subscriber
+    // contract makes this safe by construction.
+    defer(() =>
+      source.pipe(
+        filter((m): m is FillUpdate => m.type === "fill"),
+        // scan FIRST, throttle AFTER — fills must NOT be dropped (each fill
+        // mutates the aggregate). Unlike priceStream (where individual price
+        // updates are last-write-wins per symbol so pre-throttle drop is
+        // acceptable), every fill changes the running netQty/avgPx and
+        // dropping one corrupts the position permanently.
+        scan<FillUpdate, Map<string, NetPosition>>((acc, fill) => {
+          // In-place mutation — same Map identity emitted every tick.
+          acc.set(fill.symbol, applyFill(acc.get(fill.symbol), fill));
+          return acc;
+        }, new Map<string, NetPosition>()),
+        throttleTime(interval, animationFrameScheduler, {
+          leading: true,
+          trailing: true,
+        }),
+      ),
     );
 }

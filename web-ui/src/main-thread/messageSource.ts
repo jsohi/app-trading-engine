@@ -11,18 +11,21 @@
  * Lifecycle:
  *   - Booted from `main.tsx` once via `startMessageSource()`. The internal
  *     `started` flag makes the call idempotent (HMR re-evaluation safe).
- *   - Dev mode: subscribes `fakeStream({ intervalMs: 250 })` and pushes
- *     `pushConnectionState("CONNECTED")` so the indicator turns green.
- *   - Prod mode: APP-160 (JWT auth) has not landed, so the prod branch
- *     ships as a LOUD STUB — `console.error` + `pushConnectionState
- *     ("DOWN_REQUIRES_USER_ACTION")` + early return. Full WorkerClient
- *     wiring lives as a commented-out template block, ready to swap in.
- *   - HMR teardown unsubscribes the dev stream AND `_messages.complete()`-s
+ *   - Both modes (pre-prod): drive the UI off `fakeStream({ intervalMs: 250 })`
+ *     and push `pushConnectionState("CONNECTED")` so the indicator goes green
+ *     and all three blotters populate. `prod` emits ONE `console.warn` so
+ *     pre-prod state is observable.
+ *   - When APP-160 lands, the `prod` branch swaps to the real WorkerClient
+ *     wiring documented in `docs/messageSource-prod-wiring.md`. The mode
+ *     parameter stays so the swap is a localised edit.
+ *   - HMR teardown unsubscribes the fakeStream sub AND `_messages.complete()`-s
  *     the OLD subject so consumers retaining stale references to the OLD
  *     `defer` closure see a `complete` notification.
  *
- * The `mode` parameter is for tests only (`import.meta.env.DEV` is a Vite
- * transform-time constant that `vi.stubEnv` does not reliably flip).
+ * The `mode` parameter is for tests only. The default reads
+ * `import.meta.env.MODE` (a runtime string Vite emits as a real value, not
+ * the transform-time `DEV` boolean) so the security-relevant prod-stub
+ * branch can't silently flip if the Vite transform changes.
  *
  * Threading: main thread.
  * Allocation: subject construction at module load + per-emission `.next()`
@@ -73,65 +76,38 @@ let _devSub: Subscription | null = null;
  * @param mode override for tests; production callers omit.
  */
 export function startMessageSource(
-  mode: "dev" | "prod" = import.meta.env.DEV ? "dev" : "prod",
+  mode: "dev" | "prod" = import.meta.env.MODE === "production" ? "prod" : "dev",
 ): void {
   if (started) return;
   started = true;
 
-  if (mode === "dev") {
-    _devSub = fakeStream({ intervalMs: 250 }).subscribe((m) => {
-      _messages.next(m);
-    });
-    pushConnectionState("CONNECTED");
-
-    // HMR teardown: unsubscribe AND complete the old subject so consumers
-    // still holding the OLD `defer` closure get a `complete` notification.
-    if (import.meta.hot) {
-      import.meta.hot.dispose(() => {
-        _devSub?.unsubscribe();
-        _devSub = null;
-        _messages.complete();
-        started = false;
-      });
-    }
-  } else {
-    // APP-160 (JWT auth + prod token provider) has NOT landed. Prod boot
-    // ships as a LOUD STUB so a prod-build smoke surfaces the gap loudly.
-    // When APP-160 lands, replace the three lines below with the full
-    // WorkerClient bridge (see commented template below).
-    pushConnectionState("DOWN_REQUIRES_USER_ACTION");
-    console.error("messageSource: prod token provider not landed (APP-160)");
-    return;
-
-    /* When APP-160 lands, replace the stub above with:
-    const client = new WorkerClient({
-      tokenProvider: prodTokenProvider,
-      wsUrl: import.meta.env.VITE_WS_URL,
-    });
-    const subMessages = client.messages$.subscribe((m) => _messages.next(m));
-    // skip(1): WorkerClient.connectionState$ is a BehaviorSubject seeded
-    // "CONNECTING"; subscribing replays it synchronously. The async
-    // start().catch() resolves on a later microtask, so it cannot beat
-    // the seed. skip(1) drops the redundant CONNECTING re-push so any
-    // worker-emitted state (or the catch-pushed WORKER_DEAD) becomes the
-    // first value to propagate.
-    const subState = client.connectionState$.pipe(skip(1)).subscribe(pushConnectionState);
-    const subErrors = client.errors$.subscribe((e) =>
-      console.warn("[worker]", e.code, e.hint),
+  // Pre-prod build: both `dev` and `prod` modes drive the UI off the same
+  // synthetic `fakeStream`. The mode parameter still distinguishes them so
+  // when APP-160 lands the prod branch can swap to the real WorkerClient
+  // wiring (see `docs/messageSource-prod-wiring.md`) without touching dev.
+  // Until then `prod` emits ONE console.warn so the pre-prod state is
+  // observable in DevTools / RUM — but the indicator turns green and the
+  // blotters populate exactly like the dev path.
+  if (mode === "prod") {
+    console.warn(
+      "messageSource: pre-prod build — driving fakeStream until APP-160 lands real auth + WorkerClient wiring",
     );
-    void client.start().catch(() => pushConnectionState("WORKER_DEAD"));
+  }
 
-    if (import.meta.hot) {
-      import.meta.hot.dispose(() => {
-        subMessages.unsubscribe();
-        subState.unsubscribe();
-        subErrors.unsubscribe();
-        client.dispose();
-        _messages.complete();
-        started = false;
-      });
-    }
-    */
+  _devSub = fakeStream({ intervalMs: 250 }).subscribe((m) => {
+    _messages.next(m);
+  });
+  pushConnectionState("CONNECTED");
+
+  // HMR teardown: unsubscribe AND complete the old subject so consumers
+  // still holding the OLD `defer` closure get a `complete` notification.
+  if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+      _devSub?.unsubscribe();
+      _devSub = null;
+      _messages.complete();
+      started = false;
+    });
   }
 }
 

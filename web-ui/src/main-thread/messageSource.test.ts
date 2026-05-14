@@ -1,6 +1,6 @@
 /**
  * Purpose: Unit tests for messageSource singleton — dev-mode idempotency,
- * prod-stub behaviour (console.error + DOWN_REQUIRES_USER_ACTION), and
+ * prod-mode pre-prod behaviour (console.warn + fakeStream-driven UI), and
  * subscription contract documentation.
  *
  * Rationale: messageSource uses module-level singletons; tests reset via
@@ -59,7 +59,10 @@ vi.mock("@/streams/connection-stream", () => ({
 // NOTE: the types are declared here; the actual values are assigned inside
 // beforeEach after the dynamic import resolves.
 let startMessageSource: (mode?: "dev" | "prod") => void;
-let messages$: Observable<WorkerMessage>;
+// `messages$` is held for future tests that need to subscribe; not currently
+// asserted (the fakeStream mock returns NEVER so no messages flow). Prefixed
+// `_` so the no-unused-vars rule allows it.
+let _messages$: Observable<WorkerMessage>;
 let __resetMessageSourceForTests: () => void;
 
 // ── tests ──────────────────────────────────────────────────────────────────
@@ -93,7 +96,7 @@ describe("messageSource", () => {
     // Dynamically import a fresh messageSource with the mocked deps.
     const mod = await import("@/main-thread/messageSource");
     startMessageSource = mod.startMessageSource;
-    messages$ = mod.messages$;
+    _messages$ = mod.messages$;
     __resetMessageSourceForTests = mod.__resetMessageSourceForTests;
   });
 
@@ -105,32 +108,40 @@ describe("messageSource", () => {
     expect(_pushedStates.filter((s) => s === "CONNECTED")).toHaveLength(1);
   });
 
-  it("startMessageSource_prodMode_pushesDownRequiresUserAction", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation((): void => undefined);
+  it("startMessageSource_prodMode_warnsAndDrivesFakeStream", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((): void => undefined);
 
     startMessageSource("prod");
 
-    // Prod stub pushes DOWN_REQUIRES_USER_ACTION immediately.
-    expect(_pushedStates).toContain("DOWN_REQUIRES_USER_ACTION");
+    // Pre-prod build: prod mode emits ONE console.warn so the pre-prod
+    // state is observable (DevTools / RUM). The warn mentions APP-160 so
+    // ops can find the upstream ticket. When APP-160 lands, this warn
+    // goes away and the prod path uses real WorkerClient instead.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]![0]).toMatch(/APP-160/);
 
-    // Prod stub logs a loud console.error mentioning APP-160.
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy.mock.calls[0]![0]).toMatch(/APP-160/);
+    // Prod mode also drives fakeStream → indicator goes CONNECTED, blotters
+    // populate. Same UX as dev until the swap lands.
+    expect(_pushedStates).toContain("CONNECTED");
+    expect(_pushedStates).not.toContain("DOWN_REQUIRES_USER_ACTION");
 
-    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
-  it("startMessageSource_prodMode_noMessagesEmitted", () => {
-    const received: unknown[] = [];
-    // Subscribe INSIDE it() body — defer(…) reads current _messages at subscribe time.
-    const sub = messages$.subscribe((m) => received.push(m));
-
+  it("startMessageSource_prodMode_subscribesToFakeStreamForUI", () => {
+    // The fakeStream mock returns NEVER (no real emissions) so we can't
+    // assert end-to-end message delivery here without breaking test
+    // isolation. The OTHER prod-mode test verifies the CONNECTED push +
+    // the absence of DOWN_REQUIRES_USER_ACTION, which is sufficient to
+    // prove the prod branch took the fakeStream subscribe path (not the
+    // old loud-stub). The full message-delivery path is covered by the
+    // Playwright e2e (`blotters_devServer_atLeastOneRowAppearsInEachBlotter`),
+    // which boots a real dev server.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((): void => undefined);
     startMessageSource("prod");
-
-    // Prod path does NOT push to messages$ — only to connectionStream$.
-    expect(received).toHaveLength(0);
-
-    sub.unsubscribe();
+    // CONNECTED was pushed (only path that does this is the fakeStream branch).
+    expect(_pushedStates).toContain("CONNECTED");
+    warnSpy.mockRestore();
   });
 
   it("messages$_subscriptionContract_subscribeInsideIt", () => {

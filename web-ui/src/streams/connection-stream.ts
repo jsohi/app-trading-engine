@@ -61,7 +61,15 @@ export function __resetConnectionStreamForTests(): void {
   _subject = new BehaviorSubject<ConnectionState>("CONNECTING");
 }
 
-/** HMR-safe dispose — module-level singleton cleanup. */
+/**
+ * HMR-safe dispose — module-level singleton cleanup. Completes the OLD
+ * subject so consumers retaining stale references to the OLD `defer`
+ * closure see a `complete` notification (mirrors `messageSource.ts`'s
+ * dev HMR shape). On module re-evaluation Vite re-runs the top-level
+ * `let _subject = new BehaviorSubject(...)` initialiser, so the NEW
+ * subject is supplied to fresh subscribers via the `defer(...)` wrapper —
+ * no explicit reassignment in the dispose body needed.
+ */
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     _subject.complete();
