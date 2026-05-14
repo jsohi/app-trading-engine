@@ -39,6 +39,7 @@ import { messages$ } from "@/main-thread/messageSource";
 import { type NetPosition } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
+import { bigintComparator } from "@/shared/grid/comparators";
 import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getPositionRowId } from "@/streams/agGridResolvers";
 import { positionStream } from "@/streams/position-stream";
@@ -55,6 +56,7 @@ const COLUMN_DEFS: readonly ColDef<NetPosition>[] = [
       "pos-long": (p) => typeof p.value === "bigint" && p.value > 0n,
       "pos-short": (p) => typeof p.value === "bigint" && p.value < 0n,
     },
+    comparator: bigintComparator,
     enableCellChangeFlash: true,
     width: 160,
   },
@@ -64,6 +66,7 @@ const COLUMN_DEFS: readonly ColDef<NetPosition>[] = [
     // Price-like — 0n is "flat / no avg" → dash.
     valueFormatter: (p: ValueFormatterParams<NetPosition>) =>
       p.value != null && p.value !== 0n ? toFixed8(p.value as bigint) : "—",
+    comparator: bigintComparator,
     width: 140,
   },
   {
@@ -75,6 +78,7 @@ const COLUMN_DEFS: readonly ColDef<NetPosition>[] = [
             .toISOString()
             .slice(11, 23)
         : "—",
+    comparator: bigintComparator,
     width: 130,
   },
 ];

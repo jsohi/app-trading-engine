@@ -38,6 +38,7 @@ import { messages$ } from "@/main-thread/messageSource";
 import { type OrderUpdate } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
+import { bigintComparator } from "@/shared/grid/comparators";
 import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getOrderRowId } from "@/streams/agGridResolvers";
 import { orderStream } from "@/streams/order-stream";
@@ -78,6 +79,7 @@ const COLUMN_DEFS: readonly ColDef<OrderUpdate>[] = [
     valueFormatter: (p: ValueFormatterParams<OrderUpdate>) =>
       // Price-like — 0n is "uninitialised" → render as dash.
       p.value != null && p.value !== 0n ? toFixed8(p.value as bigint) : "—",
+    comparator: bigintComparator,
     enableCellChangeFlash: true,
     width: 140,
   },
@@ -87,6 +89,7 @@ const COLUMN_DEFS: readonly ColDef<OrderUpdate>[] = [
     // FIX: qty=0n is meaningful (LeavesQty post-fill); render as 0, not dash.
     valueFormatter: (p: ValueFormatterParams<OrderUpdate>) =>
       p.value != null ? toFixed8(p.value as bigint) : "",
+    comparator: bigintComparator,
     width: 140,
   },
   {
@@ -98,6 +101,7 @@ const COLUMN_DEFS: readonly ColDef<OrderUpdate>[] = [
             .toISOString()
             .slice(11, 23)
         : "—",
+    comparator: bigintComparator,
     width: 130,
   },
 ];
@@ -105,16 +109,21 @@ const COLUMN_DEFS: readonly ColDef<OrderUpdate>[] = [
 const getRowId = (row: OrderUpdate): string => getOrderRowId(row);
 
 export function OrderBlotter(): JSX.Element {
-  // FIFO of clOrdIds in insertion order. Same code path runs in dev and
-  // prod — the cap is sized for prod's long-running sessions; in dev with
-  // fakeStream's monotonic clOrdIds it just trims chatter the same way.
-  // The hook's `onInsert` callback pushes here on EVERY successful add
-  // (including buffered-then-flushed batches), so the FIFO stays in lock-
-  // step with `insertedIds` regardless of whether onGridReady has fired.
-  const fifoRef = useRef<string[]>([]);
+  // FIFO of clOrdIds in insertion order. Backed by a Map<string, true>
+  // (NOT a plain array) — `Map` preserves insertion order in JS and
+  // gives O(1) add / O(1) delete-by-key / O(1) size, vs. `Array.shift()`
+  // which is O(n) (re-indexes up to MAX_ROWS=10_000 elements per
+  // eviction). Important once the cap is hit and every new clOrdId
+  // triggers an evict. (Gemini R2 review of PR #72.)
+  //
+  // The hook's `onInsert` callback adds here on EVERY successful add
+  // (including buffered-then-flushed batches), so the FIFO stays in
+  // lock-step with `insertedIds` regardless of whether onGridReady has
+  // fired.
+  const fifoRef = useRef<Map<string, true>>(new Map<string, true>());
 
   const onInsert = useCallback((id: string): void => {
-    fifoRef.current.push(id);
+    fifoRef.current.set(id, true);
   }, []);
 
   const sink = useGridStreamSink<OrderUpdate>({
@@ -132,10 +141,11 @@ export function OrderBlotter(): JSX.Element {
       if (
         sink.apiRef.current !== null &&
         !sink.hasInserted(order.clOrdId) &&
-        fifoRef.current.length >= MAX_ROWS
+        fifoRef.current.size >= MAX_ROWS
       ) {
         const fifo = fifoRef.current;
-        const oldest = fifo.shift();
+        // Map preserves insertion order — `keys().next().value` is the oldest.
+        const oldest = fifo.keys().next().value;
         if (oldest !== undefined) {
           // AG Grid remove[] matches by getRowId; only clOrdId is read.
           sink.applyDirect({
@@ -144,14 +154,15 @@ export function OrderBlotter(): JSX.Element {
           });
           sink.markRemoved(oldest);
           sink.markInserted(order.clOrdId);
-          fifo.push(order.clOrdId);
+          fifo.delete(oldest);
+          fifo.set(order.clOrdId, true);
           return;
         }
       }
 
       // Default path: hook's `onInsert` callback pushes to the FIFO on
-      // first insert. No O(n) `Array.includes` dedup needed — the hook's
-      // `insertedIds` Set is the authoritative dedup check.
+      // first insert. No dedup needed — the hook's `insertedIds` Set is
+      // the authoritative check; FIFO is just for ordering.
       sink.applyBatch([order]);
     });
 
