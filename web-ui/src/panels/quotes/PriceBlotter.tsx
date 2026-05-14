@@ -13,6 +13,12 @@
  * `useGridStreamSink` hook's `insertedIds` is also fresh per mount, so the
  * resync goes through AG Grid's `add` array as required.
  *
+ * Deletion contract: the delta-diff projection detects ADDED and UPDATED
+ * entries via reference equality on the in-place Map. Does NOT detect
+ * deletions — by `priceStream`'s contract the upstream Map is
+ * monotonically additive (APP-38 covers resync-on-reconnect for delete
+ * semantics).
+ *
  * Dev-mode flash density: `fakeStream.makePrice` allocates a fresh
  * `PriceUpdate` object on every tick → reference inequality always → every
  * dev tick flashes every emitted symbol. By design.

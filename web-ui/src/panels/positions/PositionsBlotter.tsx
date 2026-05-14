@@ -10,6 +10,12 @@
  * source on reconnect; APP-37 ships local aggregation only. APP-38 covers
  * the real-WebSocket E2E with server resync.
  *
+ * Deletion contract: the delta-diff projection detects ADDED and UPDATED
+ * entries via reference equality on the in-place Map. Does NOT detect
+ * deletions — by `positionStream`'s contract the upstream Map is
+ * monotonically additive (APP-38 covers resync-on-reconnect for delete
+ * semantics).
+ *
  * Threading: main thread.
  * Allocation: per-emission `changed` array (bounded by symbol cardinality).
  *

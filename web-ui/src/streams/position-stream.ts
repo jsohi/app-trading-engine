@@ -20,6 +20,12 @@
  * source on reconnect; APP-37 ships local aggregation only. APP-38 covers
  * the real-WebSocket E2E with server resync.
  *
+ * **Deletion contract**: this operator is monotonically additive — symbols
+ * are never removed from the in-place Map. Consumers' delta-diff loops
+ * (PositionsBlotter) only detect ADD + UPDATE, not REMOVE. Server-side
+ * resync on reconnect (APP-38) is responsible for any "remove" semantics
+ * via a snapshot replay that wipes the local Map at boot.
+ *
  * Rationale: matches the in-place-Map / reference-equality projection
  * contract established by `price-stream.ts` so PositionsBlotter can reuse
  * the same delta-diff loop shape as PriceBlotter.

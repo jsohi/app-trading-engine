@@ -30,7 +30,7 @@
  *
  * Plan reference: APP-37 §OrderBlotter / §Implementation notes (Blotters shared pattern).
  */
-import { type JSX, useEffect, useRef } from "react";
+import { type JSX, useCallback, useEffect, useRef } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { type ColDef, type ValueFormatterParams, type ValueGetterParams } from "ag-grid-community";
 
@@ -105,20 +105,30 @@ const COLUMN_DEFS: readonly ColDef<OrderUpdate>[] = [
 const getRowId = (row: OrderUpdate): string => getOrderRowId(row);
 
 export function OrderBlotter(): JSX.Element {
-  const sink = useGridStreamSink<OrderUpdate>({
-    panelName: "OrderBlotter",
-    getRowId,
-  });
   // FIFO of clOrdIds in insertion order. Same code path runs in dev and
   // prod — the cap is sized for prod's long-running sessions; in dev with
   // fakeStream's monotonic clOrdIds it just trims chatter the same way.
+  // The hook's `onInsert` callback pushes here on EVERY successful add
+  // (including buffered-then-flushed batches), so the FIFO stays in lock-
+  // step with `insertedIds` regardless of whether onGridReady has fired.
   const fifoRef = useRef<string[]>([]);
+
+  const onInsert = useCallback((id: string): void => {
+    fifoRef.current.push(id);
+  }, []);
+
+  const sink = useGridStreamSink<OrderUpdate>({
+    panelName: "OrderBlotter",
+    getRowId,
+    onInsert,
+  });
 
   useEffect(() => {
     const sub = messages$.pipe(orderStream()).subscribe((order) => {
       // Row-cap fast path: evict-oldest + insert-new as a paired
       // transaction. Bypasses the shared `applyBatch` to keep the remove
-      // and add in a single AG Grid call (no flicker).
+      // and add in a single AG Grid call (no flicker). Only runs when the
+      // grid api is ready AND this is a first-time-seen clOrdId.
       if (
         sink.apiRef.current !== null &&
         !sink.hasInserted(order.clOrdId) &&
@@ -128,30 +138,21 @@ export function OrderBlotter(): JSX.Element {
         const oldest = fifo.shift();
         if (oldest !== undefined) {
           // AG Grid remove[] matches by getRowId; only clOrdId is read.
-          const removeStub: Pick<OrderUpdate, "clOrdId"> = { clOrdId: oldest };
-          const applied = sink.applyDirect({
-            remove: [removeStub as OrderUpdate],
+          sink.applyDirect({
+            remove: [{ clOrdId: oldest }],
             add: [order],
           });
-          if (applied) {
-            sink.markRemoved(oldest);
-            sink.markInserted(order.clOrdId);
-            fifo.push(order.clOrdId);
-            return;
-          }
+          sink.markRemoved(oldest);
+          sink.markInserted(order.clOrdId);
+          fifo.push(order.clOrdId);
+          return;
         }
       }
 
+      // Default path: hook's `onInsert` callback pushes to the FIFO on
+      // first insert. No O(n) `Array.includes` dedup needed — the hook's
+      // `insertedIds` Set is the authoritative dedup check.
       sink.applyBatch([order]);
-      if (sink.hasInserted(order.clOrdId)) {
-        // Track in FIFO only on first insert; subsequent updates to the
-        // same clOrdId don't re-enter the FIFO. `hasInserted` is true now
-        // because applyBatch just added it.
-        const fifo = fifoRef.current;
-        if (!fifo.includes(order.clOrdId)) {
-          fifo.push(order.clOrdId);
-        }
-      }
     });
 
     return () => {

@@ -66,21 +66,19 @@ if (IS_JSDOM_ENV) {
   });
 }
 
-// afterEach order is LOAD-BEARING — see file header.
-// (1) Unmount React tree first.
+// Single afterEach with the four resets in load-bearing order — see file
+// header. Collapsed from four separate `afterEach` registrations so the
+// ordering invariant is in ONE place and can't be reordered by a future
+// import-sort that splits them across files.
 afterEach(() => {
+  // (1) Unmount React tree first — blotter useEffect subscriptions tear
+  //     down before the module singletons go away.
   cleanup();
-});
-// (2) Reset messageSource singleton.
-afterEach(() => {
+  // (2) Reset messageSource singleton (private _messages ReplaySubject).
   __resetMessageSourceForTests();
-});
-// (3) Reset connection-stream singleton.
-afterEach(() => {
+  // (3) Reset connection-stream singleton (private _subject BehaviorSubject).
   __resetConnectionStreamForTests();
-});
-// (4) Reset connection-store snapshot.
-afterEach(() => {
+  // (4) Reset connection-store closure-local snapshot.
   __resetConnectionStoreForTests();
 });
 
