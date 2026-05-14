@@ -31,8 +31,13 @@
  * Capture-then-commit: `partitionAndApply` accumulates the `add`/`update`
  * arrays + the `toMark` id list first, then calls `applyTransactionAsync`,
  * then commits to `insertedIds` and fires `onInsert`. If AG Grid throws
- * synchronously the state stays consistent — `insertedIds` is not poisoned
- * with ids the grid never accepted.
+ * SYNCHRONOUSLY the state stays consistent — `insertedIds` is not poisoned
+ * with ids the grid never accepted. **Async-rejection caveat**:
+ * `applyTransactionAsync` queues work for the next rAF; if AG Grid drops
+ * that queued tx (e.g. grid destroyed between call and flush) this hook
+ * does NOT roll back `insertedIds` or the consumer's `onInsert` state.
+ * Not observed in AG Grid v33+ today; rollback-on-async-failure is tracked
+ * with the perf-budget work on APP-248.
  *
  * Threading: main thread (React).
  * Allocation: per-emission `add`/`update`/`toMark` arrays; transient
@@ -113,6 +118,17 @@ export function useGridStreamSink<TRow>(
   // Keep onInsert in a ref so consumers can pass an unstable callback
   // without invalidating the memoised result object. The hook reads the
   // CURRENT callback on every call site.
+  //
+  // Deliberate inline-assign (not `useEffect(() => { ref.current = ... })`):
+  // wrapping in useEffect would introduce a one-render-stale window where
+  // a transaction fired between render-commit and effect-execution would
+  // still call the PREVIOUS onInsert — and the hook's call sites
+  // (`partitionAndApply` etc.) can fire synchronously inside the same
+  // render cycle if a parent's state update triggers a subscription
+  // emission during commit. The inline-assign is idempotent under Strict
+  // Mode double-render (same value written twice) and matches React's
+  // documented "latest ref" idiom for hooks that need synchronous
+  // up-to-date access to a callback.
   const onInsertRef = useRef<typeof onInsert>(onInsert);
   onInsertRef.current = onInsert;
 

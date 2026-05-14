@@ -11,6 +11,15 @@ import "@/shared/grid/registerAgGridModules";
 import "@/shared/layout/PanelGrid.css";
 import "@/shared/grid/agGridTheme.css";
 
+// Boot the singleton broadcast point so blotter stories receive
+// fakeStream data. `startMessageSource` is idempotency-guarded so
+// repeated story remounts (including HMR) are safe. Without this,
+// stories that mount a blotter directly subscribe to `messages$` but
+// no producer ever pushes — `play` functions waiting for `.ag-row`
+// would time out.
+import { startMessageSource } from "@/main-thread/messageSource";
+startMessageSource();
+
 const preview: Preview = {
   parameters: {
     layout: "fullscreen",
