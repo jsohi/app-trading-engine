@@ -30,7 +30,6 @@
     ".storybook/**/*",
     "vite.config.ts",
     "vitest.config.ts",
-    "vitest.config.browser.ts",
     "playwright.config.ts"
   ],
   "exclude": ["node_modules", "dist", "storybook-static", "playwright-report"]
