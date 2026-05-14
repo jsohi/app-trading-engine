@@ -138,28 +138,48 @@ export function useGridStreamSink<TRow>(
       const toAdd: TRow[] = [];
       const toUpdate: TRow[] = [];
       const toMark: string[] = [];
-      // Track ids already promoted to `toAdd` IN THIS BATCH so a second
-      // occurrence of the same id (within the same emission) lands in
-      // `update[]` instead of duplicating into `add[]`. Without this,
-      // AG Grid would receive two rows with the same getRowId AND
-      // `onInsert` would fire twice for the same id — corrupting
-      // external trackers like OrderBlotter's FIFO. (Found by Gemini
-      // R1 review of PR #72.)
-      const batchSeenNewIds = new Set<string>();
-      for (const row of batch) {
+
+      // Single-row fast path — skips the per-batch `Set` allocation.
+      // OrderBlotter feeds 1-row batches (`applyBatch([order])`), so this
+      // is the hot path. (Gemini R2 perf finding on PR #72.)
+      if (batch.length === 1) {
+        // `batch.length === 1` guarantees `batch[0]` is defined, but
+        // `noUncheckedIndexedAccess` widens the type; explicit narrow.
+        const row = batch[0];
+        if (row === undefined) return;
         const id = getRowId(row);
-        if (inserted.has(id) || batchSeenNewIds.has(id)) {
+        if (inserted.has(id)) {
           toUpdate.push(row);
         } else {
           toAdd.push(row);
           toMark.push(id);
-          batchSeenNewIds.add(id);
+        }
+      } else {
+        // Multi-row path. Track ids already promoted to `toAdd` IN THIS
+        // BATCH so a second occurrence of the same id (within the same
+        // emission) lands in `update[]` instead of duplicating into `add[]`.
+        // Without this, AG Grid would receive two rows with the same
+        // getRowId AND `onInsert` would fire twice for the same id —
+        // corrupting external trackers like OrderBlotter's FIFO.
+        // (Gemini R1 finding on PR #72.)
+        const batchSeenNewIds = new Set<string>();
+        for (const row of batch) {
+          const id = getRowId(row);
+          if (inserted.has(id) || batchSeenNewIds.has(id)) {
+            toUpdate.push(row);
+          } else {
+            toAdd.push(row);
+            toMark.push(id);
+            batchSeenNewIds.add(id);
+          }
         }
       }
+
       if (toAdd.length === 0 && toUpdate.length === 0) return;
       // Capture-then-commit: only mutate `inserted` AFTER the AG Grid call
       // succeeds. If `applyTransactionAsync` throws synchronously the set
-      // is not poisoned with ids the grid never accepted.
+      // is not poisoned with ids the grid never accepted. (Async-rejection
+      // caveat — see file header.)
       api.applyTransactionAsync({ add: toAdd, update: toUpdate });
       const notify = onInsertRef.current;
       for (const id of toMark) {

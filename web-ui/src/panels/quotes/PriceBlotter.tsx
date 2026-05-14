@@ -47,6 +47,7 @@ import { messages$ } from "@/main-thread/messageSource";
 import { type PriceUpdate, type WorkerMessage } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
+import { bigintComparator } from "@/shared/grid/comparators";
 import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getPriceRowId } from "@/streams/agGridResolvers";
 import { priceStream } from "@/streams/price-stream";
@@ -63,6 +64,7 @@ const COLUMN_DEFS: readonly ColDef<PriceRowData>[] = [
     valueGetter: (p: ValueGetterParams<PriceRowData>) => p.data?.bid,
     valueFormatter: (p: ValueFormatterParams<PriceRowData>) =>
       p.value != null && p.value !== 0n ? toFixed8(p.value as bigint) : "—",
+    comparator: bigintComparator,
     enableCellChangeFlash: true,
     width: 140,
   },
@@ -71,6 +73,7 @@ const COLUMN_DEFS: readonly ColDef<PriceRowData>[] = [
     valueGetter: (p: ValueGetterParams<PriceRowData>) => p.data?.ask,
     valueFormatter: (p: ValueFormatterParams<PriceRowData>) =>
       p.value != null && p.value !== 0n ? toFixed8(p.value as bigint) : "—",
+    comparator: bigintComparator,
     enableCellChangeFlash: true,
     width: 140,
   },
@@ -83,6 +86,7 @@ const COLUMN_DEFS: readonly ColDef<PriceRowData>[] = [
     },
     valueFormatter: (p: ValueFormatterParams<PriceRowData>) =>
       p.value != null ? toFixed8(p.value as bigint) : "—",
+    comparator: bigintComparator,
     width: 120,
   },
   {
@@ -94,6 +98,7 @@ const COLUMN_DEFS: readonly ColDef<PriceRowData>[] = [
             .toISOString()
             .slice(11, 23)
         : "—",
+    comparator: bigintComparator,
     width: 130,
   },
 ];
