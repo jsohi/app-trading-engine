@@ -6,7 +6,7 @@
  */
 import { expect, test } from "@playwright/test";
 
-test("dev server boots and renders panel shell", async ({ page }) => {
+test("devServer_boot_rendersPanelShellWithBlotterHeadings", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Trading Engine" })).toBeVisible();
   // Three blotter headings registered by APP-37.
@@ -15,7 +15,7 @@ test("dev server boots and renders panel shell", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Quotes" })).toBeVisible();
 });
 
-test("blotters receive fakeStream data and conn-dot is visible @licensed", async ({ page }) => {
+test("blotters_fakeStreamData_rowsVisibleAndConnDotPresent @licensed", async ({ page }) => {
   // Tagged @licensed — exercises a richer rendering path.
   await page.goto("/");
 

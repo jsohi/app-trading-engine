@@ -1,10 +1,15 @@
 /**
- * PanelGrid layout snapshot test. Asserts:
- *   - Empty grid renders all 5 grid slots as "unregistered" (top-bar is empty
- *     → renders nothing, so the 5-count is unchanged).
- *   - Registered grid panel renders its component body.
- *   - Registered top-bar panel renders inside <header className="app-header">.
- *   - Slot order is stable across calls.
+ * Purpose: PanelGrid layout snapshot test — verifies the 5 grid slots render
+ *   their `unregistered` chrome when empty, registered grid panels render
+ *   their component body in the correct slot, and the new `top-bar` slot
+ *   (APP-37) renders inside the existing `<header className="app-header">`.
+ *
+ * Rationale: APP-37 extended `PanelSlot` with `'top-bar'`. The new slot
+ *   renders nothing when empty (NOT an "unregistered" placeholder) so the
+ *   5-grid-slot count is unchanged for the empty-grid case.
+ *
+ * @see ./PanelGrid.tsx — system under test.
+ * @see ../../app/panelRegistry.ts — peer (PanelSlot union, slot ordering).
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";

@@ -105,43 +105,59 @@ describe("OrderBlotter", () => {
       fireFakeOnGridReady();
     });
 
-    // Flush on onGridReady — one call with all 3 buffered orders.
+    // Flush on onGridReady — one call. All three clOrdIds are first-time-seen,
+    // so AG Grid v33+ requires them in the `add` array (rows not yet matched
+    // by getRowId). The `update` array is empty for this flush.
     expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(1);
     const call = _fakeApi.applyTransactionAsync.mock.calls[0]![0] as {
+      add: OrderUpdate[];
       update: OrderUpdate[];
     };
-    expect(call.update).toHaveLength(3);
-    expect(call.update.map((o: OrderUpdate) => o.clOrdId)).toEqual([
-      "ORD-001",
-      "ORD-002",
-      "ORD-003",
-    ]);
+    expect(call.add).toHaveLength(3);
+    expect(call.update).toHaveLength(0);
+    expect(call.add.map((o: OrderUpdate) => o.clOrdId)).toEqual(["ORD-001", "ORD-002", "ORD-003"]);
   });
 
-  it("applyTransactionAsync_afterOnGridReady_singleUpdate", () => {
+  it("applyTransactionAsync_afterOnGridReady_partitionsAddAndUpdate", () => {
     render(<OrderBlotter />);
 
     act(() => {
       fireFakeOnGridReady();
     });
 
+    // First emissions for ORD-A and ORD-B are NEW rows — must land in `add`.
     act(() => {
       _messagesSubject.next(makeOrder("ORD-A"));
     });
     act(() => {
       _messagesSubject.next(makeOrder("ORD-B"));
     });
+    // Second emission for ORD-A is now an existing row — must land in `update`.
+    act(() => {
+      _messagesSubject.next(makeOrder("ORD-A"));
+    });
 
-    // Each emission produces its own applyTransactionAsync call.
-    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(2);
+    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(3);
     const firstCall = _fakeApi.applyTransactionAsync.mock.calls[0]![0] as {
+      add: OrderUpdate[];
       update: OrderUpdate[];
     };
-    expect(firstCall.update[0]!.clOrdId).toBe("ORD-A");
+    expect(firstCall.add[0]!.clOrdId).toBe("ORD-A");
+    expect(firstCall.update).toHaveLength(0);
+
     const secondCall = _fakeApi.applyTransactionAsync.mock.calls[1]![0] as {
+      add: OrderUpdate[];
       update: OrderUpdate[];
     };
-    expect(secondCall.update[0]!.clOrdId).toBe("ORD-B");
+    expect(secondCall.add[0]!.clOrdId).toBe("ORD-B");
+    expect(secondCall.update).toHaveLength(0);
+
+    const thirdCall = _fakeApi.applyTransactionAsync.mock.calls[2]![0] as {
+      add: OrderUpdate[];
+      update: OrderUpdate[];
+    };
+    expect(thirdCall.add).toHaveLength(0);
+    expect(thirdCall.update[0]!.clOrdId).toBe("ORD-A");
   });
 
   it("applyTransactionAsync_pendingOverflow_warnsOnceAndDropsRest", () => {

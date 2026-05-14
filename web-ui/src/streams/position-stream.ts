@@ -98,22 +98,15 @@ export function applyFill(prior: NetPosition | undefined, fill: FillUpdate): Net
   const increasingOpenSide: boolean = sameSign && newAbs > priorAbs;
   const reducingOpenSide: boolean = sameSign && newAbs < priorAbs;
 
-  let newAvgPx: bigint;
-  if (priorIsFlat) {
-    // First fill from flat — VWAP is just the fill price.
-    newAvgPx = fill.fillPrice;
-  } else if (reducingOpenSide) {
-    // Closing trade: PRESERVE avgPx. P&L realised elsewhere; remaining
-    // open qty keeps its original cost basis.
-    newAvgPx = priorAvgPx;
-  } else if (increasingOpenSide) {
-    // Adding to the open side — VWAP-weight by absolute quantities.
-    const totalAbs: bigint = priorAbs + fill.fillQty;
-    newAvgPx = (priorAvgPx * priorAbs + fill.fillPrice * fill.fillQty) / totalAbs;
-  } else {
-    // Sign flipped (close + reopen): residual is fresh exposure; reset.
-    newAvgPx = fill.fillPrice;
-  }
+  const newAvgPx: bigint = computeAvgPx({
+    priorIsFlat,
+    reducingOpenSide,
+    increasingOpenSide,
+    priorAvgPx,
+    priorAbs,
+    fillPrice: fill.fillPrice,
+    fillQty: fill.fillQty,
+  });
 
   return {
     symbol: fill.symbol,
@@ -121,6 +114,37 @@ export function applyFill(prior: NetPosition | undefined, fill: FillUpdate): Net
     avgPx: newAvgPx,
     lastFillNanos: fill.serverNanos,
   };
+}
+
+/**
+ * Compute the new VWAP for a non-flat post-fill position. Pure; documented
+ * branches mirror the VWAP rules in `applyFill`'s JSDoc.
+ */
+function computeAvgPx(args: {
+  readonly priorIsFlat: boolean;
+  readonly reducingOpenSide: boolean;
+  readonly increasingOpenSide: boolean;
+  readonly priorAvgPx: bigint;
+  readonly priorAbs: bigint;
+  readonly fillPrice: bigint;
+  readonly fillQty: bigint;
+}): bigint {
+  if (args.priorIsFlat) {
+    // First fill from flat — VWAP is just the fill price.
+    return args.fillPrice;
+  }
+  if (args.reducingOpenSide) {
+    // Closing trade: PRESERVE avgPx. P&L realised elsewhere; remaining
+    // open qty keeps its original cost basis.
+    return args.priorAvgPx;
+  }
+  if (args.increasingOpenSide) {
+    // Adding to the open side — VWAP-weight by absolute quantities.
+    const totalAbs: bigint = args.priorAbs + args.fillQty;
+    return (args.priorAvgPx * args.priorAbs + args.fillPrice * args.fillQty) / totalAbs;
+  }
+  // Sign flipped (close + reopen): residual is fresh exposure; reset.
+  return args.fillPrice;
 }
 
 /**
