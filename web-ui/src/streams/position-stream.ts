@@ -151,6 +151,13 @@ function computeAvgPx(args: {
   }
   if (args.increasingOpenSide) {
     // Adding to the open side — VWAP-weight by absolute quantities.
+    //
+    // **No divide-by-zero**: `increasingOpenSide` is only true when
+    // `sameSign && newAbs > priorAbs`. `sameSign` itself requires
+    // `!priorIsFlat`, so `priorAbs > 0n`. `fillQty` is non-negative by
+    // FIX semantics (the SBE `FillUpdate` decoder rejects negatives). So
+    // `totalAbs = priorAbs + fillQty > 0n` — bigint division is safe.
+    // (Gemini R3 review of PR #72.)
     const totalAbs: bigint = args.priorAbs + args.fillQty;
     return (args.priorAvgPx * args.priorAbs + args.fillPrice * args.fillQty) / totalAbs;
   }
