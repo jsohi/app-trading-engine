@@ -9,20 +9,22 @@
  * invariant per `order-stream.ts` is preserved).
  *
  * `lastSeen` is declared INSIDE the `useEffect` body so a remount triggers
- * a fresh-empty Map → first emission produces a one-time full resync. This
- * is documented expected behaviour, NOT a flash storm regression.
+ * a fresh-empty Map → first emission produces a one-time full resync. The
+ * `useGridStreamSink` hook's `insertedIds` is also fresh per mount, so the
+ * resync goes through AG Grid's `add` array as required.
  *
  * Dev-mode flash density: `fakeStream.makePrice` allocates a fresh
  * `PriceUpdate` object on every tick → reference inequality always → every
  * dev tick flashes every emitted symbol. By design.
  *
  * Threading: main thread.
- * Allocation: per-emission `update` array (bounded by symbol cardinality).
+ * Allocation: per-emission `changed` array (bounded by symbol cardinality).
  *
  * Dependencies:
  *   - `@/main-thread/messageSource` — upstream `messages$`.
  *   - `@/streams/price-stream` — peer operator.
  *   - `@/streams/agGridResolvers` — `getPriceRowId`.
+ *   - `@/shared/grid/useGridStreamSink` — peer: shared blotter scaffolding.
  *   - `@/shared/transport/format/toFixed8` — sanctioned bigint→display.
  *
  * @see OrderBlotter — peer; same shape minus delta-diff + plus dev row cap.
@@ -30,25 +32,18 @@
  *
  * Plan reference: APP-37 §PriceBlotter / §Implementation notes.
  */
-import { type JSX, useEffect, useRef } from "react";
+import { type JSX, useEffect } from "react";
 import { AgGridReact } from "ag-grid-react";
-import {
-  type ColDef,
-  type GridApi,
-  type GridReadyEvent,
-  type ValueFormatterParams,
-  type ValueGetterParams,
-} from "ag-grid-community";
+import { type ColDef, type ValueFormatterParams, type ValueGetterParams } from "ag-grid-community";
 import { filter } from "rxjs";
 
 import { messages$ } from "@/main-thread/messageSource";
 import { type PriceUpdate, type WorkerMessage } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
+import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getPriceRowId } from "@/streams/agGridResolvers";
 import { priceStream } from "@/streams/price-stream";
-
-const PENDING_CAP = 10_000;
 
 // Row data is structurally identical to PriceUpdate — spread is computed
 // in valueGetter, not stored. Type alias (not empty-extends interface) to
@@ -97,45 +92,18 @@ const COLUMN_DEFS: readonly ColDef<PriceRowData>[] = [
   },
 ];
 
+const getRowId = (row: PriceRowData): string => getPriceRowId(row);
+
 export function PriceBlotter(): JSX.Element {
-  const apiRef = useRef<GridApi<PriceRowData> | null>(null);
-  const onGridReadyHandlerRef = useRef<((event: GridReadyEvent<PriceRowData>) => void) | null>(
-    null,
-  );
+  const sink = useGridStreamSink<PriceRowData>({
+    panelName: "PriceBlotter",
+    getRowId,
+  });
 
   useEffect(() => {
     // Per-mount state — fresh Map per remount triggers the documented
     // one-shot full resync invariant.
     const lastSeen = new Map<string, PriceUpdate>();
-    // Set of symbols already inserted — required to partition each diff
-    // into AG Grid's `add` (new rows) vs `update` (existing rows). Without
-    // this, AG Grid silently drops first-emission rows for any symbol.
-    const insertedIds = new Set<string>();
-    const pending: PriceUpdate[] = [];
-    let warnedOverflow = false;
-
-    function partitionAndApply(api: GridApi<PriceRowData>, batch: readonly PriceUpdate[]): void {
-      const add: PriceUpdate[] = [];
-      const update: PriceUpdate[] = [];
-      for (const p of batch) {
-        if (insertedIds.has(p.symbol)) {
-          update.push(p);
-        } else {
-          add.push(p);
-          insertedIds.add(p.symbol);
-        }
-      }
-      if (add.length === 0 && update.length === 0) return;
-      api.applyTransactionAsync({ add, update });
-    }
-
-    function flushPending(): void {
-      const api = apiRef.current;
-      if (api === null || pending.length === 0) return;
-      partitionAndApply(api, pending);
-      pending.length = 0;
-      warnedOverflow = false;
-    }
 
     const sub = messages$
       .pipe(
@@ -153,52 +121,22 @@ export function PriceBlotter(): JSX.Element {
             lastSeen.set(symbol, p);
           }
         }
-        if (changed.length === 0) return;
-
-        const api = apiRef.current;
-        if (api !== null) {
-          partitionAndApply(api, changed);
-          return;
-        }
-
-        // Buffer until onGridReady fires. Per-message admission so the
-        // shape matches OrderBlotter's overflow semantics.
-        for (const u of changed) {
-          if (pending.length < PENDING_CAP) {
-            pending.push(u);
-          } else if (!warnedOverflow) {
-            console.warn(
-              "PriceBlotter: pending overflow (cap=" +
-                String(PENDING_CAP) +
-                "); subsequent drops silenced until flush",
-            );
-            warnedOverflow = true;
-          }
-        }
+        sink.applyBatch(changed);
       });
-
-    onGridReadyHandlerRef.current = (event: GridReadyEvent<PriceRowData>) => {
-      apiRef.current = event.api;
-      flushPending();
-    };
 
     return () => {
       sub.unsubscribe();
     };
-  }, []);
-
-  // No explicit apiRef cleanup — see OrderBlotter for rationale (rule 11).
+  }, [sink]);
 
   return (
     <div style={{ height: "100%", width: "100%" }}>
       <AgGridReact<PriceRowData>
         theme={themeQuartzDark}
         columnDefs={COLUMN_DEFS as ColDef<PriceRowData>[]}
-        getRowId={(p) => getPriceRowId(p.data)}
+        getRowId={(p) => getRowId(p.data)}
         asyncTransactionWaitMillis={16}
-        onGridReady={(event) => {
-          onGridReadyHandlerRef.current?.(event);
-        }}
+        onGridReady={sink.onGridReady}
         rowBuffer={20}
       />
     </div>

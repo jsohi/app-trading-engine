@@ -11,12 +11,13 @@
  * the real-WebSocket E2E with server resync.
  *
  * Threading: main thread.
- * Allocation: per-emission `update` array (bounded by symbol cardinality).
+ * Allocation: per-emission `changed` array (bounded by symbol cardinality).
  *
  * Dependencies:
  *   - `@/main-thread/messageSource` — upstream `messages$`.
  *   - `@/streams/position-stream` — peer operator (filter+scan+throttle).
  *   - `@/streams/agGridResolvers` — `getPositionRowId`.
+ *   - `@/shared/grid/useGridStreamSink` — peer: shared blotter scaffolding.
  *   - `@/shared/transport/format/toFixed8` — sanctioned bigint→display.
  *
  * @see PriceBlotter — peer; same delta-diff shape.
@@ -24,24 +25,17 @@
  *
  * Plan reference: APP-37 §PositionsBlotter.
  */
-import { type JSX, useEffect, useRef } from "react";
+import { type JSX, useEffect } from "react";
 import { AgGridReact } from "ag-grid-react";
-import {
-  type ColDef,
-  type GridApi,
-  type GridReadyEvent,
-  type ValueFormatterParams,
-  type ValueGetterParams,
-} from "ag-grid-community";
+import { type ColDef, type ValueFormatterParams, type ValueGetterParams } from "ag-grid-community";
 
 import { messages$ } from "@/main-thread/messageSource";
 import { type NetPosition } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
+import { useGridStreamSink } from "@/shared/grid/useGridStreamSink";
 import { getPositionRowId } from "@/streams/agGridResolvers";
 import { positionStream } from "@/streams/position-stream";
-
-const PENDING_CAP = 10_000;
 
 const COLUMN_DEFS: readonly ColDef<NetPosition>[] = [
   { headerName: "Symbol", field: "symbol", pinned: "left", width: 110 },
@@ -79,41 +73,16 @@ const COLUMN_DEFS: readonly ColDef<NetPosition>[] = [
   },
 ];
 
+const getRowId = (row: NetPosition): string => getPositionRowId(row);
+
 export function PositionsBlotter(): JSX.Element {
-  const apiRef = useRef<GridApi<NetPosition> | null>(null);
-  const onGridReadyHandlerRef = useRef<((event: GridReadyEvent<NetPosition>) => void) | null>(null);
+  const sink = useGridStreamSink<NetPosition>({
+    panelName: "PositionsBlotter",
+    getRowId,
+  });
 
   useEffect(() => {
     const lastSeen = new Map<string, NetPosition>();
-    // Set of symbols already inserted — required to partition each diff into
-    // AG Grid's `add` (new rows) vs `update` (existing rows). Without this,
-    // AG Grid silently drops first-emission rows for any symbol.
-    const insertedIds = new Set<string>();
-    const pending: NetPosition[] = [];
-    let warnedOverflow = false;
-
-    function partitionAndApply(api: GridApi<NetPosition>, batch: readonly NetPosition[]): void {
-      const add: NetPosition[] = [];
-      const update: NetPosition[] = [];
-      for (const p of batch) {
-        if (insertedIds.has(p.symbol)) {
-          update.push(p);
-        } else {
-          add.push(p);
-          insertedIds.add(p.symbol);
-        }
-      }
-      if (add.length === 0 && update.length === 0) return;
-      api.applyTransactionAsync({ add, update });
-    }
-
-    function flushPending(): void {
-      const api = apiRef.current;
-      if (api === null || pending.length === 0) return;
-      partitionAndApply(api, pending);
-      pending.length = 0;
-      warnedOverflow = false;
-    }
 
     const sub = messages$.pipe(positionStream(false)).subscribe((map) => {
       const changed: NetPosition[] = [];
@@ -123,50 +92,22 @@ export function PositionsBlotter(): JSX.Element {
           lastSeen.set(symbol, p);
         }
       }
-      if (changed.length === 0) return;
-
-      const api = apiRef.current;
-      if (api !== null) {
-        partitionAndApply(api, changed);
-        return;
-      }
-
-      for (const u of changed) {
-        if (pending.length < PENDING_CAP) {
-          pending.push(u);
-        } else if (!warnedOverflow) {
-          console.warn(
-            "PositionsBlotter: pending overflow (cap=" +
-              String(PENDING_CAP) +
-              "); subsequent drops silenced until flush",
-          );
-          warnedOverflow = true;
-        }
-      }
+      sink.applyBatch(changed);
     });
-
-    onGridReadyHandlerRef.current = (event: GridReadyEvent<NetPosition>) => {
-      apiRef.current = event.api;
-      flushPending();
-    };
 
     return () => {
       sub.unsubscribe();
     };
-  }, []);
-
-  // No explicit apiRef cleanup — see OrderBlotter for rationale (rule 11).
+  }, [sink]);
 
   return (
     <div style={{ height: "100%", width: "100%" }}>
       <AgGridReact<NetPosition>
         theme={themeQuartzDark}
         columnDefs={COLUMN_DEFS as ColDef<NetPosition>[]}
-        getRowId={(p) => getPositionRowId(p.data)}
+        getRowId={(p) => getRowId(p.data)}
         asyncTransactionWaitMillis={16}
-        onGridReady={(event) => {
-          onGridReadyHandlerRef.current?.(event);
-        }}
+        onGridReady={sink.onGridReady}
         rowBuffer={20}
       />
     </div>

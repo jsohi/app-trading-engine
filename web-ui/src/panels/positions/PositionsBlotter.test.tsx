@@ -135,14 +135,16 @@ describe("PositionsBlotter", () => {
     expect(_fakeApi.applyTransactionAsync.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("applyTransactionAsync_pendingOverflow_warnsOnceAndDropsRest", () => {
+  it("applyTransactionAsync_pendingOverflow_warnsOnceAndCapsBufferAtPendingCap", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation((): void => undefined);
 
+    // Mount with apiRef perpetually null so every emission goes into pending[].
+    _onGridReady = undefined;
     render(<PositionsBlotter />);
 
     act(() => {
-      // Push a Map with 10_001 unique symbols — all are "new" (not in lastSeen),
-      // so they all go into the update[] which exceeds PENDING_CAP (10_000).
+      // Push a Map with 10_001 unique symbols — all new (not in lastSeen),
+      // so all 10_001 go into pending[]. PENDING_CAP is 10_000.
       const bigMap = new Map<string, NetPosition>();
       for (let i = 0; i <= 10_000; i++) {
         const sym = `SYM-${String(i)}`;
@@ -151,8 +153,23 @@ describe("PositionsBlotter", () => {
       _positionSubject.next(bigMap);
     });
 
+    // (a) exactly one warn fires (one-shot latch, not per-drop spam).
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0]![0]).toMatch(/pending overflow/i);
+
+    // (b) Now fire onGridReady — the flush must carry EXACTLY PENDING_CAP
+    // rows (10_000), proving the cap was enforced (not 10_001).
+    act(() => {
+      fireFakeOnGridReady();
+    });
+
+    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(1);
+    const call = _fakeApi.applyTransactionAsync.mock.calls[0]![0] as {
+      add: NetPosition[];
+      update: NetPosition[];
+    };
+    // All flushed rows are first-time-seen → land in `add`. Total must be exactly 10_000.
+    expect(call.add.length + call.update.length).toBe(10_000);
 
     warnSpy.mockRestore();
   });
