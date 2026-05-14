@@ -160,6 +160,40 @@ describe("OrderBlotter", () => {
     expect(thirdCall.update[0]!.clOrdId).toBe("ORD-A");
   });
 
+  it("partitionAndApply_duplicateIdsWithinBatch_firstAddsSecondUpdates", () => {
+    // Regression for Gemini R1 review (HIGH) of PR #72: a batch containing
+    // two emissions for the same first-time-seen clOrdId would previously
+    // land BOTH in `add[]` and fire `onInsert` twice — duplicating the row
+    // in AG Grid and corrupting OrderBlotter's FIFO. The hook now tracks
+    // `batchSeenNewIds` in `partitionAndApply` so the second occurrence
+    // lands in `update[]` and `onInsert` fires exactly once.
+    //
+    // Trigger: emit 2 orders with the same clOrdId BEFORE onGridReady so
+    // they both land in `pending[]`. The flush calls partitionAndApply
+    // with a 2-element batch where both entries share an id.
+    _onGridReady = undefined;
+    render(<OrderBlotter />);
+    act(() => {
+      _messagesSubject.next(makeOrder("DUP-ID"));
+      _messagesSubject.next(makeOrder("DUP-ID"));
+    });
+    act(() => {
+      fireFakeOnGridReady();
+    });
+
+    expect(_fakeApi.applyTransactionAsync).toHaveBeenCalledTimes(1);
+    const call = _fakeApi.applyTransactionAsync.mock.calls[0]![0] as {
+      add: OrderUpdate[];
+      update: OrderUpdate[];
+    };
+    // First occurrence is the new row → add[]; second is the same id, so
+    // dedup promotes it to update[].
+    expect(call.add).toHaveLength(1);
+    expect(call.add[0]!.clOrdId).toBe("DUP-ID");
+    expect(call.update).toHaveLength(1);
+    expect(call.update[0]!.clOrdId).toBe("DUP-ID");
+  });
+
   it("applyTransactionAsync_pendingOverflow_warnsOnceAndDropsRest", () => {
     // Override the mock so onGridReady is never called (apiRef stays null).
     _onGridReady = undefined;
