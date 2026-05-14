@@ -98,7 +98,11 @@ export function applyFill(prior: NetPosition | undefined, fill: FillUpdate): Net
   }
 
   const priorIsFlat: boolean = priorNetQty === 0n;
-  const sameSign: boolean = !priorIsFlat && priorNetQty > 0n === newNetQty > 0n;
+  // Boolean intermediates over (a) === (b) — Prettier strips defensive
+  // parens, so use explicit intermediates that read straight-through.
+  const priorIsPositive: boolean = priorNetQty > 0n;
+  const newIsPositive: boolean = newNetQty > 0n;
+  const sameSign: boolean = !priorIsFlat && priorIsPositive === newIsPositive;
 
   const priorAbs: bigint = priorNetQty > 0n ? priorNetQty : -priorNetQty;
   const newAbs: bigint = newNetQty > 0n ? newNetQty : -newNetQty;
