@@ -27,7 +27,10 @@ export default defineConfig({
     include: ["src/**/*.{test,spec}.{ts,tsx}", "test/**/*.{test,spec}.{ts,tsx}"],
     // The fixture *.ts files (no .test suffix) are not collected as
     // tests; they're inputs to the lint-fixtures.test.ts spawner.
-    exclude: ["node_modules", "dist", "e2e/**"],
+    // `test/browser/**` is owned by vitest.config.browser.ts (Playwright
+    // provider); excluding here prevents double-discovery + ensures the
+    // browser specs never run under jsdom (where AG Grid silently no-ops).
+    exclude: ["node_modules", "dist", "e2e/**", "test/browser/**"],
     setupFiles: ["./test/setup.ts"],
     // Vitest's experimental in-suite typecheck is intentionally OFF —
     // it emits a SemVer "experimental feature" warning at every run

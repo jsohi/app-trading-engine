@@ -53,6 +53,18 @@ body,
   letter-spacing: 0.05em;
 }
 
+/*
+ * Top-bar slot — pinned to the right edge of the header. Hosts the
+ * registered `top-bar` panel (e.g., ConnectionIndicator). Margin-left:auto
+ * pushes it past the .app-mode label.
+ */
+.app-header__right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -102,10 +114,30 @@ body,
   letter-spacing: 0.05em;
 }
 
+/*
+ * .panel-body hosts AG Grid. The grid owns its own viewport scroller, so
+ * this container MUST NOT introduce a second scroll surface (would produce
+ * scroll-within-scroll past the viewport row count) and MUST NOT add
+ * padding (would cause a height:100% child to overflow by 2*padding).
+ *
+ * Non-grid panels that want padding/scroll wrap their content in their own
+ * inner element.
+ *
+ * Plan reference: APP-37 §Files to modify (PanelGrid.css).
+ */
 .panel-body {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
-  overflow: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Empty-state panels keep small padding for the placeholder text. */
+.panel-empty .panel-body {
   padding: 0.5rem;
+  overflow: auto;
 }
 
 .panel-empty-msg {

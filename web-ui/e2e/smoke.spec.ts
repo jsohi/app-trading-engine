@@ -1,24 +1,34 @@
 /**
  * Playwright smoke test: dev server boots, the app shell renders,
- * and the sample panel emits at least one synthetic message.
+ * and the streaming blotters receive at least one synthetic message.
  *
- * Tagged untagged → runs on fork PRs without an AG Grid license.
+ * Untagged — runs on fork PRs without an AG Grid license.
  */
 import { expect, test } from "@playwright/test";
 
 test("dev server boots and renders panel shell", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Trading Engine" })).toBeVisible();
-  // Sample panel is registered into left-top.
-  await expect(page.getByRole("heading", { name: "Sample (1A)" })).toBeVisible();
+  // Three blotter headings registered by APP-37.
+  await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Positions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quotes" })).toBeVisible();
 });
 
-test("sample panel receives a fakeStream tick @licensed", async ({ page }) => {
-  // Tagged @licensed only because this test exercises a richer
-  // path that is more flaky on watermark-only forks; main repo runs
-  // it as part of the full e2e suite.
+test("blotters receive fakeStream data and conn-dot is visible @licensed", async ({ page }) => {
+  // Tagged @licensed — exercises a richer rendering path.
   await page.goto("/");
-  await expect(page.getByText(/"type":\s*"(price|order|fill|event)"/)).toBeVisible({
-    timeout: 5_000,
-  });
+
+  // Wait for at least one .ag-root-wrapper (AG Grid mounted).
+  await expect(page.locator(".ag-root-wrapper").first()).toBeVisible({ timeout: 5_000 });
+
+  // Connection indicator dot (top-bar ConnectionIndicator).
+  await expect(page.locator(".conn-dot").first()).toBeVisible({ timeout: 5_000 });
+
+  // At least one row cell containing a symbol from fakeStream within 10s.
+  const symbolPattern = /EUR\/USD|GBP\/USD|USD\/JPY/;
+  await expect(async () => {
+    const texts = await page.locator(".ag-cell").allTextContents();
+    expect(texts.some((t) => symbolPattern.test(t))).toBe(true);
+  }).toPass({ timeout: 10_000 });
 });

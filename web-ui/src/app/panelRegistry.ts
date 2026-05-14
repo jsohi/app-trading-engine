@@ -21,11 +21,20 @@
 import { type ComponentType } from "react";
 
 /**
- * Panel slots in the 2-column responsive layout. Three slots on the
- * right (top/middle/bottom) and two on the left (top/bottom) match
- * the layout sketch in docs/web-ui.md lines 97–132.
+ * Panel slots:
+ *   - `top-bar` is rendered inside the app-shell header (NOT inside the
+ *     2-column grid). Intended for status indicators and other small
+ *     header widgets. APP-37 registers `ConnectionIndicator` here.
+ *   - The 5 grid slots (left-top/bottom, right-top/middle/bottom) match
+ *     the layout sketch in docs/web-ui.md lines 97–132.
  */
-export type PanelSlot = "left-top" | "left-bottom" | "right-top" | "right-middle" | "right-bottom";
+export type PanelSlot =
+  | "top-bar"
+  | "left-top"
+  | "left-bottom"
+  | "right-top"
+  | "right-middle"
+  | "right-bottom";
 
 export interface PanelRegistration {
   /** Stable id used for React keys + analytics. Must be globally unique. */
@@ -85,6 +94,7 @@ export function __clearPanelRegistryForTests(): void {
  */
 export function collectPanels(): readonly PanelRegistration[] {
   const slotOrder: readonly PanelSlot[] = [
+    "top-bar",
     "left-top",
     "left-bottom",
     "right-top",
