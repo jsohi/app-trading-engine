@@ -36,8 +36,8 @@ export const Default: Story = {
       new Promise<void>((r) => {
         setTimeout(r, ms);
       });
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
+    const deadline = performance.now() + 5_000;
+    while (performance.now() < deadline) {
       if (canvasElement.querySelectorAll(".ag-row").length >= 1) break;
       await sleep(200);
     }

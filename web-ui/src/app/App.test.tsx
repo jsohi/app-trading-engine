@@ -1,7 +1,15 @@
 /**
- * App-mount smoke test: panel registry resolves the blotter panels and
- * ConnectionIndicator, they mount without console errors, and the layout
- * shell renders with correct aria-labels for all three blotter slots.
+ * Purpose: App-mount smoke test — verifies the panel registry resolves the
+ *   three blotter panels + ConnectionIndicator, they mount without console
+ *   errors, and the layout shell renders with correct aria-labels.
+ *
+ * Rationale: APP-37 replaces the `_sample` scaffold panel with real panels.
+ *   The pre-existing `errorSpy.not.toHaveBeenCalled()` invariant is preserved
+ *   by stubbing `connectionStore` and `messages$` via hoisted `vi.mock` so
+ *   the test never pulls live RxJS subscriptions.
+ *
+ * @see ../shared/layout/PanelGrid.test.tsx — peer test for the shell shape.
+ * @see ./App.tsx — system under test.
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";

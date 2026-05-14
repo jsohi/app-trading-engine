@@ -85,34 +85,53 @@ export function PositionsBlotter(): JSX.Element {
 
   useEffect(() => {
     const lastSeen = new Map<string, NetPosition>();
+    // Set of symbols already inserted — required to partition each diff into
+    // AG Grid's `add` (new rows) vs `update` (existing rows). Without this,
+    // AG Grid silently drops first-emission rows for any symbol.
+    const insertedIds = new Set<string>();
     const pending: NetPosition[] = [];
     let warnedOverflow = false;
+
+    function partitionAndApply(api: GridApi<NetPosition>, batch: readonly NetPosition[]): void {
+      const add: NetPosition[] = [];
+      const update: NetPosition[] = [];
+      for (const p of batch) {
+        if (insertedIds.has(p.symbol)) {
+          update.push(p);
+        } else {
+          add.push(p);
+          insertedIds.add(p.symbol);
+        }
+      }
+      if (add.length === 0 && update.length === 0) return;
+      api.applyTransactionAsync({ add, update });
+    }
 
     function flushPending(): void {
       const api = apiRef.current;
       if (api === null || pending.length === 0) return;
-      api.applyTransactionAsync({ update: [...pending] });
+      partitionAndApply(api, pending);
       pending.length = 0;
       warnedOverflow = false;
     }
 
     const sub = messages$.pipe(positionStream(false)).subscribe((map) => {
-      const update: NetPosition[] = [];
+      const changed: NetPosition[] = [];
       for (const [symbol, p] of map) {
         if (lastSeen.get(symbol) !== p) {
-          update.push(p);
+          changed.push(p);
           lastSeen.set(symbol, p);
         }
       }
-      if (update.length === 0) return;
+      if (changed.length === 0) return;
 
       const api = apiRef.current;
       if (api !== null) {
-        api.applyTransactionAsync({ update });
+        partitionAndApply(api, changed);
         return;
       }
 
-      for (const u of update) {
+      for (const u of changed) {
         if (pending.length < PENDING_CAP) {
           pending.push(u);
         } else if (!warnedOverflow) {
@@ -136,12 +155,7 @@ export function PositionsBlotter(): JSX.Element {
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      apiRef.current = null;
-    },
-    [],
-  );
+  // No explicit apiRef cleanup — see OrderBlotter for rationale (rule 11).
 
   return (
     <div style={{ height: "100%", width: "100%" }}>

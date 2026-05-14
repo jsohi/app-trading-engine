@@ -107,13 +107,32 @@ export function PriceBlotter(): JSX.Element {
     // Per-mount state — fresh Map per remount triggers the documented
     // one-shot full resync invariant.
     const lastSeen = new Map<string, PriceUpdate>();
+    // Set of symbols already inserted — required to partition each diff
+    // into AG Grid's `add` (new rows) vs `update` (existing rows). Without
+    // this, AG Grid silently drops first-emission rows for any symbol.
+    const insertedIds = new Set<string>();
     const pending: PriceUpdate[] = [];
     let warnedOverflow = false;
+
+    function partitionAndApply(api: GridApi<PriceRowData>, batch: readonly PriceUpdate[]): void {
+      const add: PriceUpdate[] = [];
+      const update: PriceUpdate[] = [];
+      for (const p of batch) {
+        if (insertedIds.has(p.symbol)) {
+          update.push(p);
+        } else {
+          add.push(p);
+          insertedIds.add(p.symbol);
+        }
+      }
+      if (add.length === 0 && update.length === 0) return;
+      api.applyTransactionAsync({ add, update });
+    }
 
     function flushPending(): void {
       const api = apiRef.current;
       if (api === null || pending.length === 0) return;
-      api.applyTransactionAsync({ update: [...pending] });
+      partitionAndApply(api, pending);
       pending.length = 0;
       warnedOverflow = false;
     }
@@ -127,24 +146,24 @@ export function PriceBlotter(): JSX.Element {
         // Delta-diff projection: select only entries whose value reference
         // changed. priceStream's mutated Map identity is stable; the diff
         // is on the inner PriceUpdate object reference per symbol.
-        const update: PriceUpdate[] = [];
+        const changed: PriceUpdate[] = [];
         for (const [symbol, p] of map) {
           if (lastSeen.get(symbol) !== p) {
-            update.push(p);
+            changed.push(p);
             lastSeen.set(symbol, p);
           }
         }
-        if (update.length === 0) return;
+        if (changed.length === 0) return;
 
         const api = apiRef.current;
         if (api !== null) {
-          api.applyTransactionAsync({ update });
+          partitionAndApply(api, changed);
           return;
         }
 
         // Buffer until onGridReady fires. Per-message admission so the
         // shape matches OrderBlotter's overflow semantics.
-        for (const u of update) {
+        for (const u of changed) {
           if (pending.length < PENDING_CAP) {
             pending.push(u);
           } else if (!warnedOverflow) {
@@ -168,12 +187,7 @@ export function PriceBlotter(): JSX.Element {
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      apiRef.current = null;
-    },
-    [],
-  );
+  // No explicit apiRef cleanup — see OrderBlotter for rationale (rule 11).
 
   return (
     <div style={{ height: "100%", width: "100%" }}>

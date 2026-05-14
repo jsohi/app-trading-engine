@@ -205,11 +205,16 @@ describe("PriceBlotter", () => {
     // Full resync: at least one call on remount.
     expect(_fakeApi.applyTransactionAsync.mock.calls.length).toBeGreaterThanOrEqual(1);
 
-    // The call should contain both symbols.
+    // On remount, both `lastSeen` AND `insertedIds` reset → both symbols are
+    // first-time-seen and land in the `add` array (NOT `update`). AG Grid
+    // v33+ requires this partition; `update` matches by getRowId and would
+    // silently drop rows the grid has not yet inserted.
     const resyncCall = _fakeApi.applyTransactionAsync.mock.calls[0]![0] as {
+      add: PriceUpdate[];
       update: PriceUpdate[];
     };
-    expect(resyncCall.update).toHaveLength(2);
+    expect(resyncCall.add).toHaveLength(2);
+    expect(resyncCall.update).toHaveLength(0);
 
     unmount2();
   });

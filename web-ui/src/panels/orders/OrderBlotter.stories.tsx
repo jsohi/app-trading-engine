@@ -30,12 +30,12 @@ export const Default: Story = {
     await expect(wrapper).not.toBeNull();
 
     // fakeStream emits at 250 ms intervals; within 5s we should have ≥1 row.
-    const deadline = Date.now() + 5_000;
+    const deadline = performance.now() + 5_000;
     const sleep = (ms: number): Promise<void> =>
       new Promise<void>((r) => {
         setTimeout(r, ms);
       });
-    while (Date.now() < deadline) {
+    while (performance.now() < deadline) {
       const rows = canvasElement.querySelectorAll(".ag-row");
       if (rows.length >= 1) break;
       await sleep(200);

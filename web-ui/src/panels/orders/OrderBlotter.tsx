@@ -122,17 +122,36 @@ export function OrderBlotter(): JSX.Element {
     // Per-mount state so a StrictMode remount triggers a clean buffer.
     const pending: OrderUpdate[] = [];
     let warnedOverflow = false;
+    // Set of clOrdIds already inserted into the grid — required to partition
+    // each emission into AG Grid's `add` (new rows) vs `update` (existing rows)
+    // arrays. AG Grid v33+ contract: `update` matches by getRowId; rows not
+    // already present are SILENTLY DROPPED. Without this partition the grid
+    // stays empty forever (every fakeStream order has a fresh clOrdId).
+    const insertedIds = new Set<string>();
     // Dev-only FIFO of clOrdIds for the row cap — gated to avoid prod overhead.
     const devFifo: string[] = [];
     const isDev: boolean = import.meta.env.DEV;
 
+    function partitionAndApply(api: GridApi<OrderUpdate>, batch: readonly OrderUpdate[]): void {
+      const add: OrderUpdate[] = [];
+      const update: OrderUpdate[] = [];
+      for (const o of batch) {
+        if (insertedIds.has(o.clOrdId)) {
+          update.push(o);
+        } else {
+          add.push(o);
+          insertedIds.add(o.clOrdId);
+          if (isDev) devFifo.push(o.clOrdId);
+        }
+      }
+      if (add.length === 0 && update.length === 0) return;
+      api.applyTransactionAsync({ add, update });
+    }
+
     function flushPending(): void {
       const api = apiRef.current;
       if (api === null || pending.length === 0) return;
-      api.applyTransactionAsync({ update: [...pending] });
-      if (isDev) {
-        for (const o of pending) devFifo.push(o.clOrdId);
-      }
+      partitionAndApply(api, pending);
       pending.length = 0;
       warnedOverflow = false;
     }
@@ -154,20 +173,25 @@ export function OrderBlotter(): JSX.Element {
       }
 
       // Dev row cap: when FIFO is full, evict oldest and pair with the insert.
-      if (isDev && devFifo.length >= DEV_ROW_CAP) {
+      // The new row is an `add` (never seen before), the evicted row is a `remove`.
+      if (isDev && devFifo.length >= DEV_ROW_CAP && !insertedIds.has(order.clOrdId)) {
         const oldest = devFifo.shift();
         if (oldest !== undefined) {
-          api.applyTransactionAsync({
-            remove: [{ clOrdId: oldest } as OrderUpdate],
-            update: [order],
-          });
+          // AG Grid remove[] matches by getRowId; only clOrdId is read.
+          // The other OrderUpdate fields are unused on the remove path.
+          const removeStub: Pick<OrderUpdate, "clOrdId"> = { clOrdId: oldest };
+          insertedIds.delete(oldest);
+          insertedIds.add(order.clOrdId);
           devFifo.push(order.clOrdId);
+          api.applyTransactionAsync({
+            remove: [removeStub as OrderUpdate],
+            add: [order],
+          });
           return;
         }
       }
 
-      api.applyTransactionAsync({ update: [order] });
-      if (isDev) devFifo.push(order.clOrdId);
+      partitionAndApply(api, [order]);
     });
 
     // Bind flushPending so onGridReady can reach it via the ref-callback.
@@ -181,14 +205,11 @@ export function OrderBlotter(): JSX.Element {
     };
   }, []);
 
-  // Component-unmount-only cleanup: clear apiRef ONLY on real unmount, NOT
-  // on StrictMode-induced effect re-runs. Empty deps + cleanup-only fn.
-  useEffect(
-    () => () => {
-      apiRef.current = null;
-    },
-    [],
-  );
+  // No explicit apiRef cleanup: the ref is component-scoped and is
+  // garbage-collected with the component on real unmount. AG Grid re-fires
+  // onGridReady on a fresh mount instance, so a stale ref is impossible by
+  // construction. Nulling in an empty-deps effect cleanup would fire
+  // during StrictMode's synthetic unmount step (rule 11 of /review).
 
   return (
     <div style={{ height: "100%", width: "100%" }}>
