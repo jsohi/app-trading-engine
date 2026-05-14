@@ -230,10 +230,17 @@ export function createStore<T>(source: Observable<T>, options: StoreOptions<T>):
     },
     __resetSnapshot(): void {
       // @internal — see CreatedStore<T> JSDoc. Re-seeds the closure-local
-      // snapshot back to `options.initial`. Listeners are intentionally NOT
-      // notified — by the time afterEach runs this, React has been unmounted
-      // by the prior `cleanup()` call and `listeners.size === 0`.
+      // snapshot back to `options.initial`, drops any active upstream
+      // subscription, and clears listeners. Defensive against tests that
+      // forget the ordered afterEach chain — if listeners are still active
+      // when this runs, the upstream Observable could otherwise push a
+      // fresh snapshot over the just-reset initial.
       snapshot = options.initial;
+      if (subscription !== null) {
+        subscription.unsubscribe();
+        subscription = null;
+      }
+      listeners.clear();
     },
   };
 }

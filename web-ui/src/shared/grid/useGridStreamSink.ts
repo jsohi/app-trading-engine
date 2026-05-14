@@ -8,7 +8,7 @@
  * silently dropped).
  *
  * Consumers:
- *   - `OrderBlotter` (plus its own dev-row-cap via `applyDirect`)
+ *   - `OrderBlotter` (plus its own dev-row-cap via `applyDirect` + `onInsert`)
  *   - `PositionsBlotter`
  *   - `PriceBlotter`
  *   - Future APP-42 (events) / APP-40 (RFQ) blotters
@@ -17,20 +17,35 @@
  * triplicated across the three blotters (and would compound with each new
  * panel). Centralising it means the AG Grid `add`/`update` partition rule
  * lives in ONE place — preventing future blotters from regressing on the
- * BLOCKER caught by /review Agent B on the original APP-37 commit.
+ * BLOCKER caught by /review Agent B in earlier rounds.
+ *
+ * Insertion notification (`onInsert`): when the hook first inserts a row,
+ * it invokes the consumer's `onInsert(id)` callback. This is the load-
+ * bearing seam for any consumer that maintains an external row-tracking
+ * structure (e.g. OrderBlotter's FIFO for the MAX_ROWS cap). Without this
+ * callback, a consumer that only checks `hasInserted()` AFTER calling
+ * `applyBatch` misses the buffered-then-flushed path entirely (the hook's
+ * own `partitionAndApply` adds to `insertedIds` during flush, with no
+ * consumer-visible signal).
+ *
+ * Capture-then-commit: `partitionAndApply` accumulates the `add`/`update`
+ * arrays + the `toMark` id list first, then calls `applyTransactionAsync`,
+ * then commits to `insertedIds` and fires `onInsert`. If AG Grid throws
+ * synchronously the state stays consistent — `insertedIds` is not poisoned
+ * with ids the grid never accepted.
  *
  * Threading: main thread (React).
- * Allocation: per-emission `add`/`update` arrays; transient `pending`
- * buffer (drained on `onGridReady`); single `Set<string>` of inserted ids
- * mutated in place. Zero closure allocation per emission — the returned
- * callbacks are stable (useCallback with empty deps).
+ * Allocation: per-emission `add`/`update`/`toMark` arrays; transient
+ * `pending` buffer (drained on `onGridReady`); single `Set<string>` of
+ * inserted ids mutated in place. Returned object identity is stable via
+ * `useMemo` so consumers can include it in `useEffect` deps safely.
  *
  * @see OrderBlotter — primary consumer + dev-row-cap escape hatch.
  * @see PositionsBlotter / PriceBlotter — peer consumers.
  *
  * Plan reference: APP-37 §Files to modify (post-/review extraction).
  */
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { type GridApi, type GridReadyEvent } from "ag-grid-community";
 
 const DEFAULT_PENDING_CAP = 10_000;
@@ -42,6 +57,15 @@ export interface UseGridStreamSinkOptions<TRow> {
   readonly getRowId: (row: TRow) => string;
   /** Optional override; default = 10_000. */
   readonly pendingCap?: number;
+  /**
+   * Called by the hook EACH time it inserts a row (`add` path). The id is
+   * the just-inserted row's `getRowId(row)` value. Fires for both the
+   * direct `applyBatch` path AND the buffered-flush path inside
+   * `onGridReady`. Consumers use this to maintain an external row-tracking
+   * structure (e.g. OrderBlotter's MAX_ROWS FIFO). Pass a stable callback
+   * (wrap in `useCallback` with empty deps).
+   */
+  readonly onInsert?: (id: string) => void;
 }
 
 export interface UseGridStreamSinkResult<TRow> {
@@ -51,56 +75,72 @@ export interface UseGridStreamSinkResult<TRow> {
   readonly onGridReady: (event: GridReadyEvent<TRow>) => void;
   /**
    * Push a batch of rows. Auto-partitions into `add` (first-time-seen) vs
-   * `update` (existing); auto-buffers if the api is not yet ready.
-   * Zero-arg: a no-op if the batch is empty.
+   * `update` (existing); auto-buffers if the api is not yet ready. No-op
+   * if the batch is empty.
    */
   readonly applyBatch: (batch: readonly TRow[]) => void;
   /**
-   * Escape hatch for paired-transaction needs (e.g. OrderBlotter's dev row
+   * Escape hatch for paired-transaction needs (e.g. OrderBlotter's row
    * cap: evict-oldest + insert-new in one call). The caller is responsible
    * for keeping `insertedIds` in sync via `markInserted` / `markRemoved`.
-   * Returns `false` if the api is not yet ready (caller should buffer).
+   * THROWS if the api is not yet ready — buffering an arbitrary direct
+   * transaction is not well-defined; callers must gate on
+   * `apiRef.current !== null` first.
    */
   readonly applyDirect: (tx: {
     readonly add?: TRow[];
     readonly update?: TRow[];
-    readonly remove?: TRow[];
-  }) => boolean;
+    readonly remove?: readonly Partial<TRow>[];
+  }) => void;
   /** Mark an id as inserted (after a successful `applyDirect({add})`). */
   readonly markInserted: (id: string) => void;
   /** Mark an id as removed (after a successful `applyDirect({remove})`). */
   readonly markRemoved: (id: string) => void;
-  /** Read-only check used by callers (e.g. OrderBlotter's dev-row-cap). */
+  /** Read-only check used by callers (e.g. OrderBlotter's row-cap). */
   readonly hasInserted: (id: string) => boolean;
 }
 
 export function useGridStreamSink<TRow>(
   options: UseGridStreamSinkOptions<TRow>,
 ): UseGridStreamSinkResult<TRow> {
-  const { panelName, getRowId, pendingCap = DEFAULT_PENDING_CAP } = options;
+  const { panelName, getRowId, pendingCap = DEFAULT_PENDING_CAP, onInsert } = options;
 
   const apiRef = useRef<GridApi<TRow> | null>(null);
   // Per-mount state in refs — survives across renders without re-init.
   const insertedIdsRef = useRef<Set<string>>(new Set<string>());
   const pendingRef = useRef<TRow[]>([]);
   const warnedOverflowRef = useRef<boolean>(false);
+  // Keep onInsert in a ref so consumers can pass an unstable callback
+  // without invalidating the memoised result object. The hook reads the
+  // CURRENT callback on every call site.
+  const onInsertRef = useRef<typeof onInsert>(onInsert);
+  onInsertRef.current = onInsert;
 
   const partitionAndApply = useCallback(
     (api: GridApi<TRow>, batch: readonly TRow[]): void => {
       const inserted = insertedIdsRef.current;
-      const add: TRow[] = [];
-      const update: TRow[] = [];
+      const toAdd: TRow[] = [];
+      const toUpdate: TRow[] = [];
+      const toMark: string[] = [];
       for (const row of batch) {
         const id = getRowId(row);
         if (inserted.has(id)) {
-          update.push(row);
+          toUpdate.push(row);
         } else {
-          add.push(row);
-          inserted.add(id);
+          toAdd.push(row);
+          toMark.push(id);
         }
       }
-      if (add.length === 0 && update.length === 0) return;
-      api.applyTransactionAsync({ add, update });
+      if (toAdd.length === 0 && toUpdate.length === 0) return;
+      // Capture-then-commit: only mutate `inserted` AFTER the AG Grid call
+      // succeeds. If `applyTransactionAsync` throws synchronously the set
+      // is not poisoned with ids the grid never accepted.
+      api.applyTransactionAsync({ add: toAdd, update: toUpdate });
+      const notify = onInsertRef.current;
+      for (const id of toMark) {
+        inserted.add(id);
+        notify?.(id);
+      }
     },
     [getRowId],
   );
@@ -153,14 +193,27 @@ export function useGridStreamSink<TRow>(
     (tx: {
       readonly add?: TRow[];
       readonly update?: TRow[];
-      readonly remove?: TRow[];
-    }): boolean => {
+      readonly remove?: readonly Partial<TRow>[];
+    }): void => {
       const api = apiRef.current;
-      if (api === null) return false;
-      api.applyTransactionAsync(tx);
-      return true;
+      if (api === null) {
+        // Documented contract: callers MUST gate on apiRef.current first.
+        // Throwing here makes misuse loud — buffering an arbitrary direct
+        // transaction (which can include `remove`) is not well-defined.
+        throw new Error(panelName + ".applyDirect called before onGridReady (apiRef is null)");
+      }
+      // AG Grid v33+ `RowDataTransaction` types these fields as
+      // `TRow[] | null` (not `| undefined`) under `exactOptionalPropertyTypes`.
+      // Map missing fields to `null`. AG Grid accepts `Partial<TRow>` on the
+      // `remove` path at runtime (matched by getRowId); the narrow type at
+      // the hook boundary documents this.
+      api.applyTransactionAsync({
+        add: tx.add ?? null,
+        update: tx.update ?? null,
+        remove: (tx.remove as TRow[] | undefined) ?? null,
+      });
     },
-    [],
+    [panelName],
   );
 
   const markInserted = useCallback((id: string): void => {
@@ -175,13 +228,20 @@ export function useGridStreamSink<TRow>(
     return insertedIdsRef.current.has(id);
   }, []);
 
-  return {
-    apiRef,
-    onGridReady,
-    applyBatch,
-    applyDirect,
-    markInserted,
-    markRemoved,
-    hasInserted,
-  };
+  // Memoise the returned object so consumers can pass `sink` in useEffect
+  // deps without triggering resubscribe-storms on parent re-renders.
+  // Every callback above is `useCallback`-stable, so the memo deps capture
+  // the actual stability surface.
+  return useMemo(
+    () => ({
+      apiRef,
+      onGridReady,
+      applyBatch,
+      applyDirect,
+      markInserted,
+      markRemoved,
+      hasInserted,
+    }),
+    [onGridReady, applyBatch, applyDirect, markInserted, markRemoved, hasInserted],
+  );
 }

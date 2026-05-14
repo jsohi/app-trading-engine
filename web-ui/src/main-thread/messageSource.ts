@@ -94,8 +94,19 @@ export function startMessageSource(
     );
   }
 
-  _devSub = fakeStream({ intervalMs: 250 }).subscribe((m) => {
-    _messages.next(m);
+  _devSub = fakeStream({ intervalMs: 250 }).subscribe({
+    next: (m) => {
+      _messages.next(m);
+    },
+    error: (err: unknown) => {
+      // fakeStream is a `timer(...).pipe(map(...))` that never errors today,
+      // but defensive: surface the error and degrade to DOWN so the indicator
+      // visibly reflects the broken upstream. The real WorkerClient swap
+      // (APP-160) will replace this whole branch — its error handling lives
+      // in WorkerClient itself.
+      console.error("messageSource: fakeStream upstream error", err);
+      pushConnectionState("DOWN");
+    },
   });
   pushConnectionState("CONNECTED");
 

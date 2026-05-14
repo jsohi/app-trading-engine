@@ -89,10 +89,15 @@ export default defineConfig({
         test: {
           name: "storybook",
           // `storybookTest` discovers stories via `.storybook/main.ts`'s
-          // `stories` glob. Setup file wires `setProjectAnnotations(...)`
-          // so preview-time decorators (theme CSS, ModuleRegistry import)
-          // propagate to play-as-test runs.
-          setupFiles: ["./.storybook/vitest.setup.ts"],
+          // `stories` glob. Setup files (run in order):
+          //   1. `./test/setup.ts` — global AG Grid module registration +
+          //      ordered `afterEach` chain (cleanup → __reset*ForTests).
+          //      Without it, a story `play` that drives `messages$` leaks
+          //      singleton state to the next story.
+          //   2. `./.storybook/vitest.setup.ts` — `setProjectAnnotations(...)`
+          //      so preview-time decorators (theme CSS, ModuleRegistry import)
+          //      propagate to play-as-test runs.
+          setupFiles: ["./test/setup.ts", "./.storybook/vitest.setup.ts"],
           browser: {
             enabled: true,
             provider: playwright(),
