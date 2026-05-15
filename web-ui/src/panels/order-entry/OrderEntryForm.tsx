@@ -172,7 +172,7 @@ export function OrderEntryForm(): ReactElement {
       {state.kind === "success" && (
         <div data-testid="order-entry-success" role="status">
           Accepted (correlationId={state.ack.correlationId})
-          <button type="button" onClick={reset}>
+          <button type="button" data-testid="order-entry-reset" onClick={reset}>
             Reset
           </button>
         </div>

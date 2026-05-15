@@ -75,6 +75,13 @@ const TEMPLATE_ID_SUBSCRIBE = 62;
 const TEMPLATE_ID_CLIENT_HEARTBEAT = 65;
 
 /**
+ * Module-scope `TextEncoder`. Reused by `encodeAuth` for token UTF-8 encoding;
+ * a per-call `new TextEncoder()` would allocate one instance per (re)auth.
+ * Cold path today, but the alloc is unnecessary regardless.
+ */
+const AUTH_TOKEN_ENCODER = new TextEncoder();
+
+/**
  * Dev-default subscription cohort. Fixed list of major-FX pairs that the
  * pricing-service emits. Production deployments should derive this from a
  * per-user preference store; this constant exists only because there is no
@@ -474,6 +481,15 @@ function wireCommandPort(port: MessagePort): void {
     ) {
       return;
     }
+    // Boundary validation: main can pass `length > bytes.length` and `subarray`
+    // would silently clamp without warning, sending the wrong byte count over
+    // the wire. Negative or fractional lengths are equally meaningless. Reject
+    // with a typed Rejected ack so the caller fails fast and a regression
+    // surfaces in tests rather than as a silent server-side decode error.
+    if (!Number.isInteger(env.length) || env.length < 0 || env.length > env.bytes.byteLength) {
+      postCommandAck(env.correlationId, "Rejected", "INVALID_LENGTH");
+      return;
+    }
     if (ws?.readyState !== WebSocket.OPEN) {
       // Defence-in-depth: the main thread should not submit before CONNECTED,
       // but if it does we issue a Rejected/NOT_CONNECTED ack immediately so the
@@ -484,7 +500,10 @@ function wireCommandPort(port: MessagePort): void {
     }
     const slice = env.bytes.subarray(0, env.length);
     // Same zero-copy discipline as the AUTH path (see Gemini R5 note in
-    // sendBytes): Uint8Array IS an ArrayBufferView at runtime.
+    // sendBytes): Uint8Array IS an ArrayBufferView at runtime. The narrow cast
+    // satisfies TS's BufferSource type (which excludes SharedArrayBuffer-backed
+    // views); the SharedArrayBuffer escape hatch is forbidden project-wide via
+    // the eslint rule, so the runtime invariant is always `ArrayBuffer`.
     ws.send(slice as Uint8Array<ArrayBuffer>);
   };
 }
@@ -736,17 +755,22 @@ function buildRouterHandlers(): RouterHandlers {
             new DataView(payload.buffer, payload.byteOffset, payload.byteLength),
             0,
           );
-          // Wire field is `clientCmdSeqNo` (int64). main-thread commandClient
-          // uses a u32-masked counter as the slot key, so the bigint here will
-          // always fit in a JS number (max 2^32-1 << 2^53). The lint rule
-          // `no-restricted-syntax` bans `Number(bigint)` because most bigint
-          // fields are prices/qty (fixed-point — must stay bigint). This field
-          // is a SEQUENCE NUMBER bounded by u32 mask — losing precision is
-          // impossible by construction. The bit-band path (`& Number.MAX_…`)
-          // is non-numeric coercion that satisfies the lint without introducing
-          // a Number() call.
+          // Wire field is `clientCmdSeqNo` (int64). The browser's commandClient
+          // uses a u32-masked counter as the slot key — bounded `0 < seq ≤
+          // 0xFFFFFFFF`. After EventSink broadcasts CommandAck to ALL cluster
+          // sessions, this worker may also see acks for FIX-gateway-originated
+          // commands whose sequence space is unbounded. Filter those out so they
+          // cannot spuriously fire a slot collision: only browser-originated
+          // acks (seq within u32) are forwarded. Bigint comparison avoids the
+          // `no-restricted-syntax` Number(bigint) coercion.
+          const seqBig = dec.clientCmdSeqNo();
+          if (seqBig <= 0n || seqBig > 0xffffffffn) {
+            return;
+          }
+          // Safe: comparison above guarantees seqBig fits in u32, well inside
+          // Number.MAX_SAFE_INTEGER.
           // eslint-disable-next-line no-restricted-syntax
-          const correlationId = Number(dec.clientCmdSeqNo());
+          const correlationId = Number(seqBig);
           const statusOrd = dec.status();
           const statusLabel = commandAckStatusLabel(statusOrd);
           postCommandAck(correlationId, statusLabel);
@@ -988,10 +1012,21 @@ function sendDefaultSubscriptions(): void {
     const symbol = DEFAULT_SUBSCRIBE_SYMBOLS[i];
     if (symbol === undefined) continue;
     const entryOffset = HEADER_BYTES + GROUP_HEADER_BYTES + i * ENTRY_BYTES;
-    // Encode 8 bytes ASCII; charCodeAt is the documented source-of-truth for
-    // Symbol fields per APP-36 §A1 (server decodes via US-ASCII byte-array).
+    // Encode 8 bytes printable ASCII; throw on non-printable so a future
+    // mis-configured symbol fails loud rather than silently corrupting via
+    // a `& 0x7f` mask. Symbols are wire-pinned ASCII per APP-36 §A1.
     for (let b = 0; b < 8; b++) {
-      sbe[entryOffset + b] = b < symbol.length ? symbol.charCodeAt(b) & 0x7f : 0;
+      if (b < symbol.length) {
+        const code = symbol.charCodeAt(b);
+        if (code < 0x20 || code > 0x7e) {
+          throw new RangeError(
+            `sendDefaultSubscriptions: non-ASCII byte 0x${code.toString(16)} in symbol "${symbol}"`,
+          );
+        }
+        sbe[entryOffset + b] = code;
+      } else {
+        sbe[entryOffset + b] = 0;
+      }
     }
     view.setUint32(entryOffset + 8, SUBSCRIBE_ALL_EVENT_TYPES, true);
   }
@@ -1022,7 +1057,7 @@ function buildAuthCallbacks(): AuthClientCallbacks {
       //   bytes 8-9  protocolVersion (u16 LE)
       //   bytes 10-13 token length (u32 LE — varDataEncoding)
       //   bytes 14+  token bytes (UTF-8 of JWT compact serialisation)
-      const tokenBytes = new TextEncoder().encode(token);
+      const tokenBytes = AUTH_TOKEN_ENCODER.encode(token);
       const HEADER_BYTES = 8;
       const BLOCK_LENGTH = 2; // protocolVersion uint16
       const VAR_LENGTH_BYTES = 4; // varDataEncoding length prefix is uint32

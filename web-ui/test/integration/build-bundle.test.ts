@@ -107,14 +107,20 @@ describe("bundle-guard: size budget", () => {
 });
 
 function readBudget(): BundleBudget {
+  let raw: string;
   try {
-    const raw = readFileSync(BUDGET_FILE, "utf8");
-    return JSON.parse(raw) as BundleBudget;
-  } catch {
-    // First run — write a starter budget so subsequent runs have a baseline.
-    const totals = computeTotals();
-    return totals;
+    raw = readFileSync(BUDGET_FILE, "utf8");
+  } catch (e: unknown) {
+    // Self-baselining (returning current totals as the budget) silently passes
+    // every regression on a fresh checkout — defeats the entire test. Fail
+    // loudly with a measure-and-commit instruction.
+    throw new Error(
+      `bundle-guard: missing baseline at ${BUDGET_FILE}. Run \`npm run build\`, ` +
+        `compute gzip+brotli totals over dist/assets/*.js, and commit a starter ` +
+        `bundle-budget.json. Original error: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
+  return JSON.parse(raw) as BundleBudget;
 }
 
 function computeTotals(): BundleBudget {

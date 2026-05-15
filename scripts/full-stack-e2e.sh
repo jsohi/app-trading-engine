@@ -76,6 +76,10 @@ cleanup() {
   if [[ "$EXIT_CODE" -ne 0 ]]; then
     dump_logs_on_failure "$LOG_DIR"
   fi
+
+  # Best-effort scrub of on-disk JWTs. Files are gitignored under e2e/logs/
+  # but no token must outlive the suite.
+  rm -f "$LOG_DIR/jwt-A.txt" "$LOG_DIR/jwt-B.txt" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -141,14 +145,23 @@ done
 # and the server rejects with "no matching key(s) found". Per-issuer separation
 # is enforced by the `iss` claim → keyset mapping in the issuerRegistry, not by
 # disjoint kid prefixes.
-E2E_JWT_A=$(node "$REPO_ROOT/scripts/dev-token.mjs" --keyset A \
-  --iss https://dev-issuer.local --ttl 1800 \
-  2>>"$LOG_DIR/dev-token.log" | grep -E '^eyJ' || true)
-E2E_JWT_B=$(node "$REPO_ROOT/scripts/dev-token.mjs" --keyset B \
-  --iss https://dev-issuer-b.local --ttl 1800 \
-  2>>"$LOG_DIR/dev-token.log" | grep -E '^eyJ' || true)
+# Write tokens to dedicated files (chmod 600). Capturing via stdout + stderr
+# interleave is fragile — a stray "eyJ"-prefixed log line on stderr could win
+# the grep race. Files are deleted in the EXIT trap so they never persist.
+JWT_FILE_A="$LOG_DIR/jwt-A.txt"
+JWT_FILE_B="$LOG_DIR/jwt-B.txt"
+node "$REPO_ROOT/scripts/dev-token.mjs" --keyset A \
+  --iss https://dev-issuer.local --ttl 3600 \
+  >"$JWT_FILE_A" 2>>"$LOG_DIR/dev-token.log"
+node "$REPO_ROOT/scripts/dev-token.mjs" --keyset B \
+  --iss https://dev-issuer-b.local --ttl 3600 \
+  >"$JWT_FILE_B" 2>>"$LOG_DIR/dev-token.log"
+chmod 600 "$JWT_FILE_A" "$JWT_FILE_B" 2>/dev/null || true
+E2E_JWT_A=$(head -n 1 "$JWT_FILE_A" 2>/dev/null || true)
+E2E_JWT_B=$(head -n 1 "$JWT_FILE_B" 2>/dev/null || true)
 [[ "$E2E_JWT_A" =~ ^eyJ ]] && [[ "$E2E_JWT_B" =~ ^eyJ ]] || {
-  echo "FATAL: JWT mint failed — see $LOG_DIR/dev-token.log" >&2; exit 4;
+  echo "FATAL: JWT mint failed — see $LOG_DIR/dev-token.log" >&2
+  exit 4
 }
 
 # ----- 9. Render YAML overlays (Node one-liner — avoids envsubst on macOS) -----
@@ -223,24 +236,37 @@ echo "[full-stack-e2e] running Playwright suite (specs 01-07)..."
 PLAYWRIGHT_RESULT=$?
 
 # ----- 14. Test 8 multi-issuer: restart launcher with multi-issuer overlay -----
+#
+# The launcher PID dying is necessary but not sufficient — its child processes
+# (3 cluster-node JVMs, 3 archive JVMs, the media-driver process) may still hold
+# file locks on the Aeron archive segments and the cluster-data dir. Re-launching
+# against the same cluster-data dir while children are mid-flush corrupts state.
+#
+# Always rotate the cluster-data dir for the multi-issuer relaunch — the
+# multi-issuer config is semantically distinct, there is no reason to preserve
+# state across the boundary. Doing this unconditionally also eliminates the
+# brittle "did flush complete?" race entirely.
 echo "[full-stack-e2e] restarting launcher with multi-issuer overlay for test 8..."
 kill -TERM "$LAUNCHER_PID" 2>/dev/null || true
-# Bounded archive flush wait; if not complete in 30s, rotate the cluster-data dir
-# so the new launch cannot collide with stale archive segments.
-ARCHIVE_FLUSHED=0
-for _ in $(seq 1 30); do
-  if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
-    ARCHIVE_FLUSHED=1
-    break
-  fi
+# Wait up to 15s for the launcher process tree (parent + every direct child) to
+# exit gracefully. Then SIGKILL any survivors of the parent OR its descendants
+# AND any stale Aeron media-driver JVM bound to the e2e prefix.
+for _ in $(seq 1 15); do
+  if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then break; fi
   sleep 1
 done
-ROTATE_ARGS=()
-if [[ "$ARCHIVE_FLUSHED" -eq 0 ]]; then
-  echo "[full-stack-e2e] archive flush incomplete; rotating cluster-data dir for multi-issuer launch."
+# Force-kill the launcher PID and ALL descendants (children may outlive parent
+# briefly). The `pgrep -P` walks the immediate children; if Aeron spawns
+# grandchildren, the `-Daeron.dir.prefix=e2e` pkill below catches them.
+if kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+  pkill -KILL -P "$LAUNCHER_PID" 2>/dev/null || true
   kill -KILL "$LAUNCHER_PID" 2>/dev/null || true
-  ROTATE_ARGS=(-Daeron.dir.prefix=e2e-mi -Dcluster.baseDir=e2e/cluster-data-mi)
 fi
+pkill -KILL -f -- "-Daeron.dir.prefix=e2e " 2>/dev/null || true
+sleep 1
+# Always rotate to fresh cluster-data + Aeron prefix for multi-issuer — no
+# attempt to preserve state across the boundary, no race to detect "flush done".
+ROTATE_ARGS=(-Daeron.dir.prefix=e2e-mi -Dcluster.baseDir=e2e/cluster-data-mi)
 LAUNCHER_PID=""
 ./gradlew :launcher:run --no-daemon \
   -Dfix.host=localhost -Dfix.port=19880 \

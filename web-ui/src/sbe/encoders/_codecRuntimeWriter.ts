@@ -16,12 +16,19 @@
  * <p>Threading: the encoders are flyweights — single-threaded use only (caller serialises).
  */
 
-const TEXT_ENCODER = new TextEncoder();
-
 /**
- * Write a fixed-length null-padded char array. Truncates if the encoded UTF-8 byte length
- * exceeds {@code length} (asserts in dev to surface the truncation; production callers should
- * validate the input to the schema's max-length constraint client-side).
+ * Write a fixed-length null-padded char array directly from the source string's
+ * char codes. Truncates if the source length exceeds {@code length}. Throws
+ * `RangeError` if any character is outside the printable ASCII range (0x20–0x7E)
+ * — SBE `Symbol`/`ClOrdID`/`Account` etc. are wire-pinned ASCII per the FIX
+ * spec, so non-ASCII input is a programming error, not a silent corruption.
+ *
+ * <p><b>Allocation:</b> ZERO per call — no `TextEncoder.encode` (which would
+ * allocate a fresh `Uint8Array` per fixed-string field × 14 fields per
+ * `submitOrder`, contradicting the alloc-tripwire baseline). The hot path is a
+ * tight `charCodeAt` loop directly into the caller-provided `DataView`.
+ *
+ * <p>The reviewer-flagged TextEncoder-per-call regression is fixed here.
  */
 export function writeFixedString(
   buffer: DataView,
@@ -29,15 +36,15 @@ export function writeFixedString(
   length: number,
   value: string,
 ): void {
-  // Encode into a temporary scratch then copy + null-pad. We cannot encodeInto directly into
-  // the destination because we must zero-fill any trailing bytes — a partially-filled slot from
-  // a pool reuse must not bleed prior bytes into the wire frame.
-  const bytes = TEXT_ENCODER.encode(value);
-  const writeLen = Math.min(bytes.length, length);
+  const writeLen = Math.min(value.length, length);
   for (let i = 0; i < writeLen; i++) {
-    // bytes[i] is in-bounds by writeLen ≤ bytes.length; coerce undefined → 0
-    // for the strict-tsconfig path. Hot loop — keep as a single setUint8 call.
-    buffer.setUint8(offset + i, bytes[i] ?? 0);
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) {
+      throw new RangeError(
+        `writeFixedString: non-ASCII byte 0x${code.toString(16)} at index ${String(i)} of "${value}"`,
+      );
+    }
+    buffer.setUint8(offset + i, code);
   }
   for (let i = writeLen; i < length; i++) {
     buffer.setUint8(offset + i, 0);

@@ -203,16 +203,22 @@ export class CommandClient {
     if (this.inFlight >= MAX_IN_FLIGHT) {
       return Promise.reject(new BackpressureError());
     }
-    // u32 sequence: increment + mask. JS `number` is safe through 2^53; the mask ensures the
-    // wire field stays in u32 range. 0 is reserved as "slot free" sentinel.
-    // Compute the candidate seq + slot WITHOUT mutating this.nextSeq yet —
-    // if the slot is occupied we reject without burning the seq number
-    // (reviewer A LOW finding F-A7).
+    // u32 sequence: increment + mask. JS `number` is safe through 2^53; the mask
+    // ensures the wire field stays in u32 range. 0 is reserved as "slot free"
+    // sentinel. After u32 wrap (~2^32 submits) the candidate would be 0; we skip
+    // to 1 so the slot index 0 remains the sentinel.
     let candidateSeq = (this.nextSeq + 1) & 0xffffffff;
     if (candidateSeq === 0) candidateSeq = 1;
     const slotIdx = candidateSeq & SLOT_MASK;
     const slot = this.slots[slotIdx];
     if (slot?.seq !== 0) {
+      // Slot occupied — commit the seq advance SO the next call probes a
+      // different slot. Without this commit, repeated rejections at the
+      // wrap-around boundary (where candidateSeq = 1 and slot 1 is occupied
+      // by a long-pending submit) would loop forever on the same candidateSeq.
+      // Advancing past the collision is the right semantic: the number IS
+      // burned by the in-flight occupier.
+      this.nextSeq = candidateSeq;
       return Promise.reject(new RequestIdCollisionError(candidateSeq));
     }
     // Commit the seq advance — slot is free, we are taking it.
@@ -222,7 +228,12 @@ export class CommandClient {
       slot.seq = seq;
       slot.resolve = resolve;
       slot.reject = reject;
-      slot.deadlineMs = Date.now() + SLOT_TIMEOUT_MS;
+      // performance.now() is monotonic — wall-clock skew (NTP step / VM snapshot
+      // restore / DST adjust / OS sleep) cannot move it backwards or forwards
+      // independent of elapsed wall time. Using `Date.now()` here would let
+      // a clock step fire a timeout prematurely or never (already fixed in
+      // WorkerClient.ts; this site is the same bug).
+      slot.deadlineMs = performance.now() + SLOT_TIMEOUT_MS;
       this.inFlight++;
 
       // Real SBE encode (no JSON envelope, no synthetic ack). The pool is indexed by slot —
@@ -303,7 +314,8 @@ export class CommandClient {
 
   private scanExpired(): void {
     if (this.inFlight === 0) return;
-    const now = Date.now();
+    // Monotonic clock — paired with the `performance.now()`-based deadline above.
+    const now = performance.now();
     let seen = 0;
     for (let i = 0; i < SLOT_COUNT && seen < this.inFlight; i++) {
       const slot = this.slots[i];
