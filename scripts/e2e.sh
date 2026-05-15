@@ -16,6 +16,13 @@ LAUNCHER_PID=""
 E2E_RESULT=1
 E2E_STARTUP_TIMEOUT="${E2E_STARTUP_TIMEOUT:-90}"
 
+# Shared helpers (also used by scripts/full-stack-e2e.sh). Sourcing keeps the
+# two scripts from drifting on readiness/log-dump semantics.
+# shellcheck source=lib/wait-system-ready.sh
+source "$E2E_DIR/scripts/lib/wait-system-ready.sh"
+# shellcheck source=lib/log-capture.sh
+source "$E2E_DIR/scripts/lib/log-capture.sh"
+
 # --- Pre-flight checks ---
 for cmd in lsof pkill pgrep; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "FAIL: $cmd not found"; exit 1; }
@@ -38,22 +45,13 @@ cleanup() {
     sleep 2
     pkill -9 -f -- "-Daeron.dir.prefix=e2e" 2>/dev/null || true
 
-    # Collect logs on failure
+    # Collect logs on failure (delegates to shared dump helper, then adds the
+    # focused tails this script's failure-mode reports specifically need).
     if [[ "${E2E_RESULT}" -ne 0 ]]; then
-        echo ""
-        echo "=== ERRORS IN LAUNCHER LOG ==="
-        grep -i "error\|exception\|fatal" "$LOG_DIR/launcher.log" 2>/dev/null | tail -30 || true
-        echo ""
-        echo "=== LAST 100 LINES OF LAUNCHER LOG ==="
-        tail -100 "$LOG_DIR/launcher.log" 2>/dev/null || true
+        dump_logs_on_failure "$LOG_DIR"
         echo ""
         echo "=== LAST 100 LINES OF E2E CLIENT LOG ==="
         tail -100 "$LOG_DIR/e2e-client.log" 2>/dev/null || true
-        echo ""
-        echo "=== MEDIA DRIVER ERRORS ==="
-        for f in "$LOG_DIR"/media-driver-*.stdout.log; do
-            [ -f "$f" ] && grep -il "error\|exception" "$f" 2>/dev/null && tail -20 "$f" || true
-        done
     fi
 }
 trap cleanup EXIT
@@ -105,25 +103,7 @@ LAUNCHER_PID=$!
 
 # --- 4. Wait for SYSTEM_READY (configurable timeout, default 90s) ---
 echo "Waiting for SYSTEM_READY (timeout: ${E2E_STARTUP_TIMEOUT}s)..."
-DEADLINE=$((SECONDS + E2E_STARTUP_TIMEOUT))
-while ! grep -q "SYSTEM_READY" "$LOG_DIR/launcher.log" 2>/dev/null; do
-    if [[ $SECONDS -ge $DEADLINE ]]; then
-        echo "FAIL: Trading engine did not reach SYSTEM_READY within ${E2E_STARTUP_TIMEOUT}s"
-        exit 1
-    fi
-    if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
-        echo "FAIL: Trading engine process died during startup"
-        exit 1
-    fi
-    # Fail fast on startup errors — match "Startup failed" (Log4j2 ERROR level) specifically,
-    # not "fatal" generically (which false-matches GFLog config warnings containing the word
-    # FATAL in enumeration lists like '[TRACE, DEBUG, INFO, WARN, ERROR, FATAL]').
-    if grep -q "Startup failed" "$LOG_DIR/launcher.log" 2>/dev/null; then
-        echo "FAIL: Startup error detected"
-        exit 1
-    fi
-    sleep 1
-done
+wait_for_system_ready "$LOG_DIR/launcher.log" "$E2E_STARTUP_TIMEOUT" "$LAUNCHER_PID"
 echo "Trading engine ready."
 
 # --- 5. Run E2E test client via installDist (no second Gradle process) ---

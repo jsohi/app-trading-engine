@@ -88,6 +88,92 @@ val webUiE2e by tasks.registering(NpmTask::class) {
     args.set(listOf("run", "-w", "web-ui", "e2e:smoke"))
 }
 
+// Full-stack E2E (plan §9). Used by scripts/full-stack-e2e.sh — depends on
+// webUiInstall + Playwright Chromium download. The :fullStackE2eRun task is
+// invoked in foreground after the cluster is up; :fullStackE2eRunMultiIssuer
+// is invoked separately after the launcher reboots with the multi-issuer
+// overlay. Both share the same Playwright config — the test split is by
+// filename ordering inside e2e/full-stack/.
+val webUiE2eDeps by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Install npm + Playwright Chromium for full-stack-e2e."
+    dependsOn(webUiInstall)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    // npm exec --workspace web-ui ensures we resolve playwright from web-ui's deps.
+    args.set(
+        listOf(
+            "exec",
+            "-w",
+            "web-ui",
+            "--",
+            "playwright",
+            "install",
+            "--with-deps",
+            "chromium",
+        ),
+    )
+}
+
+val bundleGuard by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Build prod bundle + assert no test-mode escape-hatch leaks + size budget."
+    dependsOn(webUiInstall)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    args.set(
+        listOf(
+            "exec",
+            "-w",
+            "web-ui",
+            "--",
+            "vitest",
+            "run",
+            "--project",
+            "unit",
+            "test/integration/build-bundle.test.ts",
+        ),
+    )
+}
+
+val fullStackE2eRun by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Playwright full-stack run (specs 01-07; expects launcher pre-booted by scripts/full-stack-e2e.sh)."
+    dependsOn(webUiE2eDeps)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    args.set(
+        listOf(
+            "exec",
+            "-w",
+            "web-ui",
+            "--",
+            "playwright",
+            "test",
+            "--config=playwright.full-stack.config.ts",
+            "--grep-invert",
+            "multi-issuer",
+        ),
+    )
+}
+
+val fullStackE2eRunMultiIssuer by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Playwright full-stack run for spec 08 (multi-issuer); expects launcher rebooted with multi-issuer overlay."
+    dependsOn(webUiE2eDeps)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    args.set(
+        listOf(
+            "exec",
+            "-w",
+            "web-ui",
+            "--",
+            "playwright",
+            "test",
+            "--config=playwright.full-stack.config.ts",
+            "--grep",
+            "multi-issuer",
+        ),
+    )
+}
+
 val webUiStorybook by tasks.registering(NpmTask::class) {
     group = "build"
     description = "Storybook static build → storybook-static/."

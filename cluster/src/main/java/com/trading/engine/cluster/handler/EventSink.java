@@ -112,8 +112,23 @@ public final class EventSink {
     // 4. Append to journal (fatal on monotonicity violation — triggers Aeron failover)
     journal.append(seqNo, templateId, buffer, offset, length);
 
-    // 5. Offer to session with backpressure retry
-    offerToSession(session, buffer, offset, length);
+    // 5. Broadcast to ALL connected cluster client sessions — the websocket-server
+    // and the gateway each open their own cluster session, and every domain event
+    // must reach every client so per-client subscription filters can route them
+    // (e.g., a FIX-injected order's OrderCreated must surface in the browser's
+    // OrderBlotter via the websocket-server's session, not only on the gateway's).
+    // The `session` parameter is the originator and is included in the broadcast
+    // — its consumer already expects to see its own events. Backpressure is
+    // handled per-session by offerToSession; a slow client cannot starve fast
+    // ones because each iteration retries independently.
+    if (cluster != null) {
+      for (final var s : cluster.clientSessions()) {
+        offerToSession(s, buffer, offset, length);
+      }
+    } else {
+      // Test path (no cluster wired) — fall back to the single-session offer.
+      offerToSession(session, buffer, offset, length);
+    }
 
     return seqNo;
   }

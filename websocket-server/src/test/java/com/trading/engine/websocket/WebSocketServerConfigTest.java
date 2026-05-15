@@ -349,6 +349,24 @@ final class WebSocketServerConfigTest {
   }
 
   @Test
+  void rejectsHttpJwksUri_loadingFromYaml(@TempDir final Path tmp) throws IOException {
+    // YAML-load variant of the builder-form test above (reviewer F15). Defence-in-depth:
+    // the validator runs in both code paths; the YAML loader assembles the registry differently
+    // (requireIssuerRegistry maps "jwksUri" YAML keys), so a regression that broke only the
+    // YAML path would slip past the builder-form test.
+    final var yaml = tmp.resolve("config.yaml");
+    Files.writeString(
+        yaml,
+        """
+        jwtAudience: trading-ui
+        issuerRegistry:
+          "https://issuer-x":
+            jwksUri: "http://attacker.example/keys.json"
+        """);
+    assertThrows(IllegalArgumentException.class, () -> WebSocketServerConfig.fromYaml(yaml));
+  }
+
+  @Test
   void validate_authFailureLockoutFieldsValidation() {
     // Zero values
     assertThrows(

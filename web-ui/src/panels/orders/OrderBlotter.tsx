@@ -35,6 +35,10 @@ import { AgGridReact } from "ag-grid-react";
 import { type ColDef, type ValueFormatterParams, type ValueGetterParams } from "ag-grid-community";
 
 import { messages$ } from "@/main-thread/messageSource";
+// `registerOrdersGridApi` is dynamic-imported inside `onGridReady` below to keep
+// `e2eHooks.ts` (with `__ordersGridApi` and `__forceWsClose` global symbol literals)
+// out of the production bundle. Bundle-guard test asserts those literals are absent
+// from dist/*.js. Static import would land them regardless of DCE.
 import { type OrderUpdate } from "@/shared/transport/MessageShape";
 import { nanosToDate, toFixed8 } from "@/shared/transport/format/toFixed8";
 import { themeQuartzDark } from "@/shared/grid/agGridTheme";
@@ -172,13 +176,23 @@ export function OrderBlotter(): JSX.Element {
   }, [sink]);
 
   return (
-    <div style={{ height: "100%", width: "100%" }}>
+    <div data-testid="blotter-orders" style={{ height: "100%", width: "100%" }}>
       <AgGridReact<OrderUpdate>
         theme={themeQuartzDark}
         columnDefs={COLUMN_DEFS as ColDef<OrderUpdate>[]}
         getRowId={(p) => getRowId(p.data)}
         asyncTransactionWaitMillis={16}
-        onGridReady={sink.onGridReady}
+        onGridReady={(params) => {
+          sink.onGridReady(params);
+          // Test-mode hook for the full-stack-e2e cellFlash recorder (plan §8 test 5):
+          // expose AG Grid api via `window.__ordersGridApi`. Dynamic-imported so
+          // `e2eHooks.ts` doesn't bleed into the prod bundle (bundle-guard test).
+          if (import.meta.env.VITE_E2E_REAL_BACKEND === "true") {
+            void import("@/main-thread/e2eHooks").then((m) => {
+              m.registerOrdersGridApi(params.api);
+            });
+          }
+        }}
         rowBuffer={20}
       />
     </div>

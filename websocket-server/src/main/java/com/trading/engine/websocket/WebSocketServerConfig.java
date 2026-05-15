@@ -323,6 +323,17 @@ public final class WebSocketServerConfig {
    * @throws IllegalArgumentException if any value is out of range
    */
   public static WebSocketServerConfig fromYaml(final Path filePath) throws IOException {
+    return fromYaml(filePath, OidcDiscoveryClient.createDefault());
+  }
+
+  /**
+   * Variant of {@link #fromYaml(Path)} that accepts an {@link OidcDiscoveryClient}. Used by {@code
+   * WebSocketServerConfigOidcDiscoveryTest} to inject a Jetty stub-backed client. Production
+   * callers should use the no-arg overload above.
+   */
+  public static WebSocketServerConfig fromYaml(
+      final Path filePath, final OidcDiscoveryClient discoveryClient) throws IOException {
+    Objects.requireNonNull(discoveryClient, "discoveryClient");
     final Object raw;
     try (final var in = Files.newInputStream(filePath)) {
       raw = new Yaml(new SafeConstructor(new LoaderOptions())).load(in);
@@ -404,7 +415,7 @@ public final class WebSocketServerConfig {
             "Config key 'issuerRegistry' must be a mapping, got: "
                 + issuers.getClass().getSimpleName());
       }
-      b.issuerRegistry(requireIssuerRegistry((Map<?, ?>) issuers));
+      b.issuerRegistry(requireIssuerRegistry((Map<?, ?>) issuers, discoveryClient));
     }
 
     return b.build();
@@ -483,7 +494,23 @@ public final class WebSocketServerConfig {
     return List.copyOf(stringList);
   }
 
-  private static Map<String, String> requireIssuerRegistry(final Map<?, ?> map) {
+  /**
+   * Parses the {@code issuerRegistry} YAML mapping into an issuer→jwksUri map. Each entry must
+   * specify EXACTLY ONE of {@code jwksUri} (direct) or {@code oidcDiscoveryUri} (RFC 8414
+   * discovery) — both or neither is rejected as an operator misconfiguration.
+   *
+   * <p>{@code oidcDiscoveryUri} entries are resolved eagerly via {@code discoveryClient}: a single
+   * HTTPS GET, JSON-parsed, {@code jwks_uri} extracted and host-checked (RFC 8414 §3). The resolved
+   * value is substituted back into the registry so downstream consumers (e.g. {@link JwtValidator})
+   * never need to know whether the URI was direct or discovered. A failure during discovery throws
+   * {@link OidcDiscoveryException} which surfaces as a startup-fatal error.
+   *
+   * @param map the YAML mapping (already validated as Map by the caller)
+   * @param discoveryClient client used to resolve {@code oidcDiscoveryUri} entries at startup
+   * @return issuer→jwksUri map (always direct https URIs, never discovery URIs)
+   */
+  private static Map<String, String> requireIssuerRegistry(
+      final Map<?, ?> map, final OidcDiscoveryClient discoveryClient) {
     final var registry = new HashMap<String, String>();
     map.forEach(
         (k, v) -> {
@@ -495,22 +522,47 @@ public final class WebSocketServerConfig {
             throw new IllegalArgumentException(
                 "issuerRegistry entry '"
                     + k
-                    + "' must be a mapping with 'jwksUri', got: "
+                    + "' must be a mapping with 'jwksUri' or 'oidcDiscoveryUri', got: "
                     + v.getClass().getSimpleName());
           }
-          final var uri = inner.get("jwksUri");
-          if (uri == null) {
-            throw new IllegalArgumentException(
-                "issuerRegistry entry '" + k + "' is missing required 'jwksUri' field");
-          }
-          if (!(uri instanceof String)) {
+          final var jwksUriRaw = inner.get("jwksUri");
+          final var discoveryUriRaw = inner.get("oidcDiscoveryUri");
+          if (jwksUriRaw == null && discoveryUriRaw == null) {
             throw new IllegalArgumentException(
                 "issuerRegistry entry '"
                     + k
-                    + "' jwksUri must be a string, got: "
-                    + uri.getClass().getSimpleName());
+                    + "' must specify exactly one of 'jwksUri' or 'oidcDiscoveryUri'");
           }
-          registry.put((String) k, (String) uri);
+          if (jwksUriRaw != null && discoveryUriRaw != null) {
+            throw new IllegalArgumentException(
+                "issuerRegistry entry '"
+                    + k
+                    + "' specifies both 'jwksUri' and 'oidcDiscoveryUri' — they are mutually"
+                    + " exclusive");
+          }
+          if (jwksUriRaw != null) {
+            if (!(jwksUriRaw instanceof String)) {
+              throw new IllegalArgumentException(
+                  "issuerRegistry entry '"
+                      + k
+                      + "' jwksUri must be a string, got: "
+                      + jwksUriRaw.getClass().getSimpleName());
+            }
+            registry.put((String) k, (String) jwksUriRaw);
+            return;
+          }
+          // OIDC discovery branch — resolve at startup.
+          if (!(discoveryUriRaw instanceof String discoveryUri)) {
+            throw new IllegalArgumentException(
+                "issuerRegistry entry '"
+                    + k
+                    + "' oidcDiscoveryUri must be a string, got: "
+                    + discoveryUriRaw.getClass().getSimpleName());
+          }
+          // Discovery client is intentionally synchronous and fail-fast — we are inside config
+          // load, single-threaded startup, allocation OK. A discovery failure aborts startup.
+          final var resolved = discoveryClient.resolveJwksUri(discoveryUri);
+          registry.put((String) k, resolved);
         });
     return registry;
   }

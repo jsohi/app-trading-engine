@@ -91,6 +91,23 @@ export const CONSECUTIVE_AUTH_FAILURES_FREEZE = 3;
 export const RATE_LIMIT_FREEZE_AFTER = 2;
 export const RATE_LIMIT_FREEZE_WINDOW_MS = 5 * 60_000;
 
+/**
+ * Worst-case wall-clock budget for an unattended client to re-establish a wss session
+ * after a forced disconnect. Used by the full-stack-e2e replay-reconnect spec (plan §8
+ * test 7) instead of a hardcoded 30_000 — tuning the backoff stays in sync with the
+ * gate.
+ *
+ * Derivation (per §5.2 backoff design): exponential with base 500ms capped at 30s.
+ * For the `__forceWsClose` test path the worker reconnects on the first attempt
+ * (no Reconnect.applyCloseCode penalty, no rate-limit multiplier), so the practical
+ * gate is one base interval (~500ms backoff jitter) + WS handshake (~10s p99 cold CI)
+ * + wss + AuthAck round-trip (~5s p99). Sum: 15.5s; bumped to 30s to absorb cold CI
+ * variance + JFR overhead.
+ */
+export const WS_HANDSHAKE_BUDGET_MS = 10_000;
+/** Plan §8 test 7 reconnect budget — derived from backoff + handshake constants. */
+export const RECONNECT_GATE_MS = RECONNECT_BASE_MS + WS_HANDSHAKE_BUDGET_MS + RECONNECT_CAP_MS / 2;
+
 // ─── Gap detection (§2.7) ──────────────────────────────────────────
 /** Out-of-order buffer cap (bytes, not frames). Over → close BufferOverflow. */
 export const MAX_GAP_BUFFER_BYTES = 16 * 1024 * 1024;

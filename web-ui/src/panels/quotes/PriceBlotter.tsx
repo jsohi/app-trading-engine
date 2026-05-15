@@ -141,7 +141,7 @@ export function PriceBlotter(): JSX.Element {
   }, [sink]);
 
   return (
-    <div style={{ height: "100%", width: "100%" }}>
+    <div data-testid="blotter-prices" style={{ height: "100%", width: "100%" }}>
       <AgGridReact<PriceRowData>
         theme={themeQuartzDark}
         columnDefs={COLUMN_DEFS as ColDef<PriceRowData>[]}

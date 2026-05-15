@@ -23,6 +23,7 @@ Thumbs.db
 node_modules/
 dist/
 playwright-report/
+playwright-report-full-stack/
 test-results/
 storybook-static/
 coverage/
@@ -38,8 +39,22 @@ logs/
 # JVM crash logs
 hs_err_pid*.log
 
-# E2E test runtime artifacts (not the checked-in test data or source code)
-/e2e/
+# E2E test runtime artifacts (not the checked-in test data or source code).
+# Note: only specific subdirs are ignored — e2e/config/*.tmpl (committed templates
+# rendered at runtime by scripts/full-stack-e2e.sh) and e2e/* committed test data
+# (currently none) remain tracked. The full-stack overlay rendered files are
+# explicitly ignored below.
+e2e/cluster-data*/
+e2e/logs/
+e2e/config/websocket-server-e2e.yaml
+e2e/config/websocket-server-multi-issuer.yaml
+# Catch e2e/ subdirs created beneath any module (launcher/e2e/, integration-tests/e2e/,
+# etc. that may appear when running launcher tests from a module subdirectory).
 **/e2e/cluster-data/
+**/e2e/cluster-data-*/
 **/e2e/logs/
 fix-logs/
+
+# JCStress raw run artefacts (per-run binary, large, not source-controlled).
+# HTML report under websocket-server/build/reports/jcstress/ is ignored via build/.
+**/jcstress-results-*.bin.gz

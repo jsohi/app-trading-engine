@@ -501,11 +501,21 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     enc.clientHeartbeatIntervalMs(Math.toIntExact(config.negotiatedClientHeartbeatIntervalMs()));
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
-    final var nettyBuf = ctx.alloc().buffer(encodedLen);
+    // The client's worker pipeline is FrameParser-first: every inbound binary
+    // frame after upgrade goes through the 13-byte best-effort envelope. AuthAck
+    // is no exception — the next handler installed downstream (WebSocketFrameDispatcher)
+    // also reads framed bytes. Wrap the SBE payload in a best-effort envelope
+    // (totalLength u32 | seqNo i64 = 0 | flags u8 = 0) so the client's existing
+    // FrameParser → MessageRouter → AuthClient pipeline sees template 61.
+    final int frameLen = BEST_EFFORT_HEADER_LENGTH + encodedLen;
+    final var nettyBuf = ctx.alloc().buffer(frameLen);
     // Release on any exception path BEFORE the write happens; successful
     // writeAndFlush transfers buffer ownership. catch+rethrow avoids a
     // mutable `boolean written` local per CLAUDE.md.
     try {
+      nettyBuf.writeIntLE(frameLen); // totalLength = envelope + payload
+      nettyBuf.writeLongLE(0L); // seqNo = 0 on best-effort
+      nettyBuf.writeByte(0); // flags = 0 (best-effort, no CRC, no replay/snapshot)
       nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
       ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
     } catch (final Throwable t) {
@@ -513,6 +523,9 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       throw t;
     }
   }
+
+  /** Best-effort envelope: totalLength u32 LE | seqNo i64 LE | flags u8. */
+  private static final int BEST_EFFORT_HEADER_LENGTH = 13;
 
   private void resolveAuth() {
     authResolved = true;

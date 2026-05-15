@@ -43,6 +43,13 @@ import {
   WORKER_RESPAWN_WINDOW_MS,
 } from "@/workers/WorkerTuning";
 
+/** CommandAck envelope surfaced by the worker on the commandPort (plan §12). */
+export interface CommandAckEnvelope {
+  readonly correlationId: number;
+  readonly status: "Accepted" | "Rejected" | "Duplicate" | "Throttled";
+  readonly reasonCode?: string;
+}
+
 /** Public surface — caller subscribes to receive worker → main events. */
 export interface WorkerClientStreams {
   /** Discriminated union; consumers narrow on `msg.type`. */
@@ -58,6 +65,12 @@ export interface WorkerClientStreams {
    * reconnect UX) can react.
    */
   readonly connectionState$: BehaviorSubject<ConnectionState>;
+  /**
+   * CommandAck envelopes from the worker's commandPort (plan §12 / APP-160).
+   * Subscribed by `commandClient` to resolve pending submitOrder Promises by
+   * matching `correlationId` against its slot table.
+   */
+  readonly commandAcks$: Subject<CommandAckEnvelope>;
 }
 
 export interface WorkerClientOptions {
@@ -78,10 +91,12 @@ export class WorkerClient implements WorkerClientStreams {
   readonly messages$ = new Subject<WorkerMessage>();
   readonly errors$ = new Subject<WorkerErrorMsg>();
   readonly connectionState$ = new BehaviorSubject<ConnectionState>("CONNECTING");
+  readonly commandAcks$ = new Subject<CommandAckEnvelope>();
 
   private readonly options: WorkerClientOptions;
   private worker: Worker | null = null;
   private watchdogChannel: MessageChannel | null = null;
+  private commandChannel: MessageChannel | null = null;
   private pingTimer: number | null = null;
   private pongDeadlineTimer: number | null = null;
   private consecutiveMisses = 0;
@@ -128,6 +143,8 @@ export class WorkerClient implements WorkerClientStreams {
     this.stopWatchdog();
     this.watchdogChannel?.port1.close();
     this.watchdogChannel = null;
+    this.commandChannel?.port1.close();
+    this.commandChannel = null;
     this.spawn().catch((err: unknown) => {
       this.errors$.next({
         type: "ERROR",
@@ -152,13 +169,17 @@ export class WorkerClient implements WorkerClientStreams {
     }
     this.watchdogChannel?.port1.close();
     this.watchdogChannel = null;
+    this.commandChannel?.port1.close();
+    this.commandChannel = null;
     this.messages$.complete();
     this.errors$.complete();
+    this.commandAcks$.complete();
   }
 
   private async spawn(): Promise<void> {
     const tokenPort = await this.options.tokenProvider();
     this.watchdogChannel = new MessageChannel();
+    this.commandChannel = new MessageChannel();
     const worker = loadWorker();
     this.worker = worker;
     worker.onmessage = (ev: MessageEvent<WorkerToMain>) => {
@@ -173,7 +194,13 @@ export class WorkerClient implements WorkerClientStreams {
       this.onWatchdogPong(ev);
     };
 
-    // Send INIT with both ports as Transferables.
+    // Wire command port (main side, plan §12 / APP-160). Worker posts
+    // CommandAck envelopes here when wss frames matching templateId=70 arrive.
+    this.commandChannel.port1.onmessage = (ev: MessageEvent<unknown>) => {
+      this.onCommandAck(ev.data);
+    };
+
+    // Send INIT with all three ports as Transferables.
     worker.postMessage(
       {
         type: "INIT",
@@ -181,12 +208,60 @@ export class WorkerClient implements WorkerClientStreams {
         wsUrl: this.options.wsUrl,
         tokenPort,
         watchdogPort: this.watchdogChannel.port2,
+        commandPort: this.commandChannel.port2,
         initialReconnectAttempt: this.currentReconnectAttempt,
       },
-      [tokenPort, this.watchdogChannel.port2],
+      [tokenPort, this.watchdogChannel.port2, this.commandChannel.port2],
     );
 
     this.startWatchdog();
+  }
+
+  /**
+   * Submit a pre-encoded command frame (SBE NewOrderSingle bytes from
+   * {@link import("@/sbe/encoders/NewOrderSingleEncoder").NewOrderSingleEncoder})
+   * to the worker for transmission on the wss send queue. The
+   * {@code correlationId} is the main-thread slot key that {@link commandAcks$}
+   * envelopes will carry back.
+   */
+  submitCommand(bytes: Uint8Array, length: number, correlationId: number): void {
+    if (this.commandChannel === null) {
+      throw new Error("WorkerClient.submitCommand: not started — call start() first");
+    }
+    // postMessage with the underlying ArrayBuffer transferred for zero-copy
+    // hand-off. The worker uses subarray(0, length) so the trailing bytes of
+    // the pooled buffer are ignored.
+    this.commandChannel.port1.postMessage({ type: "COMMAND_FRAME", bytes, length, correlationId }, [
+      bytes.buffer,
+    ]);
+  }
+
+  private onCommandAck(data: unknown): void {
+    if (
+      data === null ||
+      typeof data !== "object" ||
+      (data as { type?: unknown }).type !== "COMMAND_ACK"
+    ) {
+      return;
+    }
+    const env = data as { correlationId?: unknown; status?: unknown; reasonCode?: unknown };
+    if (typeof env.correlationId !== "number" || typeof env.status !== "string") return;
+    const status = env.status;
+    if (
+      status !== "Accepted" &&
+      status !== "Rejected" &&
+      status !== "Duplicate" &&
+      status !== "Throttled"
+    ) {
+      return;
+    }
+    // Conditional spread satisfies exactOptionalPropertyTypes — `reasonCode`
+    // is omitted entirely when absent rather than set to `undefined`.
+    const ack: CommandAckEnvelope =
+      typeof env.reasonCode === "string"
+        ? { correlationId: env.correlationId, status, reasonCode: env.reasonCode }
+        : { correlationId: env.correlationId, status };
+    this.commandAcks$.next(ack);
   }
 
   private onWorkerMessage(msg: WorkerToMain): void {
@@ -260,6 +335,11 @@ export class WorkerClient implements WorkerClientStreams {
       this.stopWatchdog();
       this.watchdogChannel?.port1.close();
       this.watchdogChannel = null;
+      // Per reviewer B finding: close commandChannel.port1 + null the field on
+      // every auto-respawn path (mirror watchdog cleanup). Prior versions
+      // leaked one MessagePort + listener per reconnect cycle.
+      this.commandChannel?.port1.close();
+      this.commandChannel = null;
       this.spawn().catch((err: unknown) => {
         this.errors$.next({
           type: "ERROR",
@@ -329,6 +409,10 @@ export class WorkerClient implements WorkerClientStreams {
     this.stopWatchdog();
     this.watchdogChannel?.port1.close();
     this.watchdogChannel = null;
+    // Per reviewer B finding: close commandChannel.port1 + null the field on
+    // every auto-respawn path (mirror watchdog cleanup).
+    this.commandChannel?.port1.close();
+    this.commandChannel = null;
 
     // Per /review LOW + Agent B MEDIUM: use monotonic `performance.now()`
     // instead of wall-clock `Date.now()`. This is elapsed-time math (the
@@ -349,6 +433,11 @@ export class WorkerClient implements WorkerClientStreams {
           Math.floor(WORKER_RESPAWN_WINDOW_MS / 1000),
         )} s`,
       });
+      // Push WORKER_DEAD onto connectionState$ so downstream subscribers
+      // (commandClient.failAllInFlight + ConnectionIndicator + reconnect UX)
+      // observe the terminal state immediately rather than waiting on a
+      // 5s CommandTimeoutError. Reviewer A HIGH finding F-A2.
+      this.connectionState$.next("WORKER_DEAD");
       return;
     }
 

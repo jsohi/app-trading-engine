@@ -10,13 +10,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/enforce-plan-design-before-exit.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-plan-design-before-exit.sh",
             "timeout": 5,
             "statusMessage": "Checking plan design gate (Plan-agent marker)..."
           },
           {
             "type": "command",
-            "command": ".claude/hooks/enforce-plan-review-before-exit.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-plan-review-before-exit.sh",
             "timeout": 5,
             "statusMessage": "Checking plan review gate (marker file)..."
           }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/enforce-review-before-complete.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-review-before-complete.sh",
             "timeout": 5,
             "statusMessage": "Checking review + test gates before task completion..."
           }
@@ -38,19 +38,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/pre-tool-use.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-use.sh",
             "timeout": 5,
             "statusMessage": "Checking Linear issue convention..."
           },
           {
             "type": "command",
-            "command": ".claude/hooks/enforce-review-before-push.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-review-before-push.sh",
             "timeout": 5,
             "statusMessage": "Checking review + E2E gate..."
           },
           {
             "type": "command",
-            "command": ".claude/hooks/enforce-review-after-gemini.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-review-after-gemini.sh",
             "timeout": 5,
             "statusMessage": "Checking post-Gemini /review gate..."
           },
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/record-plan-agent-done.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/record-plan-agent-done.sh",
             "timeout": 5,
             "statusMessage": "Recording Plan-agent invocation (if subagent_type=Plan)..."
           }
