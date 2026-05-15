@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.EpochNanoClock;
@@ -95,6 +96,16 @@ public final class E2EFixTestClient {
   private static final long RESPONSE_TIMEOUT_MS = 30_000;
   private static final int LIBRARY_POLL_LIMIT = 10;
   private static final int MESSAGE_QUEUE_CAPACITY = 64;
+
+  /**
+   * Sticky flag set by the {@link SessionHandler#onMessage} callback when the bounded capture queue
+   * rejects an offer. Read by {@code run(...)} after every scenario and surfaces the failure as
+   * {@link #EXIT_EXCEPTION} so the operator sees the root cause instead of the misleading {@link
+   * #EXIT_TIMEOUT} that would otherwise fire 30 s later when the test polled an empty queue. Static
+   * to keep the bridge between the Artio I/O thread (handler) and the runner thread simple — only
+   * one client process is in flight per JVM.
+   */
+  private static final AtomicBoolean CAPTURE_QUEUE_OVERFLOWED = new AtomicBoolean(false);
 
   /** Monotonic clock for elapsed-time measurement and deadlines. */
   private static final NanoClock NANO_CLOCK = TradingClocks.nanoClock();
@@ -509,6 +520,20 @@ public final class E2EFixTestClient {
 
     while (NANO_CLOCK.nanoTime() < responseDeadlineNs) {
       library.poll(LIBRARY_POLL_LIMIT);
+
+      // Capture-queue overflow is fatal — the silently-dropped frame would
+      // otherwise surface as an opaque RESPONSE_TIMEOUT 30 s later, masking
+      // the real cause. Bail with EXIT_EXCEPTION so the operator-visible exit
+      // reason matches what actually happened.
+      if (CAPTURE_QUEUE_OVERFLOWED.get()) {
+        LOG.error(
+            "[{}/{}] {} — FAIL: capture queue overflowed (capacity {})",
+            index + 1,
+            total,
+            scenario.name(),
+            MESSAGE_QUEUE_CAPACITY);
+        return EXIT_EXCEPTION;
+      }
 
       final var msg = messageQueue.poll();
       if (msg != null) {
@@ -980,7 +1005,20 @@ public final class E2EFixTestClient {
         // Defensively copy — Artio reuses the buffer after this callback returns
         final byte[] copy = new byte[length];
         buffer.getBytes(offset, copy);
-        messageQueue.offer(new CapturedMessage(messageType, copy));
+        // Bounded OneToOneConcurrentArrayQueue: if a scenario produces > 64
+        // captured messages before the polling loop drains them, dropping the
+        // tail silently surfaces as an opaque RESPONSE_TIMEOUT 30s later
+        // instead of a clean diagnostic. Log + flag so the operator sees the
+        // root cause immediately.
+        final boolean enqueued = messageQueue.offer(new CapturedMessage(messageType, copy));
+        if (!enqueued) {
+          LOG.error(
+              "E2E capture queue overflow (capacity {}): dropping messageType={}; raise"
+                  + " MESSAGE_QUEUE_CAPACITY or drain faster",
+              MESSAGE_QUEUE_CAPACITY,
+              messageType);
+          CAPTURE_QUEUE_OVERFLOWED.set(true);
+        }
         return Action.CONTINUE;
       }
 

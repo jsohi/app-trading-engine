@@ -13,26 +13,32 @@ import org.openjdk.jcstress.infra.results.II_Result;
  *
  * <p>Plan §14: nanosecond-resolution interleaving of one capture thread (writes seq=11) and one
  * replay thread (reads seq=11). Pre-seeded with seq 1..10 so the replay window is hot on entry. The
- * expected outcomes are:
+ * {@code @Actor replayer} encodes the observed state into a {@link II_Result} {@code (r1, r2)}; the
+ * mapping is:
  *
  * <ul>
- *   <li>{@code (1, 64)} — replay observed the in-progress write fully (length matches the
- *       deterministic payload).
- *   <li>{@code (-1, 0)} — replay observed nothing yet (slot still holds an evicted older seq).
+ *   <li>{@code (0, 0)} — {@code copyPayload} returned {@code n &lt; 0} (slot not yet visible, or
+ *       evicted before replay sampled it). The actor's guard zeros both fields so a "nothing
+ *       observed" outcome is unambiguous.
+ *   <li>{@code (64, 192)} — replay observed the fully-captured frame: {@code n == PAYLOAD_BYTES
+ *       (64)} and the XOR signature of the deterministic payload for {@code seq=11} equals {@link
+ *       #EXPECTED_XOR} (192).
  * </ul>
  *
- * <p>Any other (length, byteSum) combination is a forbidden interleaving (torn frame).
+ * <p>Any other {@code (n, xor)} combination is a forbidden interleaving (torn frame); the
+ * static-initialiser guard below blows up at class-load if a future schema change makes the literal
+ * {@code "64, 192"} stale.
  */
 @JCStressTest
 @Description("Capture(seq=11) vs Replay(seq=11): never produces a torn frame.")
 @Outcome(
     id = "0, 0",
     expect = Expect.ACCEPTABLE,
-    desc = "replay saw nothing yet (length -1 mapped via guard)")
+    desc = "replay observed nothing yet (copyPayload returned n<0 → guard zeros both fields)")
 @Outcome(
     id = "64, 192",
     expect = Expect.ACCEPTABLE,
-    desc = "replay saw fully-captured frame (XOR of seq=11 deterministic payload = 192)")
+    desc = "replay observed fully-captured frame (length=64, XOR signature=192)")
 @Outcome(expect = Expect.FORBIDDEN, desc = "any other combination = torn frame")
 @State
 public class ReliableStreamTrackerCaptureReplayJCStress {
