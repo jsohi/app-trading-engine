@@ -46,6 +46,12 @@ const { values } = parseArgs({
     keyset: { type: "string" },
     "with-oidc-discovery": { type: "boolean", default: false },
     issuer: { type: "string", default: "https://dev-issuer.local" },
+    // Public host used in URL-construction (issuer, jwks_uri). Distinct from
+    // the bind host (`HOST` env, default 0.0.0.0). RFC 8414 §3 requires the
+    // discovery URI's host to equal the jwks_uri's host (case-insensitive). Our
+    // YAML-configured discovery URI uses `localhost`, so this default must
+    // match. Override via --public-host for non-localhost deployments.
+    "public-host": { type: "string", default: "localhost" },
   },
   allowPositionals: false,
 });
@@ -92,7 +98,12 @@ const jwks = readFileSync(jwksPath);
 // `jwks_uri` to share host with the discovery URI, so we always emit the same
 // host:port for both — never an external redirect.
 function buildDiscoveryDoc(actualPort) {
-  const base = `https://${host}:${actualPort}`;
+  // Use the public-host (default `localhost`) — NOT the bind host (default
+  // `0.0.0.0`). RFC 8414 §3: discovery URI host MUST equal jwks_uri host. Our
+  // YAML overlay points the discovery URI at `localhost:<port>`; emitting
+  // `0.0.0.0:<port>` here would make OidcDiscoveryClient reject the doc with
+  // a host-mismatch exception at launcher startup → multi-issuer launch fails.
+  const base = `https://${values["public-host"]}:${actualPort}`;
   return JSON.stringify(
     {
       issuer: values.issuer,

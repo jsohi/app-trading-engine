@@ -96,7 +96,7 @@ test("UI submit — Duplicate: same ClOrdID twice → second resolves Duplicate"
   await expect(page.locator('[data-testid="order-entry-success"]')).toBeVisible({
     timeout: 15_000,
   });
-  await page.locator('button:has-text("Reset")').click();
+  await page.locator('[data-testid="order-entry-reset"]').click();
 
   // Second submit with the SAME ClOrdID — must surface Duplicate.
   await page.locator('[data-testid="order-entry-clord-id"]').fill(dupId);

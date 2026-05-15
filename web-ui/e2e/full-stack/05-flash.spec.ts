@@ -24,15 +24,13 @@ test("OrderBlotter cellFlash fires on status transition", async ({ page }) => {
       }
     ).__ordersGridApi;
     if (api && typeof api.addEventListener === "function") {
-      api.addEventListener(
-        "cellFlash",
-        (e: { colDef?: { field?: string }; node?: { id?: string } }) => {
-          const flashes = (globalThis as unknown as { __cellFlashes?: unknown[] }).__cellFlashes;
-          if (Array.isArray(flashes)) {
-            flashes.push({ field: e.colDef?.field ?? "", rowId: e.node?.id ?? "" });
-          }
-        },
-      );
+      api.addEventListener("cellFlash", (e: unknown) => {
+        const evt = e as { colDef?: { field?: string }; node?: { id?: string } };
+        const flashes = (globalThis as unknown as { __cellFlashes?: unknown[] }).__cellFlashes;
+        if (Array.isArray(flashes)) {
+          flashes.push({ field: evt.colDef?.field ?? "", rowId: evt.node?.id ?? "" });
+        }
+      });
     }
   });
 

@@ -12,6 +12,7 @@ import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import java.nio.ByteOrder;
 import java.util.Objects;
+import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 
@@ -52,6 +53,27 @@ public final class EventSink {
   private final MessageHeaderDecoder journalHeaderDecoder = new MessageHeaderDecoder();
 
   private Cluster cluster;
+
+  /**
+   * Pre-allocated, mutable broadcast context. Set on entry to {@link #emit} and consumed by
+   * {@link #broadcastConsumer} inside the {@link Cluster#forEachClientSession} call below. The
+   * fields are scoped to the duty-cycle thread (single writer); the closure-capture-free
+   * {@link Consumer} reads them via {@code this} field access.
+   */
+  private MutableDirectBuffer broadcastBuffer;
+
+  private int broadcastOffset;
+  private int broadcastLength;
+
+  /**
+   * Final-field {@link Consumer} bound once at construction so {@link #emit} can call {@link
+   * Cluster#forEachClientSession(Consumer)} without allocating a new SAM per call. The consumer
+   * reads {@link #broadcastBuffer}/{@link #broadcastOffset}/{@link #broadcastLength} which the
+   * caller stamps on every {@code emit} invocation. Single-writer (cluster duty cycle) → no
+   * synchronisation required.
+   */
+  private final Consumer<ClientSession> broadcastConsumer =
+      session -> offerToSession(session, broadcastBuffer, broadcastOffset, broadcastLength);
 
   /**
    * Creates an EventSink wired to the given sequencer and journal.
@@ -112,19 +134,50 @@ public final class EventSink {
     // 4. Append to journal (fatal on monotonicity violation — triggers Aeron failover)
     journal.append(seqNo, templateId, buffer, offset, length);
 
-    // 5. Broadcast to ALL connected cluster client sessions — the websocket-server
-    // and the gateway each open their own cluster session, and every domain event
-    // must reach every client so per-client subscription filters can route them
-    // (e.g., a FIX-injected order's OrderCreated must surface in the browser's
-    // OrderBlotter via the websocket-server's session, not only on the gateway's).
-    // The `session` parameter is the originator and is included in the broadcast
-    // — its consumer already expects to see its own events. Backpressure is
-    // handled per-session by offerToSession; a slow client cannot starve fast
-    // ones because each iteration retries independently.
+    // 5. Broadcast to ALL connected cluster client sessions.
+    //
+    // RATIONALE (the cluster is the journaled source of truth; per-client routing is
+    // downstream):
+    //
+    // - The websocket-server and the gateway each open their own cluster session.
+    //   Every domain event must reach every cluster client so per-client filters
+    //   downstream can route them. A FIX-injected order's `OrderCreated` MUST
+    //   surface in the browser's `OrderBlotter` via the websocket-server's session
+    //   (which performs per-browser `SubscriptionFilter` routing); the gateway is
+    //   not the only consumer.
+    // - The gateway is NOT at risk of re-publishing other clients' events as bogus
+    //   ExecutionReports: it correlates inbound `OrderCreated` to the originating
+    //   FIX session by `clOrdId`/`account`, and silently drops events whose
+    //   `clOrdId` it never sent (verified by `GatewayClusterEgressListener`).
+    // - Cross-tenant data isolation is enforced downstream:
+    //     * Browser ↔ ws-server  → `SubscriptionFilter.matches(...)` per session,
+    //       guarded by per-account `entitledSymbolsByAccount` (Phase 3 hardening).
+    //     * Gateway ↔ FIX client → `clOrdId`-keyed correlation table.
+    //   The cluster's job is to journal + broadcast; routing is the consumer's job.
+    // - CommandAck (templateId 70) IS broadcast; the websocket-server's drain
+    //   handler only forwards acks whose `clientCmdSeqNo` matches an in-flight slot
+    //   for THAT browser session (per `commandClient`'s 1024-slot table). Acks for
+    //   gateway-originated commands carry a different sequence range and are
+    //   dropped client-side.
+    //
+    // The `session` argument is the originator (the caller of `emit`) and is
+    // included in the broadcast — its consumer already expects to see its own
+    // events. Backpressure is handled per-session by `offerToSession`; a slow
+    // client cannot starve fast ones because each iteration retries independently.
+    //
+    // Iteration uses Cluster.forEachClientSession(Consumer) (Aeron's zero-alloc
+    // alternative to clientSessions().iterator()) and a final-field consumer
+    // bound at construction. This satisfies the cluster-service no-heap-alloc
+    // invariant — the SAM is allocated ONCE in the constructor; every emit call
+    // mutates the per-call broadcast context fields and calls forEachClientSession
+    // with the same consumer reference. Single-writer (cluster duty cycle) ensures
+    // the field reads inside the consumer see the writes from the line above
+    // without any synchronisation.
     if (cluster != null) {
-      for (final var s : cluster.clientSessions()) {
-        offerToSession(s, buffer, offset, length);
-      }
+      this.broadcastBuffer = buffer;
+      this.broadcastOffset = offset;
+      this.broadcastLength = length;
+      cluster.forEachClientSession(broadcastConsumer);
     } else {
       // Test path (no cluster wired) — fall back to the single-session offer.
       offerToSession(session, buffer, offset, length);

@@ -73,6 +73,12 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/**', 'gradle/libs.versions.toml') }}
 
+      - name: npm install (web-ui workspace)
+        # Required before `npm audit` — audit reads the installed tree, not just
+        # package-lock.json. `npm ci` is the strict-CI variant: errors on any
+        # lockfile drift.
+        run: npm ci --workspace web-ui
+
       - name: npm audit (high+)
         # Plan §11 — run audit before the heavy E2E so a known HIGH/CRITICAL fails fast.
         run: npm audit --workspaces --audit-level=high

@@ -75,6 +75,13 @@ export function useOrderSubmission(): UseOrderSubmissionApi {
           import("@/main-thread/commandClient"),
           import("@/main-thread/workerClientSingleton"),
         ]);
+        // React StrictMode mounts every component twice on first render in dev.
+        // The cleanup callback flips `disposed.v=true` between the two mounts.
+        // The check below sits AFTER both dynamic imports have resolved (the
+        // last suspension point); from here through `setClient(cc)` is purely
+        // synchronous, so a single check is sufficient. If `getWorkerClient()`
+        // is ever made async, ADD a second check after `new CC(...)` and
+        // dispose the constructed CC if `disposed.v` is now true.
         if (disposed.v) return;
         const cc = new CC(getWorkerClient());
         ccLocal = cc;

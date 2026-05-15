@@ -255,11 +255,20 @@ export class WorkerClient implements WorkerClientStreams {
     ) {
       return;
     }
+    // Bound the reasonCode length defensively. The worker is the sole writer
+    // today, but a bug or future spoofing path that ships a multi-megabyte
+    // string would cost render time + memory in the UI. 256 chars covers every
+    // currently-defined reason code (`NOT_CONNECTED`, `INVALID_LENGTH`,
+    // `ENTITLEMENT`, `RATE_LIMIT`, etc.) with abundant headroom.
+    const reasonCode =
+      typeof env.reasonCode === "string" && env.reasonCode.length <= 256
+        ? env.reasonCode
+        : undefined;
     // Conditional spread satisfies exactOptionalPropertyTypes — `reasonCode`
     // is omitted entirely when absent rather than set to `undefined`.
     const ack: CommandAckEnvelope =
-      typeof env.reasonCode === "string"
-        ? { correlationId: env.correlationId, status, reasonCode: env.reasonCode }
+      reasonCode !== undefined
+        ? { correlationId: env.correlationId, status, reasonCode }
         : { correlationId: env.correlationId, status };
     this.commandAcks$.next(ack);
   }
