@@ -174,6 +174,7 @@ class RfqLifecycleEventsIT {
 
     cluster = new RfqClusterTestHarness(TIMESTAMP);
     session = new FakeClientSession(42L);
+    cluster.addClientSession(session);
     service.onStart(cluster, null);
   }
 

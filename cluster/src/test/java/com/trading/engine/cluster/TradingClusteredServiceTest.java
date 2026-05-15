@@ -127,6 +127,7 @@ class TradingClusteredServiceTest {
 
     cluster = new FakeCluster(TIMESTAMP);
     session = new FakeClientSession();
+    cluster.addClientSession(session);
     // Prime the service with a cluster ref via onStart(cluster, null).
     service.onStart(cluster, null);
   }
@@ -537,6 +538,7 @@ class TradingClusteredServiceTest {
     res.service().loadSnapshot(concatenated, 0, totalLength);
 
     final var resSession = new FakeClientSession();
+    cluster.addClientSession(resSession);
     for (int i = 4; i <= 5; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -558,6 +560,7 @@ class TradingClusteredServiceTest {
     final var full = createServiceBundle(true);
 
     final var fullSession = new FakeClientSession();
+    cluster.addClientSession(fullSession);
     for (int i = 1; i <= 5; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(
@@ -792,6 +795,7 @@ class TradingClusteredServiceTest {
   @Test
   void sessionOfferBackpressureRetriedUntilSuccess() {
     final var bpSession = new FakeClientSession();
+    cluster.addClientSession(bpSession);
     bpSession.pendingBackpressures = 2;
 
     final var buf = new ExpandableArrayBuffer(256);
@@ -852,6 +856,7 @@ class TradingClusteredServiceTest {
     // closed so the cluster framework tears it down. Silent drop would leave the client
     // without ACK / NACK and free it to replay the command.
     final var stuckSession = new FakeClientSession();
+    cluster.addClientSession(stuckSession);
     stuckSession.alwaysBackpressured = true;
 
     final var buf = new ExpandableArrayBuffer(256);
@@ -1074,6 +1079,7 @@ class TradingClusteredServiceTest {
     final int orderCount = 1000;
     final var buf = new ExpandableArrayBuffer(256);
     final var bigSession = new FakeClientSession();
+    cluster.addClientSession(bigSession);
     for (int i = 1; i <= orderCount; i++) {
       final int len =
           SbeTestEncoder.encodeNewOrderSingle(

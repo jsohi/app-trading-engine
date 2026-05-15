@@ -182,6 +182,7 @@ class RfqSnapshotRecoveryIT {
 
     final var harness = new RfqClusterTestHarness(clusterTime);
     final var session = new FakeClientSession(sessionId);
+    harness.addClientSession(session);
     service.onStart(harness, null);
 
     return new ServiceBundle(service, rfqStateMachine, rfqMetrics, eventSink, session, harness);

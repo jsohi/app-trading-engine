@@ -5,6 +5,7 @@ import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -48,6 +49,15 @@ public class FakeCluster implements Cluster {
   private ErrorHandler errorHandler;
 
   private ClusteredServiceContainer.Context cachedContext;
+
+  /**
+   * Registered client sessions returned by {@link #clientSessions()} and iterated by {@link
+   * #forEachClientSession(Consumer)}. Tests register sessions explicitly via {@link
+   * #addClientSession(ClientSession)} to mirror the real Aeron Cluster's session-tracking semantics
+   * (in production the cluster framework registers sessions on connect; in tests the harness must
+   * do this explicitly so {@code EventSink}'s broadcast loop reaches the test session).
+   */
+  private final List<ClientSession> registeredSessions = new ArrayList<>();
 
   /**
    * Creates a fake cluster with a fixed timestamp.
@@ -134,14 +144,30 @@ public class FakeCluster implements Cluster {
   /** {@inheritDoc} */
   @Override
   public Collection<ClientSession> clientSessions() {
-    return List.of();
+    return registeredSessions;
   }
 
   /** {@inheritDoc} */
   @Override
   public void forEachClientSession(final Consumer<? super ClientSession> action) {
     java.util.Objects.requireNonNull(action, "action must not be null");
-    // No-op — fake cluster has no sessions to iterate
+    // Index loop — Aeron's real Cluster.forEachClientSession is a synchronous fold that allocates
+    // no Iterator. The FakeCluster mirrors that contract so tests do not silently mask zero-alloc
+    // regressions in the production EventSink broadcast path.
+    for (int i = 0, n = registeredSessions.size(); i < n; i++) {
+      action.accept(registeredSessions.get(i));
+    }
+  }
+
+  /**
+   * Registers a client session so it is returned by {@link #clientSessions()} and iterated by
+   * {@link #forEachClientSession(Consumer)}. Tests must call this for every {@link
+   * FakeClientSession} they expect to receive broadcast events from {@code EventSink}.
+   *
+   * @param session the session to register (must not be null)
+   */
+  public void addClientSession(final ClientSession session) {
+    registeredSessions.add(java.util.Objects.requireNonNull(session, "session"));
   }
 
   /** {@inheritDoc} */

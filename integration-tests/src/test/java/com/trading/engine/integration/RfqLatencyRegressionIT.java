@@ -235,6 +235,7 @@ class RfqLatencyRegressionIT {
 
     final var harness = new RfqClusterTestHarness(TIMESTAMP);
     final var session = new FakeClientSession(42L);
+    harness.addClientSession(session);
     service.onStart(harness, null);
 
     return new Object[] {service, session, harness};

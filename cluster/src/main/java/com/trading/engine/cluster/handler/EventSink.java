@@ -55,10 +55,22 @@ public final class EventSink {
   private Cluster cluster;
 
   /**
-   * Pre-allocated, mutable broadcast context. Set on entry to {@link #emit} and consumed by
-   * {@link #broadcastConsumer} inside the {@link Cluster#forEachClientSession} call below. The
-   * fields are scoped to the duty-cycle thread (single writer); the closure-capture-free
-   * {@link Consumer} reads them via {@code this} field access.
+   * Pre-allocated, mutable broadcast context. Set on entry to {@link #emit} and consumed by {@link
+   * #broadcastConsumer} inside the {@link Cluster#forEachClientSession} call below.
+   *
+   * <p><b>Aeron contract this design depends on (single-line CONTRACT, must hold):</b> {@link
+   * Cluster#forEachClientSession(Consumer)} invokes the consumer SYNCHRONOUSLY on the duty-cycle
+   * thread for every active session BEFORE returning. This is the documented Aeron 1.50.x behaviour
+   * — the API is named "forEach" precisely because it is a synchronous fold. If a future Aeron
+   * version changes this to a deferred / async iteration, this design SILENTLY BREAKS (the consumer
+   * would read the wrong buffer).
+   *
+   * <p><b>Regression guard:</b> {@code EventSinkBroadcastTest} asserts that all sessions receive
+   * the per-emit buffer bytes WITHIN the {@code emit()} call return — not after. Any future Aeron
+   * upgrade that defers iteration will fail this test loudly.
+   *
+   * <p>Single-writer (cluster duty cycle) ⇒ no synchronisation required between the field writes
+   * below and the field reads inside {@link #broadcastConsumer}.
    */
   private MutableDirectBuffer broadcastBuffer;
 
@@ -69,8 +81,8 @@ public final class EventSink {
    * Final-field {@link Consumer} bound once at construction so {@link #emit} can call {@link
    * Cluster#forEachClientSession(Consumer)} without allocating a new SAM per call. The consumer
    * reads {@link #broadcastBuffer}/{@link #broadcastOffset}/{@link #broadcastLength} which the
-   * caller stamps on every {@code emit} invocation. Single-writer (cluster duty cycle) → no
-   * synchronisation required.
+   * caller stamps on every {@code emit} invocation under the synchronous-iteration contract
+   * documented above.
    */
   private final Consumer<ClientSession> broadcastConsumer =
       session -> offerToSession(session, broadcastBuffer, broadcastOffset, broadcastLength);

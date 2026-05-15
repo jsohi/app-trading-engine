@@ -56,8 +56,11 @@ jobs:
           sudo apt-get install -y mkcert libnss3-tools lsof
 
       - name: Resolve Playwright version
+        # Read from package-lock.json directly — node_modules does not exist
+        # yet at this step (the npm ci runs further down). The lockfile is the
+        # single source of truth for the resolved Playwright version anyway.
         run: |
-          echo "PLAYWRIGHT_VERSION=$(node -p \"require('./web-ui/node_modules/@playwright/test/package.json').version\")" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_VERSION=$(node -p "require('./web-ui/package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_ENV"
 
       - name: Cache Playwright browsers
         uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4

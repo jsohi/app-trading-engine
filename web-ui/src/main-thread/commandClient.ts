@@ -271,11 +271,12 @@ export class CommandClient {
         return;
       }
       try {
-        // The buffer is transferred into the worker (zero-copy). After this call the main-thread
-        // `buf` is detached; we replace it in the pool BEFORE the next submit reuses this slot.
+        // `submitCommand` uses structured-clone (NOT Transferable) so the
+        // pooled buffer stays attached. The pool slot is therefore reusable
+        // on the NEXT submit that lands in this slotIdx — genuinely zero-alloc
+        // after warmup. (Previously the buffer was transferred and the pool
+        // slot had to be re-allocated; that contradicted the alloc-tripwire.)
         this.worker.submitCommand(buf, length, seq);
-        // Re-allocate the pool slot — the previous buffer was transferred to the worker.
-        this.outboundPool[slotIdx] = new Uint8Array(POOL_BUFFER_SIZE);
       } catch (e: unknown) {
         this.freeSlot(slot);
         reject(e instanceof Error ? e : new Error(String(e)));

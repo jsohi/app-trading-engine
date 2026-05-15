@@ -1,5 +1,7 @@
 package com.trading.engine.websocket;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -218,16 +220,17 @@ public final class OidcDiscoveryClient {
 
   /**
    * Subset of the OIDC discovery doc — we only consume {@code jwks_uri}. {@link
-   * DeserializationFeature#FAIL_ON_UNKNOWN_PROPERTIES} is disabled so unknown sibling fields
-   * (token_endpoint, jwks_uri, etc.) parse without complaint. The field is {@code private final}
-   * with a getter and {@link com.fasterxml.jackson.annotation.JsonCreator}-annotated constructor —
-   * matches production Jackson hygiene elsewhere in the repo (no public mutable fields).
+   * DeserializationFeature#FAIL_ON_UNKNOWN_PROPERTIES} is disabled so unknown sibling fields (e.g.
+   * {@code token_endpoint}, {@code response_types_supported}, {@code scopes_supported}) parse
+   * without complaint. The field is {@code private final} with a getter and {@link
+   * JsonCreator}-annotated constructor — matches production Jackson hygiene elsewhere in the repo
+   * (no public mutable fields).
    */
   static final class DiscoveryDoc {
     private final String jwksUri;
 
-    @com.fasterxml.jackson.annotation.JsonCreator
-    DiscoveryDoc(@com.fasterxml.jackson.annotation.JsonProperty("jwks_uri") final String jwksUri) {
+    @JsonCreator
+    DiscoveryDoc(@JsonProperty("jwks_uri") final String jwksUri) {
       this.jwksUri = jwksUri;
     }
 
