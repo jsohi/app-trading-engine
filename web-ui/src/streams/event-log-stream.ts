@@ -114,14 +114,20 @@ export function eventLogStream(
     });
 }
 
+/**
+ * Build a UTF-8 text snapshot of an event for the in-memory inspector ring.
+ * The {@code bytes} field on {@link EventLogEntry} is opaque to the UI panel,
+ * which renders it via {@code TextDecoder}; storing the raw post-header SBE
+ * bytes would require carrying them through the worker→main batch boundary,
+ * which we deliberately avoid (the worker decodes once and discards the wire
+ * buffer to keep the hot path zero-alloc). Module-scope {@code TEXT_ENCODER}
+ * keeps the call zero-alloc beyond the result {@code Uint8Array} (Gemini R12).
+ */
 function encodeEventUpdate(msg: {
   eventType: string;
   details: string;
   serverNanos: bigint;
 }): Uint8Array {
-  // Minimal text encoding for now; the C9 contract test layer wires
-  // real decoder bytes once the per-template event decoders land. Uses
-  // the module-scope `TEXT_ENCODER` singleton (Gemini review MEDIUM).
   const text = `${msg.eventType}|${msg.details}|${String(msg.serverNanos)}`;
   return TEXT_ENCODER.encode(text);
 }

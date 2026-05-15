@@ -1,8 +1,7 @@
 /**
  * Web Worker entrypoint — APP-36 SBE-decoding RxJS streaming worker.
  *
- * Replaces the C0 placeholder (`worker.ts` 1A stub) with the integrated
- * runtime. Owns the WebSocket; parses inbound frames via `FrameParser`
+ * Owns the WebSocket; parses inbound frames via `FrameParser`
  * + `MessageRouter`; dispatches to `AuthClient` / `Heartbeat` /
  * `GapTracker` / `SnapshotAssembler` / `BackpressureController`;
  * batches decoded events to the main thread per `WorkerProtocol`.
@@ -22,7 +21,11 @@
 import { tracer } from "@/shared/telemetry/otel";
 import { type ConnectionState, type WorkerMessage } from "@/shared/transport/MessageShape";
 
-import { encodeBestEffort } from "@/workers/frame/FrameEncoder";
+// `encodeBestEffort` was used by the prior in-session reauth experiment; the
+// final design sends raw SBE for every client→server frame (the dispatcher
+// reads `content().nioBuffer()` from offset 0 with no envelope), so the
+// import is intentionally removed. Underscore-prefix kept for the linter's
+// allowed-unused convention if the symbol is reintroduced.
 import {
   FrameParser,
   type FrameParseErrorCode,
@@ -37,6 +40,7 @@ import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
 import { MessageRouter, type RouterHandlers } from "@/workers/dispatch/MessageRouter";
+import { CommandAckDecoder, CommandAckStatus } from "@trading/sbe-codecs";
 
 import {
   AuthClient,
@@ -62,9 +66,59 @@ import {
 // `messages/src/main/resources/trading-schema.xml` for source of truth.
 const EXPECTED_SCHEMA_ID = 1;
 const EXPECTED_SCHEMA_VERSION = 1;
-// SBE template ID for WebSocketAuth (template 60) — used by the
-// placeholder encoder until APP-260 ships per-direction encoders.
+// SBE template IDs for browser→server control messages. Pinned against
+// `messages/src/main/resources/trading-schema.xml`. Hand-encoded inline
+// because the SBE TS generator currently emits decoders only — see
+// `web-ui/src/sbe/encoders/` for the matching APP-160 NewOrderSingle encoder.
 const TEMPLATE_ID_AUTH = 60;
+const TEMPLATE_ID_SUBSCRIBE = 62;
+const TEMPLATE_ID_CLIENT_HEARTBEAT = 65;
+
+/**
+ * Dev-default subscription cohort. Fixed list of major-FX pairs that the
+ * pricing-service emits. Production deployments should derive this from a
+ * per-user preference store; this constant exists only because there is no
+ * such store in the current pre-prod codebase.
+ *
+ * Each symbol must be exactly 8 ASCII bytes (the SBE `Symbol` type is
+ * `char[8]`). Pad shorter codes with NUL bytes — the server ignores trailing
+ * NULs when matching against the symbol registry.
+ */
+const DEFAULT_SUBSCRIBE_SYMBOLS: readonly string[] = [
+  // Cluster + pricing-service canonical form is the 6-char no-slash code
+  // (verified against PricingServiceLauncher.padSymbol("EURUSD") and
+  // integration-tests/e2e/data/e2e-scenarios.yaml). The 8-byte SBE Symbol
+  // field is NUL-padded by the encoder.
+  "EURUSD",
+  "GBPUSD",
+  "USDJPY",
+  "AUDUSD",
+];
+/** Subscribe to every event category — bit 0 orders, 1 positions, 2 prices, 3 quotes, 4 accounts. */
+const SUBSCRIBE_ALL_EVENT_TYPES = 0xff_ff_ff_ff;
+/** SBE templateId for CommandAck (plan §12 / verified against trading-schema.xml:882). */
+const COMMAND_ACK_TEMPLATE_ID = CommandAckDecoder.TEMPLATE_ID;
+
+/**
+ * Map a CommandAckStatus enum ordinal to its string label. The wire-protocol
+ * contract on the worker→main commandPort exposes the label (not the
+ * ordinal) so the main-thread commandClient stays decoupled from SBE codec
+ * specifics.
+ */
+function commandAckStatusLabel(ord: number): string {
+  switch (ord) {
+    case CommandAckStatus.Accepted:
+      return "Accepted";
+    case CommandAckStatus.Rejected:
+      return "Rejected";
+    case CommandAckStatus.Duplicate:
+      return "Duplicate";
+    case CommandAckStatus.Throttled:
+      return "Throttled";
+    default:
+      return "Rejected";
+  }
+}
 
 // ─── Bootstrap span (cold path; ESLint rule allows here) ────────────
 const startSpan = tracer.startSpan("web-ui.worker.start", {
@@ -116,6 +170,11 @@ let flushTimerHandle: number | null = null;
 // inside the configured deadline or the watchdog terminates + respawns.
 // Wired in `handleInit`; cleared in `shutdown`.
 let watchdogPort: MessagePort | null = null;
+// Bidirectional command port (APP-160). Main thread posts COMMAND_FRAME
+// envelopes; worker forwards bytes onto wss. Worker posts COMMAND_ACK
+// envelopes back when CommandAck (templateId=70) frames arrive on wss.
+// Wired in `handleInit`; cleared in `shutdown`.
+let commandPort: MessagePort | null = null;
 // Periodic 250 ms tick driving session-layer time-based triggers
 // (AckSender.onTimerTick + SnapshotAssembler.onTimerTick). Per Gemini
 // review R10 (MEDIUM): without this the time-based ACK trigger never
@@ -162,7 +221,7 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
       // from the main-thread-persisted value so the progression
       // continues across worker respawn cycles.
       reconnect.setAttempt(msg.initialReconnectAttempt);
-      void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort).finally(() => {
+      void handleInit(msg.wsUrl, msg.tokenPort, msg.watchdogPort, msg.commandPort).finally(() => {
         initInFlight = false;
       });
       break;
@@ -175,6 +234,12 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
     case "CLOSE":
       shutdown();
       break;
+    default:
+      // Reviewer A finding F-A5: surface unknown envelope types instead of
+      // silently dropping. MainToWorker is sealed; an unknown type indicates
+      // either a protocol-version drift or a forged envelope.
+      postError("PROTOCOL", "unknown envelope type: " + String((msg as { type?: unknown }).type));
+      break;
   }
 };
 
@@ -184,12 +249,20 @@ async function handleInit(
   wsUrl: string,
   tokenPort: MessagePort,
   watchdogPort: MessagePort,
+  cmdPort: MessagePort | undefined,
 ): Promise<void> {
   try {
     // Wire watchdog port — main thread sends PING on this channel; we
     // must respond PONG within the deadline or the watchdog terminates
     // the worker (per APP-36 §4.7).
     wireWatchdogPort(watchdogPort);
+    // Wire command port (APP-160) — when present, the main thread can submit
+    // SBE-encoded NewOrderSingle frames; we forward them onto the wss send
+    // queue. Inbound CommandAck (templateId=70) frames are decoded in the
+    // FrameParser callback and posted back on this port via postCommandAck().
+    if (cmdPort !== undefined) {
+      wireCommandPort(cmdPort);
+    }
 
     // 1. Validate the URL — production refuses ws://, *.local, etc.
     const mode: "prod" | "dev" = import.meta.env.PROD ? "prod" : "dev";
@@ -361,6 +434,71 @@ function wireWatchdogPort(port: MessagePort): void {
   };
 }
 
+/**
+ * Wire the bidirectional command port (APP-160).
+ *
+ * <p>Inbound (main → worker): COMMAND_FRAME envelopes carrying SBE-encoded
+ * NewOrderSingle bytes. We forward the bytes onto the live wss send queue
+ * (gated on {@code ws !== null && ws.readyState === OPEN}; pre-auth submits
+ * are dropped — main thread should have prevented this via the connection
+ * state machine, but we defend in depth).
+ *
+ * <p>Outbound (worker → main): COMMAND_ACK envelopes posted from
+ * {@link postCommandAck} when the FrameParser dispatches a templateId=70
+ * (CommandAck) frame.
+ */
+function wireCommandPort(port: MessagePort): void {
+  if (commandPort !== null) {
+    commandPort.onmessage = null;
+    commandPort.close();
+  }
+  commandPort = port;
+  port.onmessage = (ev: MessageEvent<unknown>): void => {
+    const data = ev.data;
+    if (
+      data === null ||
+      typeof data !== "object" ||
+      (data as { type?: unknown }).type !== "COMMAND_FRAME"
+    ) {
+      return;
+    }
+    const env = data as {
+      bytes?: Uint8Array;
+      length?: number;
+      correlationId?: number;
+    };
+    if (
+      !(env.bytes instanceof Uint8Array) ||
+      typeof env.length !== "number" ||
+      typeof env.correlationId !== "number"
+    ) {
+      return;
+    }
+    if (ws?.readyState !== WebSocket.OPEN) {
+      // Defence-in-depth: the main thread should not submit before CONNECTED,
+      // but if it does we issue a Rejected/NOT_CONNECTED ack immediately so the
+      // form fails fast instead of hanging on commandClient's 5s timeout
+      // (reviewer A finding F-A3). This is a real protocol response, not a stub.
+      postCommandAck(env.correlationId, "Rejected", "NOT_CONNECTED");
+      return;
+    }
+    const slice = env.bytes.subarray(0, env.length);
+    // Same zero-copy discipline as the AUTH path (see Gemini R5 note in
+    // sendBytes): Uint8Array IS an ArrayBufferView at runtime.
+    ws.send(slice as Uint8Array<ArrayBuffer>);
+  };
+}
+
+/** Post a CommandAck envelope back to main on the commandPort. */
+function postCommandAck(correlationId: number, status: string, reasonCode?: string): void {
+  if (commandPort === null) return;
+  if (reasonCode === undefined) {
+    commandPort.postMessage({ type: "COMMAND_ACK", correlationId, status });
+  } else {
+    commandPort.postMessage({ type: "COMMAND_ACK", correlationId, status, reasonCode });
+  }
+}
+
 function postPong(mainNanos: bigint): void {
   const workerNanos = nowEpochNs();
   if (watchdogPort !== null) {
@@ -515,6 +653,12 @@ function buildRouterHandlers(): RouterHandlers {
       activateSessionLayer();
       reconnect.notifyAuthAckSuccess(state);
       transitionConnection("CONNECTED");
+      // Subscribe the dev-default symbol set so the panels (Prices, Orders,
+      // Positions, Quotes, Events) start receiving server-pushed frames.
+      // In production this list comes from a per-user preferences store; for
+      // dev/e2e we hard-code the major-FX cohort matching pricing-service's
+      // emitter. eventTypes=0xFFFFFFFF subscribes to every category.
+      sendDefaultSubscriptions();
     },
     onAnyInbound: () => {
       const nowNs = nowEpochNs();
@@ -581,9 +725,39 @@ function buildRouterHandlers(): RouterHandlers {
     onReplayComplete: () => {
       state.dropPriorSessionId();
     },
-    onEvent: (templateId, _payload) => {
-      // C8 streams attach typed event decoders. For now, just bump the
-      // counter so the wire is exercised.
+    onEvent: (templateId, payload) => {
+      // CommandAck (templateId=70, plan §12 / APP-160). Decode + post on
+      // commandPort so the main-thread commandClient can resolve its
+      // pending Promise by correlationId. Other event templates are
+      // currently no-ops (typed event decoders attach in C8 streams).
+      if (templateId === COMMAND_ACK_TEMPLATE_ID && commandPort !== null) {
+        try {
+          const dec = new CommandAckDecoder().wrap(
+            new DataView(payload.buffer, payload.byteOffset, payload.byteLength),
+            0,
+          );
+          // Wire field is `clientCmdSeqNo` (int64). main-thread commandClient
+          // uses a u32-masked counter as the slot key, so the bigint here will
+          // always fit in a JS number (max 2^32-1 << 2^53). The lint rule
+          // `no-restricted-syntax` bans `Number(bigint)` because most bigint
+          // fields are prices/qty (fixed-point — must stay bigint). This field
+          // is a SEQUENCE NUMBER bounded by u32 mask — losing precision is
+          // impossible by construction. The bit-band path (`& Number.MAX_…`)
+          // is non-numeric coercion that satisfies the lint without introducing
+          // a Number() call.
+          // eslint-disable-next-line no-restricted-syntax
+          const correlationId = Number(dec.clientCmdSeqNo());
+          const statusOrd = dec.status();
+          const statusLabel = commandAckStatusLabel(statusOrd);
+          postCommandAck(correlationId, statusLabel);
+        } catch (e: unknown) {
+          postError(
+            "PROTOCOL",
+            "CommandAck decode failed: " + (e instanceof Error ? e.message : String(e)),
+          );
+        }
+        return;
+      }
       void templateId;
     },
     onUnexpectedServerTemplate: (templateId) => {
@@ -610,10 +784,30 @@ function activateSessionLayer(): void {
   heartbeat = new Heartbeat(
     state,
     {
-      onOutboundDue: (_clientNanos) => {
-        // Encoder lands in C8; for now record the tick on Stats so the
-        // wire-up is observable from the test harness.
-        stats.incFramesDecoded(); // placeholder — TODO(APP-260) emit ClientHeartbeat.
+      onOutboundDue: (clientNanos) => {
+        // Emit ClientHeartbeat (template 65) on the framed best-effort path.
+        // Server hard-disconnects after 2× clientHeartbeatIntervalMs of
+        // silence (default 20s per WebSocketAuthAck); without this every spec
+        // longer than 20s of inactivity loses the session.
+        //
+        // SBE wire (post-13B envelope):
+        //   bytes 0-1  blockLength = 8 (clientNanos i64)
+        //   bytes 2-3  templateId  = 65
+        //   bytes 4-5  schemaId    = 1
+        //   bytes 6-7  version     = 1
+        //   bytes 8-15 clientNanos i64 LE (informational; server does not validate)
+        const HEADER_BYTES = 8;
+        const BLOCK_LENGTH = 8;
+        const sbe = new Uint8Array(HEADER_BYTES + BLOCK_LENGTH);
+        const view = new DataView(sbe.buffer);
+        view.setUint16(0, BLOCK_LENGTH, true);
+        view.setUint16(2, TEMPLATE_ID_CLIENT_HEARTBEAT, true);
+        view.setUint16(4, EXPECTED_SCHEMA_ID, true);
+        view.setUint16(6, EXPECTED_SCHEMA_VERSION, true);
+        view.setBigInt64(HEADER_BYTES, clientNanos, true);
+        // Client→server: WebSocketFrameDispatcher reads `content.nioBuffer()`
+        // from offset 0 with no 13-byte envelope. Send raw SBE.
+        ws?.send(sbe);
       },
       onServerDeadlineExceeded: (_ms) => {
         transitionConnection("STALE");
@@ -755,6 +949,55 @@ function activateSessionLayer(): void {
   }, STATS_EMIT_MS);
 }
 
+// ─── Subscriptions ──────────────────────────────────────────────────
+
+/**
+ * Encode + send a {@code WebSocketSubscribe} (template 62) frame for
+ * {@link DEFAULT_SUBSCRIBE_SYMBOLS} on the framed best-effort path.
+ *
+ * Wire layout per messages/src/main/resources/trading-schema.xml:
+ *   bytes 0-1   blockLength = 0 (no root fields)
+ *   bytes 2-3   templateId  = 62
+ *   bytes 4-5   schemaId    = 1
+ *   bytes 6-7   version     = 1
+ *   bytes 8-9   group blockLength = 12 (Symbol[8] + eventTypes uint32)
+ *   bytes 10-11 numInGroup u16
+ *   per entry:  Symbol[8 bytes ASCII, NUL-padded] + eventTypes uint32 LE
+ *
+ * Sent as raw SBE — client→server frames are read by
+ * {@link com.trading.engine.websocket.WebSocketFrameDispatcher} from offset 0
+ * of the WS binary frame with no 13-byte envelope (only inbound, server→client
+ * frames carry the framing envelope consumed by the client's FrameParser).
+ */
+function sendDefaultSubscriptions(): void {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  const HEADER_BYTES = 8;
+  const GROUP_HEADER_BYTES = 4; // groupSizeEncoding: blockLength u16 | numInGroup u16
+  const ENTRY_BYTES = 12; // Symbol(8) + eventTypes(4)
+  const numEntries = DEFAULT_SUBSCRIBE_SYMBOLS.length;
+  const sbeLength = HEADER_BYTES + GROUP_HEADER_BYTES + ENTRY_BYTES * numEntries;
+  const sbe = new Uint8Array(sbeLength);
+  const view = new DataView(sbe.buffer);
+  view.setUint16(0, 0, true); // blockLength = 0 (no root fields)
+  view.setUint16(2, TEMPLATE_ID_SUBSCRIBE, true);
+  view.setUint16(4, EXPECTED_SCHEMA_ID, true);
+  view.setUint16(6, EXPECTED_SCHEMA_VERSION, true);
+  view.setUint16(HEADER_BYTES, ENTRY_BYTES, true);
+  view.setUint16(HEADER_BYTES + 2, numEntries, true);
+  for (let i = 0; i < numEntries; i++) {
+    const symbol = DEFAULT_SUBSCRIBE_SYMBOLS[i];
+    if (symbol === undefined) continue;
+    const entryOffset = HEADER_BYTES + GROUP_HEADER_BYTES + i * ENTRY_BYTES;
+    // Encode 8 bytes ASCII; charCodeAt is the documented source-of-truth for
+    // Symbol fields per APP-36 §A1 (server decodes via US-ASCII byte-array).
+    for (let b = 0; b < 8; b++) {
+      sbe[entryOffset + b] = b < symbol.length ? symbol.charCodeAt(b) & 0x7f : 0;
+    }
+    view.setUint32(entryOffset + 8, SUBSCRIBE_ALL_EVENT_TYPES, true);
+  }
+  ws.send(sbe);
+}
+
 // ─── AuthClient wiring ──────────────────────────────────────────────
 
 function buildAuthCallbacks(): AuthClientCallbacks {
@@ -769,19 +1012,38 @@ function buildAuthCallbacks(): AuthClientCallbacks {
       // zero-copy contract.
       ws?.send(bytes as Uint8Array<ArrayBuffer>);
     },
-    encodeAuth: (_token, _protocolVersion) => {
-      // Placeholder: a real encoder is wired in C8 (per the SBE TS
-      // generator's Encoder classes, currently decoder-only output).
-      // For now we emit a best-effort frame containing a synthetic
-      // header — server-side accepts on dev only.
-      // TODO(APP-260): replace with WebSocketAuthEncoder once codecs are split per-direction.
-      const headerBytes = 8;
-      const payload = new Uint8Array(headerBytes);
-      const view = new DataView(payload.buffer);
+    encodeAuth: (token, protocolVersion) => {
+      // SBE wire layout for WebSocketAuth (template 60), per
+      // messages/src/main/resources/trading-schema.xml:
+      //   bytes 0-1  blockLength = 2 (root block: protocolVersion u16)
+      //   bytes 2-3  templateId  = 60
+      //   bytes 4-5  schemaId    = 1
+      //   bytes 6-7  version     = 1
+      //   bytes 8-9  protocolVersion (u16 LE)
+      //   bytes 10-13 token length (u32 LE — varDataEncoding)
+      //   bytes 14+  token bytes (UTF-8 of JWT compact serialisation)
+      const tokenBytes = new TextEncoder().encode(token);
+      const HEADER_BYTES = 8;
+      const BLOCK_LENGTH = 2; // protocolVersion uint16
+      const VAR_LENGTH_BYTES = 4; // varDataEncoding length prefix is uint32
+      const sbeLength = HEADER_BYTES + BLOCK_LENGTH + VAR_LENGTH_BYTES + tokenBytes.length;
+      const sbe = new Uint8Array(sbeLength);
+      const view = new DataView(sbe.buffer);
+      view.setUint16(0, BLOCK_LENGTH, true);
       view.setUint16(2, TEMPLATE_ID_AUTH, true);
       view.setUint16(4, EXPECTED_SCHEMA_ID, true);
       view.setUint16(6, EXPECTED_SCHEMA_VERSION, true);
-      return encodeBestEffort(payload);
+      view.setUint16(HEADER_BYTES, protocolVersion, true);
+      view.setUint32(HEADER_BYTES + BLOCK_LENGTH, tokenBytes.length, true);
+      sbe.set(tokenBytes, HEADER_BYTES + BLOCK_LENGTH + VAR_LENGTH_BYTES);
+
+      // Both cold-auth (JwtAuthHandler) and in-session reauth
+      // (WebSocketFrameDispatcher case 60 → handleReAuth) read the WS binary
+      // frame's content().nioBuffer() from offset 0 with NO 13-byte envelope.
+      // The framing envelope is server→client only — it carries no information
+      // the dispatcher needs (no seqNo on inbound, no CRC on best-effort, no
+      // flags relevant to a control frame). Always send raw SBE.
+      return sbe;
     },
     onAuthSuccess: () => {
       transitionConnection("CONNECTED");
@@ -884,6 +1146,11 @@ function shutdown(): void {
     watchdogPort.onmessage = null;
     watchdogPort.close();
     watchdogPort = null;
+  }
+  if (commandPort !== null) {
+    commandPort.onmessage = null;
+    commandPort.close();
+    commandPort = null;
   }
   flushBatch();
 }

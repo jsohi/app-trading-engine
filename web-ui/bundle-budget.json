@@ -1,0 +1,10 @@
+{
+  "_comment": "Sum of gzip/brotli bytes across web-ui/dist/**/*.js. Measured baselines from a fresh `npm run build` (NOT placeholders). Bundle-guard test enforces baseline + 10% headroom; regenerate via `node -e '...'` snippet documented in docs/full-stack-e2e.md after a deliberate bundle bump.",
+  "_lastMeasured": "2026-05-15",
+  "_buildArtifacts": [
+    "dist/assets/index-*.js (main + AG Grid + RxJS)",
+    "dist/assets/worker-*.js (Web Worker + SBE codecs + framing)"
+  ],
+  "gzipBytes": 412712,
+  "brotliBytes": 335144
+}

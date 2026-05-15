@@ -1,0 +1,63 @@
+# Full-stack E2E websocket-server config overlay (multi-issuer path).
+#
+# Same as websocket-server-e2e.yaml.tmpl but with TWO issuers — A and B —
+# served by two parallel JWKS instances on ports 7100 and 7101 with
+# disjoint kid namespaces. Used by the test 8 (08-multi-issuer.spec.ts)
+# Playwright spec which authenticates two browser contexts against
+# different issuers.
+#
+# Plan §15: tests both `jwksUri` (direct) AND `oidcDiscoveryUri` paths in
+# the same launcher boot — issuer A uses direct JWKS URI (7100), issuer B
+# uses OIDC discovery (the dev JWKS server is started with
+# `--with-oidc-discovery` flag for the 7101 instance).
+
+port: 8443
+maxConcurrentSessions: 32
+maxSubscriptionsPerClient: 16
+maxConnectionsPerIp: 8
+maxConnectionsPerUser: 4
+perIpNewConnectionsPerSec: 4
+globalNewConnectionsPerSec: 16
+
+clientTimeoutMs: 30000
+heartbeatIntervalMs: 5000
+
+replayBufferFrames: 64
+replayBufferFrameSize: 4096
+
+commandsPerSecSustained: 100
+commandsBurst: 256
+subscriptionsPerSec: 16
+
+snapshotFragmentSizeBytes: 32768
+
+tlsCertPath: "$REPO_ROOT/web-ui/.dev-certs/cert.pem"
+tlsKeyPath:  "$REPO_ROOT/web-ui/.dev-certs/key.pem"
+
+writeBufferLowWaterMark: 65536
+writeBufferHighWaterMark: 524288
+egressQueueCapacity: 1024
+slowConsumerLevel1Bytes: 16384
+slowConsumerLevel2Bytes: 65536
+slowConsumerLevel3Bytes: 262144
+slowConsumerLevel4Bytes: 524288
+slowConsumerDisconnectMs: 30000
+
+commandQueueCapacity: 256
+commandAckQueueCapacity: 256
+clOrdIdDedupCapacity: 1024
+clOrdIdDedupTtlMs: 60000
+clOrdIdDedupMaxUsers: 64
+dedupTryLockMicros: 100
+
+jwtAudience: "trading-ui"
+maxTokenSizeBytes: 8192
+maxPendingAuth: 8
+authFailureLockoutThreshold: 5
+authFailureLockoutSeconds: 60
+
+issuerRegistry:
+  "https://dev-issuer.local":
+    jwksUri: "https://localhost:7100/jwks.json"
+  "https://dev-issuer-b.local":
+    oidcDiscoveryUri: "https://localhost:7101/.well-known/openid-configuration"

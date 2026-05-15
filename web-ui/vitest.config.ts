@@ -58,6 +58,12 @@ export default defineConfig({
           include: [
             "src/**/*.{test,spec}.{ts,tsx}",
             "test/unit/**/*.{test,spec}.{ts,tsx}",
+            // test/integration/build-bundle.test.ts (the bundle-guard) runs in the unit
+            // project so the :web-ui:bundleGuard Gradle task can target it via
+            // `vitest run --project unit test/integration/build-bundle.test.ts`. Other
+            // integration-style tests should follow the same convention so the unit
+            // project remains the single home for "fast, no-browser" tests.
+            "test/integration/**/*.{test,spec}.{ts,tsx}",
             "test/lint-fixtures/**/*.{test,spec}.{ts,tsx}",
           ],
           exclude: [...sharedExclude, "test/browser/**"],
@@ -66,7 +72,25 @@ export default defineConfig({
       },
       {
         extends: true,
-        plugins: [react()],
+        plugins: [
+          react(),
+          // Vite plugin that injects COOP/COEP on every response served by the vitest
+          // browser dev server. Required for performance.measureUserAgentSpecificMemory()
+          // (the only browser API that gives accurate cross-realm heap readings, used by
+          // web-ui/test/browser/perf/commandClient-alloc.browser.test.ts). The perf
+          // tests check `crossOriginIsolated` and gracefully skip if the headers aren't
+          // applied — so this stays defensive even if Vite changes its plugin API.
+          {
+            name: "browser-perf-coop-coep",
+            configureServer(server) {
+              server.middlewares.use((_req, res, next) => {
+                res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+                res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+                next();
+              });
+            },
+          },
+        ],
         resolve: { alias },
         test: {
           name: "browser",
@@ -76,7 +100,14 @@ export default defineConfig({
           setupFiles: ["./test/setup.ts"],
           browser: {
             enabled: true,
-            provider: playwright(),
+            // --js-flags=--expose-gc gives the perf alloc-tripwire test access to
+            // `globalThis.gc()` so it can quiesce GC between memory snapshots; without
+            // it, `performance.measureUserAgentSpecificMemory()` returns noisy values.
+            // Both are vitest-browser-only — the production build does NOT need
+            // cross-origin isolation.
+            provider: playwright({
+              launchOptions: { args: ["--js-flags=--expose-gc"] },
+            }),
             headless: true,
             instances: [{ browser: "chromium" }],
           },

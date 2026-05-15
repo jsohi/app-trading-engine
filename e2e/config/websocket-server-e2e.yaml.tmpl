@@ -1,0 +1,61 @@
+# Full-stack E2E websocket-server config overlay (single-issuer path).
+#
+# Rendered by scripts/full-stack-e2e.sh — `$REPO_ROOT` is substituted with
+# `process.cwd()` at render time. The rendered file is gitignored.
+#
+# Plan §3 + §15: TLS uses the mkcert PEMs from web-ui/.dev-certs/, JWKS is
+# served by scripts/dev-jwks-server.mjs at https://localhost:7100, JWT
+# audience pinned to `trading-ui` (matches scripts/dev-token.mjs default).
+
+# Use existing low-spec defaults for the in-memory queues so the test boots fast on a 4-core CI.
+port: 8443
+maxConcurrentSessions: 32
+maxSubscriptionsPerClient: 16
+maxConnectionsPerIp: 8
+maxConnectionsPerUser: 4
+perIpNewConnectionsPerSec: 4
+globalNewConnectionsPerSec: 16
+
+clientTimeoutMs: 30000
+heartbeatIntervalMs: 5000
+
+# Replay buffer sized to comfortably cover the test 7 reconnect window
+# (10 frames @ <1KB each, capacity must be a power of two).
+replayBufferFrames: 64
+replayBufferFrameSize: 4096
+
+commandsPerSecSustained: 100
+commandsBurst: 256
+subscriptionsPerSec: 16
+
+snapshotFragmentSizeBytes: 32768
+
+tlsCertPath: "$REPO_ROOT/web-ui/.dev-certs/cert.pem"
+tlsKeyPath:  "$REPO_ROOT/web-ui/.dev-certs/key.pem"
+
+writeBufferLowWaterMark: 65536
+writeBufferHighWaterMark: 524288
+egressQueueCapacity: 1024
+slowConsumerLevel1Bytes: 16384
+slowConsumerLevel2Bytes: 65536
+slowConsumerLevel3Bytes: 262144
+slowConsumerLevel4Bytes: 524288
+slowConsumerDisconnectMs: 30000
+
+commandQueueCapacity: 256
+commandAckQueueCapacity: 256
+clOrdIdDedupCapacity: 1024
+clOrdIdDedupTtlMs: 60000
+clOrdIdDedupMaxUsers: 64
+dedupTryLockMicros: 100
+
+# --- Authentication ---
+jwtAudience: "trading-ui"
+maxTokenSizeBytes: 8192
+maxPendingAuth: 8
+authFailureLockoutThreshold: 5
+authFailureLockoutSeconds: 60
+
+issuerRegistry:
+  "https://dev-issuer.local":
+    jwksUri: "https://localhost:7100/jwks.json"

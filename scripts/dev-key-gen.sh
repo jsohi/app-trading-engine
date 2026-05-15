@@ -21,11 +21,37 @@
 
 set -euo pipefail
 
+# CLI flags (added for the full-stack-e2e flow):
+#   --no-yaml          Skip writing the websocket-server-dev.local.yaml
+#                      override. Used by scripts/full-stack-e2e.sh which passes
+#                      its own -Dwebsocket.config.file overlay and must not be
+#                      shadowed by a sibling YAML on the classpath.
+#   --prefix <NAME>    Suffix the keypair + JWKS output paths with -<NAME>
+#                      (e.g. --prefix A → jwt-private-A.pem, jwks-A.json).
+#                      Used by the multi-issuer E2E to mint two disjoint
+#                      keysets (A and B) without collision.
+WRITE_YAML=1
+PREFIX=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-yaml) WRITE_YAML=0; shift ;;
+    --prefix)
+      [[ $# -ge 2 ]] || { echo "--prefix requires a value" >&2; exit 1; }
+      [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "--prefix '$2' must match [A-Za-z0-9_-]+" >&2; exit 1; }
+      PREFIX="$2"; shift 2 ;;
+    --help|-h)
+      sed -n '1,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CERT_DIR="${REPO_ROOT}/web-ui/.dev-certs"
-PRIVATE_PEM="${CERT_DIR}/jwt-private.pem"
-PUBLIC_PEM="${CERT_DIR}/jwt-public.pem"
-JWKS_JSON="${CERT_DIR}/jwks.json"
+SUFFIX=""
+[[ -n "${PREFIX}" ]] && SUFFIX="-${PREFIX}"
+PRIVATE_PEM="${CERT_DIR}/jwt-private${SUFFIX}.pem"
+PUBLIC_PEM="${CERT_DIR}/jwt-public${SUFFIX}.pem"
+JWKS_JSON="${CERT_DIR}/jwks${SUFFIX}.json"
 WS_DEV_OVERRIDE="${REPO_ROOT}/websocket-server/src/main/resources/websocket-server-dev.local.yaml"
 
 if ! command -v openssl >/dev/null 2>&1; then
@@ -49,9 +75,10 @@ node "${REPO_ROOT}/scripts/dev-jwks-build.mjs" \
   --public "${PUBLIC_PEM}" \
   --output "${JWKS_JSON}"
 
-echo "Writing websocket-server dev override..."
-mkdir -p "$(dirname "${WS_DEV_OVERRIDE}")"
-cat > "${WS_DEV_OVERRIDE}" <<'YAML'
+if [[ "${WRITE_YAML}" -eq 1 ]]; then
+  echo "Writing websocket-server dev override..."
+  mkdir -p "$(dirname "${WS_DEV_OVERRIDE}")"
+  cat > "${WS_DEV_OVERRIDE}" <<'YAML'
 # Local-only dev override. Gitignored — see root .gitignore.
 # Loaded by websocket-server when present; falls back to
 # checked-in websocket-server.yaml otherwise.
@@ -60,13 +87,16 @@ issuerRegistry:
   "https://dev-issuer.local":
     jwksUri: "https://localhost:7000/jwks.json"
 YAML
+else
+  echo "--no-yaml passed: skipping websocket-server dev override write."
+fi
 
 cat <<EOF
 Done.
   Private key: ${PRIVATE_PEM} (gitignored)
   Public key:  ${PUBLIC_PEM}
   JWKS doc:    ${JWKS_JSON}
-  Server cfg:  ${WS_DEV_OVERRIDE} (gitignored)
+$( [[ "${WRITE_YAML}" -eq 1 ]] && echo "  Server cfg:  ${WS_DEV_OVERRIDE} (gitignored)" )
 
 Next steps:
   ./scripts/dev-cert.sh                   # if you have not generated the TLS cert

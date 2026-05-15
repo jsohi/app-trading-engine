@@ -35,6 +35,22 @@ import "@/shared/grid/agGridTheme.css";
 
 initialiseTelemetry();
 
+// Install test-mode hooks BEFORE the message source — the WorkerClient setup
+// path inside `startMessageSource` (when `VITE_E2E_REAL_BACKEND === "true"`)
+// registers `__forceWsClose` against the hooks namespace; that namespace must
+// exist first.
+//
+// Dynamic import keeps `e2eHooks.ts` (with its `__e2eHooks` / `__forceWsClose`
+// global symbol literals) OUT of the production bundle entirely. Static import
+// would land the literals in dist/*.js even though `installEarlyHooks` early-
+// returns when `VITE_E2E_REAL_BACKEND !== "true"` — the literals appear in the
+// module body regardless of DCE. Bundle-guard test asserts their absence.
+if (import.meta.env.VITE_E2E_REAL_BACKEND === "true") {
+  void import("@/main-thread/e2eHooks").then((m) => {
+    m.installEarlyHooks();
+  });
+}
+
 // Boot the singleton broadcast point. Idempotent. Sole call site.
 startMessageSource();
 

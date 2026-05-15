@@ -31,6 +31,7 @@ export default [
       "node_modules/**",
       "storybook-static/**",
       "playwright-report/**",
+      "playwright-report-full-stack/**",
       "test-results/**",
       "coverage/**",
       // Build output of @trading/sbe-codecs (generated, lives outside

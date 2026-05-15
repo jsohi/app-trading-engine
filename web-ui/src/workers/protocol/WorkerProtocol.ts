@@ -36,6 +36,45 @@ import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 // must import from `@/workers/WorkerTuning` directly — re-exporting
 // here was removed to avoid two import paths drifting.
 
+// ─── Command-port channel (bidirectional, multi-message) ──────────
+//
+// Plan §12 (APP-160). The main thread posts {@link CommandFramePortMessage}s
+// onto the port; the worker pushes the payload bytes onto the wss send queue.
+// On inbound wss frames matching templateId=70 (CommandAck), the worker decodes
+// the correlationId + status and posts a {@link CommandAckPortMessage} back on
+// the same port for main-thread routing.
+//
+// The bytes payload is ALWAYS the SBE-encoded NewOrderSingle frame (header +
+// block) produced by `web-ui/src/sbe/encoders/NewOrderSingleEncoder.ts`. The
+// worker does NOT re-validate the bytes — main-thread is the single point of
+// truth for the wire layout.
+
+export interface CommandFramePortMessage {
+  readonly type: "COMMAND_FRAME";
+  /** Wire bytes (SBE message header + block). */
+  readonly bytes: Uint8Array;
+  /**
+   * Encoded length within {@code bytes} — the buffer may be a pooled
+   * Uint8Array larger than the encoded frame.
+   */
+  readonly length: number;
+  /**
+   * Per-request correlation id (matches the SBE NewOrderSingle's clOrdId hash
+   * the cluster echoes on CommandAck). Main-thread tracks this against its
+   * pre-allocated slot table to resolve the awaiting Promise.
+   */
+  readonly correlationId: number;
+}
+
+export interface CommandAckPortMessage {
+  readonly type: "COMMAND_ACK";
+  readonly correlationId: number;
+  /** "Accepted" | "Rejected" | "Duplicate" | "Throttled" — see CommandAckStatus enum. */
+  readonly status: string;
+  /** Optional textual reason for non-Accepted statuses. */
+  readonly reasonCode?: string;
+}
+
 // ─── Token-port channel (one-way, single-message) ──────────────────
 
 /**
@@ -66,6 +105,17 @@ export interface InitMsg {
   readonly tokenPort: MessagePort;
   /** Bidirectional watchdog port for PING/PONG liveness. */
   readonly watchdogPort: MessagePort;
+  /**
+   * Optional bidirectional command port (APP-160). When present, the worker:
+   *   - Receives {@link CommandFramePortMessage}s from main and forwards the
+   *     payload bytes to the live wss send queue.
+   *   - Decodes inbound CommandAck (templateId=70) wss frames and posts
+   *     {@link CommandAckPortMessage}s back on this port for main-thread
+   *     correlation by `correlationId`.
+   * Absent in pre-APP-160 deployments — the worker treats it as "command
+   * submission disabled" and routes nothing.
+   */
+  readonly commandPort?: MessagePort;
   /**
    * Backoff attempt counter to seed the worker's `Reconnect`
    * instance. Per Gemini review R10 (HIGH): WorkerClient persists

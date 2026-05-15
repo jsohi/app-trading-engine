@@ -50,6 +50,16 @@ import { fakeStream } from "@/mocks/fakeStream";
 import { type WorkerMessage } from "@/shared/transport/MessageShape";
 import { pushConnectionState } from "@/streams/connection-stream";
 
+// IMPORTANT: WorkerClient and devTokenProvider are imported DYNAMICALLY inside
+// the VITE_E2E_REAL_BACKEND branch (see startMessageSource below). Static imports
+// here would pull `@/workers/loadWorker` into every test setup's module graph
+// BEFORE `vi.mock("@/workers/loadWorker", ...)` calls in individual test files
+// take effect, breaking the WorkerClient unit tests' synthetic-Worker mock.
+// Dynamic import keeps the test-mode dependency tree opt-in: only loaded when
+// the env var is set. registerForceWsClose is a no-op outside test mode so we
+// can keep its static import.
+import { registerForceWsClose } from "@/main-thread/e2eHooks";
+
 // Module-private; `let` so `__resetMessageSourceForTests()` can swap.
 // Public binding stays stable across resets via the `defer(...)` wrapper —
 // avoids the `export const` reassignment trap (ESM bindings are immutable).
@@ -98,6 +108,64 @@ export function startMessageSource(
 ): void {
   if (started) return;
   started = true;
+
+  // Test-mode escape hatch (plan §4): real WorkerClient against the live
+  // websocket-server. Vite inlines the env-var comparison at build time;
+  // esbuild dead-code-eliminates the body for production builds. The
+  // bundle-guard test (web-ui/test/integration/build-bundle.test.ts) greps
+  // dist/*.js to prove no leakage. Defence-in-depth: also asserts DEV mode
+  // — if a future build ever runs with VITE_E2E_REAL_BACKEND=true under
+  // import.meta.env.PROD=true, fail loud rather than silently shipping the
+  // test path.
+  if (import.meta.env.VITE_E2E_REAL_BACKEND === "true") {
+    if (import.meta.env.PROD) {
+      throw new Error("VITE_E2E_REAL_BACKEND must only be set in dev builds (defence-in-depth)");
+    }
+    // Dynamic import keeps WorkerClient + the singleton's transitive imports
+    // out of every test setup's module graph — only the test-mode branch loads
+    // them. We use the process-wide singleton (workerClientSingleton.ts) so the
+    // panel-form CommandClient and this inbound-stream subscription share ONE
+    // worker / ONE wss session. Without the singleton each consumer would
+    // spawn a parallel worker, burning a second auth slot and routing
+    // CommandAck back to whichever worker emitted the original send (reviewer
+    // A finding F-A1).
+    void (async (): Promise<void> => {
+      try {
+        const { getWorkerClient, disposeWorkerClient } =
+          await import("@/main-thread/workerClientSingleton");
+        const client = getWorkerClient();
+        const sub = client.messages$.subscribe({
+          next: (m) => {
+            _messages.next(m);
+          },
+          error: (e: unknown) => {
+            console.error("messageSource: WorkerClient stream error", e);
+            pushConnectionState("DOWN");
+          },
+        });
+        const stateSub = client.connectionState$.subscribe((s) => {
+          pushConnectionState(s);
+        });
+        registerForceWsClose(() => {
+          // Tear down the singleton; next consumer call recreates it.
+          disposeWorkerClient();
+        });
+        if (import.meta.hot) {
+          import.meta.hot.dispose(() => {
+            sub.unsubscribe();
+            stateSub.unsubscribe();
+            disposeWorkerClient();
+            _messages.complete();
+            started = false;
+          });
+        }
+      } catch (e: unknown) {
+        console.error("messageSource: real-backend bootstrap failed", e);
+        pushConnectionState("DOWN");
+      }
+    })();
+    return;
+  }
 
   // Pre-prod build: both `dev` and `prod` modes drive the UI off the same
   // synthetic `fakeStream`. The mode parameter still distinguishes them so

@@ -2,10 +2,15 @@ package com.trading.engine.e2e;
 
 import static java.util.Collections.singletonList;
 
+import com.trading.engine.e2e.E2EFixTestClientArgs.ArgsParseException;
+import com.trading.engine.e2e.E2EFixTestClientArgs.CliScenarioSpec;
+import com.trading.engine.e2e.E2EFixTestClientArgs.RunMode;
+import com.trading.engine.fix.Side;
 import com.trading.engine.fix.builder.NewOrderSingleEncoder;
 import com.trading.engine.fix.decoder.BusinessMessageRejectDecoder;
 import com.trading.engine.fix.decoder.ExecutionReportDecoder;
 import com.trading.engine.fix.decoder.RejectDecoder;
+import com.trading.engine.messages.FixedPointScale;
 import com.trading.engine.messages.clock.TradingClocks;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
@@ -100,46 +105,32 @@ public final class E2EFixTestClient {
   private E2EFixTestClient() {}
 
   /**
-   * Main entry point. Parses CLI args, connects to gateway, runs data-driven test scenarios.
-   *
-   * @param args CLI arguments: {@code --host <host> --port <port> --data-dir <path>
-   *     --sender-comp-id <id> --target-comp-id <id>}
+   * Main entry point. Parses CLI args via {@link E2EFixTestClientArgs}, connects to gateway, then
+   * runs either the YAML-driven scenario suite or a single CLI-specified order (per {@link
+   * RunMode}).
    */
   public static void main(final String[] args) {
-    String host = "localhost";
-    int port = 19880;
-    String senderCompId = "CLIENT1";
-    String targetCompId = "TRADING";
-    String dataDir = null;
-
-    for (int i = 0; i < args.length - 1; i += 2) {
-      switch (args[i]) {
-        case "--host" -> host = args[i + 1];
-        case "--port" -> port = Integer.parseInt(args[i + 1]);
-        case "--sender-comp-id" -> senderCompId = args[i + 1];
-        case "--target-comp-id" -> targetCompId = args[i + 1];
-        case "--data-dir" -> dataDir = args[i + 1];
-        default -> LOG.warn("Unknown CLI arg: {}", args[i]);
-      }
-    }
-
-    if (dataDir == null) {
-      LOG.error("--data-dir is required");
+    final E2EFixTestClientArgs parsed;
+    try {
+      parsed = E2EFixTestClientArgs.parse(args);
+    } catch (final ArgsParseException e) {
+      LOG.error("E2E FAIL: {}", e.getMessage());
       LogManager.shutdown();
       System.exit(EXIT_EXCEPTION);
+      return; // unreachable, satisfies the compiler's definite-assignment analysis
     }
 
     LOG.info(
-        "E2E FIX Test Client: host={} port={} senderCompId={} targetCompId={} dataDir={}",
-        host,
-        port,
-        senderCompId,
-        targetCompId,
-        dataDir);
+        "E2E FIX Test Client: host={} port={} senderCompId={} targetCompId={} mode={}",
+        parsed.host(),
+        parsed.port(),
+        parsed.senderCompId(),
+        parsed.targetCompId(),
+        parsed.runMode());
 
     int exitCode = EXIT_EXCEPTION;
     try {
-      exitCode = run(host, port, senderCompId, targetCompId, Path.of(dataDir).toAbsolutePath());
+      exitCode = run(parsed);
     } catch (final Exception e) {
       LOG.error("E2E FAIL: unexpected exception", e);
     }
@@ -148,13 +139,11 @@ public final class E2EFixTestClient {
     System.exit(exitCode);
   }
 
-  private static int run(
-      final String host,
-      final int port,
-      final String senderCompId,
-      final String targetCompId,
-      final Path dataDir)
-      throws Exception {
+  private static int run(final E2EFixTestClientArgs parsed) throws Exception {
+    final var host = parsed.host();
+    final var port = parsed.port();
+    final var senderCompId = parsed.senderCompId();
+    final var targetCompId = parsed.targetCompId();
 
     final var driverDir = Files.createTempDirectory("e2e-fix-client");
     final var archiveDir = Files.createTempDirectory("e2e-archive");
@@ -239,8 +228,14 @@ public final class E2EFixTestClient {
       long logonMs = TimeUnit.NANOSECONDS.toMillis(NANO_CLOCK.nanoTime() - logonStartNs);
       LOG.info("FIX session ACTIVE (logon: {}ms)", logonMs);
 
-      // 7. Load and run all data-driven scenarios
-      int result = runAllScenarios(session, library, messageQueue, dataDir);
+      // 7. Run mode-specific scenario(s)
+      final int result;
+      if (parsed.runMode() == RunMode.CLI) {
+        result = runCliScenario(session, library, messageQueue, parsed.cliScenario().orElseThrow());
+      } else {
+        final var dataDir = Path.of(parsed.dataDir().orElseThrow()).toAbsolutePath();
+        result = runAllScenarios(session, library, messageQueue, dataDir);
+      }
 
       // 8. Clean shutdown: logout then close
       session.logoutAndDisconnect();
@@ -339,6 +334,86 @@ public final class E2EFixTestClient {
   }
 
   // ===========================================================================
+  // CLI mode — single or matched-pair scenario, ClOrdID supplied by caller
+  // ===========================================================================
+
+  /**
+   * Executes one or two CLI-specified NOS messages, reusing the YAML-mode {@link
+   * #runNosScenarioWithClOrdId} helper for the actual encode/send/validate loop.
+   *
+   * <p>For {@link CliScenarioSpec.ScenarioKind#SINGLE}: one NOS, ClOrdID exactly as supplied.
+   *
+   * <p>For {@link CliScenarioSpec.ScenarioKind#MATCH}: two NOS — buy then sell — with ClOrdIDs
+   * suffixed {@code -buy} and {@code -sell}. Both legs share symbol/qty/price/account/currency
+   * (only side flips). Used by the full-stack-e2e Playwright spec 4 to produce a fill that lands a
+   * non-zero row in PositionsBlotter.
+   *
+   * @return worst (highest) exit code across the legs
+   */
+  private static int runCliScenario(
+      final Session session,
+      final FixLibrary library,
+      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue,
+      final CliScenarioSpec spec) {
+
+    return switch (spec.kind()) {
+      case SINGLE -> runCliLeg(session, library, messageQueue, spec, spec.clOrdId(), spec.side());
+      case MATCH -> {
+        final var ids = spec.matchClOrdIds();
+        final int buyResult = runCliLeg(session, library, messageQueue, spec, ids[0], Side.BUY);
+        if (buyResult != EXIT_PASS) {
+          yield buyResult;
+        }
+        final int sellResult = runCliLeg(session, library, messageQueue, spec, ids[1], Side.SELL);
+        yield Math.max(buyResult, sellResult);
+      }
+    };
+  }
+
+  private static int runCliLeg(
+      final Session session,
+      final FixLibrary library,
+      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue,
+      final CliScenarioSpec spec,
+      final String clOrdId,
+      final Side side) {
+
+    // Best-effort drain of stale messages (matches YAML-mode discipline).
+    while (messageQueue.poll() != null) {
+      // discard
+    }
+
+    // Build a NosScenario at runtime from the CLI spec — reuses the YAML-mode validators.
+    // Unscaled (value, scale) fields are derived from the pre-computed fixed-point longs by
+    // dividing back to (long, SCALE_DIGITS) form. The encode path in runNosScenarioWithClOrdId
+    // calls priceValue/priceScale/qtyValue/qtyScale, which is what NewOrderSingleEncoder needs.
+    final long priceFp = spec.priceFixedPoint();
+    final long qtyFp = spec.qtyFixedPoint();
+    final var scenario =
+        new NosScenario(
+            "cli-" + spec.kind() + "-" + side + "-" + clOrdId,
+            NosScenario.ScenarioType.NEW_ORDER_SINGLE,
+            NosScenario.ExpectedOutcome.NEW,
+            spec.account(),
+            spec.symbol(),
+            spec.currency(),
+            side,
+            spec.ordType(),
+            spec.timeInForce(),
+            priceFp, // priceValue (already scaled — see priceScale=SCALE_DIGITS below)
+            FixedPointScale.SCALE_DIGITS,
+            spec.hasPrice(),
+            qtyFp,
+            FixedPointScale.SCALE_DIGITS,
+            priceFp,
+            qtyFp,
+            null);
+
+    // Reuse the YAML-mode runner with the externally-supplied ClOrdID.
+    return runNosScenarioWithClOrdId(session, library, messageQueue, scenario, clOrdId, 0, 1);
+  }
+
+  // ===========================================================================
   // NOS scenario execution
   // ===========================================================================
 
@@ -365,6 +440,23 @@ public final class E2EFixTestClient {
     // ClOrdID: truncate nanoTime to 9 digits — stays within FIX 4.4's 20-char limit.
     // Math.abs() handles negative nanoTime() values (allowed by contract).
     final var clOrdId = "E2E-" + index + "-" + Math.abs(NANO_CLOCK.nanoTime() % 1_000_000_000L);
+    return runNosScenarioWithClOrdId(
+        session, library, messageQueue, scenario, clOrdId, index, total);
+  }
+
+  /**
+   * Variant of {@link #runNosScenario} that takes an externally-supplied ClOrdID. Used by CLI mode
+   * where the ClOrdID is the deterministic grep key the Playwright spec expects to see in the
+   * OrderBlotter row.
+   */
+  private static int runNosScenarioWithClOrdId(
+      final Session session,
+      final FixLibrary library,
+      final OneToOneConcurrentArrayQueue<CapturedMessage> messageQueue,
+      final NosScenario scenario,
+      final String clOrdId,
+      final int index,
+      final int total) {
 
     // Encode NewOrderSingle
     final var nos = new NewOrderSingleEncoder();

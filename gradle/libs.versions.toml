@@ -22,6 +22,15 @@ jmh = "1.37"
 jmh-gradle-plugin = "0.7.3"
 # HdrHistogram for RfqLatencyRegressionIT P50/P99/P999 budget assertions.
 hdr-histogram = "2.2.2"
+# JCStress concurrency-stress harness for ReliableStreamTracker reconnect race coverage
+# (plan §14). Pinned to the latest stable release. Test-only — :websocket-server:jcstress task.
+jcstress = "0.16"
+# Jetty 11 (test-scope only) for the Jetty stub server used by
+# WebSocketServerConfigOidcDiscoveryTest. Pinned to 11.x because the
+# jakarta.servlet Handler signature changed in Jetty 12 (split into ee10/ee11
+# modules); production WebSocket server uses Netty, not Jetty. Centralised
+# here so OWASP CVE scans cover it.
+jetty11 = "11.0.24"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -60,3 +69,6 @@ jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", ver
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-annotation-processor = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 hdr-histogram = { module = "org.hdrhistogram:HdrHistogram", version.ref = "hdr-histogram" }
+jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "jcstress" }
+jetty-server = { module = "org.eclipse.jetty:jetty-server", version.ref = "jetty11" }
+jetty-servlet = { module = "org.eclipse.jetty:jetty-servlet", version.ref = "jetty11" }

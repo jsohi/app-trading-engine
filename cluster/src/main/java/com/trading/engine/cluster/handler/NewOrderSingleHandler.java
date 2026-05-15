@@ -607,8 +607,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
     // Encode OrderCreatedEvent with all 19 fields.
     orderCreatedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    orderCreatedEncoder.sequenceNumber(0L); // placeholder — EventSink stamps authoritative value
-    orderCreatedEncoder.timestamp(0L); // placeholder — EventSink stamps authoritative value
+    // sequenceNumber + timestamp written here as zero by design: EventSink overwrites both
+    // fields with the authoritative cluster sequence + nanosecond timestamp during egress
+    // publication (the cluster duty-cycle thread is the single point of monotonic ordering).
+    // Writing them here keeps the SBE block layout dense + avoids re-wrap allocation.
+    orderCreatedEncoder.sequenceNumber(0L);
+    orderCreatedEncoder.timestamp(0L);
     orderCreatedEncoder.putOrderId(tradingState.orderIdScratch(), 0);
     orderCreatedEncoder.putExecId(tradingState.execIdScratch(), 0);
     orderCreatedEncoder.putClOrdId(clOrdIdScratch, 0);
@@ -708,8 +712,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
       final String text) {
 
     orderRejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
-    orderRejectedEncoder.sequenceNumber(0L); // placeholder — EventSink stamps
-    orderRejectedEncoder.timestamp(0L); // placeholder — EventSink stamps
+    // Authoritative sequenceNumber + timestamp stamped by EventSink at egress (see comment in
+    // OrderCreatedEvent encode block above for full rationale).
+    orderRejectedEncoder.sequenceNumber(0L);
+    orderRejectedEncoder.timestamp(0L);
     orderRejectedEncoder.putClOrdId(clOrdIdScratch, 0);
     // Symbol may be zero-padded from the decoder; pass the scratch verbatim.
     orderRejectedEncoder.putSymbol(symbolScratch, 0);

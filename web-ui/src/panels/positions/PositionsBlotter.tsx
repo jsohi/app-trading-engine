@@ -111,7 +111,7 @@ export function PositionsBlotter(): JSX.Element {
   }, [sink]);
 
   return (
-    <div style={{ height: "100%", width: "100%" }}>
+    <div data-testid="blotter-positions" style={{ height: "100%", width: "100%" }}>
       <AgGridReact<NetPosition>
         theme={themeQuartzDark}
         columnDefs={COLUMN_DEFS as ColDef<NetPosition>[]}

@@ -1,0 +1,130 @@
+name: Full-Stack E2E
+
+# Plan §11. Heavy job — boots cluster + websocket-server + Vite + JWKS instances,
+# runs Playwright full-stack suite + JCStress + stress JUnit phase. Skipped on fork
+# PRs by default (mkcert + Aeron resource cost); maintainer can opt-in via
+# workflow_dispatch with a reviewed head SHA.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: "Reviewed commit SHA to run against (REQUIRED for fork PRs)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  full-stack-e2e:
+    # Skip fork PRs unless maintainer-triggered via workflow_dispatch.
+    if: >
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository)
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout (PR head)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout (workflow_dispatch — pinned SHA)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
+        with:
+          node-version: 22
+
+      - name: Install mkcert + nss
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mkcert libnss3-tools lsof
+
+      - name: Resolve Playwright version
+        run: |
+          echo "PLAYWRIGHT_VERSION=$(node -p \"require('./web-ui/node_modules/@playwright/test/package.json').version\")" >> "$GITHUB_ENV"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('web-ui/package-lock.json') }}-${{ env.PLAYWRIGHT_VERSION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/**', 'gradle/libs.versions.toml') }}
+
+      - name: npm audit (high+)
+        # Plan §11 — run audit before the heavy E2E so a known HIGH/CRITICAL fails fast.
+        run: npm audit --workspaces --audit-level=high
+        continue-on-error: false
+
+      - name: SBE codec integrity check
+        # Plan §11 — verify the generated SBE codec output matches the checked-in SHA-256
+        # so a malicious commit can't slip a tampered codec through. The `messages` module
+        # generates codecs into messages/build/generated-codec/; we hash the directory tree.
+        # MUST fail the build on mismatch (was previously continue-on-error:true which defanged
+        # the security check — reviewer A finding F-6).
+        run: |
+          ./gradlew :messages:generateCodecs --no-daemon
+          if [[ -f messages/build/generated-codec.sha256 ]]; then
+            (cd messages/build && sha256sum -c generated-codec.sha256) || {
+              echo "::error::SBE codec integrity check failed"; exit 1;
+            }
+          else
+            echo "::error::no checked-in SHA file at messages/build/generated-codec.sha256"
+            echo "generate one via: (cd messages/build && find generated-codec -type f -print0 | sort -z | xargs -0 sha256sum > generated-codec.sha256) and commit"
+            exit 1
+          fi
+
+      - name: Run :fullStackE2e
+        run: ./gradlew fullStackE2e --no-daemon
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: playwright-report-full-stack
+          path: |
+            web-ui/playwright-report-full-stack/
+            web-ui/test-results/
+
+      - name: Upload e2e logs (incl. JFR)
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: e2e-logs
+          path: e2e/logs/
+
+      - name: Upload JCStress report
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: jcstress-report
+          path: websocket-server/build/reports/jcstress/
+
+      - name: Upload prod bundle
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: web-ui-dist
+          path: web-ui/dist/

@@ -1,6 +1,11 @@
 package com.trading.engine.launcher;
 
 import com.trading.engine.messages.clock.TradingClocks;
+import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.AccountTypeEnum;
+import com.trading.engine.messages.sbe.AcctIDSourceEnum;
+import com.trading.engine.messages.sbe.ComplianceStatusEnum;
+import com.trading.engine.projections.account.AccountReadModel;
 import com.trading.engine.websocket.AeronEgressThread;
 import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.EgressEntry;
@@ -13,7 +18,12 @@ import com.trading.engine.websocket.WebSocketMetrics;
 import com.trading.engine.websocket.WebSocketServerConfig;
 import com.trading.engine.websocket.WebSocketServerMain;
 import com.trading.engine.websocket.WebSocketSessionManager;
+import com.trading.refdata.ReferenceDataLoadException;
+import com.trading.refdata.account.AccountRecord;
+import com.trading.refdata.account.YamlAccountLoader;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
@@ -126,8 +136,18 @@ public final class WebSocketLauncher {
     final var jtiCache =
         new JtiRevocationCache(
             config.maxRevokedJtis(), config.revocationTtlMinutes(), SystemNanoClock.INSTANCE);
-    // TODO(APP-237): wire AccountProjection for real account lookup
-    final var entitlementService = new UserEntitlementService(code -> null);
+    // Build the account lookup table from the same accounts.yaml the cluster's
+    // ReferenceDataOrchestrator loads. Resolves the YAML path the same way
+    // LauncherConfig does — `-Daccounts.file` or default "accounts.yaml". Loaded
+    // once at startup; lookups are non-blocking Map.get().
+    //
+    // APP-237 will replace this with a live AccountProjection driven by cluster
+    // egress events so account state changes propagate without a launcher restart.
+    // Until then, the YAML is the authoritative source for both the cluster (via
+    // ReferenceDataOrchestrator) and this lookup, so they stay in sync by
+    // construction.
+    final var accountLookup = loadAccountLookupFromYaml();
+    final var entitlementService = new UserEntitlementService(accountLookup::get);
     final var authFailureTracker =
         new AuthFailureTracker(
             config.authFailureLockoutThreshold(),
@@ -177,5 +197,91 @@ public final class WebSocketLauncher {
         config.egressQueueCapacity());
 
     return new WebSocketComponents(server, egressThread, clusterClient);
+  }
+
+  /**
+   * Load accounts from the same YAML file the cluster consumes via {@code
+   * ReferenceDataOrchestrator}, and project each {@link AccountRecord} into the {@link
+   * AccountReadModel} shape {@link UserEntitlementService} requires.
+   *
+   * <p>Resolves the file path from the {@code accounts.file} system property (default {@code
+   * accounts.yaml}) — identical to {@link LauncherConfig}'s rule, so both wiring paths read the
+   * same source of truth.
+   *
+   * @return immutable {@code Map<accountCode, AccountReadModel>}; throws on YAML errors so a
+   *     misconfigured launcher fails loud at startup rather than silently rejecting every JWT.
+   */
+  private static Map<String, AccountReadModel> loadAccountLookupFromYaml()
+      throws ReferenceDataLoadException {
+    final var path = Path.of(System.getProperty("accounts.file", "accounts.yaml"));
+    final var loader = new YamlAccountLoader(path);
+    final var records = loader.load();
+    final Map<String, AccountReadModel> map = new HashMap<>(records.size() * 2);
+    for (final var rec : records) {
+      map.put(rec.accountCode(), toReadModel(rec));
+    }
+    LOG.info(
+        "Loaded {} account(s) from {} for WebSocket entitlement lookup", map.size(), path);
+    return Map.copyOf(map);
+  }
+
+  /**
+   * Project a YAML-loaded {@link AccountRecord} into an {@link AccountReadModel} so {@link
+   * UserEntitlementService#validateAccounts} can apply its status check. Enum string lookups
+   * mirror the SBE codec — unknown values map to {@code NULL_VAL} so the validator's "non-active"
+   * branch rejects them.
+   */
+  private static AccountReadModel toReadModel(final AccountRecord rec) {
+    final long capabilities = rec.capabilities();
+    final boolean canTrade = (capabilities & 1L) != 0L;
+    final boolean canRequestQuotes = (capabilities & 2L) != 0L;
+    return new AccountReadModel(
+        rec.accountId(),
+        rec.parentAccountId(),
+        rec.accountCode(),
+        parseAcctIdSource(rec.acctIdSource()),
+        rec.accountName(),
+        parseAccountType(rec.accountType()),
+        rec.baseCurrency(),
+        parseAccountStatus(rec.status()),
+        parseComplianceStatus(rec.complianceStatus()),
+        capabilities,
+        canTrade,
+        canRequestQuotes,
+        0L,
+        0L,
+        0L);
+  }
+
+  private static AccountStatusEnum parseAccountStatus(final String s) {
+    try {
+      return AccountStatusEnum.valueOf(s);
+    } catch (final IllegalArgumentException ex) {
+      return AccountStatusEnum.NULL_VAL;
+    }
+  }
+
+  private static AccountTypeEnum parseAccountType(final String s) {
+    try {
+      return AccountTypeEnum.valueOf(s);
+    } catch (final IllegalArgumentException ex) {
+      return AccountTypeEnum.NULL_VAL;
+    }
+  }
+
+  private static AcctIDSourceEnum parseAcctIdSource(final String s) {
+    try {
+      return AcctIDSourceEnum.valueOf(s);
+    } catch (final IllegalArgumentException ex) {
+      return AcctIDSourceEnum.NULL_VAL;
+    }
+  }
+
+  private static ComplianceStatusEnum parseComplianceStatus(final String s) {
+    try {
+      return ComplianceStatusEnum.valueOf(s);
+    } catch (final IllegalArgumentException ex) {
+      return ComplianceStatusEnum.NULL_VAL;
+    }
   }
 }

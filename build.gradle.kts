@@ -124,6 +124,20 @@ tasks.named("build") {
 }
 
 // =============================================================================
+// PortLockService — Gradle BuildService that serialises tasks binding the
+// e2e port set (5173 / 8443 / 19880 / 20110-22220 / 8010-8012 / 7000 / 7001).
+// Local devs running multiple Gradle invocations in parallel hit "port already
+// in use" otherwise — Gradle serialises tasks declaring usesService(portLock)
+// via maxParallelUsages = 1. Reviewer F-16 (HIGH).
+// =============================================================================
+abstract class PortLockService : org.gradle.api.services.BuildService<org.gradle.api.services.BuildServiceParameters.None>
+
+val portLock =
+    gradle.sharedServices.registerIfAbsent("portLock", PortLockService::class.java) {
+        maxParallelUsages.set(1)
+    }
+
+// =============================================================================
 // E2E integration test — boots real 3-node cluster, sends FIX NOS, validates ER
 // =============================================================================
 
@@ -131,6 +145,7 @@ tasks.register<Exec>("e2e") {
     group = "verification"
     description = "Run full e2e test — real 3-node cluster, FIX NOS, ExecutionReport validation"
     dependsOn("build", ":integration-tests:installDist")
+    usesService(portLock)
     commandLine("bash", "scripts/e2e.sh")
     timeout.set(java.time.Duration.ofMinutes(3))
 }
@@ -146,6 +161,46 @@ tasks.register<Delete>("e2eClean") {
             .waitFor()
         // Also kill stale media drivers matched by aeron dir path (mirrors scripts/e2e.sh cleanup)
         ProcessBuilder("bash", "-c", "pkill -9 -f 'aeron-e2e-' 2>/dev/null || true")
+            .start()
+            .waitFor()
+    }
+}
+
+// =============================================================================
+// Full-Stack E2E (plan §9) — boots cluster + websocket-server + Vite + JWKS,
+// runs Playwright + JCStress + stress JUnit phase. ~28-35 min wall-clock.
+// =============================================================================
+tasks.register<Exec>("fullStackE2e") {
+    group = "verification"
+    description = "Full-stack e2e: real backend + browser UI + Playwright suite + JCStress"
+    dependsOn(
+        "build",
+        ":integration-tests:installDist",
+        ":web-ui:webUiE2eDeps",
+        ":web-ui:bundleGuard",
+    )
+    usesService(portLock)
+    commandLine("bash", "scripts/full-stack-e2e.sh")
+    timeout.set(java.time.Duration.ofMinutes(40))
+}
+
+tasks.register<Delete>("fullStackE2eClean") {
+    group = "verification"
+    description = "Remove full-stack e2e artifacts (rendered overlays, dist, playwright reports)"
+    delete(
+        "e2e/logs",
+        "e2e/cluster-data",
+        "e2e/cluster-data-mi",
+        "e2e/config/websocket-server-e2e.yaml",
+        "e2e/config/websocket-server-multi-issuer.yaml",
+        "web-ui/dist",
+        "web-ui/playwright-report",
+        "web-ui/playwright-report-full-stack",
+        "web-ui/test-results",
+    )
+    doLast {
+        ProcessBuilder("bash", "-c", "rm -rf /tmp/aeron-e2e-*").start().waitFor()
+        ProcessBuilder("bash", "-c", "pkill -9 -f -- '-Daeron.dir.prefix=e2e' 2>/dev/null || true")
             .start()
             .waitFor()
     }

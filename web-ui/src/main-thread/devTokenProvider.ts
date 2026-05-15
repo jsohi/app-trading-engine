@@ -36,12 +36,20 @@ export const devTokenProvider: TokenProvider = () => {
       "devTokenProvider invoked in production build — APP-160 must own the prod token-issuer iframe path",
     );
   }
-  const token: unknown = import.meta.env.VITE_DEV_JWT;
+  // Per-context override (plan §15): the multi-issuer Playwright spec calls
+  // `context.addInitScript(t => window.__E2E_JWT_OVERRIDE__ = t, jwt)` BEFORE
+  // page navigation, so each browser context can authenticate as a different
+  // issuer. The override is honoured ONLY in dev — the `import.meta.env.PROD`
+  // guard above blocks the entire function in prod. Defence-in-depth: the
+  // bundle-guard test (web-ui/test/integration/build-bundle.test.ts) asserts
+  // the literal `__E2E_JWT_OVERRIDE__` is absent from web-ui/dist/*.js.
+  const overrideHolder = globalThis as unknown as { __E2E_JWT_OVERRIDE__?: unknown };
+  const override = overrideHolder.__E2E_JWT_OVERRIDE__;
+  const token: unknown =
+    typeof override === "string" && override !== "" ? override : import.meta.env.VITE_DEV_JWT;
   if (typeof token !== "string" || token === "") {
     return Promise.reject(
-      new Error(
-        "devTokenProvider: VITE_DEV_JWT not set; configure web-ui/.env.local for local dev",
-      ),
+      new Error("devTokenProvider: neither window.__E2E_JWT_OVERRIDE__ nor VITE_DEV_JWT is set"),
     );
   }
   const channel = new MessageChannel();
