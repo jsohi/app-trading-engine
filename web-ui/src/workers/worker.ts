@@ -486,7 +486,17 @@ function wireCommandPort(port: MessagePort): void {
     // the wire. Negative or fractional lengths are equally meaningless. Reject
     // with a typed Rejected ack so the caller fails fast and a regression
     // surfaces in tests rather than as a silent server-side decode error.
-    if (!Number.isInteger(env.length) || env.length < 0 || env.length > env.bytes.byteLength) {
+    if (
+      !Number.isInteger(env.length) ||
+      env.length < 0 ||
+      env.length > env.bytes.byteLength ||
+      env.bytes.buffer.byteLength === 0
+    ) {
+      // The fourth check catches a detached underlying ArrayBuffer (transfer
+      // semantics). The current workerClient design uses structured-clone, but
+      // a future change that re-enables transfer must not silently send empty
+      // WS frames — the server would close the connection with a protocol
+      // violation, masking the real cause.
       postCommandAck(env.correlationId, "Rejected", "INVALID_LENGTH");
       return;
     }

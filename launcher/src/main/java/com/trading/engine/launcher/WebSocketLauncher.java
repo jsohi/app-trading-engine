@@ -220,16 +220,15 @@ public final class WebSocketLauncher {
     for (final var rec : records) {
       map.put(rec.accountCode(), toReadModel(rec));
     }
-    LOG.info(
-        "Loaded {} account(s) from {} for WebSocket entitlement lookup", map.size(), path);
+    LOG.info("Loaded {} account(s) from {} for WebSocket entitlement lookup", map.size(), path);
     return Map.copyOf(map);
   }
 
   /**
    * Project a YAML-loaded {@link AccountRecord} into an {@link AccountReadModel} so {@link
-   * UserEntitlementService#validateAccounts} can apply its status check. Enum string lookups
-   * mirror the SBE codec — unknown values map to {@code NULL_VAL} so the validator's "non-active"
-   * branch rejects them.
+   * UserEntitlementService#validateAccounts} can apply its status check. Enum string lookups mirror
+   * the SBE codec — unknown values map to {@code NULL_VAL} so the validator's "non-active" branch
+   * rejects them.
    */
   private static AccountReadModel toReadModel(final AccountRecord rec) {
     final long capabilities = rec.capabilities();

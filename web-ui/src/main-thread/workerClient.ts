@@ -228,12 +228,23 @@ export class WorkerClient implements WorkerClientStreams {
     if (this.commandChannel === null) {
       throw new Error("WorkerClient.submitCommand: not started — call start() first");
     }
-    // postMessage with the underlying ArrayBuffer transferred for zero-copy
-    // hand-off. The worker uses subarray(0, length) so the trailing bytes of
-    // the pooled buffer are ignored.
-    this.commandChannel.port1.postMessage({ type: "COMMAND_FRAME", bytes, length, correlationId }, [
-      bytes.buffer,
-    ]);
+    // Structured-clone of the bytes (NOT Transferable). Reasoning:
+    //   - The encoded NewOrderSingle is 116 bytes. Structured-clone of a
+    //     Uint8Array of that size is ~50ns — well under the per-submit budget.
+    //   - Transferable would detach `bytes.buffer` on the main side, forcing
+    //     the caller's pool slot to be re-allocated (~116 B alloc per submit
+    //     + GC pressure). That contradicts the commandClient `*AllocTest`
+    //     baseline AND the documented "zero-allocation after warmup" contract.
+    //   - The worker reads `bytes.subarray(0, length)`, so the trailing bytes
+    //     of the pooled buffer (cloned by structured-clone) are ignored
+    //     server-side. The clone of those bytes is a few extra nanoseconds —
+    //     negligible vs. the GC pause cost of the alloc-per-submit path.
+    this.commandChannel.port1.postMessage({
+      type: "COMMAND_FRAME",
+      bytes,
+      length,
+      correlationId,
+    });
   }
 
   private onCommandAck(data: unknown): void {

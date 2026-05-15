@@ -67,12 +67,18 @@ if (!Number.isFinite(port) || port < 0 || port > 65535) {
   process.stderr.write(`--port must be 0..65535, got '${values.port ?? process.env.PORT}'\n`);
   process.exit(1);
 }
-// Bind to IPv4 wildcard by default. Node's `server.listen(port, "localhost")`
+// Bind to IPv4 LOOPBACK by default. Node's `server.listen(port, "localhost")`
 // would resolve to a single AF (IPv6 ::1 first on modern macOS), and the JVM's
-// `RemoteJWKSet` resolves `localhost` to IPv4 (127.0.0.1) → "Connection refused".
-// `0.0.0.0` is dev-only; the JWT/JWKS contents are non-sensitive ephemeral
-// keys minted by `dev-key-gen.sh` and the listener exits with the e2e script.
-const host = process.env.HOST ?? "0.0.0.0";
+// `RemoteJWKSet` resolves `localhost` to IPv4 (127.0.0.1) → "Connection refused"
+// if we bound only to ::1. Binding to 127.0.0.1 sidesteps that AF mismatch
+// without exposing the dev JWKS endpoint to the LAN. The full-stack-e2e flow
+// runs against `localhost`, so loopback is sufficient.
+//
+// To run on a different machine (rare — only if a remote test runner needs
+// the JWKS), set HOST=0.0.0.0 explicitly. Defence-in-depth: the server only
+// serves dev JWKS keys + a discovery doc; no secrets — but a permissive bind
+// on a public Wi-Fi network exposes the dev cert chain to LAN snoopers.
+const host = process.env.HOST ?? "127.0.0.1";
 
 for (const [label, p] of [
   ["TLS cert", certPath],
