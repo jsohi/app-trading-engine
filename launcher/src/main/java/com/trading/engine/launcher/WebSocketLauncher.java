@@ -252,7 +252,16 @@ public final class WebSocketLauncher {
         0L);
   }
 
+  // Each parser maps null-or-unknown YAML strings to NULL_VAL so the
+  // entitlement validator's "non-active" branch rejects them cleanly. Without
+  // the explicit null guard `Enum.valueOf(null)` throws NPE (which the
+  // IllegalArgumentException catch does not cover) and crashes launcher
+  // startup with a noisy stack trace instead of a clean rejection.
+
   private static AccountStatusEnum parseAccountStatus(final String s) {
+    if (s == null) {
+      return AccountStatusEnum.NULL_VAL;
+    }
     try {
       return AccountStatusEnum.valueOf(s);
     } catch (final IllegalArgumentException ex) {
@@ -261,6 +270,9 @@ public final class WebSocketLauncher {
   }
 
   private static AccountTypeEnum parseAccountType(final String s) {
+    if (s == null) {
+      return AccountTypeEnum.NULL_VAL;
+    }
     try {
       return AccountTypeEnum.valueOf(s);
     } catch (final IllegalArgumentException ex) {
@@ -269,6 +281,9 @@ public final class WebSocketLauncher {
   }
 
   private static AcctIDSourceEnum parseAcctIdSource(final String s) {
+    if (s == null) {
+      return AcctIDSourceEnum.NULL_VAL;
+    }
     try {
       return AcctIDSourceEnum.valueOf(s);
     } catch (final IllegalArgumentException ex) {
@@ -277,6 +292,9 @@ public final class WebSocketLauncher {
   }
 
   private static ComplianceStatusEnum parseComplianceStatus(final String s) {
+    if (s == null) {
+      return ComplianceStatusEnum.NULL_VAL;
+    }
     try {
       return ComplianceStatusEnum.valueOf(s);
     } catch (final IllegalArgumentException ex) {

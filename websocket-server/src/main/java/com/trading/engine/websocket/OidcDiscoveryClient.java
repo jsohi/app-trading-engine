@@ -5,7 +5,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
@@ -147,46 +149,67 @@ public final class OidcDiscoveryClient {
             .header("Accept", "application/json")
             .build();
 
-    final HttpResponse<byte[]> response;
+    // Stream the body and abort as soon as MAX_RESPONSE_BYTES is exceeded.
+    // BodyHandlers.ofByteArray() would buffer the entire response first
+    // (potentially gigabytes within the 10s REQUEST_TIMEOUT at gigabit
+    // line-rate) and only enforce the cap *after* allocation — defeating
+    // the whole point of MAX_RESPONSE_BYTES as an OOM defence against a
+    // hostile or compromised IdP.
+    final HttpResponse<InputStream> response;
     try {
-      response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+      response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
     } catch (final IOException e) {
-      throw new OidcDiscoveryException("failed to fetch " + oidcDiscoveryUri + ": " + e, e);
+      throw new OidcDiscoveryException(
+          "failed to fetch " + redactQuery(oidcDiscoveryUri) + ": " + e, e);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new OidcDiscoveryException("interrupted fetching " + oidcDiscoveryUri, e);
+      throw new OidcDiscoveryException("interrupted fetching " + redactQuery(oidcDiscoveryUri), e);
     }
 
     if (response.statusCode() != 200) {
+      // Drain & close to release the connection back to the pool.
+      try (final var ignored = response.body()) {
+        // no-op — the try-with-resources closes the stream
+      } catch (final IOException ignored) {
+        // best-effort drain
+      }
       throw new OidcDiscoveryException(
-          "discovery URI returned HTTP " + response.statusCode() + ": " + oidcDiscoveryUri);
+          "discovery URI returned HTTP "
+              + response.statusCode()
+              + ": "
+              + redactQuery(oidcDiscoveryUri));
     }
 
-    final var body = response.body();
-    if (body.length > MAX_RESPONSE_BYTES) {
+    final byte[] body;
+    try (final var in = response.body()) {
+      body = readBoundedFully(in, MAX_RESPONSE_BYTES);
+    } catch (final OidcDiscoveryResponseTooLarge e) {
       throw new OidcDiscoveryException(
           "discovery doc exceeds "
               + MAX_RESPONSE_BYTES
-              + " byte cap (got "
-              + body.length
-              + "): "
-              + oidcDiscoveryUri);
+              + " byte cap: "
+              + redactQuery(oidcDiscoveryUri),
+          e);
+    } catch (final IOException e) {
+      throw new OidcDiscoveryException(
+          "I/O error reading discovery doc from " + redactQuery(oidcDiscoveryUri), e);
     }
 
     final DiscoveryDoc doc;
     try {
       doc = mapper.readValue(body, DiscoveryDoc.class);
     } catch (final IOException e) {
-      throw new OidcDiscoveryException("malformed discovery JSON at " + oidcDiscoveryUri, e);
+      throw new OidcDiscoveryException(
+          "malformed discovery JSON at " + redactQuery(oidcDiscoveryUri), e);
     }
     if (doc == null || doc.getJwksUri() == null || doc.getJwksUri().isBlank()) {
       throw new OidcDiscoveryException(
-          "discovery doc missing required 'jwks_uri' field: " + oidcDiscoveryUri);
+          "discovery doc missing required 'jwks_uri' field: " + redactQuery(oidcDiscoveryUri));
     }
 
     if (!doc.getJwksUri().regionMatches(true, 0, "https://", 0, 8)) {
       throw new OidcDiscoveryException(
-          "discovery doc jwks_uri must use https://, got: " + doc.getJwksUri());
+          "discovery doc jwks_uri must use https://, got: " + redactQuery(doc.getJwksUri()));
     }
 
     final URI jwksUri;
@@ -194,7 +217,7 @@ public final class OidcDiscoveryClient {
       jwksUri = new URI(doc.getJwksUri());
     } catch (final URISyntaxException e) {
       throw new OidcDiscoveryException(
-          "malformed jwks_uri in discovery doc: " + doc.getJwksUri(), e);
+          "malformed jwks_uri in discovery doc: " + redactQuery(doc.getJwksUri()), e);
     }
 
     // RFC 8414 §3 best-practice host-match: discovered jwks_uri must share host with the
@@ -216,6 +239,65 @@ public final class OidcDiscoveryClient {
 
   private static String nullToEmpty(final String s) {
     return s == null ? "" : s;
+  }
+
+  /**
+   * Returns the URI minus its query string and fragment so operator-log lines and exception
+   * messages do not leak query parameters that might (in non-standard IdP setups) carry secrets.
+   * The Throwable cause already retains the full URI for deep diagnosis at TRACE level. Operates on
+   * the string form (cheaper than {@link URI} reconstruction; this is only on the exception-path).
+   */
+  private static String redactQuery(final String uri) {
+    if (uri == null) {
+      return "<null>";
+    }
+    int end = uri.length();
+    final int q = uri.indexOf('?');
+    if (q >= 0) {
+      end = q;
+    }
+    final int f = uri.indexOf('#');
+    if (f >= 0 && f < end) {
+      end = f;
+    }
+    return end == uri.length() ? uri : uri.substring(0, end);
+  }
+
+  /**
+   * Reads up to {@code cap} bytes from {@code in} and returns the byte array. If the stream
+   * delivers more than {@code cap} bytes (i.e. the (cap + 1)-th byte read returns {@code != -1}),
+   * throws {@link OidcDiscoveryResponseTooLarge} so the caller fails fast without buffering the
+   * over-cap bytes. Closes the stream is the caller's responsibility (use try-with-resources).
+   */
+  private static byte[] readBoundedFully(final InputStream in, final int cap) throws IOException {
+    // Use a fixed 8 KiB chunk to balance heap pressure (small allocation per read) against
+    // syscall count (large enough that a 64 KiB cap fits in 8 reads). Total worst-case heap
+    // during read: cap + 8 KiB chunk + ByteArrayOutputStream resize headroom.
+    final var out = new ByteArrayOutputStream(Math.min(cap, 8 * 1024));
+    final byte[] chunk = new byte[8 * 1024];
+    int total = 0;
+    int n;
+    while ((n = in.read(chunk)) != -1) {
+      total += n;
+      if (total > cap) {
+        throw new OidcDiscoveryResponseTooLarge(cap, total);
+      }
+      out.write(chunk, 0, n);
+    }
+    return out.toByteArray();
+  }
+
+  /**
+   * Thrown by {@link #readBoundedFully(InputStream, int)} when the response body exceeds the
+   * configured cap. Caught by {@link #resolveJwksUri(String)} and re-thrown as a {@link
+   * OidcDiscoveryException} with the operator-friendly redacted-URI message.
+   */
+  static final class OidcDiscoveryResponseTooLarge extends IOException {
+    private static final long serialVersionUID = 1L;
+
+    OidcDiscoveryResponseTooLarge(final int cap, final int seenSoFar) {
+      super("response exceeds " + cap + " byte cap (>= " + seenSoFar + " bytes)");
+    }
   }
 
   /**

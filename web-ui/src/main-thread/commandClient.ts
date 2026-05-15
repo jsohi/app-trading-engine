@@ -172,8 +172,14 @@ export class CommandClient {
     this.worker = worker;
     this.slots = new Array<Slot>(SLOT_COUNT);
     for (let i = 0; i < SLOT_COUNT; i++) this.slots[i] = newSlot();
-    this.outboundPool = new Array<Uint8Array>(MAX_IN_FLIGHT);
-    for (let i = 0; i < MAX_IN_FLIGHT; i++) {
+    // The pool is indexed by `slotIdx = seq & SLOT_MASK` (range 0..SLOT_COUNT-1),
+    // so it MUST be sized to SLOT_COUNT — not MAX_IN_FLIGHT. A pool sized to the
+    // smaller MAX_IN_FLIGHT (256) was previously masked by a `?? new Uint8Array(...)`
+    // fallback that allocated on demand for slotIdx ≥ 256, silently violating the
+    // alloc-tripwire's "zero allocation after warmup" contract for any slot in
+    // 256..1023. Sizing to SLOT_COUNT removes the fallback need entirely.
+    this.outboundPool = new Array<Uint8Array>(SLOT_COUNT);
+    for (let i = 0; i < SLOT_COUNT; i++) {
       this.outboundPool[i] = new Uint8Array(POOL_BUFFER_SIZE);
     }
 
@@ -237,8 +243,21 @@ export class CommandClient {
       this.inFlight++;
 
       // Real SBE encode (no JSON envelope, no synthetic ack). The pool is indexed by slot —
-      // each in-flight slot owns its own buffer, so concurrent submits cannot collide.
-      const buf = this.outboundPool[slotIdx] ?? new Uint8Array(POOL_BUFFER_SIZE);
+      // each in-flight slot owns its own buffer, so concurrent submits cannot collide. The
+      // pool is fully populated in the constructor, so a missing slot here is an invariant
+      // violation — fail loud rather than silently allocating a fresh Uint8Array (which would
+      // also bypass the alloc-tripwire test's "zero-allocation after warmup" contract).
+      const pooled = this.outboundPool[slotIdx];
+      if (pooled === undefined) {
+        this.freeSlot(slot);
+        reject(
+          new Error(
+            `commandClient: outboundPool slot ${String(slotIdx)} missing — pool invariant violated`,
+          ),
+        );
+        return;
+      }
+      const buf = pooled;
       const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       try {
         this.encoder.wrapAndApplyHeader(view, 0).setFields({
