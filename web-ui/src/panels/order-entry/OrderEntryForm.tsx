@@ -36,7 +36,25 @@ function decimalToFixedPoint(s: string): bigint | null {
   return BigInt(whole) * PRICE_SCALE + BigInt(padded);
 }
 
-export function OrderEntryForm(): ReactElement {
+/**
+ * OrderEntryForm props. {@code accountCode} is REQUIRED — every submit must be
+ * tagged with the authenticated user's account so multi-account users do not
+ * silently route every order through any fixed account. Production callers
+ * resolve it from the authenticated session at AuthAck time (per the
+ * per-account {@code panelLayout} surface in the plan §C ticket-hygiene
+ * mapping under APP-244 — Web UI Production Hardening umbrella, which owns
+ * the interactive preferences editor + live AccountProjection follow-up).
+ * Tests pass it explicitly. The panel-registry mount
+ * uses a thin {@link OrderEntryFormPanel} wrapper that reads the dev-fixture
+ * default — the default lives at ONE named site, so a future audit can grep
+ * {@link DEFAULT_DEV_ACCOUNT_CODE} to find every place a non-authenticated
+ * account is silently substituted.
+ */
+export interface OrderEntryFormProps {
+  readonly accountCode: string;
+}
+
+export function OrderEntryForm({ accountCode }: OrderEntryFormProps): ReactElement {
   const { state, submit, reset } = useOrderSubmission();
   const [clOrdId, setClOrdId] = useState<string>("");
   const [symbol, setSymbol] = useState<string>("EUR/USD");
@@ -62,10 +80,17 @@ export function OrderEntryForm(): ReactElement {
     // Strip slash to canonical 6-char form — cluster expects "EURUSD".
     const canonicalSymbol = symbol.replace("/", "");
     return {
-      payload: { clOrdId: id, symbol: canonicalSymbol, side, qty: qtyFp, price: priceFp },
+      payload: {
+        clOrdId: id,
+        symbol: canonicalSymbol,
+        side,
+        qty: qtyFp,
+        price: priceFp,
+        accountCode,
+      },
       error: null,
     };
-  }, [clOrdId, symbol, side, qty, price]);
+  }, [clOrdId, symbol, side, qty, price, accountCode]);
 
   const onSubmit = useCallback(
     (e: { preventDefault(): void }): void => {
@@ -179,4 +204,28 @@ export function OrderEntryForm(): ReactElement {
       )}
     </form>
   );
+}
+
+/**
+ * The dev-fixture account used by {@link OrderEntryFormPanel} when the panel
+ * registry mounts the form without per-session context plumbing. Production
+ * (multi-account) MUST replace {@link OrderEntryFormPanel} with a wrapper that
+ * resolves the authenticated account from the AccountReadModel at AuthAck
+ * time — attached to APP-244 (Web UI Production Hardening umbrella) per the
+ * Phase 3 plan §"Out-of-scope items: Linear attachment mapping". Single named
+ * export so an audit can grep this symbol to find every non-authenticated
+ * account substitution.
+ */
+export const DEFAULT_DEV_ACCOUNT_CODE = "ACME-001";
+
+/**
+ * Panel-registry mount point for {@link OrderEntryForm}. The panel registry's
+ * `component: ComponentType` slot does not pass props, so this wrapper exists
+ * solely to bind the dev-fixture {@link DEFAULT_DEV_ACCOUNT_CODE}. Production
+ * replaces this wrapper with one that reads the authenticated session — the
+ * {@link OrderEntryForm} itself keeps `accountCode` as a strict required prop
+ * so a TypeScript caller cannot silently mount the form without an account.
+ */
+export function OrderEntryFormPanel(): ReactElement {
+  return <OrderEntryForm accountCode={DEFAULT_DEV_ACCOUNT_CODE} />;
 }

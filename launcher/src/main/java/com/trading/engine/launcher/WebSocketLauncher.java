@@ -23,6 +23,7 @@ import com.trading.refdata.account.AccountRecord;
 import com.trading.refdata.account.YamlAccountLoader;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
@@ -141,8 +142,11 @@ public final class WebSocketLauncher {
     // LauncherConfig does — `-Daccounts.file` or default "accounts.yaml". Loaded
     // once at startup; lookups are non-blocking Map.get().
     //
-    // APP-237 will replace this with a live AccountProjection driven by cluster
-    // egress events so account state changes propagate without a launcher restart.
+    // APP-244 (Web UI Production Hardening umbrella) will replace this with a
+    // live AccountProjection driven by cluster egress events so account state
+    // changes propagate without a launcher restart. The original APP-237
+    // reference in this comment was a stale handoff-doc misnomer — APP-237 in
+    // Linear is security-audit/SAST, unrelated. Phase 3 corrected the mapping.
     // Until then, the YAML is the authoritative source for both the cluster (via
     // ReferenceDataOrchestrator) and this lookup, so they stay in sync by
     // construction.
@@ -252,53 +256,94 @@ public final class WebSocketLauncher {
         0L);
   }
 
-  // Each parser maps null-or-unknown YAML strings to NULL_VAL so the
-  // entitlement validator's "non-active" branch rejects them cleanly. Without
-  // the explicit null guard `Enum.valueOf(null)` throws NPE (which the
-  // IllegalArgumentException catch does not cover) and crashes launcher
-  // startup with a noisy stack trace instead of a clean rejection.
+  /**
+   * Per-class cache of enum-constant arrays. {@link Class#getEnumConstants()} returns a defensive
+   * clone on every call; with O(N×4) startup parser invocations across accounts × enum families
+   * that adds avoidable allocation pressure on launcher boot. {@link ClassValue} memoises the array
+   * per enum {@link Class} with the right lifecycle semantics (one entry per loaded class; GC'd
+   * when the class is unloaded). Cold path; the cache itself is never read from any cluster/gateway
+   * hot path.
+   */
+  private static final ClassValue<Enum<?>[]> ENUM_CONSTANTS_CACHE =
+      new ClassValue<>() {
+        @Override
+        protected Enum<?>[] computeValue(final Class<?> type) {
+          return (Enum<?>[]) type.getEnumConstants();
+        }
+      };
+
+  // Each parser delegates to the generic parseEnumOrNull helper. Maps
+  // null/blank/unknown YAML strings to the supplied NULL_VAL fallback so the
+  // entitlement validator's "non-active" branch rejects them cleanly. The
+  // null guard inside parseEnumOrNull avoids the NPE that `Enum.valueOf(null)`
+  // would throw and crash launcher startup. Case-insensitive comparison
+  // (lowercased candidate vs lowercased enum constant name, both via
+  // Locale.ROOT) handles every YAML casing variation without bias toward the
+  // SBE generator's PascalCase choice — "Active" / "ACTIVE" / "active" all
+  // resolve to the same constant.
+
+  /**
+   * Parses {@code raw} into the enum constant {@code E}, or returns {@code nullValue} on null,
+   * blank, or unknown input. Case-insensitive — compares lowercased candidate to lowercased enum
+   * constant names so YAML casing variation ("Active" vs "ACTIVE" vs "active") does not silently
+   * degrade to {@code nullValue}. The SBE codec generator produces PascalCase enum constants (e.g.
+   * {@code Active}, {@code Suspended}); a uniform-case {@link Enum#valueOf(Class, String)} would
+   * have to pick one and the other forms would fail — case-insensitive comparison is the only
+   * correct choice. Package-private for unit tests; production callers go through the four typed
+   * wrappers below.
+   *
+   * <p>The {@code Locale.ROOT} {@code toLowerCase} avoids the Turkish dotted-i hazard ({@code "I"}
+   * → {@code "ı"} on a {@code tr_TR} JVM under default-locale folding).
+   *
+   * <p><b>Allocation per call:</b> 1× {@code trim()} string + 1× {@code toLowerCase()} string for
+   * the input + 1× {@code toLowerCase()} string per enum constant scanned (worst-case N). The
+   * enum-constant ARRAY itself is cached via {@link #ENUM_CONSTANTS_CACHE}, so the per-call
+   * defensive-clone of {@link Class#getEnumConstants()} is avoided — but the per-constant
+   * lowercased NAMES are not cached (would require a parallel {@link ClassValue}; not worth the
+   * complexity on the cold path). Cold path — launcher startup only; do NOT call from any
+   * cluster/gateway hot path.
+   *
+   * @param raw the raw YAML string (may be null or blank)
+   * @param type the enum class to look up against (must not be null)
+   * @param nullValue the fallback enum constant returned on null / blank / unknown input
+   * @param <E> the enum type
+   * @return the parsed enum constant, or {@code nullValue} on any non-match
+   */
+  static <E extends Enum<E>> E parseEnumOrNull(
+      final String raw, final Class<E> type, final E nullValue) {
+    Objects.requireNonNull(type, "type");
+    Objects.requireNonNull(nullValue, "nullValue");
+    if (raw == null) {
+      return nullValue;
+    }
+    final var trimmed = raw.trim();
+    if (trimmed.isEmpty()) {
+      return nullValue;
+    }
+    final var needle = trimmed.toLowerCase(Locale.ROOT);
+    @SuppressWarnings("unchecked")
+    final E[] candidates = (E[]) ENUM_CONSTANTS_CACHE.get(type);
+    for (final var candidate : candidates) {
+      if (candidate.name().toLowerCase(Locale.ROOT).equals(needle)) {
+        return candidate;
+      }
+    }
+    return nullValue;
+  }
 
   private static AccountStatusEnum parseAccountStatus(final String s) {
-    if (s == null) {
-      return AccountStatusEnum.NULL_VAL;
-    }
-    try {
-      return AccountStatusEnum.valueOf(s);
-    } catch (final IllegalArgumentException ex) {
-      return AccountStatusEnum.NULL_VAL;
-    }
+    return parseEnumOrNull(s, AccountStatusEnum.class, AccountStatusEnum.NULL_VAL);
   }
 
   private static AccountTypeEnum parseAccountType(final String s) {
-    if (s == null) {
-      return AccountTypeEnum.NULL_VAL;
-    }
-    try {
-      return AccountTypeEnum.valueOf(s);
-    } catch (final IllegalArgumentException ex) {
-      return AccountTypeEnum.NULL_VAL;
-    }
+    return parseEnumOrNull(s, AccountTypeEnum.class, AccountTypeEnum.NULL_VAL);
   }
 
   private static AcctIDSourceEnum parseAcctIdSource(final String s) {
-    if (s == null) {
-      return AcctIDSourceEnum.NULL_VAL;
-    }
-    try {
-      return AcctIDSourceEnum.valueOf(s);
-    } catch (final IllegalArgumentException ex) {
-      return AcctIDSourceEnum.NULL_VAL;
-    }
+    return parseEnumOrNull(s, AcctIDSourceEnum.class, AcctIDSourceEnum.NULL_VAL);
   }
 
   private static ComplianceStatusEnum parseComplianceStatus(final String s) {
-    if (s == null) {
-      return ComplianceStatusEnum.NULL_VAL;
-    }
-    try {
-      return ComplianceStatusEnum.valueOf(s);
-    } catch (final IllegalArgumentException ex) {
-      return ComplianceStatusEnum.NULL_VAL;
-    }
+    return parseEnumOrNull(s, ComplianceStatusEnum.class, ComplianceStatusEnum.NULL_VAL);
   }
 }
