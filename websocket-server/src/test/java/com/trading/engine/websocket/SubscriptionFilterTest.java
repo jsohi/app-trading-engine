@@ -83,7 +83,10 @@ final class SubscriptionFilterTest {
   }
 
   @Test
-  void matches_allEventTypesBitmask_matchesPriceEvent() {
+  void matches_allEventTypesBitmask_dropsOrchestratorBoundPriceResponse51() {
+    // Phase 3 Commit 5: template 51 (PriceResponse) is orchestrator-bound and is now mapped to
+    // -1 by templateIdToEventBit. Even an all-bits-set subscription MUST NOT match it; the
+    // egress filter actively rejects misrouted PriceResponses.
     final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
     filter.addSubscription(SymbolPacker.pack("USDJPY"), 0x1F); // all valid bits
 
@@ -92,7 +95,7 @@ final class SubscriptionFilterTest {
             buffer, 0, "QR001", "USDJPY", true, 149_500_000_000L, 149_600_000_000L, 1000L);
     final byte[] bytes = toByteArray(buffer, len);
 
-    assertTrue(filter.matches(51, bytes, 0, len));
+    assertFalse(filter.matches(51, bytes, 0, len));
   }
 
   // --- No-symbol templates (globalEventBitMask) ---
@@ -167,18 +170,34 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_updateExistingSymbol_overwritesBitmask() {
+    // Phase 3 Commit 5: PriceResponse (template 51) is orchestrator-bound and now maps to -1;
+    // verifying the overwrite semantics here uses an order-lifecycle template (100) instead so
+    // the assertion still exercises the "bitmask grew → match flips false→true" behaviour
+    // without touching the misrouted-RFQ regression-guard template.
     final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
-    filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01); // orders only
+    filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x04); // prices only
 
     final int len =
-        SbeTestEncoder.encodePriceResponse(
-            buffer, 0, "QR001", "EURUSD", true, 110_000_000L, 111_000_000L, 1000L);
+        SbeTestEncoder.encodeOrderCreatedEvent(
+            buffer,
+            0,
+            1L,
+            1_000_000_000L,
+            "OID-001",
+            "EX-001",
+            "CL-001",
+            "EURUSD",
+            SideEnum.Buy,
+            OrdTypeEnum.Limit,
+            110_000_000L,
+            1_000_000L,
+            "ACC-001");
     final byte[] bytes = toByteArray(buffer, len);
 
-    assertFalse(filter.matches(51, bytes, 0, len)); // no price bit
+    assertFalse(filter.matches(100, bytes, 0, len)); // no orders bit
 
-    filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x05); // orders + prices
-    assertTrue(filter.matches(51, bytes, 0, len)); // now price bit is set
+    filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x05); // prices + orders
+    assertTrue(filter.matches(100, bytes, 0, len)); // now orders bit is set
   }
 
   @Test
@@ -254,8 +273,21 @@ final class SubscriptionFilterTest {
   }
 
   @Test
-  void templateIdToEventBit_priceTemplate_returnBitPrices() {
-    assertEquals(0x04, SubscriptionFilter.templateIdToEventBit(51));
+  void templateIdToEventBit_marketDataTemplates_returnBitPrices() {
+    // Phase 3 Commit 5: BIT_PRICES (0x04) now covers the market-data broadcast templates
+    // 54 (MarketDataTick), 55 (MarketDataHeartbeat), 57 (MarketDataFeedStateChange).
+    // Template 51 (PriceResponse) used to map here but is orchestrator-bound and is now -1.
+    assertEquals(0x04, SubscriptionFilter.templateIdToEventBit(54));
+    assertEquals(0x04, SubscriptionFilter.templateIdToEventBit(55));
+    assertEquals(0x04, SubscriptionFilter.templateIdToEventBit(57));
+  }
+
+  @Test
+  void templateIdToEventBit_priceResponse51_returnsMinusOne_orchestratorBound() {
+    // PriceResponse (template 51) is orchestrator-bound; the cluster routes it to the
+    // orchestrator's session, never to the browser. An arrival at the egress filter is a
+    // routing regression — mapping to -1 means the filter drops it.
+    assertEquals(-1, SubscriptionFilter.templateIdToEventBit(51));
   }
 
   @Test

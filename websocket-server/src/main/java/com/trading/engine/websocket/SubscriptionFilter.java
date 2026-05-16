@@ -232,13 +232,19 @@ public final class SubscriptionFilter {
       case 100, 101, 102, 103, 112 -> BIT_ORDERS;
       // bit 1: Positions
       case 204 -> BIT_POSITIONS;
-      // bit 2: Prices
-      case 51 -> BIT_PRICES;
+      // bit 2: Prices — Phase 3 Commit 5: market-data broadcast templates (54 / 55 / 57)
+      // replace the legacy mapping for template 51 (PriceResponse), which is orchestrator-bound
+      // and MUST NOT reach the browser. A PriceResponse arriving at the egress filter is a
+      // routing regression and is now mapped to -1 (no event-bit) so the SubscriptionFilter
+      // drops it; the browser worker's onEvent additionally counts misroutes via
+      // `marketdataMisroutedRfq` (Commit 3 regression-guard counter).
+      case 54, 55, 57 -> BIT_PRICES;
       // bit 3: Quotes
       case 104, 105, 106, 107 -> BIT_QUOTES;
       // bit 4: Account events
       case 110, 111 -> BIT_ACCOUNTS;
       // Internal events (108/109/113-116) — never delivered to WebSocket clients
+      // Template 51 (PriceResponse) — orchestrator-bound; never on the WebSocket egress path.
       default -> -1;
     };
   }
