@@ -27,3 +27,70 @@ configurations.runtimeClasspath {
 application {
     mainClass.set("com.trading.engine.pricing.PricingServiceMain")
 }
+
+// ----------------------------------------------------------------------------------------------
+// JCStress concurrency-stress source set — Phase 3 Commit 4 / MarketDataPublisherSingleWriterJCStress.
+// Mirrors the websocket-server module's JCStress setup. Source set lives at src/jcstress/java/.
+// The annotation processor generates harness classes at compile time. Runtime is a JavaExec
+// task pointing the JVM at the production pricing-service classes + the compiled jcstress
+// sources. The MarketDataPublisher single-writer invariant guard is contract-tested here: the
+// test asserts the runtime guard fires when two threads attempt onTick concurrently.
+// ----------------------------------------------------------------------------------------------
+sourceSets {
+    create("jcstress") {
+        java.srcDir("src/jcstress/java")
+        compileClasspath += sourceSets["main"].output + configurations.runtimeClasspath.get()
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+val jcstressImplementation: Configuration by configurations.getting {
+    extendsFrom(configurations.implementation.get())
+}
+val jcstressAnnotationProcessor: Configuration by configurations.getting
+
+dependencies {
+    jcstressImplementation(libs.jcstress.core)
+    jcstressAnnotationProcessor(libs.jcstress.core)
+}
+
+val jcstressJar =
+    tasks.register<Jar>("jcstressJar") {
+        group = "verification"
+        description = "Builds a fat JAR of the JCStress source set + runtime deps."
+        archiveClassifier.set("jcstress")
+        from(sourceSets["jcstress"].output)
+        from(sourceSets["main"].output)
+        from(
+            provider {
+                configurations["jcstressRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) }
+            },
+        )
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        manifest {
+            attributes("Main-Class" to "org.openjdk.jcstress.Main")
+        }
+    }
+
+tasks.register<JavaExec>("jcstress") {
+    group = "verification"
+    description = "Runs the JCStress concurrency-stress harness for MarketDataPublisher."
+    dependsOn(jcstressJar)
+    classpath = files(jcstressJar.get().archiveFile)
+    mainClass.set("org.openjdk.jcstress.Main")
+    // Pinned run budget per Phase 3 plan §Commit 4: mode=quick + 20s/test + 1 fork + 5 iters.
+    args(
+        "-m",
+        "quick",
+        "-t",
+        "MarketDataPublisher.*JCStress",
+        "-time",
+        "20000",
+        "-f",
+        "1",
+        "-iters",
+        "5",
+        "-r",
+        "${project.layout.buildDirectory.get().asFile}/reports/jcstress",
+    )
+}

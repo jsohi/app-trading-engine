@@ -1,14 +1,22 @@
 package com.trading.engine.pricing;
 
+import static com.trading.engine.messages.MarketDataConstants.MARKET_DATA_CHANNEL;
+import static com.trading.engine.messages.MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID;
+import static com.trading.engine.messages.MarketDataConstants.MARKET_DATA_STREAM_ID;
+
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.messages.util.ByteArrayKey;
 import com.trading.engine.pricing.codec.PricingResponseEncoder;
 import com.trading.engine.pricing.forward.ConfigurableForwardPointSource;
+import com.trading.engine.pricing.market.BroadcastPublisher;
 import com.trading.engine.pricing.market.DeterministicMarketDataAdapter;
 import com.trading.engine.pricing.market.MarketDataAdapter;
+import com.trading.engine.pricing.market.MarketDataPublisher;
+import com.trading.engine.pricing.market.MarketDataPublisherConfig;
 import com.trading.engine.pricing.market.MidRateCache;
+import com.trading.engine.pricing.market.MidRateToTickBridge;
 import com.trading.engine.pricing.market.SyntheticMarketDataAdapter;
 import com.trading.engine.pricing.quote.PriceValidator;
 import com.trading.engine.pricing.quote.QuoteManager;
@@ -29,6 +37,7 @@ import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.collections.Object2ObjectHashMap;
 import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.CompositeAgent;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NanoClock;
@@ -299,7 +308,48 @@ public final class PricingServiceLauncher {
             config.swapTtlNanos(),
             config.sweepIntervalNanos());
 
-    // --- Step 14: Create and start AgentRunner ---
+    // --- Step 14a: Open stream-204 publish + stream-205 snapshot-request channels ---
+    // Phase 3 market-data broadcast feed. The publisher runs on the same agent thread as
+    // PricingService via CompositeAgent, satisfying the single-writer invariant without any
+    // cross-thread channel. Stream IDs and channel string come from MarketDataConstants
+    // (cross-module shared with websocket-server).
+    final ExclusivePublication mdPublication =
+        aeron.addExclusivePublication(MARKET_DATA_CHANNEL, MARKET_DATA_STREAM_ID);
+    final Subscription mdSnapshotRequestSubscription =
+        aeron.addSubscription(MARKET_DATA_CHANNEL, MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID);
+    // Bind the real ExclusivePublication to the BroadcastPublisher seam via method references.
+    // Captured once at construction so the SAM lives for the agent's lifetime — JIT can inline
+    // through it; no per-call allocation. The seam exists because ExclusivePublication is
+    // final and cannot be subclassed by unit tests.
+    final BroadcastPublisher broadcastPublisher =
+        new BroadcastPublisher() {
+          @Override
+          public long offer(
+              final org.agrona.DirectBuffer buffer, final int offset, final int length) {
+            return mdPublication.offer(buffer, offset, length);
+          }
+
+          @Override
+          public long position() {
+            return mdPublication.position();
+          }
+
+          @Override
+          public int termBufferLength() {
+            return mdPublication.termBufferLength();
+          }
+        };
+    final MarketDataPublisher marketDataPublisher =
+        new MarketDataPublisher(
+            broadcastPublisher,
+            mdSnapshotRequestSubscription,
+            epochClock,
+            nanoClock,
+            MarketDataPublisherConfig.defaults());
+    final MidRateToTickBridge midRateBridge =
+        new MidRateToTickBridge(midRateCache, marketDataPublisher, epochClock, SYMBOL_BYTES);
+
+    // --- Step 14b: Create and start AgentRunner over the composite agent ---
     final ErrorHandler errorHandler =
         throwable ->
             LOG.error()
@@ -309,8 +359,15 @@ public final class PricingServiceLauncher {
                 .append(throwable.getMessage())
                 .commit();
 
+    // Composite agent — PricingService (RFQ pricing + adapter doWork) + MidRateToTickBridge
+    // (reads mid-rates, derives bid/ask, pushes to publisher) + MarketDataPublisher (drains
+    // conflated slots onto stream 204; polls snapshot requests on stream 205). All three on
+    // the same agent thread → no cross-thread channel, no fences, single-writer invariant
+    // held end-to-end.
+    final CompositeAgent compositeAgent =
+        new CompositeAgent(pricingService, midRateBridge, marketDataPublisher);
     final AgentRunner agentRunner =
-        new AgentRunner(idleStrategy, errorHandler, null, pricingService);
+        new AgentRunner(idleStrategy, errorHandler, null, compositeAgent);
 
     try {
       AgentRunner.startOnThread(agentRunner);
