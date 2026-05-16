@@ -19,6 +19,7 @@ import com.trading.engine.messages.sbe.QuoteRejectedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteRequestedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
+import com.trading.engine.testsupport.aeron.FakeCluster;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -113,6 +114,8 @@ class EventSinkTest {
     final var sequencer = new com.trading.engine.cluster.sequencer.EventSequencer();
     final var journal = new com.trading.engine.cluster.journal.EventJournal(16);
     final var sink = new EventSink(sequencer, journal);
+    final var cluster = new FakeCluster(0L);
+    sink.setCluster(cluster);
 
     // Encode a minimal OrderCreatedEvent (just header + enough body for seqNo + timestamp)
     final var buf = new org.agrona.concurrent.UnsafeBuffer(new byte[512]);
@@ -125,7 +128,7 @@ class EventSinkTest {
         com.trading.engine.messages.sbe.MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
 
     long clusterTimestamp = 999_000_000L;
-    long seqNo = sink.emit(null, clusterTimestamp, buf, 0, totalLen);
+    long seqNo = sink.emit(clusterTimestamp, buf, 0, totalLen);
 
     // Verify seqNo = 1 (first sequence from a fresh EventSequencer)
     assertEquals(1L, seqNo);

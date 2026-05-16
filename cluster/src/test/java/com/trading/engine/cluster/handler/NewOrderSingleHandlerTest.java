@@ -33,6 +33,7 @@ import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.testsupport.aeron.FakeClientSession;
+import com.trading.engine.testsupport.aeron.FakeCluster;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.nio.charset.StandardCharsets;
 import org.agrona.ExpandableArrayBuffer;
@@ -96,6 +97,8 @@ class NewOrderSingleHandlerTest {
     final var sequencer = new EventSequencer();
     final var journal = new EventJournal(64);
     eventSink = new EventSink(sequencer, journal);
+    final var fakeCluster = new FakeCluster(0L);
+    eventSink.setCluster(fakeCluster);
 
     rfqMetrics = new RfqMetrics();
     rfqStateMachine = buildRfqStateMachine();
@@ -104,6 +107,7 @@ class NewOrderSingleHandlerTest {
     handler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
 
     session = new FakeClientSession();
+    fakeCluster.addClientSession(session);
     msgBuf = new ExpandableArrayBuffer(512);
   }
 

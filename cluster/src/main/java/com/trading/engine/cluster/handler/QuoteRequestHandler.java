@@ -405,7 +405,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     }
 
     // 14. Emit 104 (any throw aborts cluster — acceptable per monotonicity contract)
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
 
     // 15. Commit slot to lookup maps (LAST step — emit succeeded)
     rfqStateMachine.registerRequested(slot);
@@ -439,7 +439,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (len > egressBuffer.capacity()) {
       throw new IllegalStateException("106 encode overflow: " + len);
     }
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
   }
 
   /**
@@ -467,7 +467,7 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (len > egressBuffer.capacity()) {
       throw new IllegalStateException("106 emitMalformed encode overflow: " + len);
     }
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
     metrics.rejectMalformed++;
     metrics.emitRejected++;
   }

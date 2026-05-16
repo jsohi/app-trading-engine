@@ -648,7 +648,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
     // Emit via EventSink — stamps seqNo + timestamp, appends to journal, offers to session.
     final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCreatedEncoder.encodedLength();
-    eventSink.emit(session, timestamp, egressBuffer, 0, eventLen);
+    eventSink.emit(timestamp, egressBuffer, 0, eventLen);
 
     // --- Phase B: apply state derived from the emitted event ---
 
@@ -733,7 +733,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
     final int rejEventLen =
         MessageHeaderEncoder.ENCODED_LENGTH + orderRejectedEncoder.encodedLength();
-    eventSink.emit(session, timestamp, egressBuffer, 0, rejEventLen);
+    eventSink.emit(timestamp, egressBuffer, 0, rejEventLen);
 
     tradingState.applyOrderRejected(); // no-op — structural completeness
   }
