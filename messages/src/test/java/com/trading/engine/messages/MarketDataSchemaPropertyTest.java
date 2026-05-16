@@ -136,7 +136,11 @@ final class MarketDataSchemaPropertyTest {
    */
   @Property(tries = 1000)
   void marketDataHeartbeat_property_roundTrip(
-      @ForAll final long serverNanos, @ForAll @IntRange(min = 0, max = 16) final int groupSize) {
+      @ForAll final long serverNanos,
+      // Upper bound = symbolForIndex pool size (16 entries). Raising the bound without
+      // expanding the pool would push past the 16 distinct ASCII symbols available and
+      // wrap modulo 16, weakening the per-entry position-bug coverage.
+      @ForAll @IntRange(min = 0, max = 16) final int groupSize) {
 
     // Build parallel arrays of distinct per-entry symbol and seq values.
     final String[] symbols = new String[groupSize];

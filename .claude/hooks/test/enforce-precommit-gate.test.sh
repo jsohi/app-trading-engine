@@ -4,7 +4,7 @@
 # asserts the expected exit code + stderr message.
 #
 # Run: ./enforce-precommit-gate.test.sh
-# Wired into the `:check-hooks` Gradle task (CI gate).
+# Wired into the root `:checkHooks` Gradle task (and via `check`, into CI).
 #
 # Cases:
 #   1. Clean diff → exit 0
@@ -12,6 +12,7 @@
 #   3. Placeholder `APP-NNN` → exit 1
 #   4. TODO citing non-allowlisted ID (APP-37 Done) → exit 2
 #   5. TODO citing allowlisted ID (APP-125) → exit 0
+#   6. TODO citing APP-237 (not in Phase 3 allowlist) → exit 2
 
 set -Eeuo pipefail
 
@@ -24,8 +25,8 @@ run_case() {
   local fixture="$2"
   local expected="$3"
   local actual
-  actual=$(echo -e "$fixture" | "$HOOK" 2>/dev/null && echo $? || echo $?)
-  # shell quirk: capture exit explicitly
+  # Single invocation — capture exit code via `set +e` guard so non-zero exits
+  # do not abort the script under `set -e`.
   set +e
   echo -e "$fixture" | "$HOOK" >/dev/null 2>&1
   actual=$?

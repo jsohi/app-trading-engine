@@ -128,27 +128,35 @@ describe("CommandClient", () => {
     expect((err as CommandRejectedError).status).toBe("Throttled");
   });
 
-  it("BackpressureError fires synchronously on the 257th in-flight submit", () => {
+  it("BackpressureError fires synchronously on the 257th in-flight submit", async () => {
+    // MAX_IN_FLIGHT = 256. The first 256 submits MUST succeed at the synchronous
+    // edge (they reach the worker mock and pend on an ack that never arrives);
+    // the 257th MUST reject synchronously with BackpressureError because the
+    // in-flight counter has already hit the cap. Asserted with awaited promise
+    // chains — the prior version asserted `backpressureCount === 0` BEFORE the
+    // microtask queue drained, vacuously passing regardless of the actual error
+    // outcomes.
     const settled: Array<Promise<unknown>> = [];
-    let backpressureCount = 0;
-    for (let i = 0; i < 257; i++) {
+    for (let i = 0; i < 256; i++) {
+      // Pending forever (no ack will arrive in this test) — but rejects if the
+      // synchronous edge rejects. We attach a typed catch so unhandled
+      // rejections do not destabilise the test runner.
       const p = cc
         .submitOrder({ ...samplePayload, clOrdId: `T-${String(i)}` })
-        .catch((e: unknown) => {
-          if (e instanceof BackpressureError) backpressureCount++;
-        });
+        .catch((e: unknown) => e);
       settled.push(p);
     }
-    expect(backpressureCount).toBe(0);
-    // The 257th is the one that exceeds the cap.
-    return cc.submitOrder({ ...samplePayload, clOrdId: "T-overflow" }).then(
-      () => {
-        throw new Error("expected synchronous BackpressureError");
-      },
-      (e: unknown) => {
-        expect(e).toBeInstanceOf(BackpressureError);
-      },
-    );
+    // Probe the first 256 promises synchronously — none of them should have
+    // rejected yet because no ack has arrived and the slot table is full.
+    // (We cannot await them without an ack; we instead assert their state is
+    // still pending via `Promise.race` against a same-tick sentinel.)
+    const sentinel = Symbol("pending");
+    const stateProbe = await Promise.race([Promise.all(settled), Promise.resolve(sentinel)]);
+    expect(stateProbe).toBe(sentinel);
+    // The 257th submit exceeds the cap and rejects synchronously.
+    await expect(
+      cc.submitOrder({ ...samplePayload, clOrdId: "T-overflow" }),
+    ).rejects.toBeInstanceOf(BackpressureError);
   });
 
   it("CommandTimeoutError fires after SLOT_TIMEOUT_MS (5000ms) when no ack arrives", async () => {

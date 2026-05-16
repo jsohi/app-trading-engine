@@ -50,9 +50,13 @@ public final class MarketDataConstants {
 
   /**
    * Aeron IPC stream id for the publish direction: pricing-service →&nbsp;websocket-server. Carries
-   * {@code MarketDataTick} (template 54), {@code MarketDataHeartbeat} (template 55), and {@code
-   * MarketDataFeedStateChange} (template 57 — emitted by the ws-server liveness tracker, not the
-   * publisher; the constant captures the stream id, not the producer).
+   * {@code MarketDataTick} (template 54) and {@code MarketDataHeartbeat} (template 55) only.
+   *
+   * <p><b>Template 57 is NOT on this stream.</b> {@code MarketDataFeedStateChange} (template 57) is
+   * emitted by the ws-server's {@code MarketDataSubscriptionLivenessTracker} (which observes the
+   * inbound stream-204 traffic) onto the per-session <em>reliable egress queue</em> — the same
+   * queue that carries cluster broadcast events. Template 57 never crosses Aeron stream 204 and is
+   * not produced by the pricing-service.
    */
   public static final int MARKET_DATA_STREAM_ID = 204;
 

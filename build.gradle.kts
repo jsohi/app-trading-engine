@@ -135,6 +135,41 @@ tasks.named("spotlessCheck") {
     dependsOn("enforceLinearTicketTodos")
 }
 
+// =============================================================================
+// checkHooks — Phase 3 CI-side self-test for the pre-commit hook scripts.
+//
+// The hook `.claude/hooks/enforce-precommit-gate.sh` blocks commits that cite
+// placeholder linear IDs or non-allowlisted ticket numbers. Its self-test at
+// `.claude/hooks/test/enforce-precommit-gate.test.sh` pipes deterministic
+// fixture diffs through the hook and asserts exit codes; this Gradle task
+// runs the self-test from CI so a regex regression cannot silently disarm
+// the gate (a `--no-verify` commit followed by CI would otherwise pass).
+// Wired into `check` so `./gradlew build` and any `check` invocation exercise
+// the hook coverage.
+// =============================================================================
+tasks.register<Exec>("checkHooks") {
+    group = "verification"
+    description =
+        "Runs the bash self-test for .claude/hooks/enforce-precommit-gate.sh — " +
+        "verifies the hook still blocks placeholder linear IDs and non-allowlisted " +
+        "TODO citations after every commit. Lives alongside the hook itself; not " +
+        "skippable via --no-verify (the hook gate runs on commit; this task gates CI)."
+    workingDir = rootProject.projectDir
+    commandLine("bash", ".claude/hooks/test/enforce-precommit-gate.test.sh")
+    // Inputs declared so up-to-date checks let the task no-op when neither the
+    // hook nor its self-test has changed since the last successful run.
+    inputs.file(".claude/hooks/enforce-precommit-gate.sh")
+    inputs.file(".claude/hooks/test/enforce-precommit-gate.test.sh")
+    inputs.file(".linear-allowlist")
+    // No file output — the task either succeeds (exit 0) or fails (non-zero).
+    // Mark a virtual output so Gradle still considers the task cacheable.
+    outputs.upToDateWhen { true }
+}
+
+tasks.named("check") {
+    dependsOn("checkHooks")
+}
+
 allprojects {
     group = "com.trading.engine"
     version = "0.1.0-SNAPSHOT"
