@@ -47,8 +47,16 @@ import {
   SideEnum,
 } from "@trading/sbe-codecs";
 
-import { type WorkerMessage } from "@/shared/transport/MessageShape";
+import { type ErrorMsg, type WorkerMessage } from "@/shared/transport/MessageShape";
 import { type Stats } from "@/workers/protocol/Stats";
+
+/**
+ * SBE message-header length in bytes (blockLength u16 + templateId u16 + schemaId u16 +
+ * version u16). All decoders' {@code wrap(view, offset)} must skip past these 8 bytes to land
+ * on the message body — matches the discipline in {@code MessageRouter} (where the same constant
+ * gates {@code authAckDec.wrap(view, SBE_HEADER_BYTES)} etc.).
+ */
+const SBE_HEADER_BYTES = 8;
 
 /**
  * SBE templateId for PriceResponse. Hard-coded rather than imported from a
@@ -59,11 +67,12 @@ import { type Stats } from "@/workers/protocol/Stats";
 export const PRICE_RESPONSE_TEMPLATE_ID = 51;
 
 /**
- * Worker-side error channel categories the dispatcher uses. Mirrors the
- * `ErrorMsg.code` discriminator on `WorkerMessage` so a future consolidation
- * (single source of truth) is a renaming, not a contract bump.
+ * Worker-side error channel categories the dispatcher uses. Aliased to the canonical
+ * {@link ErrorMsg.code} union from the worker→main wire contract so a future change to the
+ * accepted error-code set is detected at compile time at every {@code postError} call site —
+ * eliminates the silent-drift hazard of a structural-copy union here.
  */
-export type WorkerErrorCode = "INIT" | "AUTH" | "CRC" | "PROTOCOL" | "SCHEMA" | "BUFFER" | "WORKER";
+export type WorkerErrorCode = ErrorMsg["code"];
 
 /** Injected callbacks the dispatcher uses to deliver decoded results and surface errors. */
 export interface ClusterEventDeps {
@@ -90,12 +99,19 @@ function sideToLabel(ord: number): "BUY" | "SELL" {
  * and emits the typed {@link WorkerMessage}.
  *
  * @param templateId the SBE templateId from the dispatch layer.
- * @param payload the body-only SBE bytes (header already stripped by `MessageRouter`).
+ * @param payload the full SBE message bytes — 8-byte SBE message header (blockLength /
+ *     templateId / schemaId / version) followed by the message body. Matches the contract
+ *     {@code MessageRouter.route} passes via its default arm:
+ *     {@code this.handlers.onEvent(templateId, payload)} (the `payload` parameter is the same
+ *     reference the router decoded the header from at offset 0). Decoders below wrap at
+ *     {@code SBE_HEADER_BYTES} to land on the body.
  * @param deps callbacks for emit / postError / stats.
  * @returns `true` if the event was handled (a WorkerMessage was emitted, an
  *     error was posted, or the misroute counter incremented). `false` if the
  *     templateId is not one the dispatcher handles — the caller must invoke
- *     its `onUnexpectedServerTemplate` fallback.
+ *     its `onUnexpectedServerTemplate` fallback (today the worker drops these
+ *     silently; templates 54/55/57 reserved for Phase 3 Commit 6 will land
+ *     their handlers in that commit).
  */
 export function decodeClusterEvent(
   templateId: number,
@@ -106,7 +122,7 @@ export function decodeClusterEvent(
     const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
     switch (templateId) {
       case OrderCreatedEventDecoder.TEMPLATE_ID: {
-        const dec = new OrderCreatedEventDecoder().wrap(dv, 0);
+        const dec = new OrderCreatedEventDecoder().wrap(dv, SBE_HEADER_BYTES);
         const price = dec.price();
         deps.emit({
           type: "order",
@@ -124,7 +140,7 @@ export function decodeClusterEvent(
         return true;
       }
       case OrderRejectedEventDecoder.TEMPLATE_ID: {
-        const dec = new OrderRejectedEventDecoder().wrap(dv, 0);
+        const dec = new OrderRejectedEventDecoder().wrap(dv, SBE_HEADER_BYTES);
         // EventUpdate (not OrderUpdate) — the OrderRejectedEvent SBE template
         // does not carry qty or price, so a partial OrderUpdate would corrupt
         // the existing row's fields under AG Grid's row-id merge. Lifecycle-
@@ -140,7 +156,7 @@ export function decodeClusterEvent(
         return true;
       }
       case OrderFilledEventDecoder.TEMPLATE_ID: {
-        const dec = new OrderFilledEventDecoder().wrap(dv, 0);
+        const dec = new OrderFilledEventDecoder().wrap(dv, SBE_HEADER_BYTES);
         deps.emit({
           type: "fill",
           clOrdId: dec.clOrdId(),
@@ -154,7 +170,7 @@ export function decodeClusterEvent(
         return true;
       }
       case OrderCanceledEventDecoder.TEMPLATE_ID: {
-        const dec = new OrderCanceledEventDecoder().wrap(dv, 0);
+        const dec = new OrderCanceledEventDecoder().wrap(dv, SBE_HEADER_BYTES);
         deps.emit({
           type: "event",
           seq: dec.sequenceNumber(),
@@ -165,7 +181,7 @@ export function decodeClusterEvent(
         return true;
       }
       case OrderCancelRejectedEventDecoder.TEMPLATE_ID: {
-        const dec = new OrderCancelRejectedEventDecoder().wrap(dv, 0);
+        const dec = new OrderCancelRejectedEventDecoder().wrap(dv, SBE_HEADER_BYTES);
         deps.emit({
           type: "event",
           seq: dec.sequenceNumber(),
