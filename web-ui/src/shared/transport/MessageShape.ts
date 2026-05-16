@@ -136,6 +136,31 @@ export interface SnapshotComplete {
   readonly serverNanos: bigint;
 }
 
+/**
+ * Market-data feed liveness state — surfaced by Phase 3 Commit 6's browser-side state machine.
+ *
+ * - `LIVE` — ticks flowing within the heartbeat-base × 1.5 window.
+ * - `QUIET` — heartbeats arriving but no ticks; publisher up, all symbols idle.
+ * - `STALE` — no fragment of any kind for the stale threshold (3 × heartbeat). Heartbeats alone
+ *   do NOT clear STALE; only a real tick proves the price-feed path is healthy (EBS Direct /
+ *   ICE Impact pattern).
+ *
+ * Separate from {@link ConnectionState} — a STALE market-data feed MUST NOT trip the WS
+ * reconnect breaker; the transport is healthy, only the pricing feed is dead.
+ */
+export type FeedState = "LIVE" | "QUIET" | "STALE";
+
+/**
+ * Market-data feed-state transition message. Emitted by the worker on each inbound
+ * {@code MarketDataFeedStateChange} (template 57) frame and on reconnect-reset. Consumed by
+ * the main thread's `feedState$` BehaviorSubject in `messageSource.ts`.
+ */
+export interface FeedStateMsg {
+  readonly type: "feed-state";
+  readonly state: FeedState;
+  readonly serverNanos: bigint;
+}
+
 /** Replay finished — server emitted ReplayComplete (template 72). */
 export interface ReplayCompleteMsg {
   readonly type: "replay-complete";
@@ -215,6 +240,7 @@ export type WorkerMessage =
   | FillUpdate
   | EventUpdate
   | ConnectionStateMsg
+  | FeedStateMsg
   | SnapshotComplete
   | ReplayCompleteMsg
   | BackpressureWarning
