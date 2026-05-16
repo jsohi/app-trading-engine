@@ -7,9 +7,11 @@
  * from {@code worker.ts} precisely to make this exact call-path unit-testable without
  * triggering the Web Worker bootstrap or touching jsdom globals.
  *
- * <p>Payload construction: SBE body bytes only (no 8-byte SBE header prepended). The
- * dispatch layer strips the SBE header before delivery to `decodeClusterEvent`, so the
- * decoder is wrapped at offset 0 of a body-only DataView per the intended design.
+ * <p>Payload construction: full SBE message bytes — 8-byte SBE header (zero-filled in
+ * tests; the decoder skips past it) + body. This matches the contract `MessageRouter.route`
+ * passes via its default arm: `this.handlers.onEvent(templateId, payload)` where `payload`
+ * is the same buffer the router decoded the header from. The production decoders inside
+ * `decodeClusterEvent` wrap at `SBE_HEADER_BYTES` (=8) — tests deliver the same shape.
  *
  * Threading: single-threaded Vitest jsdom worker.
  * Allocation: one DataView + one WorkerMessage object per test (intentionally minimal).
@@ -84,6 +86,30 @@ function postError(
 // ─── SBE payload builders ─────────────────────────────────────────────────────
 
 /**
+ * SBE message-header length in bytes (blockLength u16 + templateId u16 + schemaId u16 +
+ * version u16). Production `decodeClusterEvent` wraps each event decoder at this offset to
+ * skip the header — matches the contract `MessageRouter.route` passes via its default arm.
+ * Tests MUST emit full SBE messages (header + body) so they exercise the production
+ * wrap-at-8 path, not a body-only stub that would mask off-by-8 regressions.
+ */
+const SBE_HEADER_BYTES = 8;
+
+/**
+ * Prepend an 8-byte SBE header to a body-only buffer. Header bytes are zero-filled — the
+ * decoder skips past them, so the values do not affect the decode (the dispatch layer above
+ * the decoder reads templateId/schemaId/version from these bytes, but tests invoke the
+ * decoder directly and supply the templateId as a separate argument).
+ *
+ * @param body the body-only message bytes (no header).
+ * @returns full SBE message: 8 zero bytes + body.
+ */
+function prependSbeHeader(body: Uint8Array): Uint8Array {
+  const out = new Uint8Array(SBE_HEADER_BYTES + body.byteLength);
+  out.set(body, SBE_HEADER_BYTES);
+  return out;
+}
+
+/**
  * Write a NUL-padded ASCII string into a DataView at a fixed-length char field.
  *
  * @param dv     - Target DataView.
@@ -124,7 +150,7 @@ function makeOrderCreatedPayload(fields: {
   const priceVal = fields.price ?? INT64_NULL_SENTINEL;
   dv.setBigInt64(87, priceVal, true);
   dv.setBigInt64(95, fields.orderQty, true); // orderQty at body[95]
-  return new Uint8Array(buf);
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 /**
@@ -146,7 +172,7 @@ function makeOrderRejectedPayload(fields: {
   writeFixedString(dv, 36, fields.symbol, 8); // symbol at body[36]
   dv.setUint8(45, fields.rejectReason); // rejectReason at body[45]
   writeFixedString(dv, 66, fields.text, 64); // text at body[66]
-  return new Uint8Array(buf);
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 /**
@@ -180,7 +206,7 @@ function makeOrderFilledPayload(fields: {
   // noLegs group-dimension header at BLOCK_LENGTH: blockLength=45 (u16), numInGroup=0 (u16)
   dv.setUint16(OrderFilledEventDecoder.BLOCK_LENGTH, 45, true);
   dv.setUint16(OrderFilledEventDecoder.BLOCK_LENGTH + 2, 0, true);
-  return new Uint8Array(buf);
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 /**
@@ -200,7 +226,7 @@ function makeOrderCanceledPayload(fields: {
   writeFixedString(dv, 36, fields.clOrdId, 20); // clOrdId at body[36]
   writeFixedString(dv, 56, fields.origClOrdId, 20); // origClOrdId at body[56]
   writeFixedString(dv, 76, fields.symbol, 8); // symbol at body[76]
-  return new Uint8Array(buf);
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 /**
@@ -222,7 +248,7 @@ function makeOrderCancelRejectedPayload(fields: {
   writeFixedString(dv, 56, fields.origClOrdId, 20); // origClOrdId at body[56]
   dv.setUint8(78, fields.cxlRejReason); // cxlRejReason at body[78]
   writeFixedString(dv, 95, fields.text, 64); // text at body[95]
-  return new Uint8Array(buf);
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 /**
@@ -266,8 +292,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       orderQty: QTY,
     });
 
-    decodeClusterEvent(OrderCreatedEventDecoder.TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(OrderCreatedEventDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -301,8 +332,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       orderQty: QTY,
     });
 
-    decodeClusterEvent(OrderCreatedEventDecoder.TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(OrderCreatedEventDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -332,8 +368,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       text: "qty below minimum",
     });
 
-    decodeClusterEvent(OrderRejectedEventDecoder.TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(OrderRejectedEventDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -370,8 +411,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       lastQty: LAST_QTY,
     });
 
-    decodeClusterEvent(OrderFilledEventDecoder.TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(OrderFilledEventDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -403,8 +449,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       symbol: "EURUSD",
     });
 
-    decodeClusterEvent(OrderCanceledEventDecoder.TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(OrderCanceledEventDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -435,12 +486,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       text: "order not found",
     });
 
-    decodeClusterEvent(OrderCancelRejectedEventDecoder.TEMPLATE_ID, payload, {
+    const handled = decodeClusterEvent(OrderCancelRejectedEventDecoder.TEMPLATE_ID, payload, {
       emit,
       postError,
       stats,
     });
 
+    expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
     expect(capturedMessages).toHaveLength(1);
 
@@ -469,7 +521,15 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
   it("onEvent_template51_PriceResponse_misroute_incrementsStatsCounter_and_postsError_noWorkerMessage", () => {
     const payload = makePriceResponseStub();
 
-    decodeClusterEvent(PRICE_RESPONSE_TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(PRICE_RESPONSE_TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    // Misroute IS handled — return true so the worker does not double-fire its
+    // unexpected-template fallback.
+    expect(handled).toBe(true);
 
     // (a) Stats counter must be exactly 1 after one misroute.
     expect(stats.snapshot().marketdataMisroutedRfq).toBe(1n);
@@ -483,6 +543,28 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
     if (err === undefined) throw new Error("expected error envelope");
     expect(err.code).toBe("PROTOCOL");
     expect(err.hint).toContain("misrouted PriceResponse");
+  });
+
+  /**
+   * Verifies the `return false` contract: an unknown templateId (e.g., 54 — reserved for Phase 3
+   * Commit 6, not handled by the current dispatcher) MUST return {@code false} so the worker's
+   * caller fires its own unknown-template fallback. No WorkerMessage emitted, no error posted,
+   * no stats counter touched.
+   *
+   * <p>Without this assertion a regression that causes the default-case arm to inadvertently
+   * fall through to a `return true` or to an unguarded emit would go undetected.
+   */
+  it("onEvent_unknownTemplate_returnsFalse_noMessageNoErrorNoStatsIncrement", () => {
+    // Template 54 (MarketDataTick) is reserved for Commit 6; not handled today.
+    const UNKNOWN_TEMPLATE_ID = 54;
+    const payload = prependSbeHeader(new Uint8Array(16));
+
+    const handled = decodeClusterEvent(UNKNOWN_TEMPLATE_ID, payload, { emit, postError, stats });
+
+    expect(handled).toBe(false);
+    expect(capturedMessages).toHaveLength(0);
+    expect(capturedErrors).toHaveLength(0);
+    expect(stats.snapshot().marketdataMisroutedRfq).toBe(0n);
   });
 
   /**
