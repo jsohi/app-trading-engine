@@ -1,5 +1,26 @@
 # Phase 3 Handoff — Full-Stack E2E
 
+> **Status update (2026-05-16 — branch `feat/app-237-phase3-egress-gap`)**
+>
+> **Commits 0-4 landed and fully reviewed** (all blocker/high/medium findings addressed in-line):
+>
+> - Commit 0 `647f54c` — carry-over fixes + `.linear-allowlist` + `EnforceLinearTicketTodos` lint + CLAUDE.md amendments.
+> - Commit 1 `300b12c` + review-fix `ce1dce6` — SBE templates 54/55/56/57 + `PanelString` type + `MarketDataConstants` + codec regen + 6 round-trip tests + jqwik property test.
+> - Commit 2 `30b2920` + review-fix `d69ce8f` — `EventSink.emit` unconditional broadcast (legacy session-only fallback deleted, session param removed from API), `EventSinkBroadcastTest` + `EventSinkAllocTest`, `CapturingFakeCluster` promoted to `test-support`.
+> - Commit 3 `e4a4018` + review-fix `efa6f99` — worker `onEvent` decoders for templates 100/101/102/103/112 via the new `clusterEventDecoder.ts` module; template-51 misroute regression counter (`Stats.marketdataMisroutedRfq`); 9 unit tests against the real production function.
+> - Commit 4 `bec7a69` + review-fix `37a11a3` — `MarketDataPublisher` agent + `BroadcastPublisher` SAM seam (over Aeron's `final` ExclusivePublication) + `MidRateToTickBridge` + `RejectReason` enum + `MarketDataTickSlot` + `MarketDataPublisherConfig`; 7 test classes (22 tests) + JCStress single-writer.
+> - Commit 5 (partial) — `SubscriptionFilter` remap: BIT_PRICES now covers templates 54/55/57 (was template 51, which is orchestrator-bound and now returns -1 to drop misrouted PriceResponses).
+>
+> **Remaining surface area for Commits 5-9** (full Phase 3 plan spec at `/Users/jasandeepsingh/.claude/plans/federated-sprouting-starlight.md` Commits 5-9):
+>
+> - **Commit 5 continuation**: `AeronEgressThread` DWRR polling (cluster:market-data 2:1 with idle-reset to one quantum); `MarketDataSubscriptionLivenessTracker` (LIVE/QUIET/STALE state machine); `SymbolEntitlementMap` + `entitledSymbolsByAccount` on `SubscriptionFilter` (construct-then-publish discipline); `WebSocketSession.sessionEpoch` (VarHandle release/acquire) + `snapshotTokenBucket`; `MarketDataAdmissionPipeline` (extracted from `WebSocketFrameDispatcher`); session-epoch JCStress test; launcher wiring for stream 204/205 subscriptions.
+> - **Commit 6**: browser `marketDataConflation.ts` + `gapDetector.ts` modules; worker decodes templates 54/55/57; `feedState$` BehaviorSubject; 30 Hz `setInterval` drain; dual-timestamp decode; per-account `symbolPreferences` + `panelLayout` plumbing through `AccountRecord` → `YamlAccountLoader` → `AccountReadModel` → `JwtAuthHandler.sendAuthAck` → worker `onAuthAck` → `App.tsx` panel-layout mount; alloc tripwire.
+> - **Commit 7**: snapshot-on-subscribe wiring; `MarketDataSnapshotTimeoutNoRefundTest` token-refund discipline; unconfigured-symbol sentinel; race-with-disconnect.
+> - **Commit 8**: JWT mid-session expiry + `WebSocketError 4401`; `AuthClient` in-session reauth; `JwksRotationTest` + transient-failure variant; `JwtAuthHandlerPipelineRaceTest`; `MultiIssuerKidNamespaceDisjointTest`; `SubscriptionFilterAuthSubscribeRaceJCStress`.
+> - **Commit 9**: spec 09 (`feed-stale.spec.ts`); boundary tests (NewOrderSingle max ClOrdID, JPY 3-decimal rendering, `ReliableStreamTrackerSeqNoWrapTest`, `commandClient-pool-exhaustion`); JFR custom events; OTel per-drain-cycle spans; `Log4j2DiskFullErrorHandler`; `MultiIssuerLauncherRebootArtioTest` (SeqReset-GapFill); spec 8 post-reboot assertions; `TokenIsolationContexts`; bundle-guard extension + self-test; Grafana dashboards + alerts.yaml + `:monitoring:validateGrafana` task; FIX44 dictionary export; docs updates (full-stack-e2e.md / clock-sync.md).
+>
+> A fresh implementation session should resume here. The branch is in a clean state (last reviewed commit `37a11a3` + this Commit-5 partial); all CI gates (test / integration-tests / e2e / spotless / checkHooks / JCStress compile) green at this point.
+
 **Branch:** `feat/app-237-phase3-egress-gap` (from `main` @ `70d4def`).
 **Linear parent:** APP-237 (per-account entitlement / AccountProjection / panel layouts). Adjust if a better-fitting ticket exists in `.linear-allowlist` (allowed: APP-31, APP-160, APP-237, APP-245).
 **Source plan:** `/Users/jasandeepsingh/.claude/plans/plan-e2e-test-with-enchanted-truffle.md` — sections "Phase 3 — Closing the Egress Gap", "Phase 3 — Compliance + Completeness Addendum", and "Foolproof Full-Stack E2E Contract" are the authoritative spec.
