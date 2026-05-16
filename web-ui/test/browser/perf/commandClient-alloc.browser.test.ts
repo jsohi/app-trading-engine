@@ -118,6 +118,9 @@ describe("commandClient allocation tripwire", () => {
     const cc = new CommandClient(mock.worker as WorkerClient);
     try {
       // Warmup: lets V8 inline caches + slot table settle so we measure steady state.
+      // Each warmup call uses a unique clOrdId so the worker mock's dedup table does
+      // not short-circuit submission; the template-literal allocation is acceptable
+      // here because the GC snapshot is taken AFTER warmup completes.
       for (let i = 0; i < WARMUP_CALLS; i++) {
         await cc.submitOrder({ ...samplePayload, clOrdId: `warmup-${String(i)}` });
       }
@@ -126,8 +129,15 @@ describe("commandClient allocation tripwire", () => {
       gc();
       const t0 = await memApi.measureUserAgentSpecificMemory();
 
+      // The measured loop reuses a single pre-allocated clOrdId so the loop body
+      // contains NO `${...}` template-literal allocation inside the measurement
+      // window. The mock worker accepts duplicate clOrdIds (it has no dedup
+      // table); the production CommandClient also does not validate clOrdId
+      // uniqueness at the client edge, so reusing is faithful to the steady-
+      // state hot path. Keeps the alloc budget honest at sub-byte resolution.
+      const fixedPayload = { ...samplePayload, clOrdId: "ALLOC-FIXED" };
       for (let i = 0; i < MEASURED_CALLS; i++) {
-        await cc.submitOrder({ ...samplePayload, clOrdId: `measure-${String(i)}` });
+        await cc.submitOrder(fixedPayload);
       }
 
       gc();

@@ -142,7 +142,7 @@ public final class PriceResponseHandler implements CommandHandler {
 
     // 4. Pricing rejected → emit 106 + release
     if (accepted != BooleanType.True) {
-      emitPricingRejected(slot, session, clusterTimestamp, eventSink);
+      emitPricingRejected(slot, clusterTimestamp, eventSink);
       rfqStateMachine.release(slot);
       metrics.rejectPricingDeclined++;
       metrics.emitRejected++;
@@ -162,7 +162,7 @@ public final class PriceResponseHandler implements CommandHandler {
       final boolean ok = cluster.scheduleTimer(slot.timerCorrelationId, slot.validUntil);
       if (!ok) {
         // Rollback: do NOT advance QTE counter, do NOT emit 105. Emit 106 instead.
-        emitTimerExhausted(slot, session, clusterTimestamp, eventSink);
+        emitTimerExhausted(slot, clusterTimestamp, eventSink);
         rfqStateMachine.release(slot);
         metrics.rejectTimerExhausted++;
         metrics.emitRejected++;
@@ -237,10 +237,7 @@ public final class PriceResponseHandler implements CommandHandler {
 
   /** Emits 106 reason=InvalidPrice text="pricing rejected" with full slot identity. */
   private void emitPricingRejected(
-      final RfqSlot slot,
-      final ClientSession session,
-      final long clusterTimestamp,
-      final EventSink eventSink) {
+      final RfqSlot slot, final long clusterTimestamp, final EventSink eventSink) {
     rejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     rejectedEncoder.sequenceNumber(0L);
     rejectedEncoder.timestamp(0L);
@@ -257,10 +254,7 @@ public final class PriceResponseHandler implements CommandHandler {
 
   /** Emits 106 reason=TooLateToEnter text="timer pool exhausted" — rollback path. */
   private void emitTimerExhausted(
-      final RfqSlot slot,
-      final ClientSession session,
-      final long clusterTimestamp,
-      final EventSink eventSink) {
+      final RfqSlot slot, final long clusterTimestamp, final EventSink eventSink) {
     rejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     rejectedEncoder.sequenceNumber(0L);
     rejectedEncoder.timestamp(0L);

@@ -19,21 +19,10 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
+import com.trading.engine.testsupport.aeron.CapturingFakeCluster;
 import com.trading.engine.testsupport.aeron.FakeCluster;
-import io.aeron.DirectBufferVector;
-import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
-import io.aeron.cluster.service.ClusteredServiceContainer;
-import io.aeron.logbuffer.BufferClaim;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
-import org.agrona.DirectBuffer;
-import org.agrona.collections.Long2LongHashMap;
-import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,9 +34,11 @@ import org.junit.jupiter.api.Test;
  * <p>Tests exercise the state machine as a pure unit (no Aeron process); the {@link Cluster}
  * dependency is satisfied by {@link CapturingFakeCluster} (a test-local Aeron Cluster double that
  * records timer schedule calls) and {@link FakeCluster} (from test-support) for non-timer paths.
- * {@link EventSink} is constructed with a real {@link EventSequencer} and {@link EventJournal} —
- * emitting to {@code session=null} is tolerated by {@link EventSink#emit} on the null-session code
- * path.
+ * {@link EventSink} is constructed with a real {@link EventSequencer} and {@link EventJournal}. The
+ * timer-expiry tests register zero client sessions on the cluster double, so {@code
+ * forEachClientSession} is a no-op fold — the broadcast loop executes against an empty list, which
+ * is the correct deterministic-replay behaviour for timer-driven emits that have no originating
+ * client session.
  *
  * <p><b>Threading:</b> all tests run single-threaded, matching the cluster duty-cycle invariant
  * documented on {@link RfqStateMachine}.
@@ -58,144 +49,6 @@ import org.junit.jupiter.api.Test;
  * paths).
  */
 class RfqStateMachineTest {
-
-  // -------------------------------------------------------------------------
-  // Test-local cluster double that captures scheduleTimer calls
-  // -------------------------------------------------------------------------
-
-  /**
-   * Aeron {@link Cluster} test double that records every {@code scheduleTimer(correlationId,
-   * deadline)} call and returns {@code scheduleTimerResult} (default {@code true}).
-   *
-   * <p>Extends the contract of {@link FakeCluster} without subclassing it (it is {@code final}) by
-   * reimplementing the full {@link Cluster} interface. All non-timer methods delegate to sensible
-   * no-op defaults.
-   *
-   * <p>Supports explicit session registration via {@link #addClientSession(ClientSession)} so that
-   * {@link #forEachClientSession(Consumer)} reaches test sessions during {@code EventSink.emit}
-   * broadcast (index-based iteration — no Iterator allocation).
-   */
-  static final class CapturingFakeCluster implements Cluster {
-
-    /** All (correlationId → deadline) pairs from scheduleTimer (primitive-keyed; no boxing). */
-    final Long2LongHashMap scheduledTimers = new Long2LongHashMap(Long.MIN_VALUE);
-
-    /** Controls the return value of {@link #scheduleTimer}. Default {@code true}. */
-    boolean scheduleTimerResult = true;
-
-    /** Registered sessions iterated by {@link #forEachClientSession}. */
-    private final List<ClientSession> registeredSessions = new ArrayList<>();
-
-    private final IdleStrategy idle =
-        new IdleStrategy() {
-          @Override
-          public void idle(final int workCount) {}
-
-          @Override
-          public void idle() {}
-
-          @Override
-          public void reset() {}
-        };
-
-    /**
-     * Registers a client session so it is reached during {@link #forEachClientSession} broadcast.
-     *
-     * @param session the session to register
-     */
-    void addClientSession(final ClientSession session) {
-      registeredSessions.add(session);
-    }
-
-    @Override
-    public boolean scheduleTimer(final long correlationId, final long deadline) {
-      scheduledTimers.put(correlationId, deadline);
-      return scheduleTimerResult;
-    }
-
-    @Override
-    public boolean cancelTimer(final long correlationId) {
-      return true;
-    }
-
-    @Override
-    public int memberId() {
-      return 0;
-    }
-
-    @Override
-    public Role role() {
-      return Role.LEADER;
-    }
-
-    @Override
-    public long logPosition() {
-      return 0L;
-    }
-
-    @Override
-    public io.aeron.Aeron aeron() {
-      return null;
-    }
-
-    @Override
-    public ClusteredServiceContainer.Context context() {
-      return null;
-    }
-
-    @Override
-    public ClientSession getClientSession(final long clusterSessionId) {
-      return null;
-    }
-
-    @Override
-    public Collection<ClientSession> clientSessions() {
-      return registeredSessions;
-    }
-
-    @Override
-    public void forEachClientSession(final Consumer<? super ClientSession> action) {
-      // Index-based iteration — mirrors FakeCluster's no-Iterator contract.
-      for (int i = 0, n = registeredSessions.size(); i < n; i++) {
-        action.accept(registeredSessions.get(i));
-      }
-    }
-
-    @Override
-    public boolean closeClientSession(final long clusterSessionId) {
-      return false;
-    }
-
-    @Override
-    public long time() {
-      return 0L;
-    }
-
-    @Override
-    public TimeUnit timeUnit() {
-      return TimeUnit.NANOSECONDS;
-    }
-
-    @Override
-    public long offer(final DirectBuffer buffer, final int offset, final int length) {
-      return 0L;
-    }
-
-    @Override
-    public long offer(final DirectBufferVector[] vectors) {
-      return 0L;
-    }
-
-    @Override
-    public long tryClaim(final int length, final BufferClaim bufferClaim) {
-      return 0L;
-    }
-
-    @Override
-    public IdleStrategy idleStrategy() {
-      return idle;
-    }
-  }
 
   // -------------------------------------------------------------------------
   // Shared fixtures

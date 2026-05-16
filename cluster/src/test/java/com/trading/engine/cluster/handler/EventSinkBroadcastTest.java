@@ -149,11 +149,7 @@ final class EventSinkBroadcastTest {
     assertEquals(1L, seq1);
     assertEquals(2L, seq2);
     assertEquals(3L, seq3);
-    assertEquals(
-        2,
-        s1.messages.size() - 1,
-        "s1 should have received 3 frames total (2+1 = index 2 is last)");
-    assertEquals(3, s1.messages.size());
+    assertEquals(3, s1.messages.size(), "s1 should have received 3 frames total");
   }
 
   // =========================================================================
