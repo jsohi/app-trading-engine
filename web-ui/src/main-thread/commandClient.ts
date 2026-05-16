@@ -219,6 +219,26 @@ function newSlot(): Slot {
 // CommandClient
 // ===========================================================================
 
+/**
+ * Browser-side wall-clock that produces fractional epoch-milliseconds via
+ * {@code performance.timeOrigin + performance.now()}.
+ *
+ * CLAUDE.md §Clock Usage forbids {@code Date.now()} on the hot path. The browser
+ * equivalent of an injected {@code EpochNanoClock} is
+ * {@code performance.timeOrigin + performance.now()} — monotonic (no NTP step
+ * inside a single document lifetime) and anchored to wall-clock epoch via the
+ * Performance API spec. Returns a {@code number} (fractional ms); callers floor
+ * before converting to {@code bigint} for SBE wire fields.
+ *
+ * Exposed as a default so tests can inject a deterministic clock without
+ * patching {@code Date} globally.
+ */
+export type EpochMillisClock = () => number;
+
+/** Default wall-clock — performance-based, NTP-immune within a document lifetime. */
+export const defaultEpochMillisClock: EpochMillisClock = () =>
+  performance.timeOrigin + performance.now();
+
 export class CommandClient {
   private readonly slots: Slot[];
   /** Pool of pre-allocated outbound Uint8Arrays (size = SBE frame length). */
@@ -230,11 +250,19 @@ export class CommandClient {
   private readonly worker: WorkerClient;
   private readonly ackSub: Subscription;
   private readonly stateSub: Subscription;
+  /** Wall-clock source for transactTime + settlement-date math. CLAUDE.md §Clock Usage. */
+  private readonly epochMillisClock: EpochMillisClock;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
-  constructor(worker: WorkerClient) {
+  /**
+   * @param worker the underlying WorkerClient transport.
+   * @param epochMillisClock OPTIONAL — injected wall-clock for deterministic testing. Defaults to
+   *     {@code performance.timeOrigin + performance.now()} per CLAUDE.md §Clock Usage.
+   */
+  constructor(worker: WorkerClient, epochMillisClock: EpochMillisClock = defaultEpochMillisClock) {
     this.worker = worker;
+    this.epochMillisClock = epochMillisClock;
     this.slots = new Array<Slot>(SLOT_COUNT);
     for (let i = 0; i < SLOT_COUNT; i++) this.slots[i] = newSlot();
     // The pool is indexed by `slotIdx = seq & SLOT_MASK` (range 0..SLOT_COUNT-1),
@@ -351,9 +379,14 @@ export class CommandClient {
         // Sampling twice would let a midnight-UTC tick between the two reads
         // emit a transactTime in day N nanos with a settlDate computed from
         // day N+1 — an off-by-one-business-day skew. Atomic by construction.
+        //
+        // Clock source is the injected `epochMillisClock` (defaults to
+        // `performance.timeOrigin + performance.now()`) — `Date.now()` is
+        // forbidden by CLAUDE.md §Clock Usage. `Math.floor` discards the
+        // fractional ms before the BigInt × 1_000_000n nanos conversion.
         const canonicalSymbol = payload.symbol.replaceAll("/", "");
         const quoteCcy = canonicalSymbol.slice(3, 6);
-        const nowMs = Date.now();
+        const nowMs = Math.floor(this.epochMillisClock());
         const nowDate = new Date(nowMs);
         this.encoder.wrapAndApplyHeader(view, 0).setFields({
           clOrdId: payload.clOrdId,

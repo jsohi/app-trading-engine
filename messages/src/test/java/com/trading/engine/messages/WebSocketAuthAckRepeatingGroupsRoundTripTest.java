@@ -23,7 +23,8 @@ import org.junit.jupiter.api.Test;
  *   <li><strong>symbolPreferences non-empty, panelLayout empty</strong> — four symbols with
  *       distinct ASCII values; panelLayout count = 0.
  *   <li><strong>symbolPreferences empty, panelLayout non-empty</strong> — two entries ({@code
- *       order-en → right-to}, {@code blotter → center}); symbolPreferences count = 0.
+ *       order-entry → right-bottom}, {@code positions → center}); panelId/slot values exercise the
+ *       full {@code PanelString} char[16] width; symbolPreferences count = 0.
  *   <li><strong>Both groups non-empty</strong> — combination of cases (b) and (c).
  * </ol>
  *
@@ -38,7 +39,7 @@ final class WebSocketAuthAckRepeatingGroupsRoundTripTest {
 
   /**
    * 16 KiB — comfortably larger than the largest WebSocketAuthAck frame (header 8 B + block 28 B +
-   * 4 symbols × 8 B + 2 panels × 16 B + group headers ≈ 120 B).
+   * 4 symbols × 8 B + 2 panels × 32 B (PanelString char[16] + char[16]) + group headers ≈ 140 B).
    */
   private static final int BUF_SIZE = 16_384;
 
@@ -153,14 +154,16 @@ final class WebSocketAuthAckRepeatingGroupsRoundTripTest {
 
   /**
    * Encodes WebSocketAuthAck with an empty {@code symbolPreferences} group and two {@code
-   * panelLayout} entries ({@code order-en → right-to}, {@code blotter → center}). Verifies that
-   * panelId and slot fields round-trip byte-identically and the scalar block is intact.
+   * panelLayout} entries ({@code order-entry → right-bottom}, {@code positions → center}). Uses
+   * full-length production panel/slot strings (11-13 chars) to verify the {@code PanelString}
+   * char[16] field accommodates real values without truncation. Verifies that panelId and slot
+   * fields round-trip byte-identically and the scalar block is intact.
    */
   @Test
   void webSocketAuthAck_roundTrip_symbolPreferencesEmpty_panelLayoutNonEmpty() {
-    // Panel IDs and slots are truncated to 8 chars to fit the Symbol field.
-    final var panelIds = new String[] {"order-en", "blotter"};
-    final var slots = new String[] {"right-to", "center"};
+    // Production-length panel ids and slot names — exercises the full PanelString char[16] width.
+    final var panelIds = new String[] {"order-entry", "positions"};
+    final var slots = new String[] {"right-bottom", "center"};
     final long serverHbMs = 4_000L;
     final long clientHbMs = 8_000L;
     final int protocolVersion = 3;
@@ -218,14 +221,16 @@ final class WebSocketAuthAckRepeatingGroupsRoundTripTest {
 
   /**
    * Encodes WebSocketAuthAck with both {@code symbolPreferences} (EURUSD, GBPUSD) and {@code
-   * panelLayout} ({@code order-en → right-to}, {@code blotter → center}) non-empty. Verifies that
-   * the decoder sequences correctly through both groups after the scalar block.
+   * panelLayout} ({@code order-entry → right-bottom}, {@code positions → left-middle}) non-empty.
+   * Uses full-length production panel/slot strings to exercise the {@code PanelString} char[16]
+   * width. Verifies that the decoder sequences correctly through both groups after the scalar
+   * block.
    */
   @Test
   void webSocketAuthAck_roundTrip_bothGroupsNonEmpty() {
     final var symbols = new String[] {"EURUSD", "GBPUSD"};
-    final var panelIds = new String[] {"order-en", "blotter"};
-    final var slots = new String[] {"right-to", "center"};
+    final var panelIds = new String[] {"order-entry", "positions"};
+    final var slots = new String[] {"right-bottom", "left-middle"};
     final long serverHbMs = 7_500L;
     final long clientHbMs = 15_000L;
     final int protocolVersion = 4;

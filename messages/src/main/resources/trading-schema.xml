@@ -40,6 +40,7 @@
         <type name="CFICode"        primitiveType="char" length="6"  description="ISO 10962 Classification of Financial Instruments code (FIX tag 461 / 608)"/>
         <type name="LegRefID"       primitiveType="char" length="20" description="Cross-reference id for a multileg leg (FIX tag 654)"/>
         <type name="IdPrefix"       primitiveType="char" length="8"  description="IdGenerator key (e.g., 'ORD', 'EXE', 'QTE'); used by IdGeneratorSnapshot to keep prefix-state per generator instance"/>
+        <type name="PanelString"    primitiveType="char" length="16" description="Browser UI panel identifier or slot name (e.g., 'order-entry'=11, 'right-bottom'=12, 'positions'=9). char[16] accommodates the longest expected production values with headroom; chosen over `Text` (char[64]) to keep the WebSocketAuthAck (template 61) panelLayout repeating-group entry small (each entry = 32 B vs 128 B with Text). No FIX equivalent — sequential field IDs per CLAUDE.md 60-72 carve-out."/>
 
         <!-- Enums -->
         <enum name="SideEnum" encodingType="uint8" description="FIX tag 54">
@@ -884,8 +885,8 @@
         </group>
         <group name="panelLayout" id="10053" dimensionType="groupSizeEncoding"
                description="Per-account UI panel-to-slot mapping. Sourced from reference-data AccountRecord.panelLayout. Empty → App.tsx uses the default slot (right-top for OrderEntryForm). Production-path field (NOT an observer-hook); ships in the prod bundle.">
-            <field name="panelId" id="1" type="Symbol" description="Panel identifier (e.g., 'order-entry'); Symbol-shaped char[8] — carve-out per CLAUDE.md 54-59 ∪ 60-72 sequential-id rule for fields with no FIX equivalent"/>
-            <field name="slot"    id="2" type="Symbol" description="Slot identifier (e.g., 'right-top'); Symbol-shaped char[8]"/>
+            <field name="panelId" id="1" type="PanelString" description="Panel identifier (e.g., 'order-entry'=11 chars, 'positions'=9 chars); PanelString char[16] — sized to accommodate the longest expected production value. Sequential field id permitted per CLAUDE.md 60-72 carve-out (no FIX equivalent)."/>
+            <field name="slot"    id="2" type="PanelString" description="Slot identifier (e.g., 'right-top'=9 chars, 'right-bottom'=12 chars, 'left-middle'=11 chars); PanelString char[16]."/>
         </group>
     </sbe:message>
 

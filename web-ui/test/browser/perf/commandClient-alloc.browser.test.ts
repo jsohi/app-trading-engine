@@ -94,18 +94,22 @@ const samplePayload: NewOrderSinglePayload = {
 };
 
 describe("commandClient allocation tripwire", () => {
-  it("amortises ≤ baseline bytes/call across 10_000 submits", async () => {
+  // Use `ctx.skip()` rather than bare `return` so vitest marks the test as
+  // SKIPPED in its report (not PASSED). A bare `return` would silently report
+  // a passing test that asserted nothing — hiding the case where COOP/COEP or
+  // --expose-gc are misconfigured in CI and the budget is never enforced.
+  it("amortises ≤ baseline bytes/call across 10_000 submits", async (ctx) => {
     const memApi = performance as unknown as PerfWithMemoryApi;
     if (typeof memApi.measureUserAgentSpecificMemory !== "function") {
-      console.warn(
-        "skip: performance.measureUserAgentSpecificMemory not available (cross-origin-isolated " +
+      ctx.skip(
+        "performance.measureUserAgentSpecificMemory not available (cross-origin-isolated " +
           "mode required — verify COOP/COEP headers in vitest.config.ts browser project)",
       );
       return;
     }
     if (typeof (globalThis as unknown as { gc?: () => void }).gc !== "function") {
-      console.warn(
-        "skip: globalThis.gc not available (Chromium must be launched with --js-flags=--expose-gc)",
+      ctx.skip(
+        "globalThis.gc not available (Chromium must be launched with --js-flags=--expose-gc)",
       );
       return;
     }
