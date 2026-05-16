@@ -2,10 +2,13 @@ package com.trading.engine.cluster.handler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.trading.engine.cluster.journal.EventJournal;
+import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.messages.sbe.AccountLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventEncoder;
 import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.CurrencyLoadedEventEncoder;
+import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectedEventEncoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
@@ -20,6 +23,8 @@ import com.trading.engine.messages.sbe.QuoteRequestedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
 import com.trading.engine.testsupport.aeron.FakeCluster;
+import java.nio.ByteOrder;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -111,32 +116,31 @@ class EventSinkTest {
    */
   @Test
   void emitStampsSequenceAndTimestampAtCorrectOffsets() {
-    final var sequencer = new com.trading.engine.cluster.sequencer.EventSequencer();
-    final var journal = new com.trading.engine.cluster.journal.EventJournal(16);
+    final var sequencer = new EventSequencer();
+    final var journal = new EventJournal(16);
     final var sink = new EventSink(sequencer, journal);
     final var cluster = new FakeCluster(0L);
     sink.setCluster(cluster);
 
     // Encode a minimal OrderCreatedEvent (just header + enough body for seqNo + timestamp)
-    final var buf = new org.agrona.concurrent.UnsafeBuffer(new byte[512]);
-    final var hdr = new com.trading.engine.messages.sbe.MessageHeaderEncoder();
+    final var buf = new UnsafeBuffer(new byte[512]);
+    final var hdr = new MessageHeaderEncoder();
     final var enc = new OrderCreatedEventEncoder();
     enc.wrapAndApplyHeader(buf, 0, hdr);
     enc.sequenceNumber(0L); // placeholder
     enc.timestamp(0L); // placeholder
-    int totalLen =
-        com.trading.engine.messages.sbe.MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final int totalLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
 
-    long clusterTimestamp = 999_000_000L;
-    long seqNo = sink.emit(clusterTimestamp, buf, 0, totalLen);
+    final long clusterTimestamp = 999_000_000L;
+    final long seqNo = sink.emit(clusterTimestamp, buf, 0, totalLen);
 
     // Verify seqNo = 1 (first sequence from a fresh EventSequencer)
     assertEquals(1L, seqNo);
 
     // Verify the buffer was stamped at the correct positions
-    int hdrLen = com.trading.engine.messages.sbe.MessageHeaderEncoder.ENCODED_LENGTH;
-    assertEquals(1L, buf.getLong(hdrLen, java.nio.ByteOrder.LITTLE_ENDIAN));
-    assertEquals(clusterTimestamp, buf.getLong(hdrLen + 8, java.nio.ByteOrder.LITTLE_ENDIAN));
+    final int hdrLen = MessageHeaderEncoder.ENCODED_LENGTH;
+    assertEquals(1L, buf.getLong(hdrLen, ByteOrder.LITTLE_ENDIAN));
+    assertEquals(clusterTimestamp, buf.getLong(hdrLen + 8, ByteOrder.LITTLE_ENDIAN));
 
     // Verify journal received the event
     assertEquals(1L, journal.highestSequence());

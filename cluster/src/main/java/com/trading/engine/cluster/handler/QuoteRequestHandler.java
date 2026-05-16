@@ -131,7 +131,7 @@ public final class QuoteRequestHandler implements CommandHandler {
 
     // 1. Length precondition
     if (length < HDR_LEN + QuoteRequestDecoder.BLOCK_LENGTH) {
-      emitMalformed(session, clusterTimestamp, eventSink);
+      emitMalformed(clusterTimestamp, eventSink);
       return;
     }
 
@@ -155,7 +155,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     // 3. Symbol non-empty
     if (symbolScratch[0] == 0) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.UnknownSymbol,
@@ -170,7 +169,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     final var account = accountStore.getByCodeBytes(accountCodeScratch, 0, accountCodeLen());
     if (account == null || account.status() != AccountStatusEnum.Active) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.Other,
@@ -184,7 +182,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     // 5. CAN_RFQ entitlement
     if ((account.capabilities() & AccountState.Capabilities.CAN_RFQ) == 0L) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.Other,
@@ -199,7 +196,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (!currencyStore.contains(packCurrency(currencyScratch))
         || !currencyStore.contains(packCurrency(settlCurrencyScratch))) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.Other,
@@ -216,7 +212,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     // The rateLimitTryConsume call only runs when we have a real session id.
     if (session != null && !rfqStateMachine.rateLimitTryConsume(session.id(), clusterTimestamp)) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.TooLateToEnter,
@@ -233,7 +228,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     if (existing != null) {
       // Duplicate quoteReqId in REQUESTED or QUOTED — emit 106 "duplicate".
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.Other,
@@ -256,7 +250,6 @@ public final class QuoteRequestHandler implements CommandHandler {
     final var slot = rfqStateMachine.acquire();
     if (slot == null) {
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.TooLateToEnter,
@@ -306,7 +299,6 @@ public final class QuoteRequestHandler implements CommandHandler {
       slot.syncQuoteReqIdKey();
       rfqStateMachine.release(slot);
       emitRejectByQuoteReqId(
-          session,
           clusterTimestamp,
           eventSink,
           QuoteRejectReasonEnum.Other,
@@ -360,7 +352,6 @@ public final class QuoteRequestHandler implements CommandHandler {
         // Rollback: release slot before any 104 emission.
         rfqStateMachine.release(slot);
         emitRejectByQuoteReqId(
-            session,
             clusterTimestamp,
             eventSink,
             QuoteRejectReasonEnum.TooLateToEnter,
@@ -416,7 +407,6 @@ public final class QuoteRequestHandler implements CommandHandler {
    * Emits a 106 reject with quoteReqId+side+symbol+accountCode populated from the scratch arrays.
    */
   private void emitRejectByQuoteReqId(
-      final ClientSession session,
       final long clusterTimestamp,
       final EventSink eventSink,
       final QuoteRejectReasonEnum reason,
@@ -450,8 +440,7 @@ public final class QuoteRequestHandler implements CommandHandler {
    * char-array / enum field so a malformed-path 106 cannot ship the previous emit's QuoteReqID /
    * Symbol / AccountCode / Side / SettlDate / Currency / SettlCurrency content to the wire.
    */
-  private void emitMalformed(
-      final ClientSession session, final long clusterTimestamp, final EventSink eventSink) {
+  private void emitMalformed(final long clusterTimestamp, final EventSink eventSink) {
     rejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     rejectedEncoder.sequenceNumber(0L);
     rejectedEncoder.timestamp(0L);

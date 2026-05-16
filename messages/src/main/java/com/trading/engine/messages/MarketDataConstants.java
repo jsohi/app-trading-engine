@@ -67,9 +67,11 @@ public final class MarketDataConstants {
   public static final int MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID = 205;
 
   /**
-   * Publisher drain cadence in microseconds. Aligns with the browser's 30 Hz render ceiling and
-   * gives ~5× wire compression on a 1000 Hz symbol. See class-level Javadoc for the three-point
-   * tuning rationale (render ceiling / conflation window / per-publish cost).
+   * Publisher drain cadence in microseconds. 5 ms drain = 200 publish events/sec/symbol upstream.
+   * The browser subsequently conflates at its own ~30 Hz render cadence (see {@code
+   * marketDataConflation.ts}), so a 1 000 Hz mid-rate source compresses ~5× at the publisher and
+   * another ~6× at the browser before reaching the AG Grid sink. See class-level Javadoc for the
+   * three-point tuning rationale (render ceiling / conflation window / per-publish cost).
    */
   public static final long MARKET_DATA_PUBLISH_CADENCE_MICROS = 5_000L;
 
