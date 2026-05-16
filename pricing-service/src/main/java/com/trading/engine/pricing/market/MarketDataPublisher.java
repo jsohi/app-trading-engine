@@ -13,7 +13,12 @@ import com.trading.engine.messages.sbe.MarketDataTickEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
+import io.aeron.logbuffer.Header;
+import java.util.Objects;
+import java.util.function.LongFunction;
+import org.agrona.DirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongObjConsumer;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.NanoClock;
@@ -122,13 +127,21 @@ public final class MarketDataPublisher implements Agent {
    * {@code LongFunction}; passing a method reference to a {@code final} field avoids the per-call
    * lambda allocation that would otherwise happen in the steady-state branch.
    */
-  private final java.util.function.LongFunction<MarketDataTickSlot> slotFactory = this::newSlot;
+  private final LongFunction<MarketDataTickSlot> slotFactory = this::newSlot;
 
   /**
    * Drain consumer bound once at construction. Same allocation rationale as {@link #slotFactory}.
    */
-  private final org.agrona.collections.LongObjConsumer<MarketDataTickSlot> drainConsumer =
-      this::publishOneSlot;
+  private final LongObjConsumer<MarketDataTickSlot> drainConsumer = this::publishOneSlot;
+
+  /**
+   * Heartbeat-group consumer bound once at construction. {@link Long2ObjectHashMap#forEachLong}
+   * inside {@code publishHeartbeat} would otherwise need a per-emit capturing lambda (binding the
+   * local {@code groupEncoder}); pre-binding to a method reference + storing the active group
+   * encoder in {@link #activeGroupEncoder} keeps the heartbeat path zero-alloc as well.
+   */
+  private final LongObjConsumer<MarketDataTickSlot> heartbeatConsumer =
+      this::encodeHeartbeatGroupEntry;
 
   /** Snapshot-request handler bound once at construction — single SAM allocation. */
   private final FragmentHandler snapshotRequestHandler = this::onSnapshotRequest;
@@ -137,6 +150,14 @@ public final class MarketDataPublisher implements Agent {
   private final MarketDataHeartbeatEncoder heartbeatEncoder = new MarketDataHeartbeatEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[SCRATCH_BUFFER_BYTES]);
+
+  /**
+   * Active heartbeat group-encoder slot. Stashed by {@link #publishHeartbeat} before invoking
+   * {@link Long2ObjectHashMap#forEachLong} so the pre-bound {@link #heartbeatConsumer} method
+   * reference can read it without capturing a local — keeping the heartbeat path zero-alloc. The
+   * single-writer agent thread is the sole reader/writer of this field; no synchronisation.
+   */
+  private MarketDataHeartbeatEncoder.LastPublishedSeqEncoder activeGroupEncoder;
 
   /**
    * Rate-limit log timestamps, indexed by {@link RejectReason#ordinal()}. Primitive {@code long[]}
@@ -200,10 +221,10 @@ public final class MarketDataPublisher implements Agent {
       final EpochNanoClock epochNanoClock,
       final NanoClock nanoClock,
       final MarketDataPublisherConfig config) {
-    this.publication = java.util.Objects.requireNonNull(publication, "publication");
+    this.publication = Objects.requireNonNull(publication, "publication");
     this.snapshotRequestSubscription = snapshotRequestSubscription;
-    this.epochNanoClock = java.util.Objects.requireNonNull(epochNanoClock, "epochNanoClock");
-    this.nanoClock = java.util.Objects.requireNonNull(nanoClock, "nanoClock");
+    this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
+    this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     this.cadenceNanos = config.cadenceMicros() * 1_000L;
     this.heartbeatBaseNanos = config.heartbeatBaseMs() * 1_000_000L;
   }
@@ -349,10 +370,17 @@ public final class MarketDataPublisher implements Agent {
     // Stash + restore the live symbolSeq. publishOneSlot pre-increments slot.symbolSeq before
     // encoding; setting the stash to -1 means the wire value is -1 + 1 = 0 (snapshot sentinel).
     // The restore puts the live seq back so the next normal drain continues from savedSeq + 1.
+    // try/finally guarantees the restore even if publishOneSlot throws (CLOSED →
+    // IllegalStateException);
+    // without it, the slot would be left at symbolSeq = -1L and the next live drain would emit a
+    // false snapshot sentinel (wire seq = 0) instead of resuming from savedSeq + 1.
     final long savedSeq = slot.symbolSeq;
     slot.symbolSeq = -1L;
-    publishOneSlot(packedSymbol, slot);
-    slot.symbolSeq = savedSeq;
+    try {
+      publishOneSlot(packedSymbol, slot);
+    } finally {
+      slot.symbolSeq = savedSeq;
+    }
     return true;
   }
 
@@ -395,9 +423,13 @@ public final class MarketDataPublisher implements Agent {
   }
 
   private int drainSlots() {
-    final int countBefore = (int) ticksPublished;
+    // Hold the publish counter as `long` to avoid the silent int-truncation that would wrap at
+    // ~2.1 B publishes (24 days at 1 k/s). Per-drain delta is always small (≤ #symbols), so the
+    // narrowing cast on return is safe — Math.min caps at Integer.MAX_VALUE for forensic safety.
+    final long countBefore = ticksPublished;
     slots.forEachLong(drainConsumer);
-    return (int) (ticksPublished - countBefore);
+    final long delta = ticksPublished - countBefore;
+    return (int) Math.min(delta, Integer.MAX_VALUE);
   }
 
   /**
@@ -480,16 +512,14 @@ public final class MarketDataPublisher implements Agent {
     heartbeatEncoder.wrapAndApplyHeader(scratch, 0, headerEncoder);
     heartbeatEncoder.serverNanos(serverNanos);
     // Heartbeat carries per-symbol last-published seq for CME MDP 3.0 gap-attribution.
-    final MarketDataHeartbeatEncoder.LastPublishedSeqEncoder groupEncoder =
-        heartbeatEncoder.lastPublishedSeqCount(slots.size());
-    slots.forEachLong(
-        (packedSymbol, slot) -> {
-          groupEncoder.next();
-          for (int i = 0; i < 8; i++) {
-            groupEncoder.symbol(i, (byte) ((packedSymbol >>> (i * 8)) & 0xFFL));
-          }
-          groupEncoder.seq(slot.symbolSeq);
-        });
+    // The group encoder is stashed into a field so the pre-bound `heartbeatConsumer`
+    // (final-field method reference) can read it without a per-emit capturing lambda.
+    this.activeGroupEncoder = heartbeatEncoder.lastPublishedSeqCount(slots.size());
+    try {
+      slots.forEachLong(heartbeatConsumer);
+    } finally {
+      this.activeGroupEncoder = null;
+    }
     final int len = HDR_LEN + heartbeatEncoder.encodedLength();
     final long result = publication.offer(scratch, 0, len);
     if (result >= 0L) {
@@ -502,11 +532,23 @@ public final class MarketDataPublisher implements Agent {
     }
   }
 
+  /**
+   * Group-encoder callback invoked by the pre-bound {@link #heartbeatConsumer}. Reads the stashed
+   * {@link #activeGroupEncoder} field (set by {@link #publishHeartbeat} immediately before the
+   * {@link Long2ObjectHashMap#forEachLong} call) — keeps the heartbeat path zero-alloc by avoiding
+   * a capturing lambda.
+   */
+  private void encodeHeartbeatGroupEntry(final long packedSymbol, final MarketDataTickSlot slot) {
+    final MarketDataHeartbeatEncoder.LastPublishedSeqEncoder enc = this.activeGroupEncoder;
+    enc.next();
+    for (int i = 0; i < 8; i++) {
+      enc.symbol(i, (byte) ((packedSymbol >>> (i * 8)) & 0xFFL));
+    }
+    enc.seq(slot.symbolSeq);
+  }
+
   private void onSnapshotRequest(
-      final org.agrona.DirectBuffer buffer,
-      final int offset,
-      final int length,
-      final io.aeron.logbuffer.Header header) {
+      final DirectBuffer buffer, final int offset, final int length, final Header header) {
     if (length < HDR_LEN) {
       return;
     }

@@ -32,8 +32,10 @@ import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
 import org.agrona.ErrorHandler;
 import org.agrona.collections.Object2ObjectHashMap;
 import org.agrona.concurrent.AgentRunner;
@@ -324,8 +326,7 @@ public final class PricingServiceLauncher {
     final BroadcastPublisher broadcastPublisher =
         new BroadcastPublisher() {
           @Override
-          public long offer(
-              final org.agrona.DirectBuffer buffer, final int offset, final int length) {
+          public long offer(final DirectBuffer buffer, final int offset, final int length) {
             return mdPublication.offer(buffer, offset, length);
           }
 
@@ -538,7 +539,7 @@ public final class PricingServiceLauncher {
    */
   private static byte[] padSymbol(final String symbol) {
     final byte[] padded = new byte[8];
-    java.util.Arrays.fill(padded, (byte) ' ');
+    Arrays.fill(padded, (byte) ' ');
     final byte[] src = symbol.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, padded, 0, Math.min(src.length, 8));
     return padded;
