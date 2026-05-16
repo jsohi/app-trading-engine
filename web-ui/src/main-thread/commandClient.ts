@@ -64,6 +64,44 @@ const POOL_BUFFER_SIZE = NewOrderSingleEncoder.ENCODED_FRAME_LENGTH;
 /** Pricing scale factor: 10^8 (matches `FixedPointScale.PRICE_SCALE` on the server). */
 const PRICE_SCALE = 100_000_000n;
 
+/**
+ * Computes the spot-FX settlement date as YYYYMMDD (UTC) using the standard T+2
+ * convention, skipping Saturday and Sunday. A full holiday calendar (US bank
+ * holidays, currency-specific holidays for cross pairs, USD intermediation rule,
+ * broken-date validation) is out of scope for this PR and is tracked under
+ * APP-125 (Holiday / settlement calendars — value-date math for FX
+ * spot/forward/swaps) for the production-tier order-entry surface; for dev
+ * and pre-prod the weekend skip is sufficient — every business day still
+ * produces a valid settlement date and matches the cluster-side date check
+ * (see {@code NewOrderSingleHandler.validateSettlDate} in the {@code cluster}
+ * module, which only checks YYYYMMDD shape + that the date is not in the past
+ * at ack time). When APP-125 lands the holiday calendar, the cluster validator
+ * will tighten and this function will need to consult the same calendar so a
+ * Friday-before-a-bank-holiday submit does not start failing in production.
+ *
+ * TODO(APP-125): consume the holiday calendar when APP-125 ships.
+ *
+ * Exported AND covered by `commandClient.spotSettlementDate.test.ts`. The
+ * production code path samples wall-clock once per submit (see {@code submitOrder})
+ * and passes the SAME `Date` to both `transactTime` and this function so a
+ * single submit cannot drift across a midnight UTC boundary mid-encode.
+ */
+export function spotSettlementDate(now: Date): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  let added = 0;
+  while (added < 2) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const dow = d.getUTCDay(); // 0 = Sun, 6 = Sat
+    if (dow !== 0 && dow !== 6) {
+      added++;
+    }
+  }
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  return `${String(y)}${String(m).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+}
+
 /** Per the trading-schema.xml CommandAckStatus enum (Accepted/Rejected/Duplicate/Throttled). */
 export type CommandAckStatusName = "Accepted" | "Rejected" | "Duplicate" | "Throttled";
 
@@ -74,13 +112,26 @@ export interface CommandAckResult {
 
 export interface NewOrderSinglePayload {
   readonly clOrdId: string;
-  /** FX symbol matching `^[A-Z]{3}/[A-Z]{3}$` — validated client-side before submit. */
+  /**
+   * Canonical 6-char FX symbol (e.g. {@code "EURUSD"}). The OrderEntryForm
+   * accepts the human-friendly slashed form ({@code "EUR/USD"}) and strips
+   * the slash before constructing this payload.
+   */
   readonly symbol: string;
   readonly side: "buy" | "sell";
   /** Fixed-point quantity (× 10^8). */
   readonly qty: bigint;
   /** Fixed-point price (× 10^8). */
   readonly price: bigint;
+  /**
+   * Authenticated user's account code. Caller MUST supply this from the
+   * authenticated session context (the JWT {@code accounts} claim resolved at
+   * AuthAck time); the OrderEntryForm threads it through from its
+   * {@code accountCode} prop. Hardcoding it here would silently route every
+   * order through the dev fixture's "ACME-001" regardless of who is signed
+   * in — the original Gemini HIGH finding on this path.
+   */
+  readonly accountCode: string;
 }
 
 // ===========================================================================
@@ -130,6 +181,20 @@ export class CommandRejectedError extends Error {
     super("commandClient: command " + status + (reasonCode ? " (reason=" + reasonCode + ")" : ""));
     this.name = "CommandRejectedError";
     this.status = status;
+  }
+}
+
+/**
+ * Thrown when {@link NewOrderSinglePayload.accountCode} is missing, empty, or
+ * whitespace-only. The TypeScript type already prevents the missing case at
+ * compile time, but `""` and `"   "` both satisfy `string` and would be
+ * SBE-encoded as an effectively empty char field — which the cluster would
+ * reject opaquely. Failing loudly on the client surfaces the bug at its origin.
+ */
+export class InvalidAccountCodeError extends Error {
+  constructor() {
+    super("commandClient: payload.accountCode is required and must be non-blank");
+    this.name = "InvalidAccountCodeError";
   }
 }
 
@@ -206,6 +271,15 @@ export class CommandClient {
     if (this.disposed) {
       return Promise.reject(new ConnectionLostError());
     }
+    // The payload's `accountCode` is typed as a required string, but `""`,
+    // `"   "`, `null`, and `undefined` all reach this line at runtime (the
+    // first two are valid `string` values; the last two slip through an
+    // untyped JS caller). All four would SBE-encode as an empty/whitespace
+    // char field that the cluster would reject opaquely; fail loud at the
+    // client edge instead.
+    if (!payload.accountCode || payload.accountCode.trim() === "") {
+      return Promise.reject(new InvalidAccountCodeError());
+    }
     if (this.inFlight >= MAX_IN_FLIGHT) {
       return Promise.reject(new BackpressureError());
     }
@@ -260,21 +334,42 @@ export class CommandClient {
       const buf = pooled;
       const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       try {
+        // Derive currency from the symbol's quote-currency slot (last 3 chars
+        // of the canonical 6-char form). For spot FX the settlement currency
+        // equals the quote currency, so a USD/JPY order settles in JPY, not
+        // the previously-hardcoded USD. `replaceAll` (not `replace`) so a
+        // caller that passes "EUR/U/SD" still resolves to a 6-char canonical
+        // form rather than leaving a stray slash that would shift the slice.
+        //
+        // settlDate is computed via spotSettlementDate() — T+2 calendar days
+        // skipping Saturday/Sunday. A full holiday calendar is APP-125
+        // (Holiday / settlement calendars — value-date math for FX
+        // spot/forward/swaps); the dev fixture only exercises weekend skip.
+        //
+        // Wall-clock is sampled ONCE per submit (`nowMs` / `nowDate`) and
+        // both `transactTime` and `settlDate` derive from the same instant.
+        // Sampling twice would let a midnight-UTC tick between the two reads
+        // emit a transactTime in day N nanos with a settlDate computed from
+        // day N+1 — an off-by-one-business-day skew. Atomic by construction.
+        const canonicalSymbol = payload.symbol.replaceAll("/", "");
+        const quoteCcy = canonicalSymbol.slice(3, 6);
+        const nowMs = Date.now();
+        const nowDate = new Date(nowMs);
         this.encoder.wrapAndApplyHeader(view, 0).setFields({
           clOrdId: payload.clOrdId,
           quoteId: "",
-          symbol: payload.symbol,
+          symbol: canonicalSymbol,
           side: payload.side === "buy" ? SideEnum.Buy : SideEnum.Sell,
           ordType: OrdTypeEnum.Limit,
           price: payload.price,
           orderQty: payload.qty,
           timeInForce: TimeInForceEnum.Day,
-          transactTime: BigInt(Date.now()) * 1_000_000n,
-          accountCode: "ACME-001",
+          transactTime: BigInt(nowMs) * 1_000_000n,
+          accountCode: payload.accountCode,
           productType: ProductTypeEnum.Spot,
-          settlDate: "20260518",
+          settlDate: spotSettlementDate(nowDate),
           settlType: SettlTypeEnum.Regular,
-          currency: "USD",
+          currency: quoteCcy,
           settlCurrency: "",
           tenor: TenorEnum.SN,
         });
@@ -284,6 +379,13 @@ export class CommandClient {
         return;
       }
       const length = NewOrderSingleEncoder.ENCODED_FRAME_LENGTH;
+      // Invariant tripwire — POOL_BUFFER_SIZE is defined as
+      // NewOrderSingleEncoder.ENCODED_FRAME_LENGTH so this branch is
+      // unreachable today. Kept as defence-in-depth: if a future schema
+      // change adds a variable-length field and the two constants drift
+      // (the build catches a change to ENCODED_FRAME_LENGTH first), this
+      // turns the regression into a typed rejection at the client edge
+      // instead of a buffer overrun in the SBE encoder.
       if (length > POOL_BUFFER_SIZE) {
         this.freeSlot(slot);
         reject(new EncoderOverflowError(length));

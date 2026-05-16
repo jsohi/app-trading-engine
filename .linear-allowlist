@@ -1,0 +1,24 @@
+# Single source of truth for valid TODO/FIXME Linear issue references.
+# Every `// TODO(APP-N)` or `// FIXME(APP-N)` in source MUST cite one of these
+# verified-open issue IDs. The Spotless `EnforceLinearTicketTodos` custom step
+# reads this file at build time and fails the build on any TODO citing a
+# closed, non-existent, or self-referential (current PR's parent) ID, or any
+# placeholder shape (<linear-id>, <issue-id>, APP-NNN, APP-???-X, "Issue X").
+#
+# Each ID was verified open against live Linear state during Phase 3 plan
+# preparation. Done IDs (APP-31, APP-37, APP-60, APP-242, etc.) are
+# deliberately excluded — a TODO citing a Done ticket fails the lint because
+# "Done" means no further work is happening on that ticket.
+#
+# Format: one ID per line; lines starting with `#` are comments; blank lines
+# ignored. The Spotless step strips comments + whitespace before matching.
+#
+APP-125
+APP-149
+APP-160
+APP-225
+APP-235
+APP-236
+APP-244
+APP-245
+APP-247

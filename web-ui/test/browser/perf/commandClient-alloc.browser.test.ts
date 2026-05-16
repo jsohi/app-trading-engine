@@ -86,10 +86,11 @@ function buildMockWorker(): {
 
 const samplePayload: NewOrderSinglePayload = {
   clOrdId: "ALLOC-X",
-  symbol: "EUR/USD",
+  symbol: "EURUSD",
   side: "buy",
   qty: 100_000_000n,
   price: 105_000_000n,
+  accountCode: "ACME-001",
 };
 
 describe("commandClient allocation tripwire", () => {

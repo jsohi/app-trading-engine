@@ -24,6 +24,7 @@ import {
   CommandRejectedError,
   CommandTimeoutError,
   ConnectionLostError,
+  InvalidAccountCodeError,
   type NewOrderSinglePayload,
 } from "@/main-thread/commandClient";
 import type { CommandAckEnvelope, WorkerClient } from "@/main-thread/workerClient";
@@ -32,7 +33,7 @@ import type { ConnectionState } from "@/shared/transport/MessageShape";
 interface MockWorkerClient {
   readonly commandAcks$: Subject<CommandAckEnvelope>;
   readonly connectionState$: BehaviorSubject<ConnectionState>;
-  readonly submitted: Array<{ length: number; correlationId: number }>;
+  readonly submitted: Array<{ length: number; correlationId: number; bytes: Uint8Array }>;
   submitCommand: (bytes: Uint8Array, length: number, correlationId: number) => void;
 }
 
@@ -42,8 +43,11 @@ function makeMockWorker(): MockWorkerClient {
     commandAcks$: new Subject<CommandAckEnvelope>(),
     connectionState$: new BehaviorSubject<ConnectionState>("CONNECTED"),
     submitted,
-    submitCommand(_bytes, length, correlationId) {
-      submitted.push({ length, correlationId });
+    submitCommand(bytes, length, correlationId) {
+      // Defensively copy so a future change to the production code that
+      // mutates the buffer post-submit cannot retroactively alter the test
+      // observation.
+      submitted.push({ length, correlationId, bytes: new Uint8Array(bytes.subarray(0, length)) });
     },
   };
 }
@@ -54,10 +58,11 @@ function makeClient(mw: MockWorkerClient): CommandClient {
 
 const samplePayload: NewOrderSinglePayload = {
   clOrdId: "T-1",
-  symbol: "EUR/USD",
+  symbol: "EURUSD",
   side: "buy",
   qty: 100_000_000n,
   price: 105_000_000n,
+  accountCode: "ACME-001",
 };
 
 describe("CommandClient", () => {
@@ -201,5 +206,76 @@ describe("CommandClient", () => {
     expect(() => {
       cc.dispose();
     }).not.toThrow();
+  });
+
+  // -----------------------------------------------------------------------
+  // SBE encoded-frame regression coverage for the iter-2 Gemini fixes.
+  //
+  // The existing tests above never decoded the wire bytes, so a regression
+  // re-hardcoding currency to "USD" or settlement to a fixed string would
+  // have passed every existing assertion. These cases inspect the encoded
+  // buffer at the field offsets defined in NewOrderSingleEncoder.ts:
+  //   header:   0..7  (8-byte SBE message header)
+  //   symbol:   header + 40, char[8]
+  //   currency: header + 101, char[3]
+  // The encoder pads the fixed-length char fields with NULs ("\0").
+  // -----------------------------------------------------------------------
+  const SBE_HEADER_LENGTH = 8;
+  const SYMBOL_OFFSET = SBE_HEADER_LENGTH + 40;
+  const CURRENCY_OFFSET = SBE_HEADER_LENGTH + 101;
+
+  function readFixedAscii(bytes: Uint8Array, offset: number, length: number): string {
+    let end = offset + length;
+    while (end > offset && bytes[end - 1] === 0) end--;
+    return new TextDecoder("ascii").decode(bytes.subarray(offset, end));
+  }
+
+  it("encoder: currency derived from quote-currency slot (USDJPY → JPY)", () => {
+    void cc.submitOrder({ ...samplePayload, symbol: "USDJPY" }).catch((e: unknown) => {
+      // Tolerate ONLY the dispose-time teardown rejection so a regression
+      // that throws synchronously inside submitOrder still surfaces.
+      if (!(e instanceof ConnectionLostError)) throw e;
+    });
+    const sub = mw.submitted[0];
+    if (sub === undefined) throw new Error("missing submitted frame");
+    expect(readFixedAscii(sub.bytes, SYMBOL_OFFSET, 8)).toBe("USDJPY");
+    expect(readFixedAscii(sub.bytes, CURRENCY_OFFSET, 3)).toBe("JPY");
+  });
+
+  it("encoder: currency derived from slashed form (EUR/USD → USD), slash stripped from symbol", () => {
+    void cc.submitOrder({ ...samplePayload, symbol: "EUR/USD" }).catch((e: unknown) => {
+      if (!(e instanceof ConnectionLostError)) throw e;
+    });
+    const sub = mw.submitted[0];
+    if (sub === undefined) throw new Error("missing submitted frame");
+    expect(readFixedAscii(sub.bytes, SYMBOL_OFFSET, 8)).toBe("EURUSD");
+    expect(readFixedAscii(sub.bytes, CURRENCY_OFFSET, 3)).toBe("USD");
+  });
+
+  it("rejects empty accountCode synchronously with InvalidAccountCodeError", async () => {
+    const err = await cc
+      .submitOrder({ ...samplePayload, accountCode: "" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidAccountCodeError);
+    // No worker traffic generated.
+    expect(mw.submitted).toHaveLength(0);
+  });
+
+  it("rejects whitespace-only accountCode synchronously with InvalidAccountCodeError", async () => {
+    const err = await cc
+      .submitOrder({ ...samplePayload, accountCode: "   " })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidAccountCodeError);
+    expect(mw.submitted).toHaveLength(0);
+  });
+
+  it("encoder: replaceAll strips multiple slashes (EUR/U/SD → EURUSD/USD)", () => {
+    void cc.submitOrder({ ...samplePayload, symbol: "EUR/U/SD" }).catch((e: unknown) => {
+      if (!(e instanceof ConnectionLostError)) throw e;
+    });
+    const sub = mw.submitted[0];
+    if (sub === undefined) throw new Error("missing submitted frame");
+    expect(readFixedAscii(sub.bytes, SYMBOL_OFFSET, 8)).toBe("EURUSD");
+    expect(readFixedAscii(sub.bytes, CURRENCY_OFFSET, 3)).toBe("USD");
   });
 });

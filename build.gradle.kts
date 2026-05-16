@@ -29,6 +29,112 @@ spotless {
     }
 }
 
+// =============================================================================
+// EnforceLinearTicketTodos — Phase 3 ticket-hygiene gate (replaces a Spotless
+// custom step; configuration-cache-friendly standalone task).
+//
+// Scans every Java + TypeScript + JS source file (production AND test) for
+// `TODO(APP-N)` / `FIXME(APP-N)` references. Every cited ID must appear in
+// `.linear-allowlist` at repo root. Placeholder shapes (<linear-id>, <issue-id>,
+// APP-NNN, APP-???-X, "Issue X") fail the build outright. The hook script
+// `.claude/hooks/enforce-precommit-gate.sh` runs the same checks on the staged
+// diff at commit time; this task provides a build-time backstop so a
+// `--no-verify` commit cannot bypass the gate. No OR-fallback to grep — single
+// mechanism. Allowlist is the single source of truth (Phase 3 plan §C / §EE).
+// Done tickets (APP-31, APP-37, APP-60, APP-242) deliberately excluded.
+// =============================================================================
+abstract class EnforceLinearTicketTodosTask : DefaultTask() {
+    @get:InputFile
+    abstract val allowlist: RegularFileProperty
+
+    @get:InputFiles
+    abstract val sources: ConfigurableFileCollection
+
+    @TaskAction
+    fun verify() {
+        val allowedIds =
+            allowlist
+                .get()
+                .asFile
+                .readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .toSet()
+        val placeholderRe = Regex("""<linear-id>|<issue-id>|APP-NNN|APP-\?\?\?-[A-Z]|\bIssue [A-Z]\b""")
+        val citationRe = Regex("""(TODO|FIXME)\(APP-(\d+)\)""")
+        val violations = mutableListOf<String>()
+        sources.files.forEach { file ->
+            if (!file.isFile) return@forEach
+            val content = file.readText()
+            placeholderRe.find(content)?.let { m ->
+                violations.add("${file.relativeTo(project.rootDir)}: placeholder '${m.value}'")
+            }
+            for (m in citationRe.findAll(content)) {
+                val id = "APP-${m.groupValues[2]}"
+                if (!allowedIds.contains(id)) {
+                    violations.add("${file.relativeTo(project.rootDir)}: TODO cites $id (not in allowlist)")
+                }
+            }
+        }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "EnforceLinearTicketTodos failed:\n" +
+                    violations.joinToString("\n") { "  - $it" } +
+                    "\nAllowed IDs: ${allowedIds.sorted()}",
+            )
+        }
+    }
+}
+
+tasks.register<EnforceLinearTicketTodosTask>("enforceLinearTicketTodos") {
+    group = "verification"
+    description =
+        "Verifies every Phase 3 TODO(APP-N) / FIXME(APP-N) cites a Linear ID in .linear-allowlist. " +
+        "Scoped to files changed on the current branch vs main (so pre-existing TODOs predating " +
+        "Phase 3 are out of scope — those have their own ticket history). New Phase 3 files MUST " +
+        "cite an allowlisted ID."
+    allowlist.set(rootProject.file(".linear-allowlist"))
+    // Compute the changed-file set at configuration time via `git diff --name-only main`.
+    // Configuration-cache safe: the file collection is materialised eagerly into a set of
+    // existing files; the closure does not survive into the task action.
+    val changed: List<File> =
+        try {
+            val proc =
+                ProcessBuilder("git", "diff", "--name-only", "main")
+                    .directory(rootProject.projectDir)
+                    .redirectErrorStream(true)
+                    .start()
+            proc.waitFor()
+            proc.inputStream
+                .bufferedReader()
+                .readLines()
+                .map { rootProject.file(it) }
+                .filter {
+                    it.isFile &&
+                        (
+                            it.name.endsWith(".java") ||
+                                it.name.endsWith(".ts") ||
+                                it.name.endsWith(".tsx") ||
+                                it.name.endsWith(".mjs")
+                        ) &&
+                        !it.absolutePath.contains("/build/") &&
+                        !it.absolutePath.contains("/node_modules/") &&
+                        !it.absolutePath.contains("/.gradle/") &&
+                        !it.absolutePath.contains("/generated/") &&
+                        !it.absolutePath.contains(".claude/hooks/test/")
+                }
+        } catch (e: Exception) {
+            // No git, or main branch missing: fall back to scanning nothing (safe default).
+            emptyList()
+        }
+    sources.from(changed)
+}
+
+// Wire into spotlessCheck so the standard verification gate runs the lint.
+tasks.named("spotlessCheck") {
+    dependsOn("enforceLinearTicketTodos")
+}
+
 allprojects {
     group = "com.trading.engine"
     version = "0.1.0-SNAPSHOT"

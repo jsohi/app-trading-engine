@@ -12,7 +12,7 @@ All Java code must follow **industry-standard documentation practices** for a pr
 - **Method-level Javadoc**: All public methods must have Javadoc with `@param`, `@return`, and `@throws` where applicable
 - **Threading annotations**: Document whether a class/method is thread-safe, single-threaded, or requires external synchronization
 - **Allocation annotations**: Hot-path classes must document "Zero allocation after construction" or explicitly note where allocation occurs
-- **Design rationale**: Non-obvious decisions (e.g., hash collision trade-offs, sentinel values, lazy cleanup) must include inline comments explaining *why*, not just *what*
+- **Design rationale**: Non-obvious decisions (e.g., hash collision trade-offs, sentinel values, lazy cleanup) must include inline comments explaining _why_, not just _what_
 - **FIX protocol references**: FIX message types and tags must reference the tag number (e.g., "ClOrdID (tag 11)", "BusinessRejectReason (tag 380)")
 - **Cross-references**: Use `{@link}` to connect related classes (e.g., SessionRegistry → ClusterEgressListener → SessionLookup)
 - **No TODO without ticket**: Every TODO must reference a Linear issue (e.g., `// TODO(APP-166): extract CompID from auth callback`)
@@ -70,11 +70,13 @@ web-ui                — React + AG Grid browser UI (Node project)
 ## Conventions
 
 ### Pricing
+
 - **Fixed-point only**: `long` with scale factor `100_000_000L` (10^-8)
 - **No floating-point** (`double`, `float`, `BigDecimal`) for prices, quantities, or amounts
 - Constants: `public static final long PRICE_SCALE = 100_000_000L;`
 
 ### Clock Usage
+
 - **Inside cluster service**: ONLY use `long timestamp` from `onSessionMessage` / `onTimerEvent`. No wall clock. The `ConsensusModule` is configured with `NanosecondClusterClock` so all cluster timestamps are epoch nanoseconds.
 - **Outside cluster (gateway, pricing, websocket, logger)**: Inject `EpochNanoClock` via `TradingClocks.epochNanoClock()`. One instance per process at bootstrap.
 - **Monotonic timeouts/elapsed time**: Use `NanoClock` / `SystemNanoClock.INSTANCE` (or inject for testability).
@@ -82,6 +84,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **Cross-box sync**: Requires PTP (IEEE 1588) or chrony at infrastructure level. See `docs/clock-sync.md`.
 
 ### Cluster Service (Deterministic)
+
 - **No wall-clock time** — use cluster timestamp from `onSessionMessage` / `onTimerEvent`
 - **No randomness** — no `Math.random()`, `UUID.randomUUID()`, `SecureRandom`
 - **No heap allocation in hot path** — use flyweight pattern, pre-allocated buffers
@@ -89,6 +92,7 @@ web-ui                — React + AG Grid browser UI (Node project)
 - All operations must be deterministic for Aeron log replay
 
 ### WebSocket Server (Non-Deterministic)
+
 - **Outside cluster service** — runs in same JVM but does NOT participate in Raft consensus or state machine
 - **CAN use randomness** — `UUID.randomUUID()` for session IDs is acceptable
 - **CAN allocate** — Netty pooled ByteBuf allocation acceptable; replay buffers use heap-based Agrona RingBuffer
@@ -96,23 +100,26 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **Receives events** via own `AeronCluster` client session (like gateway). Session state is ephemeral — not snapshotted.
 
 ### Local Variable Style
+
 - **Reference types**: `final var x = ...` — always use `var` for reference-type local variables
 - **Primitives**: `final long x = ...` — always use explicit type with `final` for readability and to prevent silent type drift
 - **No bare locals**: all local variables must be `final` (reference types via `final var`, primitives via `final <type>`)
 - **Carve-out for loop scan pointers and accumulators**: tight byte/integer loops that scan a buffer or accumulate a result inherently require mutable primitive locals (`int p = start; while (p < end) { ... p++; }`). Refactoring these to satisfy `final` produces worse code than the rule prevents. Acceptable forms:
-  - Buffer scan pointers: `int p = startOffset;` mutated by `p++` / `p += n` inside the loop
-  - Digit-accumulator state: `long whole = 0L;` / `int fracDigits = 0;` written inside the body before the final value is returned
-  - Loop-control counters in classic `for` headers: `for (int i = 0; i < size; i++)` (the `i` is implicitly mutable)
-  - Scope: limited to zero-alloc parsers, emitters, and decoders — NOT general business logic. The mutated local must be private to one method (no escape into a field).
+    - Buffer scan pointers: `int p = startOffset;` mutated by `p++` / `p += n` inside the loop
+    - Digit-accumulator state: `long whole = 0L;` / `int fracDigits = 0;` written inside the body before the final value is returned
+    - Loop-control counters in classic `for` headers: `for (int i = 0; i < size; i++)` (the `i` is implicitly mutable)
+    - Scope: limited to zero-alloc parsers, emitters, and decoders — NOT general business logic. The mutated local must be private to one method (no escape into a field).
 - **Rationale**: consistent with exchange-core and LMAX coding style; prevents accidental reassignment; `var` for references reduces verbosity while explicit type for primitives makes zero-allocation intent self-documenting and prevents silent type drift if a return type changes from primitive to wrapper (which would introduce autoboxing)
 
 ### SBE Schema
-- Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55). **Exception:** WebSocket control templates 60-72 have no FIX equivalents — use sequential field IDs (1, 2, 3, ...) per template. Fields with FIX equivalents (e.g., symbol=55) still reuse those tag numbers.
+
+- Field `id=` values must correspond to FIX tag numbers (e.g., ClOrdID=11, OrderQty=38, Price=44, Side=54, Symbol=55). **Exception:** WebSocket control templates 60-72 AND pricing-broadcast templates 54-59 have no FIX equivalents for control/state fields — use sequential field IDs (1, 2, 3, ...) per template when no FIX equivalent exists. Fields with FIX equivalents (e.g., `symbol=55`, `bidPrice=132`, `askPrice=133`, `bidSize=134`, `askSize=135`, `symbolSeq=83` `RptSeq`, `serverNanos=52` `SendingTime`) MUST still reuse those tag numbers. (The 54-59 extension was added in Phase 3 / `feat/app-237-phase3-egress-gap` for the market-data broadcast templates `MarketDataTick`=54, `MarketDataHeartbeat`=55, `MarketDataSnapshotRequest`=56, `MarketDataFeedStateChange`=57.)
 - Schema changes to `trading-schema.xml` must be merged sequentially (no parallel merges)
 - Template IDs: commands 1-16, pricing 50-53, websocket 60-72, events 100-116, snapshots 200-209 (200=SnapshotTaken, 201=Account, 202=OrderBook, 203=RfqState, 204=Position, 205=IdGenerator, 206=EventSequencer, 208=Currency, 209=RiskLimit). Reserved: commands 17-19, pricing 54-59, websocket 73-79, events 117-119, snapshots 210+
 - **Pre-production: schema is pinned at `version="1"` / `semanticVersion="0.1.0"`** for the entire dev phase. Do NOT bump either attribute on `<sbe:messageSchema>`. Make breaking changes freely — there are no deployed consumers to preserve compatibility for. The first version bump happens only when we cut the first production release. Do not use `sinceVersion="..."` on new fields either; just add them.
 
 ### Event Sourcing
+
 - Commands are validated and produce events
 - Events are the source of truth (immutable, sequenced)
 - Projections consume events to build read models
@@ -121,9 +128,11 @@ web-ui                — React + AG Grid browser UI (Node project)
 - **RFQ snapshot recovery** — after restoring RfqStateMachine from snapshot, immediately expire any RFQ in REQUESTED/QUOTED state whose TTL has elapsed relative to recovery cluster timestamp
 
 ### Java Documentation Standards
+
 All production code must meet industry-level documentation standards consistent with exchange-core, LMAX, and Aeron project conventions:
 
 #### Class-Level Javadoc (required on every public/package-private class)
+
 - **Purpose**: What this class does and its role in the system (1-2 sentences)
 - **Design rationale**: Why this design was chosen, referencing industry patterns where applicable (e.g., "matches exchange-core idiom", "CME iLink pattern")
 - **Threading model**: Explicitly state thread-safety guarantees (e.g., "Not thread-safe — single-threaded cluster duty cycle only", "Thread-safe via CAS")
@@ -131,6 +140,7 @@ All production code must meet industry-level documentation standards consistent 
 - **Dependencies**: Note key collaborators and data flow direction
 
 #### Method-Level Javadoc (required on public methods; recommended on package-private)
+
 - **Contract**: What the method does, its preconditions, and postconditions
 - **Parameters**: `@param` for every parameter with value constraints (e.g., "must be > 0", "null for test path")
 - **Return values**: `@return` with semantics (e.g., "encoded length including header", "null if pool exhausted")
@@ -138,34 +148,40 @@ All production code must meet industry-level documentation standards consistent 
 - **Hot-path methods**: Note allocation behavior (e.g., "zero-allocation", "allocates on first call only")
 
 #### Field-Level Comments (required on non-obvious fields)
+
 - Constants: Document the value's origin and why it was chosen
 - Buffers: Document sizing rationale, lifecycle, and dual-use safety
 - State flags: Document valid transitions
 
 #### Inline Comments
+
 - **When to comment**: Non-obvious algorithmic choices, performance-critical decisions, workarounds for library quirks, safety invariants that would be broken by "obvious" refactoring
 - **When NOT to comment**: Self-evident code, restating what the code does, TODO without a ticket reference
 - **TODOs**: Always reference a Linear issue (e.g., `// TODO(APP-62): add maxOrderNotional check`)
 
 #### Test Documentation
+
 - Test class: Brief description of what component/behavior is under test
 - Test methods: Descriptive names using `methodUnderTest_scenario_expectedBehavior` pattern (e.g., `snapshotRoundTrip_emptyOrderBook_restoresAllRefData`)
 - Complex test setup: Document why specific values were chosen (e.g., "price chosen to exercise fixed-point boundary")
 
 ### Testing
+
 - Unit tests: `./gradlew :MODULE:test`
 - Integration tests: `./gradlew :integration-tests:test` (spins up full 3-node cluster)
 - All tests use JUnit 6
 
 ### Git
+
 - Branch naming: `feat/app-{N}-short-description`
 - No direct pushes to `main` — all changes via PRs
 - Commit messages reference Linear issue: `APP-{N}: description`
 - Always run `/review` before creating a PR — fix all blocking issues first
 
 ### Logging
+
 - **Hot-path modules** (`cluster`, `gateway`, `pricing-service`, `orchestrator`, `projections`): GFLog 3.0.7 — zero-allocation, builder API: `log.info().append("Order ").append(orderId).commit()`
-- **Infra modules** (`launcher`, `media-driver`, `websocket-server`, `reference-data`, `fix-client-bridge`): Log4j2 2.25.3 Async + LMAX Disruptor — garbage-free mode with `AsyncLoggerContextSelector`. The `fix-client-bridge` is structurally identical to `:websocket-server` (Netty-fronted, JWT cold-path auth, browser-facing) and uses the same Log4j2 family; per-message zero-alloc invariants are enforced by `*AllocTest` regression tests on the dispatch pipeline rather than via GFLog.
+- **Infra modules** (`launcher`, `media-driver`, `websocket-server`, `reference-data`, `fix-client-bridge`): Log4j2 2.25.4 Async + LMAX Disruptor — garbage-free mode with `AsyncLoggerContextSelector`. The `fix-client-bridge` is structurally identical to `:websocket-server` (Netty-fronted, JWT cold-path auth, browser-facing) and uses the same Log4j2 family; per-message zero-alloc invariants are enforced by `*AllocTest` regression tests on the dispatch pipeline rather than via GFLog.
 - **No SLF4J anywhere** — removed project-wide. Aeron/Artio use native error handling (CnC counters, `ErrorHandler`)
 - **Overflow strategy**: GFLog uses `DISCARD` (never block hot-path thread; log entries dropped under extreme load)
 - **Timestamps**: microsecond precision, UTC across all modules (GFLog `SSSSSS` + Log4j2 `DEFAULT_MICROS`)
@@ -174,14 +190,14 @@ All production code must meet industry-level documentation standards consistent 
 
 ## Dependencies
 
-| Library | Version | Purpose |
-|---------|---------|---------|
-| Aeron | 1.50.4 | Cluster, driver, archive |
-| SBE | 1.37.1 | Message codec generation |
-| Artio | 0.176 | FIX 4.4 engine |
-| Agrona | 2.4.0 | Off-heap collections, buffers |
-| JUnit | 6.0.3 | Testing framework |
-| GFLog | 3.0.7 | Zero-alloc logging (hot path) |
-| Log4j2 | 2.25.4 | Async logging (infra modules) |
-| Disruptor | 4.0.0 | LMAX ring buffer for Log4j2 Async |
-| JDK | 25 | Runtime |
+| Library   | Version | Purpose                           |
+| --------- | ------- | --------------------------------- |
+| Aeron     | 1.50.4  | Cluster, driver, archive          |
+| SBE       | 1.37.1  | Message codec generation          |
+| Artio     | 0.176   | FIX 4.4 engine                    |
+| Agrona    | 2.4.0   | Off-heap collections, buffers     |
+| JUnit     | 6.0.3   | Testing framework                 |
+| GFLog     | 3.0.7   | Zero-alloc logging (hot path)     |
+| Log4j2    | 2.25.4  | Async logging (infra modules)     |
+| Disruptor | 4.0.0   | LMAX ring buffer for Log4j2 Async |
+| JDK       | 25      | Runtime                           |
