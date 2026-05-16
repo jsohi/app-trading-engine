@@ -22,6 +22,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
 import {
+  FeedStateEnum,
+  MarketDataFeedStateChangeDecoder,
+  MarketDataHeartbeatDecoder,
+  MarketDataTickDecoder,
   OrderCanceledEventDecoder,
   OrderCancelRejectedEventDecoder,
   OrderCreatedEventDecoder,
@@ -39,8 +43,10 @@ import { Stats } from "@/workers/protocol/Stats";
 
 import type {
   EventUpdate,
+  FeedStateMsg,
   FillUpdate,
   OrderUpdate,
+  PriceUpdate,
   WorkerMessage,
 } from "@/shared/transport/MessageShape";
 
@@ -259,6 +265,77 @@ function makeOrderCancelRejectedPayload(fields: {
  */
 function makePriceResponseStub(): Uint8Array {
   return new Uint8Array(4); // Minimal non-zero-length body; fields are never decoded.
+}
+
+/**
+ * Build a body-only Uint8Array for {@link MarketDataTickDecoder} (templateId=54).
+ *
+ * <p>Field offsets extracted from {@code MarketDataTickDecoder.ts} (generated):
+ * symbol[0..7], bidPrice@8, askPrice@16, bidSize@24, askSize@32,
+ * symbolSeq@40, ingressNanos@48, serverNanos@56. BLOCK_LENGTH=64.
+ *
+ * @param fields - Tick fields; bidSize/askSize/symbolSeq/ingressNanos default to 0n.
+ */
+function makeMarketDataTickPayload(fields: {
+  symbol: string;
+  bidPrice: bigint;
+  askPrice: bigint;
+  serverNanos: bigint;
+  bidSize?: bigint;
+  askSize?: bigint;
+  symbolSeq?: bigint;
+  ingressNanos?: bigint;
+}): Uint8Array {
+  const buf = new ArrayBuffer(MarketDataTickDecoder.BLOCK_LENGTH);
+  const dv = new DataView(buf);
+  writeFixedString(dv, 0, fields.symbol, 8); // symbol at body[0]
+  dv.setBigInt64(8, fields.bidPrice, true); // bidPrice at body[8]
+  dv.setBigInt64(16, fields.askPrice, true); // askPrice at body[16]
+  dv.setBigInt64(24, fields.bidSize ?? 0n, true); // bidSize at body[24]
+  dv.setBigInt64(32, fields.askSize ?? 0n, true); // askSize at body[32]
+  dv.setBigInt64(40, fields.symbolSeq ?? 0n, true); // symbolSeq at body[40]
+  dv.setBigInt64(48, fields.ingressNanos ?? 0n, true); // ingressNanos at body[48]
+  dv.setBigInt64(56, fields.serverNanos, true); // serverNanos at body[56]
+  return prependSbeHeader(new Uint8Array(buf));
+}
+
+/**
+ * Build a body-only Uint8Array for {@link MarketDataHeartbeatDecoder} (templateId=55).
+ *
+ * <p>Field layout: serverNanos@0 (int64), then the {@code lastPublishedSeq} repeating-group
+ * dimension header (4 bytes: blockLength u16 + numInGroup u16). BLOCK_LENGTH=8. Since
+ * template 55 is decoded but no WorkerMessage is emitted, this builder only needs a
+ * syntactically valid frame — 0 group entries (numInGroup=0) keeps the decoder iteration
+ * cursor well-defined.
+ *
+ * @param serverNanos - Server-side heartbeat timestamp in epoch nanoseconds.
+ */
+function makeMarketDataHeartbeatPayload(serverNanos: bigint): Uint8Array {
+  // BLOCK_LENGTH (8) + 4 bytes for group-dimension header (blockLength u16 + numInGroup u16).
+  const buf = new ArrayBuffer(MarketDataHeartbeatDecoder.BLOCK_LENGTH + 4);
+  const dv = new DataView(buf);
+  dv.setBigInt64(0, serverNanos, true); // serverNanos at body[0]
+  // Group-dimension header at BLOCK_LENGTH: blockLength=16 per schema, numInGroup=0.
+  dv.setUint16(MarketDataHeartbeatDecoder.BLOCK_LENGTH, 16, true);
+  dv.setUint16(MarketDataHeartbeatDecoder.BLOCK_LENGTH + 2, 0, true);
+  return prependSbeHeader(new Uint8Array(buf));
+}
+
+/**
+ * Build a body-only Uint8Array for {@link MarketDataFeedStateChangeDecoder} (templateId=57).
+ *
+ * <p>Field offsets extracted from {@code MarketDataFeedStateChangeDecoder.ts} (generated):
+ * state@0 (uint8), serverNanos@1 (int64). BLOCK_LENGTH=9.
+ *
+ * @param state       - {@link FeedStateEnum} wire byte (Live=0, Quiet=1, Stale=2).
+ * @param serverNanos - Server-side state-change timestamp in epoch nanoseconds.
+ */
+function makeMarketDataFeedStateChangePayload(state: number, serverNanos: bigint): Uint8Array {
+  const buf = new ArrayBuffer(MarketDataFeedStateChangeDecoder.BLOCK_LENGTH);
+  const dv = new DataView(buf);
+  dv.setUint8(0, state); // state at body[0]
+  dv.setBigInt64(1, serverNanos, true); // serverNanos at body[1]
+  return prependSbeHeader(new Uint8Array(buf));
 }
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
@@ -546,17 +623,20 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
   });
 
   /**
-   * Verifies the `return false` contract: an unknown templateId (e.g., 54 — reserved for Phase 3
-   * Commit 6, not handled by the current dispatcher) MUST return {@code false} so the worker's
-   * caller fires its own unknown-template fallback. No WorkerMessage emitted, no error posted,
-   * no stats counter touched.
+   * Verifies the `return false` contract: an unknown templateId MUST return {@code false} so
+   * the worker's caller fires its own unknown-template fallback. No WorkerMessage emitted, no
+   * error posted, no stats counter touched.
+   *
+   * <p>Uses templateId {@code 999} — guaranteed-unknown across all Phase 3 schema additions.
+   * Earlier this test used templateId 54 (reserved for Commit 6's market-data branch) but
+   * Commit 6 landed the MarketDataTick decoder, so 54 is now handled and the unknown-case
+   * needs a different id.
    *
    * <p>Without this assertion a regression that causes the default-case arm to inadvertently
    * fall through to a `return true` or to an unguarded emit would go undetected.
    */
   it("onEvent_unknownTemplate_returnsFalse_noMessageNoErrorNoStatsIncrement", () => {
-    // Template 54 (MarketDataTick) is reserved for Commit 6; not handled today.
-    const UNKNOWN_TEMPLATE_ID = 54;
+    const UNKNOWN_TEMPLATE_ID = 999;
     const payload = prependSbeHeader(new Uint8Array(16));
 
     const handled = decodeClusterEvent(UNKNOWN_TEMPLATE_ID, payload, { emit, postError, stats });
@@ -602,5 +682,188 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
 
     // Misrouted-RFQ counter MUST NOT be incremented for a decode failure.
     expect(stats.snapshot().marketdataMisroutedRfq).toBe(0n);
+  });
+
+  // ─── Template 54 (MarketDataTick) ─────────────────────────────────────────
+
+  /**
+   * Verifies that template 54 (MarketDataTick) happy-path decodes all required
+   * fields — symbol, bidPrice, askPrice, serverNanos — and emits a {@link PriceUpdate}
+   * with the correct values. Other fields (bidSize/askSize/symbolSeq/ingressNanos) are
+   * wired as 0n since the production decoder does not surface them on the PriceUpdate shape.
+   *
+   * <p>Price chosen to exercise a real fixed-point value (1.085 in scale 1e8).
+   */
+  it("onEvent_template54_emits_PriceUpdate_with_bid_ask_serverNanos", () => {
+    const BID = 108_500_000n; // 1.085 in fixed-point (scale 1e8)
+    const ASK = 108_510_000n; // 1.0851 in fixed-point (scale 1e8)
+    const SERVER_NANOS = 1_700_000_000_000_000_001n;
+
+    const payload = makeMarketDataTickPayload({
+      symbol: "EURUSD",
+      bidPrice: BID,
+      askPrice: ASK,
+      serverNanos: SERVER_NANOS,
+    });
+
+    const handled = decodeClusterEvent(MarketDataTickDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as PriceUpdate;
+    expect(msg.type).toBe("price");
+    expect(msg.symbol).toBe("EURUSD");
+    expect(msg.bid).toBe(BID);
+    expect(msg.ask).toBe(ASK);
+    expect(msg.serverNanos).toBe(SERVER_NANOS);
+  });
+
+  /**
+   * Verifies that template 54 with negative prices still emits a {@link PriceUpdate} — the
+   * dispatch layer trusts the wire bytes without client-side validation. The publisher's upstream
+   * sanity check (positive price enforcement) is the correct boundary; the decoder propagates the
+   * raw wire values as bigints without clamping or rejection.
+   *
+   * <p>Uses bidPrice=-1n / askPrice=-1n (the sentinel that a buggy publisher emitting "no price
+   * available" might produce) to confirm the bigint round-trip is lossless.
+   */
+  it("onEvent_template54_negativePrice_stillEmits_PriceUpdate", () => {
+    const NEG_ONE = -1n;
+
+    const payload = makeMarketDataTickPayload({
+      symbol: "GBPUSD",
+      bidPrice: NEG_ONE,
+      askPrice: NEG_ONE,
+      serverNanos: 1_700_000_000_000_000_002n,
+    });
+
+    const handled = decodeClusterEvent(MarketDataTickDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as PriceUpdate;
+    expect(msg.type).toBe("price");
+    expect(msg.bid).toBe(NEG_ONE);
+    expect(msg.ask).toBe(NEG_ONE);
+  });
+
+  // ─── Template 55 (MarketDataHeartbeat) ────────────────────────────────────
+
+  /**
+   * Verifies that template 55 (MarketDataHeartbeat) decodes without error, returns
+   * {@code true} (handled), and emits NO {@link WorkerMessage} — heartbeats are
+   * liveness signals only (reserved for the browser-side liveness tracker). No
+   * stats counter is affected and no error is posted.
+   *
+   * <p>Uses the minimal valid heartbeat: serverNanos set, lastPublishedSeq group
+   * count = 0 so the group dimension header is syntactically present but empty.
+   */
+  it("onEvent_template55_emits_no_message_returns_true", () => {
+    const payload = makeMarketDataHeartbeatPayload(1_700_000_000_000_000_003n);
+
+    const handled = decodeClusterEvent(MarketDataHeartbeatDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedMessages).toHaveLength(0);
+    expect(capturedErrors).toHaveLength(0);
+    expect(stats.snapshot().marketdataMisroutedRfq).toBe(0n);
+  });
+
+  // ─── Template 57 (MarketDataFeedStateChange) ──────────────────────────────
+
+  /**
+   * Verifies that template 57 with {@code FeedStateEnum.Live (0)} emits a
+   * {@link FeedStateMsg} with {@code state="LIVE"} and the correct serverNanos.
+   *
+   * <p>Live is the normal operating state — the first real tick after subscription
+   * or reconnect sends this before the tick stream begins.
+   */
+  it("onEvent_template57_state_LIVE_emits_FeedStateMsg_LIVE", () => {
+    const SERVER_NANOS = 1_700_000_000_000_000_004n;
+
+    const payload = makeMarketDataFeedStateChangePayload(FeedStateEnum.Live, SERVER_NANOS);
+
+    const handled = decodeClusterEvent(MarketDataFeedStateChangeDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as FeedStateMsg;
+    expect(msg.type).toBe("feed-state");
+    expect(msg.state).toBe("LIVE");
+    expect(msg.serverNanos).toBe(SERVER_NANOS);
+  });
+
+  /**
+   * Verifies that template 57 with {@code FeedStateEnum.Stale (2)} emits a
+   * {@link FeedStateMsg} with {@code state="STALE"}. Stale is sent when no
+   * fragments are observed for the configured stale-detection threshold.
+   */
+  it("onEvent_template57_state_STALE_emits_FeedStateMsg_STALE", () => {
+    const SERVER_NANOS = 1_700_000_000_000_000_005n;
+
+    const payload = makeMarketDataFeedStateChangePayload(FeedStateEnum.Stale, SERVER_NANOS);
+
+    const handled = decodeClusterEvent(MarketDataFeedStateChangeDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as FeedStateMsg;
+    expect(msg.type).toBe("feed-state");
+    expect(msg.state).toBe("STALE");
+    expect(msg.serverNanos).toBe(SERVER_NANOS);
+  });
+
+  /**
+   * Verifies that template 57 with {@code FeedStateEnum.Quiet (1)} emits a
+   * {@link FeedStateMsg} with {@code state="QUIET"}. Quiet means heartbeats are
+   * arriving but the tick stream is idle — a normal off-hours state for FX pairs.
+   */
+  it("onEvent_template57_state_QUIET_emits_FeedStateMsg_QUIET", () => {
+    const SERVER_NANOS = 1_700_000_000_000_000_006n;
+
+    const payload = makeMarketDataFeedStateChangePayload(FeedStateEnum.Quiet, SERVER_NANOS);
+
+    const handled = decodeClusterEvent(MarketDataFeedStateChangeDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as FeedStateMsg;
+    expect(msg.type).toBe("feed-state");
+    expect(msg.state).toBe("QUIET");
+    expect(msg.serverNanos).toBe(SERVER_NANOS);
   });
 });

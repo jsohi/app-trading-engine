@@ -49,6 +49,7 @@ import { type Observable, ReplaySubject, type Subscription, defer } from "rxjs";
 import { fakeStream } from "@/mocks/fakeStream";
 import { type WorkerMessage } from "@/shared/transport/MessageShape";
 import { pushConnectionState } from "@/streams/connection-stream";
+import { pushFeedState } from "@/streams/feed-state-stream";
 
 // IMPORTANT: WorkerClient and devTokenProvider are imported DYNAMICALLY inside
 // the VITE_E2E_REAL_BACKEND branch (see startMessageSource below). Static imports
@@ -137,6 +138,13 @@ export function startMessageSource(
         const sub = client.messages$.subscribe({
           next: (m) => {
             _messages.next(m);
+            // Phase 3 Commit 6 — fan out FeedStateMsg into the dedicated feedState$
+            // BehaviorSubject so the UI can render a feed-stale banner independently
+            // of the WS connection indicator. Separating the two streams ensures a
+            // STALE market-data feed does not falsely surface as "disconnecting".
+            if (m.type === "feed-state") {
+              pushFeedState(m.state);
+            }
           },
           error: (e: unknown) => {
             console.error("messageSource: WorkerClient stream error", e);
@@ -145,6 +153,14 @@ export function startMessageSource(
         });
         const stateSub = client.connectionState$.subscribe((s) => {
           pushConnectionState(s);
+          // Reset-on-reconnect: every CONNECTED transition resets feedState$ to LIVE.
+          // The prior state captured pre-disconnect is stale; the post-reconnect
+          // server's first MarketDataFeedStateChange (template 57) frame will overwrite
+          // this. Without the reset a STALE state from before the disconnect would
+          // carry forward and falsely flag a healthy post-reconnect publisher.
+          if (s === "CONNECTED") {
+            pushFeedState("LIVE");
+          }
         });
         registerForceWsClose(() => {
           // Tear down the singleton; next consumer call recreates it.

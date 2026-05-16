@@ -793,16 +793,20 @@ function buildRouterHandlers(): RouterHandlers {
         }
         return;
       }
-      // Phase 3 Commit 3 — typed decoders for cluster domain events.
+      // Phase 3 Commit 3/6 — typed decoders for cluster domain events.
       // Delegates to the side-effect-free `decodeClusterEvent` module so the
       // dispatch is unit-testable without bootstrapping the entire worker.
       // Returns `true` when handled (WorkerMessage emitted, misroute counted,
-      // or decode error posted); `false` when the templateId is reserved for
-      // a later commit (54/55/57) or otherwise unknown. The `false` case is
-      // intentionally a silent drop: MessageRouter routes only event-class
-      // templates (default arm at MessageRouter.ts:165) into `onEvent`, and a
-      // server pushing a templateId outside that set is a server bug. Today
-      // we no-op; Phase 3 Commit 6 wires the market-data branch (54/55/57).
+      // or decode error posted); `false` when the templateId is unknown. The
+      // `false` case is intentionally a silent drop: MessageRouter routes only
+      // event-class templates (default arm at MessageRouter.ts:165) into
+      // `onEvent`, and a server pushing a templateId outside that set is a
+      // server bug.
+      // Templates handled: 100/101/102/103/112 (order lifecycle, Commit 3),
+      // 51 (PriceResponse misroute guard, Commit 3), 54 (MarketDataTick →
+      // PriceUpdate, Commit 6), 55 (MarketDataHeartbeat, decoded for the
+      // future liveness tracker, no main-thread message), 57
+      // (MarketDataFeedStateChange → FeedStateMsg, Commit 6).
       if (decodeClusterEvent(templateId, payload, { emit, postError, stats })) {
         return;
       }

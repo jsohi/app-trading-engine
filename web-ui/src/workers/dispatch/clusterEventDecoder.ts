@@ -10,8 +10,17 @@
  * - invokes {@code postError} to surface a PROTOCOL-channel error (template
  *   51 misroute or corrupt payload), OR
  * - returns {@code false} so the worker's default {@code
- *   onUnexpectedServerTemplate} handler fires (templates 54/55/57 reserved for
- *   Commit 6, plus any unknown server template).
+ *   onUnexpectedServerTemplate} handler fires (any unknown server template).
+ *
+ * <p>Templates handled as of Phase 3 Commit 6 (market-data broadcast slice):
+ * <ul>
+ *   <li>100/101/102/103/112 — order lifecycle events (Commit 3).</li>
+ *   <li>51 — PriceResponse misroute regression guard (Commit 3).</li>
+ *   <li>54 — {@code MarketDataTick} → {@code PriceUpdate}.</li>
+ *   <li>55 — {@code MarketDataHeartbeat} — drained but no main-thread message; reserved for the
+ *       browser-side liveness tracker (future commit).</li>
+ *   <li>57 — {@code MarketDataFeedStateChange} → {@code FeedStateMsg}.</li>
+ * </ul>
  *
  * **Why extracted from worker.ts.** `worker.ts` is the Web Worker module entry
  * point with top-level side effects (WebSocket setup, postMessage listener,
@@ -39,6 +48,10 @@
  */
 
 import {
+  FeedStateEnum,
+  MarketDataFeedStateChangeDecoder,
+  MarketDataHeartbeatDecoder,
+  MarketDataTickDecoder,
   OrderCanceledEventDecoder,
   OrderCancelRejectedEventDecoder,
   OrderCreatedEventDecoder,
@@ -47,7 +60,7 @@ import {
   SideEnum,
 } from "@trading/sbe-codecs";
 
-import { type ErrorMsg, type WorkerMessage } from "@/shared/transport/MessageShape";
+import { type ErrorMsg, type FeedState, type WorkerMessage } from "@/shared/transport/MessageShape";
 import { type Stats } from "@/workers/protocol/Stats";
 
 /**
@@ -92,6 +105,17 @@ export interface ClusterEventDeps {
  */
 function sideToLabel(ord: number): "BUY" | "SELL" {
   return ord === SideEnum.Sell ? "SELL" : "BUY";
+}
+
+/**
+ * Map a {@link FeedStateEnum} wire ordinal to the {@link FeedState} string label. Defensive
+ * default to {@code "LIVE"} on unknown wire bytes so a malformed inbound state cannot tip the
+ * UI into a permanent STALE banner — the next legitimate state frame corrects it.
+ */
+function feedStateToLabel(ord: number): FeedState {
+  if (ord === FeedStateEnum.Stale) return "STALE";
+  if (ord === FeedStateEnum.Quiet) return "QUIET";
+  return "LIVE";
 }
 
 /**
@@ -188,6 +212,45 @@ export function decodeClusterEvent(
           eventType: "OrderCancelRejected",
           details: `clOrdId=${dec.clOrdId()} origClOrdId=${dec.origClOrdId()} reason=${String(dec.cxlRejReason())} text=${dec.text()}`,
           serverNanos: dec.timestamp(),
+        });
+        return true;
+      }
+      case MarketDataTickDecoder.TEMPLATE_ID: {
+        const dec = new MarketDataTickDecoder().wrap(dv, SBE_HEADER_BYTES);
+        // MarketDataTick (template 54) — emit as PriceUpdate per the existing browser contract.
+        // The blotter consumes PriceUpdate via the price-stream operator; mid-rate is implicit
+        // (bid + ask). Note: bidSize/askSize/symbolSeq/ingressNanos are decoded but not exposed
+        // on the legacy PriceUpdate shape — extending PriceUpdate with these fields would
+        // ripple through every consumer; for Phase 3 the minimal-viable surface keeps
+        // bid/ask/serverNanos on the wire-contract while the publisher / wire bytes carry the
+        // full payload for future expansion.
+        deps.emit({
+          type: "price",
+          symbol: dec.symbol(),
+          bid: dec.bidPrice(),
+          ask: dec.askPrice(),
+          serverNanos: dec.serverNanos(),
+        });
+        return true;
+      }
+      case MarketDataHeartbeatDecoder.TEMPLATE_ID: {
+        // Heartbeats are state signals only — they update the liveness tracker (a future
+        // commit's responsibility) but emit no WorkerMessage to the main thread. Decoding
+        // proves the frame is well-formed; returning `true` claims the template as handled so
+        // the worker's `onUnexpectedServerTemplate` does not double-fire.
+        const dec = new MarketDataHeartbeatDecoder().wrap(dv, SBE_HEADER_BYTES);
+        // Touch the decoded serverNanos to ensure the decoder is actually exercised (a future
+        // alloc tripwire over the heartbeat path would catch any reintroduced allocation).
+        // The value is used by the (still-pending) MarketDataSubscriptionLivenessTracker.
+        void dec.serverNanos();
+        return true;
+      }
+      case MarketDataFeedStateChangeDecoder.TEMPLATE_ID: {
+        const dec = new MarketDataFeedStateChangeDecoder().wrap(dv, SBE_HEADER_BYTES);
+        deps.emit({
+          type: "feed-state",
+          state: feedStateToLabel(dec.state()),
+          serverNanos: dec.serverNanos(),
         });
         return true;
       }
