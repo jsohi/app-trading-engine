@@ -39,6 +39,7 @@ import { nowEpochMs, nowEpochNs } from "@/workers/time";
 import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
+import { decodeClusterEvent } from "@/workers/dispatch/clusterEventDecoder";
 import { MessageRouter, type RouterHandlers } from "@/workers/dispatch/MessageRouter";
 import { CommandAckDecoder, CommandAckStatus } from "@trading/sbe-codecs";
 
@@ -792,6 +793,16 @@ function buildRouterHandlers(): RouterHandlers {
         }
         return;
       }
+      // Phase 3 Commit 3 — typed decoders for cluster domain events.
+      // Delegates to the side-effect-free `decodeClusterEvent` module so the
+      // dispatch is unit-testable without bootstrapping the entire worker.
+      // Returns `true` when handled (WorkerMessage emitted, misroute counted,
+      // or decode error posted); `false` when the templateId is reserved for
+      // a later commit (54/55/57) or otherwise unknown — fall through to the
+      // worker's existing default error path below.
+      if (decodeClusterEvent(templateId, payload, { emit, postError, stats })) {
+        return;
+      }
       void templateId;
     },
     onUnexpectedServerTemplate: (templateId) => {
@@ -977,6 +988,7 @@ function activateSessionLayer(): void {
       replayFrames: snap.replayFrames,
       snapshotBytes: snap.snapshotBytes,
       bufferedAmountPeak: snap.bufferedAmountPeak,
+      marketdataMisroutedRfq: snap.marketdataMisroutedRfq,
       degradedTimingMode: snap.degradedTimingMode,
       serverNanos: nowEpochNs(),
     });
