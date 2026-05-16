@@ -58,3 +58,4 @@ fix-logs/
 # JCStress raw run artefacts (per-run binary, large, not source-controlled).
 # HTML report under websocket-server/build/reports/jcstress/ is ignored via build/.
 **/jcstress-results-*.bin.gz
+messages/.jqwik-database

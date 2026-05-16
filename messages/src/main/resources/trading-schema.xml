@@ -310,6 +310,17 @@
             <validValue name="Duplicate" description="ClOrdID already seen in dedup cache">2</validValue>
             <validValue name="Throttled" description="Rate limit exceeded">3</validValue>
         </enum>
+
+        <enum name="FeedStateEnum" encodingType="uint8"
+              description="Market-data feed liveness state machine — emitted on MarketDataFeedStateChange (template 57).
+                           LIVE: most recent inbound fragment was a tick (template 54) within MARKET_DATA_HEARTBEAT_BASE_MS × 1.5.
+                           QUIET: only heartbeats (template 55) have arrived within the live window — publisher up but no ticks for any subscribed symbol.
+                           STALE: no fragment of any kind for MARKET_DATA_STALE_THRESHOLD_NANOS (3 s = 3 × heartbeat). EBS Direct / ICE Impact pattern:
+                           heartbeats alone do NOT clear STALE — only a real tick proves the price path is healthy.">
+            <validValue name="Live"  description="Ticks flowing within the live window">0</validValue>
+            <validValue name="Quiet" description="Heartbeats arriving but no ticks">1</validValue>
+            <validValue name="Stale" description="No fragments observed for the stale threshold">2</validValue>
+        </enum>
     </types>
 
     <!-- ======================== Command Messages (templateId 1-10) ======================== -->
@@ -791,6 +802,58 @@
         <field name="transactTime" id="60"  type="uint64" description="Epoch nanos"/>
     </sbe:message>
 
+    <!-- ======================== Market-Data Broadcast Messages (templateId 54-57) ======================== -->
+    <!--
+        Wire Format Convention:
+        - Field IDs reuse FIX tag numbers where a FIX equivalent exists (symbol=55, bidPrice=132, askPrice=133,
+          bidSize=134, askSize=135, symbolSeq=83 RptSeq, ingressNanos=60 TransactTime, serverNanos=52 SendingTime).
+        - Fields with no FIX equivalent (state) use sequential IDs (1, 2, 3...) per the CLAUDE.md FIX-tag carve-out
+          extension covering 54-59 ∪ 60-72 (landed in Phase 3 Commit 0).
+        - Timestamps are binary int64 epoch-nanos (FIX UTCTimestamp string form is NOT used on the wire).
+        - All four templates are pricing-domain payload semantics regardless of wire direction (template 56 is
+          browser→ws-server→pricing-service; the others are pricing-service→browser).
+    -->
+
+    <!-- MarketDataTick: pricing service → browser broadcast. CME MDP 3.0 publish-side pattern. -->
+    <!-- Dual timestamps: ingressNanos = adapter sample time (TransactTime semantics); serverNanos = publish wall-clock
+         (SendingTime semantics). Latency decomposition: publisher-stack = serverNanos - ingressNanos; end-to-end =
+         browser-decode - serverNanos. -->
+    <sbe:message name="MarketDataTick" id="54"
+                 description="Best-effort top-of-book tick. Conflated 5 ms cadence at publisher. Per-symbol monotonic symbolSeq (FIX RptSeq tag 83) for gap detection. Snapshot frames carry symbolSeq=0 (sentinel); next live tick resumes from 1.">
+        <field name="symbol"       id="55"  type="Symbol" description="Instrument symbol (FIX tag 55)"/>
+        <field name="bidPrice"     id="132" type="int64"  description="Bid price, fixed-point 10^-8 (FIX tag 132)"/>
+        <field name="askPrice"     id="133" type="int64"  description="Ask price, fixed-point 10^-8 (FIX tag 133)"/>
+        <field name="bidSize"      id="134" type="int64"  description="Bid quantity, fixed-point 10^-8 (FIX tag 134)"/>
+        <field name="askSize"      id="135" type="int64"  description="Ask quantity, fixed-point 10^-8 (FIX tag 135)"/>
+        <field name="symbolSeq"    id="83"  type="int64"  description="Per-symbol monotonic publish sequence (FIX RptSeq tag 83). int64 (NOT uint64) for Java codec interop; wrap handled via Long.compareUnsigned. symbolSeq=0 is the snapshot sentinel."/>
+        <field name="ingressNanos" id="60"  type="int64"  description="Epoch-nanos when the synthetic adapter sampled the mid-rate (FIX TransactTime tag 60 semantics; binary int64 form NOT UTCTimestamp string)."/>
+        <field name="serverNanos"  id="52"  type="int64"  description="Epoch-nanos when the publisher began SBE encode (FIX SendingTime tag 52 semantics; binary int64 form)."/>
+    </sbe:message>
+
+    <!-- MarketDataHeartbeat: pricing service → browser. ICE Impact pattern: consumes no reliable seqNo space. -->
+    <sbe:message name="MarketDataHeartbeat" id="55"
+                 description="Best-effort heartbeat at MARKET_DATA_HEARTBEAT_BASE_MS ± 10% jitter (XorShift64-seeded per-process for anti-thundering-herd). Carries per-symbol lastPublishedSeq so the browser can compute publisher-conflated-drop vs network-drop attribution (CME MDP 3.0 gap-detection pattern).">
+        <field name="serverNanos" id="52" type="int64" description="Epoch-nanos when the publisher emitted this heartbeat (FIX SendingTime tag 52 semantics)."/>
+        <group name="lastPublishedSeq" id="10060" dimensionType="groupSizeEncoding"
+               description="Per-symbol most-recent published symbolSeq. Empty on first heartbeat before any tick; one entry per symbol the publisher has ever published. Browser uses (publisher_lastPublishedSeq - browser_lastReceivedSeq - in_flight) to attribute publisher-conflated drops vs network drops.">
+            <field name="symbol" id="55" type="Symbol" description="Instrument symbol (FIX tag 55)"/>
+            <field name="seq"    id="83" type="int64"  description="Most recently published symbolSeq for this symbol (FIX RptSeq tag 83). int64 NOT uint64 — Java codec interop; wrap via Long.compareUnsigned."/>
+        </group>
+    </sbe:message>
+
+    <!-- MarketDataSnapshotRequest: browser → ws-server → pricing service on Aeron stream 205. -->
+    <sbe:message name="MarketDataSnapshotRequest" id="56"
+                 description="Browser-to-publisher (via ws-server) request for the cached top-of-book for one symbol. ws-server admission pipeline: malformed-payload guard → entitlement check → token-bucket consume (10/sec/session) → per-symbol dedup within drain cycle → Aeron stream-205 offer with five-case return-code handling. Publisher responds by re-emitting the cached MarketDataTick with symbolSeq=0 (snapshot sentinel).">
+        <field name="symbol" id="55" type="Symbol" description="Instrument symbol whose top-of-book snapshot is requested (FIX tag 55)"/>
+    </sbe:message>
+
+    <!-- MarketDataFeedStateChange: pricing-service liveness tracker (in ws-server) → browser. EBS Direct / ICE Impact. -->
+    <sbe:message name="MarketDataFeedStateChange" id="57"
+                 description="Reliable feed-liveness state transition emitted by MarketDataSubscriptionLivenessTracker on every LIVE/QUIET/STALE transition. EBS Direct / ICE Impact pattern: heartbeats alone cannot clear STALE — only a real tick proves the price path is healthy. Routed via the reliable egress queue (BIT_PRICES subscribers).">
+        <field name="state"       id="1"  type="FeedStateEnum" description="New feed state (carve-out: no FIX equivalent; sequential id=1 permitted per CLAUDE.md 54-59 carve-out)"/>
+        <field name="serverNanos" id="52" type="int64"         description="Epoch-nanos when the liveness tracker observed the transition (FIX SendingTime tag 52 semantics)"/>
+    </sbe:message>
+
     <!-- ======================== WebSocket Control Messages (templateId 60-72) ======================== -->
     <!--
         Wire Format Convention:
@@ -809,12 +872,21 @@
 
     <!-- WebSocketAuthAck: server confirms authentication and assigns session -->
     <sbe:message name="WebSocketAuthAck" id="61"
-                 description="Server-to-browser: authentication accepted, session assigned.">
+                 description="Server-to-browser: authentication accepted, session assigned. Extended in Phase 3 with per-account symbolPreferences and panelLayout repeating groups (additive only; pre-prod schema is pinned at version=1 / semanticVersion=0.1.0).">
         <field name="sessionId"                 id="1" type="uuid"   description="Assigned session UUID (UUID.randomUUID — acceptable outside cluster)"/>
         <field name="protocolVersion"           id="2" type="uint16" description="Server-asserted protocol version constant. Server hard-codes EXPECTED_PROTOCOL_VERSION (=1); never echoes a client-supplied value. Client compares the decoded value against its own EXPECTED_PROTOCOL_VERSION constant — anti-echo defense per APP-36 §2.5."/>
         <field name="maxSubscriptions"          id="3" type="uint16" description="Maximum symbols per client subscription"/>
         <field name="serverHeartbeatIntervalMs" id="4" type="uint32" description="Negotiated server-→client WebSocketHeartbeat (template 64) cadence in ms; 0 → client uses 5000ms default per APP-36 §2.8"/>
         <field name="clientHeartbeatIntervalMs" id="5" type="uint32" description="Negotiated client-→server ClientHeartbeat (template 65) cadence in ms; 0 → client uses 10000ms default; server hard-disconnect at 2× this value"/>
+        <group name="symbolPreferences" id="10052" dimensionType="groupSizeEncoding"
+               description="Per-account default symbol cohort. Sourced from reference-data AccountRecord.symbolPreferences. Empty → worker falls back to DEFAULT_SUBSCRIBE_SYMBOLS. Worker subscribes to the union of this list ∪ defaults.">
+            <field name="symbol" id="55" type="Symbol" description="Instrument symbol (FIX tag 55); validated against ^[A-Z]{6,8}$ at YAML load"/>
+        </group>
+        <group name="panelLayout" id="10053" dimensionType="groupSizeEncoding"
+               description="Per-account UI panel-to-slot mapping. Sourced from reference-data AccountRecord.panelLayout. Empty → App.tsx uses the default slot (right-top for OrderEntryForm). Production-path field (NOT an observer-hook); ships in the prod bundle.">
+            <field name="panelId" id="1" type="Symbol" description="Panel identifier (e.g., 'order-entry'); Symbol-shaped char[8] — carve-out per CLAUDE.md 54-59 ∪ 60-72 sequential-id rule for fields with no FIX equivalent"/>
+            <field name="slot"    id="2" type="Symbol" description="Slot identifier (e.g., 'right-top'); Symbol-shaped char[8]"/>
+        </group>
     </sbe:message>
 
     <!-- WebSocketSubscribe: browser subscribes to symbols with event type filters -->

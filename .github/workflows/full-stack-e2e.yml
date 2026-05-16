@@ -88,20 +88,20 @@ jobs:
         continue-on-error: false
 
       - name: SBE codec integrity check
-        # Plan §11 — verify the generated SBE codec output matches the checked-in SHA-256
-        # so a malicious commit can't slip a tampered codec through. The `messages` module
-        # generates codecs into messages/build/generated-codec/; we hash the directory tree.
-        # MUST fail the build on mismatch (was previously continue-on-error:true which defanged
-        # the security check — reviewer A finding F-6).
+        # Phase 3 §Commit 1 — verify the generated SBE codec output matches the checked-in
+        # SHA-256 so a malicious commit cannot slip a tampered codec through. The `messages`
+        # module generates codecs into `messages/build/generated/src/main/java/`; the checksum
+        # file lives at `messages/generated-codec.sha256` (NOT under `build/` — that path is
+        # gitignored). MUST fail the build on mismatch.
         run: |
           ./gradlew :messages:generateCodecs --no-daemon
-          if [[ -f messages/build/generated-codec.sha256 ]]; then
-            (cd messages/build && sha256sum -c generated-codec.sha256) || {
+          if [[ -f messages/generated-codec.sha256 ]]; then
+            (cd messages/build/generated && sha256sum -c ../../generated-codec.sha256) || {
               echo "::error::SBE codec integrity check failed"; exit 1;
             }
           else
-            echo "::error::no checked-in SHA file at messages/build/generated-codec.sha256"
-            echo "generate one via: (cd messages/build && find generated-codec -type f -print0 | sort -z | xargs -0 sha256sum > generated-codec.sha256) and commit"
+            echo "::error::no checked-in SHA file at messages/generated-codec.sha256"
+            echo "generate via: (cd messages/build/generated && find src -type f -name '*.java' -print0 | sort -z | xargs -0 sha256sum > ../../generated-codec.sha256) and commit"
             exit 1
           fi
 
