@@ -53,9 +53,13 @@ public final class MarketDataTickSlot {
 
   /**
    * Per-symbol monotonic publish sequence (FIX tag-83 {@code RptSeq}). Incremented on every
-   * successful publish; {@code 0} on the snapshot path. Wrap is handled via {@code
-   * Long.compareUnsigned} so an overflow rolls cleanly from {@code Long.MAX_VALUE} to {@code
-   * Long.MIN_VALUE} without breaking ordering.
+   * successful publish via {@code ++}; {@code 0} on the snapshot path. The Java side performs no
+   * overflow check — {@code long} arithmetic wraps naturally from {@code Long.MAX_VALUE} to {@code
+   * Long.MIN_VALUE}. Consumers (the browser worker's gap detector) compare via unsigned logic
+   * ({@code >>> 0} in JS / equivalent) so the wrap point preserves "next" ordering. At a realistic
+   * 200 publishes/sec the wrap horizon is ~1.5 billion years — operationally never observed, but
+   * the unsigned-consumer contract is documented here so a future reviewer does not assume
+   * Java-side signed comparison.
    */
   long symbolSeq;
 

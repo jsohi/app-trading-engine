@@ -1,6 +1,8 @@
 package com.trading.engine.pricing.market;
 
 import com.trading.engine.messages.FixedPointScale;
+import java.util.Arrays;
+import java.util.Objects;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -71,9 +73,9 @@ public final class MidRateToTickBridge implements Agent {
       final MarketDataPublisher publisher,
       final EpochNanoClock epochNanoClock,
       final byte[][] symbols) {
-    this.cache = java.util.Objects.requireNonNull(cache, "cache");
-    this.publisher = java.util.Objects.requireNonNull(publisher, "publisher");
-    this.epochNanoClock = java.util.Objects.requireNonNull(epochNanoClock, "epochNanoClock");
+    this.cache = Objects.requireNonNull(cache, "cache");
+    this.publisher = Objects.requireNonNull(publisher, "publisher");
+    this.epochNanoClock = Objects.requireNonNull(epochNanoClock, "epochNanoClock");
     this.symbolKeyBytes = new byte[symbols.length][];
     this.packedSymbols = new long[symbols.length];
     for (int i = 0; i < symbols.length; i++) {
@@ -84,7 +86,7 @@ public final class MidRateToTickBridge implements Agent {
       }
       // Defensive copy so a caller mutating the input array post-construction cannot drift the
       // bridge's per-symbol keys.
-      this.symbolKeyBytes[i] = java.util.Arrays.copyOf(sym, SYMBOL_BYTES);
+      this.symbolKeyBytes[i] = Arrays.copyOf(sym, SYMBOL_BYTES);
       this.packedSymbols[i] = pack(sym);
     }
   }
