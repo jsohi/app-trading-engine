@@ -11,6 +11,7 @@ import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
+import com.trading.engine.testsupport.aeron.FakeCluster;
 import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -90,6 +91,9 @@ class RfqStateMachineAllocationTest {
     final var sequencer = new EventSequencer();
     final var journal = new EventJournal(64);
     eventSink = new EventSink(sequencer, journal);
+    // Wire a FakeCluster with zero registered sessions so broadcast iteration is a no-op but
+    // cluster is non-null (avoids NPE from EventSink.emit's unconditional forEachClientSession).
+    eventSink.setCluster(new FakeCluster(0L));
 
     threadBean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
     tid = Thread.currentThread().getId();

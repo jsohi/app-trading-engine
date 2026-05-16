@@ -226,7 +226,7 @@ public final class PriceResponseHandler implements CommandHandler {
     }
 
     // 10. Emit 105 (after this returns, slot is durably QUOTED)
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
 
     // 11. Update slot state and lookup maps
     slot.state = RfqSlotState.QUOTED;
@@ -252,7 +252,7 @@ public final class PriceResponseHandler implements CommandHandler {
     rejectedEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     rejectedEncoder.putText(RfqRejectMessages.PRICING_REJECTED, 0);
     final int len = HDR_LEN + rejectedEncoder.encodedLength();
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
   }
 
   /** Emits 106 reason=TooLateToEnter text="timer pool exhausted" — rollback path. */
@@ -272,6 +272,6 @@ public final class PriceResponseHandler implements CommandHandler {
     rejectedEncoder.productType(SafeEnumMappers.safeProductType(slot.productType));
     rejectedEncoder.putText(RfqRejectMessages.TIMER_POOL_EXHAUSTED, 0);
     final int len = HDR_LEN + rejectedEncoder.encodedLength();
-    eventSink.emit(session, clusterTimestamp, egressBuffer, 0, len);
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, len);
   }
 }

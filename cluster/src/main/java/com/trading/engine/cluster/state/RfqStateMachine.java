@@ -742,7 +742,7 @@ public final class RfqStateMachine {
     if (len > expiredEgressBuffer.capacity()) {
       throw new IllegalStateException("RFQ 107 encode overflow: " + len);
     }
-    eventSink.emit(null, timestamp, expiredEgressBuffer, 0, len);
+    eventSink.emit(timestamp, expiredEgressBuffer, 0, len);
   }
 
   /** Emits a {@code QuoteRejectedEvent} (106) for the given slot with the given text. */
@@ -762,7 +762,7 @@ public final class RfqStateMachine {
     if (len > rejectedEgressBuffer.capacity()) {
       throw new IllegalStateException("RFQ 106 encode overflow: " + len);
     }
-    eventSink.emit(null, timestamp, rejectedEgressBuffer, 0, len);
+    eventSink.emit(timestamp, rejectedEgressBuffer, 0, len);
   }
 
   // -------------------------------------------------------------------------

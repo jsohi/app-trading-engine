@@ -26,6 +26,7 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -69,6 +70,10 @@ class RfqStateMachineTest {
    * <p>Extends the contract of {@link FakeCluster} without subclassing it (it is {@code final}) by
    * reimplementing the full {@link Cluster} interface. All non-timer methods delegate to sensible
    * no-op defaults.
+   *
+   * <p>Supports explicit session registration via {@link #addClientSession(ClientSession)} so that
+   * {@link #forEachClientSession(Consumer)} reaches test sessions during {@code EventSink.emit}
+   * broadcast (index-based iteration — no Iterator allocation).
    */
   static final class CapturingFakeCluster implements Cluster {
 
@@ -77,6 +82,9 @@ class RfqStateMachineTest {
 
     /** Controls the return value of {@link #scheduleTimer}. Default {@code true}. */
     boolean scheduleTimerResult = true;
+
+    /** Registered sessions iterated by {@link #forEachClientSession}. */
+    private final List<ClientSession> registeredSessions = new ArrayList<>();
 
     private final IdleStrategy idle =
         new IdleStrategy() {
@@ -89,6 +97,15 @@ class RfqStateMachineTest {
           @Override
           public void reset() {}
         };
+
+    /**
+     * Registers a client session so it is reached during {@link #forEachClientSession} broadcast.
+     *
+     * @param session the session to register
+     */
+    void addClientSession(final ClientSession session) {
+      registeredSessions.add(session);
+    }
 
     @Override
     public boolean scheduleTimer(final long correlationId, final long deadline) {
@@ -133,11 +150,16 @@ class RfqStateMachineTest {
 
     @Override
     public Collection<ClientSession> clientSessions() {
-      return List.of();
+      return registeredSessions;
     }
 
     @Override
-    public void forEachClientSession(final Consumer<? super ClientSession> action) {}
+    public void forEachClientSession(final Consumer<? super ClientSession> action) {
+      // Index-based iteration — mirrors FakeCluster's no-Iterator contract.
+      for (int i = 0, n = registeredSessions.size(); i < n; i++) {
+        action.accept(registeredSessions.get(i));
+      }
+    }
 
     @Override
     public boolean closeClientSession(final long clusterSessionId) {
@@ -211,6 +233,7 @@ class RfqStateMachineTest {
     eventSink = new EventSink(sequencer, journal);
 
     capturingCluster = new CapturingFakeCluster();
+    eventSink.setCluster(capturingCluster);
   }
 
   /**

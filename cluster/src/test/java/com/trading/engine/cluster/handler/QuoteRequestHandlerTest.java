@@ -23,6 +23,7 @@ import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.testsupport.aeron.FakeClientSession;
+import com.trading.engine.testsupport.aeron.FakeCluster;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.nio.charset.StandardCharsets;
 import org.agrona.ExpandableArrayBuffer;
@@ -113,12 +114,15 @@ class QuoteRequestHandlerTest {
     final var sequencer = new EventSequencer();
     final var journal = new EventJournal(256);
     eventSink = new EventSink(sequencer, journal);
-    // Leave cluster null — handler test path skips timer scheduling.
+    // Wire a FakeCluster on the eventSink so emit() broadcast has something to iterate.
+    final var fakeCluster = new FakeCluster(0L);
+    eventSink.setCluster(fakeCluster);
 
     handler = new QuoteRequestHandler(stateMachine, accountStore, currencyStore, metrics);
     // Do NOT call handler.setCluster() — cluster == null triggers the test path.
 
     session = new FakeClientSession(42L);
+    fakeCluster.addClientSession(session);
   }
 
   // -------------------------------------------------------------------------
