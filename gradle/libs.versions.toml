@@ -31,6 +31,9 @@ jcstress = "0.16"
 # modules); production WebSocket server uses Netty, not Jetty. Centralised
 # here so OWASP CVE scans cover it.
 jetty11 = "11.0.24"
+# jqwik property-based testing (Phase 3 Commit 1) — round-trip property tests on
+# SBE templates 54/55/56/57. Test-only; never bundled into the runtime.
+jqwik = "1.9.2"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -72,3 +75,4 @@ hdr-histogram = { module = "org.hdrhistogram:HdrHistogram", version.ref = "hdr-h
 jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "jcstress" }
 jetty-server = { module = "org.eclipse.jetty:jetty-server", version.ref = "jetty11" }
 jetty-servlet = { module = "org.eclipse.jetty:jetty-servlet", version.ref = "jetty11" }
+jqwik = { module = "net.jqwik:jqwik", version.ref = "jqwik" }
