@@ -176,6 +176,15 @@ export interface StatsMsg {
   readonly replayFrames: bigint;
   readonly snapshotBytes: bigint;
   readonly bufferedAmountPeak: bigint;
+  /**
+   * Cumulative count of inbound PriceResponse (template 51) frames the browser worker has seen.
+   *
+   * Template 51 is orchestrator-bound (Phase 3 plan §Gap 2 semantic separation): the cluster
+   * routes PriceResponse to the orchestrator's session, never to the browser. A non-zero value
+   * indicates a broadcast routing regression. Spec 07 (replay/reconnect) asserts this counter
+   * stays at zero. Surfaced from the worker's per-second STATS emission.
+   */
+  readonly marketdataMisroutedRfq: bigint;
   /** True for Firefox-RF / Safari low-resolution `performance.now()` users. */
   readonly degradedTimingMode: boolean;
   readonly serverNanos: bigint;

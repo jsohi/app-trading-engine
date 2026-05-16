@@ -23,6 +23,17 @@ export interface StatsSnapshot {
   replayFrames: bigint;
   snapshotBytes: bigint;
   bufferedAmountPeak: bigint;
+  /**
+   * Cumulative count of inbound PriceResponse (template 51) frames reaching the browser worker.
+   *
+   * <p>Template 51 is orchestrator-bound: the cluster routes PriceResponse to the orchestrator's
+   * own session, never to the browser worker's session. Arrival here means a broadcast routing
+   * regression — see Phase 3 plan §Gap 2 semantic separation between orchestrator-bound RFQ
+   * pricing and browser-bound market-data ticks. A non-zero value should fail the per-spec metric
+   * assertion in spec 07 (replay/reconnect) and trip an alert in production. Surfaced through the
+   * STATS pipeline (APP-245 OTel bridge).
+   */
+  marketdataMisroutedRfq: bigint;
   degradedTimingMode: boolean;
 }
 
@@ -35,6 +46,7 @@ export class Stats {
   private replayFrames = 0n;
   private snapshotBytes = 0n;
   private bufferedAmountPeak = 0n;
+  private marketdataMisroutedRfq = 0n;
   private degradedTimingMode = false;
 
   incFramesDecoded(): void {
@@ -62,6 +74,15 @@ export class Stats {
     const big = BigInt(n);
     if (big > this.bufferedAmountPeak) this.bufferedAmountPeak = big;
   }
+  /**
+   * Increments the misrouted-RFQ counter. Called by the worker's `onEvent` dispatch when a
+   * PriceResponse (template 51) is observed — that template is orchestrator-bound and must never
+   * reach the browser; arrival here is a routing regression. Phase 3 Commit 3 wires this; Phase 3
+   * spec 07 asserts the counter remains zero across replay/reconnect.
+   */
+  incMarketdataMisroutedRfq(): void {
+    this.marketdataMisroutedRfq += 1n;
+  }
   setDegradedTimingMode(b: boolean): void {
     this.degradedTimingMode = b;
   }
@@ -76,6 +97,7 @@ export class Stats {
       replayFrames: this.replayFrames,
       snapshotBytes: this.snapshotBytes,
       bufferedAmountPeak: this.bufferedAmountPeak,
+      marketdataMisroutedRfq: this.marketdataMisroutedRfq,
       degradedTimingMode: this.degradedTimingMode,
     };
   }
