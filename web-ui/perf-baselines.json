@@ -11,5 +11,9 @@
     "_comment": "Amortized bytes per submitOrder call after warmup (10_000 calls, --js-flags=--expose-gc + COOP/COEP). Pool buffer + slot reuse target: ≤16 B/call.",
     "amortizedBytesPerCall": 12,
     "budgetMaxBytesPerCall": 16
+  },
+  "workerMarketdataAlloc": {
+    "_comment": "Amortized bytes per MarketDataTick (template 54) decoded through clusterEventDecoder → MarketDataConflation.onTick after warmup (10_000 ticks paced over ~1s so the 30 Hz setInterval drain fires ~30 times during the measurement window). Plan §Commit 6 budget — covers the packed-symbol Number key inline-cache + MarketDataTickFrame struct + PriceUpdate enqueue; all other paths pooled.",
+    "budgetMaxBytesPerFrame": 24
   }
 }

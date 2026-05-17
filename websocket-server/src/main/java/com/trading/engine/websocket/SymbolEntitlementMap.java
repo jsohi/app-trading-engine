@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongHashSet;
 import org.agrona.collections.ObjectHashSet;
 
 /**
@@ -60,16 +61,30 @@ public final class SymbolEntitlementMap {
   private final Long2ObjectHashMap<ObjectHashSet<String>> symbolToAccounts;
 
   /**
-   * Per account code → set of packed symbols that account is entitled to receive. Inverted index
-   * built at construction so per-session auth-time lookup is O(1).
+   * Per account code → primitive packed-symbol set the account is entitled to receive. Inverted
+   * index built at construction so per-session auth-time lookup is O(1). {@link LongHashSet} (NOT
+   * {@code ObjectHashSet<Long>}) so the {@link WebSocketSession#publishEntitledSymbols} iteration
+   * can use the primitive {@code addAll(LongHashSet)} path — zero {@link Long} boxing across the
+   * auth/resume path (Agent A review F-1: reconnect storms make this iteration frequent enough to
+   * matter).
    */
-  private final Map<String, ObjectHashSet<Long>> accountToSymbols;
+  private final Map<String, LongHashSet> accountToSymbols;
 
   /**
    * Empty fallback returned by {@link #permittedAccountsFor(long)} when the symbol is not in the
    * map. Pre-allocated; never mutated.
    */
   private static final ObjectHashSet<String> EMPTY_ACCOUNTS = new ObjectHashSet<>(1);
+
+  /**
+   * Shared zero-capacity empty fallback returned by {@link #entitledSymbolsFor(String)} when the
+   * account has no entitlements. Pre-allocated once at class init; callers MUST treat the returned
+   * set as read-only. Agrona has no immutable {@link LongHashSet} variant, so the convention is
+   * enforced by the public Javadoc + by the only caller ({@link
+   * WebSocketSession#publishEntitledSymbols}) using a read-only {@code addAll(LongHashSet)}
+   * traversal.
+   */
+  private static final LongHashSet EMPTY_SYMBOLS = new LongHashSet(0);
 
   /**
    * Constructs the entitlement map from a {@code symbol → list-of-accounts} mapping (typically
@@ -101,7 +116,7 @@ public final class SymbolEntitlementMap {
       final ObjectHashSet<String> accountSet = new ObjectHashSet<>(accounts.size() * 2);
       for (final String account : accounts) {
         accountSet.add(Objects.requireNonNull(account, "account"));
-        accountToSymbols.computeIfAbsent(account, k -> new ObjectHashSet<>(4)).add(packed);
+        accountToSymbols.computeIfAbsent(account, k -> new LongHashSet(4)).add(packed);
       }
       this.symbolToAccounts.put(packed, accountSet);
     }
@@ -122,19 +137,24 @@ public final class SymbolEntitlementMap {
   }
 
   /**
-   * Returns the set of packed-symbol longs the given account code is entitled to receive. O(1)
-   * lookup. Returns an immutable empty set if the account has no entitlements.
+   * Returns the primitive set of packed-symbol longs the given account code is entitled to receive.
+   * O(1) lookup. Returns a shared zero-capacity {@link LongHashSet} sentinel if the account has no
+   * entitlements — callers MUST NOT mutate the returned set (Agrona has no immutable {@code
+   * LongHashSet} variant; the read-only contract is enforced by convention + by the single in-tree
+   * caller {@link WebSocketSession#publishEntitledSymbols}).
    *
-   * <p>Used at session auth time to populate the session's {@code entitledSymbolsByAccount} {@link
-   * org.agrona.collections.LongHashSet} (a future Commit 5-continuation extension to {@link
-   * SubscriptionFilter}).
+   * <p>Used at session auth time to populate the session's per-channel entitlement {@link
+   * LongHashSet} via a primitive {@code addAll} — zero {@link Long} boxing across the auth/resume
+   * hot path (Agent A review F-1: reconnect storms make this iteration frequent enough that boxing
+   * the entitled-symbol set per element materially matters).
    *
    * @param accountCode the account code (e.g. {@code "ACME"}).
-   * @return the (read-only) set of packed symbols; empty if account unknown.
+   * @return the (read-only) primitive set of packed symbols; the shared empty sentinel if account
+   *     unknown.
    */
-  public ObjectHashSet<Long> entitledSymbolsFor(final String accountCode) {
-    final ObjectHashSet<Long> set = accountToSymbols.get(accountCode);
-    return set != null ? set : new ObjectHashSet<>(0);
+  public LongHashSet entitledSymbolsFor(final String accountCode) {
+    final LongHashSet set = accountToSymbols.get(accountCode);
+    return set != null ? set : EMPTY_SYMBOLS;
   }
 
   /**

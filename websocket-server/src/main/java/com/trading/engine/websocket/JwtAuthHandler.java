@@ -118,23 +118,6 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   private final WebSocketAuthDecoder authDecoder = new WebSocketAuthDecoder();
 
   /**
-   * Create a per-channel auth handler.
-   *
-   * @param pendingAuthCount shared counter across all channels for unauthenticated connection
-   *     tracking
-   * @param jwtValidator JWT RS256 validator with JWKS caching
-   * @param jtiCache JTI revocation cache for replay prevention
-   * @param entitlementService account entitlement validator
-   * @param authFailureTracker per-IP auth failure rate limiter
-   * @param sessionManager session registry with capacity limits
-   * @param metrics metrics instance for auth success/failure/lockout counters
-   * @param config server configuration (maxTokenSizeBytes, maxPendingAuth, etc.)
-   * @param nanoClock monotonic clock for auth latency measurement and dispatcher heartbeats
-   * @param validationExecutor executor for async JWT validation; use {@code
-   *     ForkJoinPool.commonPool()} in production, {@code Runnable::run} in tests for deterministic
-   *     behavior without Thread.sleep
-   */
-  /**
    * Canonical Phase 3 per-channel auth handler. All collaborators required — there is no legacy
    * overload. The post-auth path wires the per-channel {@link MarketDataAdmissionPipeline} on the
    * dispatcher AND calls {@link WebSocketSession#initSnapshotTokenBucket(long)} + {@link
