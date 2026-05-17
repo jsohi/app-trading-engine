@@ -130,7 +130,8 @@ final class SubscriptionFilterEmptyTest {
       sunBean = candidate;
     }
 
-    final long tid = Thread.currentThread().getId();
+    // Use threadId() (JDK 19+) — getId() is deprecated for removal (Agent B review R1-F4).
+    final long tid = Thread.currentThread().threadId();
     final long bytesBefore = sunBean != null ? sunBean.getThreadAllocatedBytes(tid) : -1L;
 
     // Hot loop — 100,000 iterations, all must deny.

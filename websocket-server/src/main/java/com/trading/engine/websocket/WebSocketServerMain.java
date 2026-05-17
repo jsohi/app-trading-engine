@@ -76,6 +76,19 @@ public final class WebSocketServerMain implements AutoCloseable {
   private final JtiRevocationCache jtiCache;
   private final UserEntitlementService entitlementService;
   private final AuthFailureTracker authFailureTracker;
+
+  /**
+   * Phase 3 Commit A — symbol → permitted-accounts map for the per-channel admission pipeline +
+   * session entitlement publish. May be {@code null} in legacy wirings (pre-Phase-3 tests).
+   */
+  private final SymbolEntitlementMap symbolEntitlementMap;
+
+  /**
+   * Phase 3 Commit A — SAM seam over the stream-205 Aeron publication used to construct each
+   * channel's {@link MarketDataAdmissionPipeline}. May be {@code null} in legacy wirings.
+   */
+  private final SnapshotRequestPublisher snapshotRequestPublisher;
+
   private final AtomicInteger pendingAuthCount = new AtomicInteger(0);
   private CommandDispatcher commandDispatcher;
   private Channel serverChannel;
@@ -118,7 +131,9 @@ public final class WebSocketServerMain implements AutoCloseable {
         jwtValidator,
         jtiCache,
         entitlementService,
-        authFailureTracker);
+        authFailureTracker,
+        null,
+        null);
   }
 
   /**
@@ -150,6 +165,59 @@ public final class WebSocketServerMain implements AutoCloseable {
       final JtiRevocationCache jtiCache,
       final UserEntitlementService entitlementService,
       final AuthFailureTracker authFailureTracker) {
+    this(
+        config,
+        queue,
+        commandQueue,
+        ackQueue,
+        commandEntryPool,
+        egressListener,
+        sessionManager,
+        metrics,
+        jwtValidator,
+        jtiCache,
+        entitlementService,
+        authFailureTracker,
+        null,
+        null);
+  }
+
+  /**
+   * Full Phase 3 Commit A constructor adding the symbol-entitlement map and snapshot-request
+   * publisher SAM seam. Both nullable for legacy / test wirings; when both are non-null the
+   * per-channel {@link MarketDataAdmissionPipeline} is constructed at auth time and template-56
+   * snapshot requests admit through the 4-stage fail-closed pipeline.
+   *
+   * @param config server configuration
+   * @param queue the egress queue (shared with AeronEgressThread)
+   * @param commandQueue browser→cluster command queue
+   * @param ackQueue cluster→browser ack back-channel queue
+   * @param commandEntryPool dedicated EgressEntry pool for the command path
+   * @param egressListener egress listener
+   * @param sessionManager session manager
+   * @param metrics metrics
+   * @param jwtValidator JWT validator
+   * @param jtiCache JTI cache
+   * @param entitlementService entitlement validator
+   * @param authFailureTracker auth failure tracker
+   * @param symbolEntitlementMap launcher-loaded symbol → permitted-accounts map (may be null)
+   * @param snapshotRequestPublisher SAM seam over stream-205 Aeron publication (may be null)
+   */
+  public WebSocketServerMain(
+      final WebSocketServerConfig config,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
+      final CommandEntryPool commandEntryPool,
+      final WebSocketEgressListener egressListener,
+      final WebSocketSessionManager sessionManager,
+      final WebSocketMetrics metrics,
+      final JwtValidator jwtValidator,
+      final JtiRevocationCache jtiCache,
+      final UserEntitlementService entitlementService,
+      final AuthFailureTracker authFailureTracker,
+      final SymbolEntitlementMap symbolEntitlementMap,
+      final SnapshotRequestPublisher snapshotRequestPublisher) {
     this.config = Objects.requireNonNull(config, "config");
     this.queue = Objects.requireNonNull(queue, "queue");
     this.commandQueue = Objects.requireNonNull(commandQueue, "commandQueue");
@@ -162,6 +230,8 @@ public final class WebSocketServerMain implements AutoCloseable {
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
     this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
     this.authFailureTracker = Objects.requireNonNull(authFailureTracker, "authFailureTracker");
+    this.symbolEntitlementMap = symbolEntitlementMap;
+    this.snapshotRequestPublisher = snapshotRequestPublisher;
   }
 
   /**
@@ -259,7 +329,9 @@ public final class WebSocketServerMain implements AutoCloseable {
                         nanoClock,
                         ForkJoinPool.commonPool(),
                         commandDispatcher,
-                        byteCounter));
+                        byteCounter,
+                        symbolEntitlementMap,
+                        snapshotRequestPublisher));
               }
             });
 

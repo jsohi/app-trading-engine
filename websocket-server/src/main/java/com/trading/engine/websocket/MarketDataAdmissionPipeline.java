@@ -16,6 +16,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.Long2LongHashMap;
@@ -318,19 +319,24 @@ public final class MarketDataAdmissionPipeline {
     }
     if (offerResult == Publication.MAX_POSITION_EXCEEDED) {
       session.refundSnapshotToken();
+      // Cold-path error log — explicit US_ASCII charset matches the SBE Symbol wire-format
+      // convention (printable ASCII char[8]); platform-default charset would mis-render on a
+      // non-ASCII JVM locale. The new String() allocation is acceptable on this catastrophic-
+      // error branch per the websocket-server cold-path carve-out (Agent B review R1-F3).
       LOG.error(
           "Stream-205 publish hit MAX_POSITION_EXCEEDED — session={} symbol={}",
           session.sessionId(),
-          new String(symbolDecodeBuffer));
+          new String(symbolDecodeBuffer, StandardCharsets.US_ASCII));
       sendError(ctx, WebSocketErrorCode.SnapshotBackpressured);
       return Outcome.PUBLISH_BACKPRESSURED;
     }
     if (offerResult == Publication.CLOSED) {
       session.refundSnapshotToken();
+      // Cold-path error log — see MAX_POSITION_EXCEEDED branch above for the charset rationale.
       LOG.error(
           "Stream-205 publication CLOSED — session={} symbol={}",
           session.sessionId(),
-          new String(symbolDecodeBuffer));
+          new String(symbolDecodeBuffer, StandardCharsets.US_ASCII));
       sendError(ctx, WebSocketErrorCode.SnapshotBackpressured);
       return Outcome.PUBLISH_FATAL;
     }
