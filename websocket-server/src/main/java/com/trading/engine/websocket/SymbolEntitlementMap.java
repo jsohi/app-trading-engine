@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.ObjectHashSet;
 
@@ -157,7 +158,7 @@ public final class SymbolEntitlementMap {
    *
    * @return read-only set of every configured account code.
    */
-  public java.util.Set<String> allAccounts() {
+  public Set<String> allAccounts() {
     return Collections.unmodifiableSet(accountToSymbols.keySet());
   }
 }

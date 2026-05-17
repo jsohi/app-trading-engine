@@ -160,6 +160,16 @@ public final class MarketDataAdmissionPipeline {
   private final UnsafeBuffer offerBuffer = new UnsafeBuffer(new byte[0]);
   private final byte[] symbolDecodeBuffer = new byte[8];
 
+  /**
+   * Pre-allocated heap scratch for the inbound frame copy. Sized for the max template-56 wire
+   * length (8-byte SBE header + 8-byte BLOCK_LENGTH = 16 bytes) with 48 bytes of headroom so a
+   * future schema field addition does not silently rehit the alloc path. {@link
+   * io.netty.buffer.ByteBuf#getBytes(int, byte[], int, int)} copies into this scratch and {@link
+   * #wrapBuffer} then wraps the heap array — eliminates the per-call {@code content.nioBuffer()}
+   * ByteBuffer wrapper allocation (Gemini cloud-review R1).
+   */
+  private final byte[] inboundScratch = new byte[64];
+
   // --- Per-session dedup map (packed-symbol → lastRequestedNanos) ---
   private final Long2LongHashMap dedupMap = new Long2LongHashMap(NEVER_REQUESTED);
 
@@ -229,7 +239,24 @@ public final class MarketDataAdmissionPipeline {
       return Outcome.MALFORMED_CLOSE;
     }
 
-    wrapBuffer.wrap(content.nioBuffer());
+    // Copy the inbound bytes into a pre-allocated heap scratch + wrap the heap array, instead of
+    // wrapping content.nioBuffer() which allocates a ~32-byte ByteBuffer wrapper per call (Gemini
+    // cloud-review R1 finding). The frame is bounded by the size guard above (header +
+    // BLOCK_LENGTH = 16 bytes) and inboundScratch is sized at 64 with headroom.
+    final int readable = content.readableBytes();
+    if (readable > inboundScratch.length) {
+      metrics.dispatcherMalformed();
+      sendCloseFrame(
+          ctx,
+          "snapshot-request payload exceeds scratch capacity ("
+              + readable
+              + " > "
+              + inboundScratch.length
+              + ")");
+      return Outcome.MALFORMED_CLOSE;
+    }
+    content.getBytes(content.readerIndex(), inboundScratch, 0, readable);
+    wrapBuffer.wrap(inboundScratch, 0, readable);
     requestHeaderDecoder.wrap(wrapBuffer, 0);
     final int schemaId = requestHeaderDecoder.schemaId();
     final int version = requestHeaderDecoder.version();

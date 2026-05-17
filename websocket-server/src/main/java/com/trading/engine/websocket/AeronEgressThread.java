@@ -363,9 +363,15 @@ public final class AeronEgressThread implements AutoCloseable {
       // still fires on the cluster client's cadence via sendKeepAliveIfDue() below.
       final long clusterBudget = Math.min(clusterDeficit, (long) CLUSTER_FRAGMENT_LIMIT);
       final int clusterFragments = clusterBudget > 0 ? clusterClient.pollEgressForDwrr() : 0;
-      clusterDeficit -= clusterFragments;
-      if (clusterFragments == 0) {
-        clusterDeficit = 0L; // idle reset — RFC 8290 anti-burst
+      if (clusterBudget > 0) {
+        // Only mutate deficit when a poll was actually attempted. If the source had negative
+        // accumulated debt (over-consumed in a prior cycle, budget <= 0), do NOT zero the deficit
+        // — keep the debt so subsequent cycles repay it. Idle reset to zero only when we polled
+        // and saw the source genuinely idle (Gemini cloud-review R2 G-4).
+        clusterDeficit -= clusterFragments;
+        if (clusterFragments == 0) {
+          clusterDeficit = 0L; // idle reset — RFC 8290 anti-burst, only after a real poll
+        }
       }
       total += clusterFragments;
 
@@ -383,9 +389,14 @@ public final class AeronEgressThread implements AutoCloseable {
             (int) Math.min(marketDataDeficit, (long) MARKET_DATA_FRAGMENT_LIMIT);
         final int marketDataFragments =
             marketDataLimit > 0 ? marketDataPoller.poll(marketDataHandler, marketDataLimit) : 0;
-        marketDataDeficit -= marketDataFragments;
-        if (marketDataFragments == 0) {
-          marketDataDeficit = 0L; // idle reset
+        if (marketDataLimit > 0) {
+          // Same DWRR semantic as the cluster path — only mutate deficit when a poll was
+          // attempted; idle reset to zero only when poll returned zero (Gemini cloud-review R2
+          // G-5).
+          marketDataDeficit -= marketDataFragments;
+          if (marketDataFragments == 0) {
+            marketDataDeficit = 0L; // idle reset, only after a real poll
+          }
         }
         total += marketDataFragments;
       }

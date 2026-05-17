@@ -4,11 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.sun.management.ThreadMXBean;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.projections.SymbolPacker;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.lang.management.ManagementFactory;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.LongHashSet;
@@ -123,10 +125,9 @@ final class SubscriptionFilterEmptyTest {
     // This API is present on HotSpot / OpenJDK but is not part of the standard JDK spec,
     // so the cast may fail on non-HotSpot JVMs (GraalVM native, OpenJ9). If unavailable
     // we still assert correctness and skip the byte assertion with an explanatory comment.
-    com.sun.management.ThreadMXBean sunBean = null;
-    final var mxBean = java.lang.management.ManagementFactory.getThreadMXBean();
-    if (mxBean instanceof com.sun.management.ThreadMXBean candidate
-        && candidate.isThreadAllocatedMemoryEnabled()) {
+    ThreadMXBean sunBean = null;
+    final var mxBean = ManagementFactory.getThreadMXBean();
+    if (mxBean instanceof ThreadMXBean candidate && candidate.isThreadAllocatedMemoryEnabled()) {
       sunBean = candidate;
     }
 

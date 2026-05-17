@@ -16,11 +16,13 @@ import com.trading.engine.projections.SymbolPacker;
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import io.aeron.Publication;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.ResourceLeakDetector;
 import java.util.List;
 import java.util.Map;
@@ -218,7 +220,7 @@ final class MarketDataSnapshotRequestAdmissionTest {
         dedupAfter > dedupBefore, "websocket.marketdata.snapshot.deduped counter must increment");
     // No error frame on dedup path — dedup is silent from the client's perspective.
     final var noFrame = channel.readOutbound();
-    if (noFrame != null && noFrame instanceof io.netty.util.ReferenceCounted rc) {
+    if (noFrame != null && noFrame instanceof ReferenceCounted rc) {
       rc.release();
     }
   }
@@ -314,7 +316,7 @@ final class MarketDataSnapshotRequestAdmissionTest {
     return new MarketDataAdmissionPipeline(entitlementMap, publisher, metrics, clock);
   }
 
-  private static io.netty.buffer.ByteBuf buildFrame(final String symbol) {
+  private static ByteBuf buildFrame(final String symbol) {
     final var buf = new ExpandableArrayBuffer(VALID_FRAME_SIZE);
     final var headerEncoder = new MessageHeaderEncoder();
     final var encoder = new MarketDataSnapshotRequestEncoder();

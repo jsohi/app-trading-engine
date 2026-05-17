@@ -32,6 +32,7 @@ import com.trading.refdata.account.YamlAccountLoader;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Locale;
@@ -333,9 +334,9 @@ public final class WebSocketLauncher {
    * same rule shape used for {@code accounts.yaml} so launcher operators can override consistently.
    *
    * @return populated immutable {@link SymbolEntitlementMap}
-   * @throws java.io.IOException if the YAML file is missing or unreadable
+   * @throws IOException if the YAML file is missing or unreadable
    */
-  private static SymbolEntitlementMap loadSymbolEntitlementMap() throws java.io.IOException {
+  private static SymbolEntitlementMap loadSymbolEntitlementMap() throws IOException {
     final var path = Path.of(System.getProperty("symbols.file", "symbols.yaml"));
     return new SymbolEntitlementYamlLoader(path).load();
   }
