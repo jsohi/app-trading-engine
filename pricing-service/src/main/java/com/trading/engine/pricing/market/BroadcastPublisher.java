@@ -6,21 +6,34 @@ import org.agrona.DirectBuffer;
 
 /**
  * Narrow seam over the Aeron {@link ExclusivePublication} surface that {@link MarketDataPublisher}
- * consumes. Mirrors the established {@code com.trading.engine.orchestrator.Publisher} pattern in
- * this codebase: Aeron's {@code ExclusivePublication} is {@code final} and cannot be subclassed, so
- * isolating the trio of methods the publisher actually uses behind an interface lets unit tests
- * inject a fake (or a mock) without spinning up a real Aeron Media Driver. Three-method surface —
- * intentionally small.
+ * consumes. The rationale follows the established {@code com.trading.engine.orchestrator.Publisher}
+ * pattern in this codebase: Aeron's {@code ExclusivePublication} is {@code final} and cannot be
+ * subclassed, so isolating the methods the publisher actually uses behind an interface lets unit
+ * tests inject a fake (or a mock) without spinning up a real Aeron Media Driver.
+ *
+ * <p><b>Three-method surface — deliberate deviation from the canonical SAM publisher pattern.</b>
+ * CLAUDE.md documents the "single-method functional interface" idiom (e.g. {@code
+ * com.trading.engine.orchestrator.Publisher} which is a single {@code publish(...)} method bound by
+ * a method reference). {@code BroadcastPublisher} carries THREE methods because the publisher's
+ * five-case Aeron return-code handling needs {@code position()} and {@code termBufferLength()} for
+ * the forensic-rich {@link io.aeron.Publication#MAX_POSITION_EXCEEDED} log line (per CLAUDE.md
+ * "design rationale" rule — non-obvious decisions document their trade-off). Consequently the
+ * launcher binds this interface via an anonymous inner class rather than a method reference; the
+ * anonymous class is allocated once at startup (cold path) and lives for the agent's lifetime, so
+ * the allocation-profile is equivalent to a SAM. See {@code docs/publishers.md} for the canonical
+ * SAM pattern; {@code BroadcastPublisher} is the documented exception where
+ * forensic-context-carrying motivated the three-method design.
  *
  * <p><b>Threading model.</b> Implementations are invoked on the pricing-service agent thread only.
  * Concurrent invocation is undefined behaviour; the {@link MarketDataPublisher}'s single-writer
  * runtime guard catches the violation if a future refactor introduces cross-thread invocation.
  *
  * <p><b>Allocation.</b> Zero allocation per call after JIT warmup, conditional on the
- * implementation being bound at construction time. The recommended idiom is to bind the production
- * implementation as method references against a {@code final} field ({@code publication::offer},
- * {@code publication::position}, {@code publication::termBufferLength}) captured once at
- * construction; this lets the JVM inline through the SAM and never re-allocate.
+ * implementation being bound at construction time. Because this is a 3-method interface (not a
+ * SAM), the production binding in {@code PricingServiceLauncher} uses an anonymous inner class
+ * created ONCE at launcher startup; subsequent calls invoke INVOKEVIRTUAL on the single
+ * pre-constructed instance — identical allocation profile to a method-reference SAM. Inline lambda
+ * / anonymous-class expressions inside hot loops are NOT zero-allocation.
  *
  * <p><b>Design rationale.</b> The plan's Commit-4 spec asserts five Aeron offer return codes
  * (BACK_PRESSURED / NOT_CONNECTED / ADMIN_ACTION / MAX_POSITION_EXCEEDED / CLOSED) plus

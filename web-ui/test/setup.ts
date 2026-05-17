@@ -72,10 +72,11 @@ if (IS_JSDOM_ENV) {
   });
 }
 
-// Single afterEach with the four resets in load-bearing order — see file
-// header. Collapsed from four separate `afterEach` registrations so the
+// Single afterEach with the five resets in load-bearing order — see file
+// header. Collapsed from separate `afterEach` registrations so the
 // ordering invariant is in ONE place and can't be reordered by a future
-// import-sort that splits them across files.
+// import-sort that splits them across files. (Five resets as of Phase 3
+// Commit 6 — feed-state-stream joined the four pre-existing singletons.)
 afterEach(() => {
   // (1) Unmount React tree first — blotter useEffect subscriptions tear
   //     down before the module singletons go away.
