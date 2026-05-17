@@ -20,6 +20,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -77,13 +78,10 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final CommandDispatcher commandDispatcher;
 
   /**
-   * Per-channel admission pipeline for {@code MarketDataSnapshotRequest} (template 56). Constructed
-   * lazily on the first inbound template-56 frame because the dispatcher's legacy constructors do
-   * not require the pipeline collaborators (entitlement map / snapshot publisher) — keeps
-   * pre-Phase-3 unit tests passing while production paths install the pipeline via {@link
-   * #installMarketDataAdmissionPipeline(MarketDataAdmissionPipeline)}.
+   * Per-channel admission pipeline for {@code MarketDataSnapshotRequest} (template 56). Required —
+   * supplied via the canonical constructor.
    */
-  private MarketDataAdmissionPipeline marketDataAdmissionPipeline;
+  private final MarketDataAdmissionPipeline marketDataAdmissionPipeline;
 
   // --- Reusable SBE decoders (per-channel, re-wrapped per channelRead) ---
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -124,51 +122,19 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       final WebSocketMetrics metrics,
       final NanoClock nanoClock,
       final Executor validationExecutor,
-      final CommandDispatcher commandDispatcher) {
-    this.sessionManager = sessionManager;
-    this.jwtValidator = jwtValidator;
-    this.jtiCache = jtiCache;
-    this.entitlementService = entitlementService;
-    this.config = config;
-    this.metrics = metrics;
-    this.nanoClock = nanoClock;
-    this.validationExecutor = validationExecutor;
-    this.commandDispatcher = commandDispatcher;
-  }
-
-  /**
-   * Backwards-compatible constructor that omits the {@link CommandDispatcher} (legacy tests). When
-   * a command templateId arrives via this dispatcher, it will be rejected with {@code
-   * WebSocketError(CommandRejected)} since no dispatcher is wired.
-   *
-   * @param sessionManager session manager
-   * @param jwtValidator JWT validator
-   * @param jtiCache JTI revocation cache
-   * @param entitlementService entitlement validator
-   * @param config server config
-   * @param metrics metrics instance
-   * @param nanoClock monotonic clock
-   * @param validationExecutor JWT validation executor
-   */
-  public WebSocketFrameDispatcher(
-      final WebSocketSessionManager sessionManager,
-      final JwtValidator jwtValidator,
-      final JtiRevocationCache jtiCache,
-      final UserEntitlementService entitlementService,
-      final WebSocketServerConfig config,
-      final WebSocketMetrics metrics,
-      final NanoClock nanoClock,
-      final Executor validationExecutor) {
-    this(
-        sessionManager,
-        jwtValidator,
-        jtiCache,
-        entitlementService,
-        config,
-        metrics,
-        nanoClock,
-        validationExecutor,
-        null);
+      final CommandDispatcher commandDispatcher,
+      final MarketDataAdmissionPipeline marketDataAdmissionPipeline) {
+    this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
+    this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
+    this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
+    this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
+    this.config = Objects.requireNonNull(config, "config");
+    this.metrics = Objects.requireNonNull(metrics, "metrics");
+    this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+    this.validationExecutor = Objects.requireNonNull(validationExecutor, "validationExecutor");
+    this.commandDispatcher = Objects.requireNonNull(commandDispatcher, "commandDispatcher");
+    this.marketDataAdmissionPipeline =
+        Objects.requireNonNull(marketDataAdmissionPipeline, "marketDataAdmissionPipeline");
   }
 
   @Override
@@ -223,23 +189,11 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
 
       boolean known = true;
       switch (templateId) {
-        case 1, 4, 6 -> {
-          if (commandDispatcher == null) {
-            sendError(ctx, WebSocketErrorCode.CommandRejected);
-          } else {
+        case 1, 4, 6 ->
             commandDispatcher.dispatch(ctx, session, content, templateId, blockLength, version);
-          }
-        }
-        case 56 -> {
-          if (marketDataAdmissionPipeline == null) {
-            // Production pipelines install the admission pipeline at construction; reject if not
-            // wired so a tester cannot accidentally route stream-205 traffic into a no-op.
-            sendError(ctx, WebSocketErrorCode.CommandRejected);
-          } else {
+        case 56 ->
             // Outcome controlled inside the pipeline; MALFORMED_CLOSE already closed the channel.
             marketDataAdmissionPipeline.admit(ctx, session, content, blockLength);
-          }
-        }
         case 60 -> handleReAuth(ctx, session, blockLength, version);
         case 62 -> handleSubscribe(ctx, session, blockLength, version);
         case 63 -> handleUnsubscribe(session, blockLength, version);
@@ -642,21 +596,6 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
         nettyBuf.release();
       }
     }
-  }
-
-  /**
-   * Install the per-channel {@link MarketDataAdmissionPipeline} on this dispatcher. Called by the
-   * launcher / pipeline-assembly code at construction; tests that exercise template-56 routing
-   * inject a fake pipeline via this method. Must be called before the first inbound template-56
-   * frame.
-   *
-   * @param pipeline the per-channel admission pipeline (must not be {@code null})
-   */
-  public void installMarketDataAdmissionPipeline(final MarketDataAdmissionPipeline pipeline) {
-    if (pipeline == null) {
-      throw new NullPointerException("pipeline must not be null");
-    }
-    this.marketDataAdmissionPipeline = pipeline;
   }
 
   @Override

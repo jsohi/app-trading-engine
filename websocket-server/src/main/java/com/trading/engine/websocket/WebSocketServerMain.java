@@ -1,5 +1,6 @@
 package com.trading.engine.websocket;
 
+import com.trading.engine.projections.account.AccountReadModel;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -19,6 +20,7 @@ import java.util.Objects;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.apache.logging.log4j.LogManager;
@@ -89,104 +91,23 @@ public final class WebSocketServerMain implements AutoCloseable {
    */
   private final SnapshotRequestPublisher snapshotRequestPublisher;
 
+  /**
+   * Phase 3 Commit B — account-code → {@link AccountReadModel} lookup, threaded to {@link
+   * JwtAuthHandler} so the {@code WebSocketAuthAck} (template 61) can carry per-account {@code
+   * symbolPreferences} + {@code panelLayout}. Sourced from the same launcher YAML pipeline that
+   * feeds {@link UserEntitlementService}.
+   */
+  private final Function<String, AccountReadModel> accountLookup;
+
   private final AtomicInteger pendingAuthCount = new AtomicInteger(0);
   private CommandDispatcher commandDispatcher;
   private Channel serverChannel;
   private TransportDetector.Result transport;
 
   /**
-   * Create the WebSocket server (not yet started). Used by tests that don't exercise the
-   * browser→cluster command path; commandQueue/ackQueue/commandEntryPool default to internal empty
-   * wiring and the dispatcher is constructed but no commands ever reach the cluster.
-   *
-   * @param config server configuration
-   * @param queue the egress queue (shared with AeronEgressThread)
-   * @param egressListener the egress listener
-   * @param sessionManager the session manager
-   * @param metrics metrics instance
-   * @param jwtValidator JWT validator
-   * @param jtiCache JTI revocation cache
-   * @param entitlementService account entitlement validator
-   * @param authFailureTracker per-IP auth failure tracker
-   */
-  public WebSocketServerMain(
-      final WebSocketServerConfig config,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
-      final WebSocketEgressListener egressListener,
-      final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics,
-      final JwtValidator jwtValidator,
-      final JtiRevocationCache jtiCache,
-      final UserEntitlementService entitlementService,
-      final AuthFailureTracker authFailureTracker) {
-    this(
-        config,
-        queue,
-        new ManyToOneConcurrentArrayQueue<>(config.commandQueueCapacity()),
-        new ManyToOneConcurrentArrayQueue<>(config.commandAckQueueCapacity()),
-        new CommandEntryPool(config.commandQueueCapacity(), config.replayBufferFrameSize()),
-        egressListener,
-        sessionManager,
-        metrics,
-        jwtValidator,
-        jtiCache,
-        entitlementService,
-        authFailureTracker,
-        null,
-        null);
-  }
-
-  /**
-   * Create the WebSocket server with full command/ack wiring.
-   *
-   * @param config server configuration
-   * @param queue the egress queue (shared with AeronEgressThread)
-   * @param commandQueue the browser→cluster command queue (shared with AeronEgressThread)
-   * @param ackQueue the cluster→browser ack back-channel queue (shared with AeronEgressThread)
-   * @param commandEntryPool the dedicated pool of EgressEntry objects for the command path
-   * @param egressListener the egress listener (for entry pool returns)
-   * @param sessionManager the session manager
-   * @param metrics metrics instance
-   * @param jwtValidator JWT RS256 validator with JWKS caching (closed on server shutdown)
-   * @param jtiCache JTI revocation cache for replay prevention
-   * @param entitlementService account entitlement validator
-   * @param authFailureTracker per-IP auth failure rate limiter
-   */
-  public WebSocketServerMain(
-      final WebSocketServerConfig config,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
-      final CommandEntryPool commandEntryPool,
-      final WebSocketEgressListener egressListener,
-      final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics,
-      final JwtValidator jwtValidator,
-      final JtiRevocationCache jtiCache,
-      final UserEntitlementService entitlementService,
-      final AuthFailureTracker authFailureTracker) {
-    this(
-        config,
-        queue,
-        commandQueue,
-        ackQueue,
-        commandEntryPool,
-        egressListener,
-        sessionManager,
-        metrics,
-        jwtValidator,
-        jtiCache,
-        entitlementService,
-        authFailureTracker,
-        null,
-        null);
-  }
-
-  /**
-   * Full Phase 3 Commit A constructor adding the symbol-entitlement map and snapshot-request
-   * publisher SAM seam. Both nullable for legacy / test wirings; when both are non-null the
-   * per-channel {@link MarketDataAdmissionPipeline} is constructed at auth time and template-56
-   * snapshot requests admit through the 4-stage fail-closed pipeline.
+   * Canonical Phase 3 server constructor. All collaborators required. Per-channel {@link
+   * MarketDataAdmissionPipeline} is constructed at auth time and template-56 snapshot requests
+   * admit through the 4-stage fail-closed pipeline.
    *
    * @param config server configuration
    * @param queue the egress queue (shared with AeronEgressThread)
@@ -200,8 +121,10 @@ public final class WebSocketServerMain implements AutoCloseable {
    * @param jtiCache JTI cache
    * @param entitlementService entitlement validator
    * @param authFailureTracker auth failure tracker
-   * @param symbolEntitlementMap launcher-loaded symbol → permitted-accounts map (may be null)
-   * @param snapshotRequestPublisher SAM seam over stream-205 Aeron publication (may be null)
+   * @param symbolEntitlementMap launcher-loaded symbol → permitted-accounts map
+   * @param snapshotRequestPublisher SAM seam over stream-205 Aeron publication
+   * @param accountLookup account-code → {@link AccountReadModel} lookup, threaded into {@link
+   *     JwtAuthHandler} for per-account AuthAck (template 61) UI preference groups
    */
   public WebSocketServerMain(
       final WebSocketServerConfig config,
@@ -217,7 +140,8 @@ public final class WebSocketServerMain implements AutoCloseable {
       final UserEntitlementService entitlementService,
       final AuthFailureTracker authFailureTracker,
       final SymbolEntitlementMap symbolEntitlementMap,
-      final SnapshotRequestPublisher snapshotRequestPublisher) {
+      final SnapshotRequestPublisher snapshotRequestPublisher,
+      final Function<String, AccountReadModel> accountLookup) {
     this.config = Objects.requireNonNull(config, "config");
     this.queue = Objects.requireNonNull(queue, "queue");
     this.commandQueue = Objects.requireNonNull(commandQueue, "commandQueue");
@@ -230,8 +154,11 @@ public final class WebSocketServerMain implements AutoCloseable {
     this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
     this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
     this.authFailureTracker = Objects.requireNonNull(authFailureTracker, "authFailureTracker");
-    this.symbolEntitlementMap = symbolEntitlementMap;
-    this.snapshotRequestPublisher = snapshotRequestPublisher;
+    this.symbolEntitlementMap =
+        Objects.requireNonNull(symbolEntitlementMap, "symbolEntitlementMap");
+    this.snapshotRequestPublisher =
+        Objects.requireNonNull(snapshotRequestPublisher, "snapshotRequestPublisher");
+    this.accountLookup = Objects.requireNonNull(accountLookup, "accountLookup");
   }
 
   /**
@@ -331,7 +258,8 @@ public final class WebSocketServerMain implements AutoCloseable {
                         commandDispatcher,
                         byteCounter,
                         symbolEntitlementMap,
-                        snapshotRequestPublisher));
+                        snapshotRequestPublisher,
+                        accountLookup));
               }
             });
 

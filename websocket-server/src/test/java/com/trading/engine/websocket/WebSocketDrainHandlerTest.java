@@ -42,6 +42,8 @@ final class WebSocketDrainHandlerTest {
 
   private ManyToOneConcurrentArrayQueue<EgressEntry> queue;
   private ManyToOneConcurrentArrayQueue<EgressEntry> returnQueue;
+  private ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue;
+  private CommandEntryPool commandEntryPool;
   private WebSocketMetrics metrics;
   private WebSocketEgressListener egressListener;
   private WebSocketSessionManager sessionManager;
@@ -60,6 +62,8 @@ final class WebSocketDrainHandlerTest {
   void setUp() {
     queue = new ManyToOneConcurrentArrayQueue<>(CAPACITY);
     returnQueue = new ManyToOneConcurrentArrayQueue<>(CAPACITY);
+    ackQueue = new ManyToOneConcurrentArrayQueue<>(CAPACITY);
+    commandEntryPool = new CommandEntryPool(CAPACITY, MAX_MESSAGE_SIZE);
     metrics = WebSocketMetrics.createWithDefaults();
     egressListener =
         new WebSocketEgressListener(queue, returnQueue, metrics, CAPACITY, MAX_MESSAGE_SIZE);
@@ -70,7 +74,13 @@ final class WebSocketDrainHandlerTest {
     sessionManager = new WebSocketSessionManager(config, metrics, clock);
     drainHandler =
         new WebSocketDrainHandler(
-            queue, egressListener, sessionManager, metrics, SystemNanoClock.INSTANCE);
+            queue,
+            ackQueue,
+            commandEntryPool,
+            egressListener,
+            sessionManager,
+            metrics,
+            SystemNanoClock.INSTANCE);
   }
 
   @AfterEach
@@ -95,7 +105,7 @@ final class WebSocketDrainHandlerTest {
     // Init subscription filter with a broad match so drain handler doesn't skip this session.
     // SubscriptionFilter.matches() returns false if no subscriptions — add a wildcard-like sub
     // that matches the CommandAck templateId used in most tests (bit 0 = orders).
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, metrics);
     // Subscribe with all event types for both the "any" sentinel and "EURUSD" (used in tests).
     // packedSymbol=0L covers no-symbol templates via globalEventBitMask.
     // "EURUSD" covers PriceResponse (template 51) tests.
@@ -236,7 +246,13 @@ final class WebSocketDrainHandlerTest {
         NullPointerException.class,
         () ->
             new WebSocketDrainHandler(
-                null, egressListener, sessionManager, metrics, SystemNanoClock.INSTANCE),
+                null,
+                ackQueue,
+                commandEntryPool,
+                egressListener,
+                sessionManager,
+                metrics,
+                SystemNanoClock.INSTANCE),
         "Constructor with null queue must throw NullPointerException");
   }
 }

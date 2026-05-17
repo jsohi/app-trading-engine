@@ -34,6 +34,20 @@ export interface StatsSnapshot {
    * STATS pipeline (APP-245 OTel bridge).
    */
   marketdataMisroutedRfq: bigint;
+  /**
+   * Phase 3 Commit B — cumulative market-data gaps attributed to the publisher (drops the
+   * publisher's conflation absorbed BEFORE publish). Discriminated from network drops via the
+   * `lastPublishedSeq` field on `MarketDataHeartbeat` (template 55) per CME MDP 3.0 §Gap
+   * Detection. Surfaced for `marketdata.gaps{reason="publisher-conflated"}` Prometheus series.
+   */
+  marketdataGapsPublisherConflated: bigint;
+  /**
+   * Phase 3 Commit B — cumulative market-data gaps attributed to network / transport loss
+   * (browser-observed gap MINUS publisher-conflated drops). Surfaced for
+   * `marketdata.gaps{reason="network"}` Prometheus series. A spike here indicates an Aeron /
+   * Netty / WS path issue, NOT a publisher capacity problem.
+   */
+  marketdataGapsNetwork: bigint;
   degradedTimingMode: boolean;
 }
 
@@ -47,6 +61,8 @@ export class Stats {
   private snapshotBytes = 0n;
   private bufferedAmountPeak = 0n;
   private marketdataMisroutedRfq = 0n;
+  private marketdataGapsPublisherConflated = 0n;
+  private marketdataGapsNetwork = 0n;
   private degradedTimingMode = false;
 
   incFramesDecoded(): void {
@@ -83,6 +99,21 @@ export class Stats {
   incMarketdataMisroutedRfq(): void {
     this.marketdataMisroutedRfq += 1n;
   }
+  /**
+   * Phase 3 Commit B — record `n` market-data gaps attributed to publisher-side conflation
+   * (publisher dropped before publish). Called by {@code gapDetector.ts} when the heartbeat-
+   * derived `lastPublishedSeq` attribution math classifies the gap as publisher-conflated.
+   */
+  addGapsPublisherConflated(n: number): void {
+    if (n > 0) this.marketdataGapsPublisherConflated += BigInt(n);
+  }
+  /**
+   * Phase 3 Commit B — record `n` market-data gaps attributed to network / transport loss.
+   * Called by {@code gapDetector.ts}.
+   */
+  addGapsNetwork(n: number): void {
+    if (n > 0) this.marketdataGapsNetwork += BigInt(n);
+  }
   setDegradedTimingMode(b: boolean): void {
     this.degradedTimingMode = b;
   }
@@ -98,6 +129,8 @@ export class Stats {
       snapshotBytes: this.snapshotBytes,
       bufferedAmountPeak: this.bufferedAmountPeak,
       marketdataMisroutedRfq: this.marketdataMisroutedRfq,
+      marketdataGapsPublisherConflated: this.marketdataGapsPublisherConflated,
+      marketdataGapsNetwork: this.marketdataGapsNetwork,
       degradedTimingMode: this.degradedTimingMode,
     };
   }

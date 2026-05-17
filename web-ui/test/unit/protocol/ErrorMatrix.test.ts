@@ -84,7 +84,12 @@ const EXPECTED: Record<number, ExpectedBehaviour> = {
 //                            transport layer outside applyAppErrorCode. SURFACE_ONLY for the drift
 //                            gate so a future server-side change that DOES emit this code is
 //                            forced through the mapping conversation.
-const SURFACE_ONLY_CODES = new Set([5, 9, 12, 13, 14, 15, 16, 17]);
+// 18 (AuthExpiringSoon)    — Phase 3 Commit B: triggers in-session reauth via
+//                            AuthClient.handleAuthExpiringSoon; session preserved. Routed in
+//                            worker.ts onWebSocketError BEFORE the applyAppErrorCode call so an
+//                            expiring token never advances the freeze counter (it's an
+//                            informational warning, not an attacker signal).
+const SURFACE_ONLY_CODES = new Set([5, 9, 12, 13, 14, 15, 16, 17, 18]);
 
 // ─── Individual named tests ───────────────────────────────────────────────────
 

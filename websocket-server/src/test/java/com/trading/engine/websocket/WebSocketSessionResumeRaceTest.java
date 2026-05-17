@@ -106,7 +106,7 @@ final class WebSocketSessionResumeRaceTest {
     // an empty filter. The ack path calls writeReliableToSession which writes unconditionally
     // (no isWritable guard per Gemini R2 G-3 fix); the filter check is only on the
     // writeReliableToAllChannels broadcast path.
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, metrics);
     session.subscriptionFilter().addSubscription(0L, 0x1F);
     session.entitledAccounts(Set.of("TEST"));
     session.initReliableStreamTracker(16, MAX_MESSAGE_SIZE, metrics);

@@ -30,12 +30,7 @@ import { type TokenProvider } from "@/main-thread/tokenProvider";
  * in `.env.local` or via shell). Throws in PROD; the four-layer guard
  * above means a misimport never lands in a prod bundle.
  */
-export const devTokenProvider: TokenProvider = () => {
-  if (import.meta.env.PROD) {
-    throw new Error(
-      "devTokenProvider invoked in production build — APP-160 must own the prod token-issuer iframe path",
-    );
-  }
+function readDevToken(): string {
   // Per-context override (plan §15): the multi-issuer Playwright spec calls
   // `context.addInitScript(t => window.__E2E_JWT_OVERRIDE__ = t, jwt)` BEFORE
   // page navigation, so each browser context can authenticate as a different
@@ -48,12 +43,47 @@ export const devTokenProvider: TokenProvider = () => {
   const token: unknown =
     typeof override === "string" && override !== "" ? override : import.meta.env.VITE_DEV_JWT;
   if (typeof token !== "string" || token === "") {
-    return Promise.reject(
-      new Error("devTokenProvider: neither window.__E2E_JWT_OVERRIDE__ nor VITE_DEV_JWT is set"),
+    throw new Error(
+      "devTokenProvider: neither window.__E2E_JWT_OVERRIDE__ nor VITE_DEV_JWT is set",
     );
+  }
+  return token;
+}
+
+export const devTokenProvider: TokenProvider = () => {
+  if (import.meta.env.PROD) {
+    throw new Error(
+      "devTokenProvider invoked in production build — APP-160 must own the prod token-issuer iframe path",
+    );
+  }
+  let token: string;
+  try {
+    token = readDevToken();
+  } catch (err) {
+    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
   }
   const channel = new MessageChannel();
   channel.port1.postMessage({ type: "TOKEN", value: token });
-  channel.port1.close();
+  // Phase 3 Commit B: keep port1 open so the worker can request a fresh
+  // token on `WebSocketError(AuthExpiringSoon)`. The dev provider re-reads
+  // the same env value — production issuers will round-trip to the auth
+  // iframe instead. The handler runs on the main thread (port1 was never
+  // transferred); the worker side holds port2.
+  channel.port1.onmessage = (ev: MessageEvent<unknown>): void => {
+    const data = ev.data;
+    if (
+      data !== null &&
+      typeof data === "object" &&
+      (data as { type?: unknown }).type === "REAUTH_REQUEST"
+    ) {
+      try {
+        const fresh = readDevToken();
+        channel.port1.postMessage({ type: "TOKEN", value: fresh });
+      } catch {
+        // No token available — silently drop; worker side times out via
+        // TOKEN_ACQUIRE_TIMEOUT_MS and surfaces AUTH error.
+      }
+    }
+  };
   return Promise.resolve(channel.port2);
 };

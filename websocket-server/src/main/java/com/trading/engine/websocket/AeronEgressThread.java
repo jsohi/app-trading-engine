@@ -125,84 +125,28 @@ public final class AeronEgressThread implements AutoCloseable {
   private volatile boolean started;
 
   /**
-   * Backwards-compatible constructor — no command/ack wiring and no market-data ingest. Used by
-   * legacy tests that don't exercise the browser→cluster path or the Phase 3 market-data path.
+   * Construct the Phase 3 egress thread. ALL collaborators required — there is no legacy
+   * constructor. Tests that don't exercise a particular path must wire a stub for it (e.g. a no-op
+   * {@link MarketDataPoller} that returns 0 fragments).
    *
    * @param clusterClient the cluster client agent
    * @param queue the egress queue
-   * @param metrics metrics instance
-   * @param queueCapacity queue capacity (for logging)
-   */
-  public AeronEgressThread(
-      final WebSocketClusterClient clusterClient,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
-      final WebSocketMetrics metrics,
-      final int queueCapacity) {
-    this(clusterClient, queue, null, null, null, metrics, queueCapacity);
-  }
-
-  /**
-   * Create the egress thread (not yet started) with command/ack wiring (no market-data ingest).
-   *
-   * @param clusterClient the cluster client agent to run on this thread
-   * @param queue the egress queue (cluster→browser) to monitor for backpressure
-   * @param commandQueue the browser→cluster command queue to drain (may be null to disable)
-   * @param ackQueue the cluster→browser ack back-channel queue (may be null to disable)
-   * @param commandEntryPool the pool that owns command entries; releases happen here (may be null
-   *     only if commandQueue/ackQueue are null)
-   * @param metrics metrics instance for queue depth and poll latency
-   * @param queueCapacity the maximum queue capacity (for backpressure threshold calculation)
-   */
-  public AeronEgressThread(
-      final WebSocketClusterClient clusterClient,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue,
-      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
-      final CommandEntryPool commandEntryPool,
-      final WebSocketMetrics metrics,
-      final int queueCapacity) {
-    this(
-        clusterClient,
-        queue,
-        commandQueue,
-        ackQueue,
-        commandEntryPool,
-        metrics,
-        queueCapacity,
-        null,
-        null,
-        null,
-        null,
-        SystemNanoClock.INSTANCE);
-  }
-
-  /**
-   * Full constructor with Phase 3 market-data ingest wiring. Any market-data parameter may be left
-   * {@code null} to disable that path; callers must either supply all four ({@code
-   * marketDataPoller} + {@code marketDataIngressHandler} + {@code livenessTracker} + {@code
-   * egressListener}) or none.
-   *
-   * @param clusterClient the cluster client agent
-   * @param queue the egress queue
-   * @param commandQueue the browser→cluster command queue (may be null)
-   * @param ackQueue the ack back-channel queue (may be null)
-   * @param commandEntryPool command entry pool (may be null when commandQueue/ackQueue are null)
+   * @param commandQueue the browser→cluster command queue — required
+   * @param ackQueue the ack back-channel queue — required
+   * @param commandEntryPool command entry pool — required
    * @param metrics metrics instance
    * @param queueCapacity the egress queue capacity
    * @param marketDataPoller SAM seam over the market-data {@code Subscription.poll(...)} (typically
-   *     stream 204) — see {@link MarketDataPoller} for the binding idiom; may be {@code null} to
-   *     disable the market-data path
-   * @param marketDataIngressHandler fragment handler for the market-data subscription; required if
-   *     {@code marketDataPoller} is non-null
+   *     stream 204) — see {@link MarketDataPoller} for the binding idiom; required
+   * @param marketDataIngressHandler fragment handler for the market-data subscription; required
    * @param livenessTracker {@link MarketDataSubscriptionLivenessTracker} owning the LIVE/QUIET/
-   *     STALE state machine; required if {@code marketDataPoller} is non-null. The tracker's
-   *     transition callback (bound at tracker construction time, NOT here) must encode + enqueue
-   *     the resulting {@code MarketDataFeedStateChange} via the wiring supplied by the launcher
+   *     STALE state machine; required. The tracker's transition callback (bound at tracker
+   *     construction time, NOT here) must encode + enqueue the resulting {@code
+   *     MarketDataFeedStateChange} via the wiring supplied by the launcher
    * @param egressListener the egress listener — used to borrow a pool entry when synthesising
-   *     template-57 feed-state-change frames inside this composite. Required if {@code
-   *     livenessTracker} is non-null
+   *     template-57 feed-state-change frames inside this composite; required
    * @param nanoClock monotonic clock used to stamp tracker {@code tick()} and feed-state-change
-   *     {@code serverNanos}; defaults to {@link SystemNanoClock#INSTANCE} in tests
+   *     {@code serverNanos}; typically {@link SystemNanoClock#INSTANCE}
    */
   public AeronEgressThread(
       final WebSocketClusterClient clusterClient,
@@ -219,18 +163,15 @@ public final class AeronEgressThread implements AutoCloseable {
       final NanoClock nanoClock) {
     Objects.requireNonNull(clusterClient, "clusterClient");
     this.queue = Objects.requireNonNull(queue, "queue");
+    Objects.requireNonNull(commandQueue, "commandQueue");
+    Objects.requireNonNull(ackQueue, "ackQueue");
+    Objects.requireNonNull(commandEntryPool, "commandEntryPool");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.queueCapacity = queueCapacity;
-
-    final boolean marketDataWired = marketDataPoller != null;
-    if (marketDataWired) {
-      Objects.requireNonNull(
-          marketDataIngressHandler, "marketDataIngressHandler required when subscription wired");
-      Objects.requireNonNull(
-          livenessTracker, "livenessTracker required when market-data subscription wired");
-      Objects.requireNonNull(
-          egressListener, "egressListener required when market-data subscription wired");
-    }
+    Objects.requireNonNull(marketDataPoller, "marketDataPoller");
+    Objects.requireNonNull(marketDataIngressHandler, "marketDataIngressHandler");
+    Objects.requireNonNull(livenessTracker, "livenessTracker");
+    Objects.requireNonNull(egressListener, "egressListener");
     Objects.requireNonNull(nanoClock, "nanoClock");
 
     final Agent pollingAgent =
@@ -243,12 +184,10 @@ public final class AeronEgressThread implements AutoCloseable {
             nanoClock);
 
     final Agent compositeAgent;
-    if (commandQueue != null && ackQueue != null && commandEntryPool != null) {
+    {
       final var pump =
           new CommandPump(clusterClient, commandQueue, ackQueue, commandEntryPool, metrics);
       compositeAgent = new CompositeAgent(pollingAgent, pump);
-    } else {
-      compositeAgent = pollingAgent;
     }
     // BackoffIdleStrategy: spin → yield → park. Matches the gateway pattern for low-latency
     // egress polling. Defaults: 1 spin, 1 yield, 1us min park, 1ms max park.

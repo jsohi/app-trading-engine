@@ -56,12 +56,20 @@ function makePrice(rng: () => number, symbol: string, base: bigint): PriceUpdate
   const jitter = BigInt(rng() % 50_000) - 25_000n;
   const bid = base + jitter;
   const ask = bid + 200_000n; // 2.0 pip spread
+  const serverNanos = BigInt(Date.now()) * 1_000_000n;
   return {
     type: "price",
     symbol,
     bid,
     ask,
-    serverNanos: BigInt(Date.now()) * 1_000_000n,
+    // Phase 3 Commit B additions — mock stream is dev/test only; pin to zero defaults so
+    // downstream consumers see well-formed PriceUpdate payloads.
+    bidSize: 1_000_000_000_000n,
+    askSize: 1_000_000_000_000n,
+    ingressNanos: serverNanos - 5_000n, // ~5 µs synthetic publisher-stack latency
+    serverNanos,
+    publisherStackLatencyNanos: 5_000n,
+    endToEndLatencyNanos: 0n, // mock stream is in-process; no network round-trip
   };
 }
 

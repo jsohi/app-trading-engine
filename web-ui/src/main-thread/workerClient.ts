@@ -71,6 +71,16 @@ export interface WorkerClientStreams {
    * matching `correlationId` against its slot table.
    */
   readonly commandAcks$: Subject<CommandAckEnvelope>;
+  /**
+   * Phase 3 Commit B — per-account panel-to-slot mapping decoded from the
+   * server's {@code WebSocketAuthAck} (template 61) {@code panelLayout}
+   * group. Late subscribers always see the most-recent layout via
+   * {@link BehaviorSubject}. Starts as an empty array — App.tsx falls back
+   * to the panel registry's default slots when there are no overrides.
+   */
+  readonly panelLayout$: BehaviorSubject<
+    ReadonlyArray<{ readonly panelId: string; readonly slot: string }>
+  >;
 }
 
 export interface WorkerClientOptions {
@@ -92,6 +102,9 @@ export class WorkerClient implements WorkerClientStreams {
   readonly errors$ = new Subject<WorkerErrorMsg>();
   readonly connectionState$ = new BehaviorSubject<ConnectionState>("CONNECTING");
   readonly commandAcks$ = new Subject<CommandAckEnvelope>();
+  readonly panelLayout$ = new BehaviorSubject<
+    ReadonlyArray<{ readonly panelId: string; readonly slot: string }>
+  >([]);
 
   private readonly options: WorkerClientOptions;
   private worker: Worker | null = null;
@@ -306,6 +319,12 @@ export class WorkerClient implements WorkerClientStreams {
             if (m.state === "CONNECTED") {
               this.currentReconnectAttempt = 0;
             }
+          } else if (m.type === "PANEL_LAYOUT") {
+            // Phase 3 Commit B: per-account UI layout from the server,
+            // emitted once at AuthAck. Late subscribers (React panels
+            // mounting after the batch arrived) see the value via the
+            // BehaviorSubject's replay semantics.
+            this.panelLayout$.next(m.panels);
           }
         }
         break;

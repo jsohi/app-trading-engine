@@ -307,6 +307,7 @@
             <validValue name="SnapshotThrottled"      description="Snapshot request rejected by the per-session token-bucket rate limit (Phase 3 Commit A — token NOT consumed on reject)">15</validValue>
             <validValue name="SnapshotBackpressured"  description="Snapshot request rejected because the Aeron offer to stream 205 returned BACK_PRESSURED / NOT_CONNECTED / ADMIN_ACTION (Phase 3 Commit A — token refunded)">16</validValue>
             <validValue name="Malformed"              description="Frame rejected as malformed by the dispatcher admission pipeline (bad SBE header, bad length, bad symbol encoding) — session torn down by RFC 6455 close 1003">17</validValue>
+            <validValue name="AuthExpiringSoon"        description="JWT is within the soft-expiry window — client should reauth in-session via a fresh token (template 60 again) BEFORE the hard expiry forces a SessionExpired close. Session preserved; informational only (Phase 3 Commit B).">18</validValue>
         </enum>
 
         <enum name="CommandAckStatus" encodingType="uint8"

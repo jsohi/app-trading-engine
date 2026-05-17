@@ -143,7 +143,12 @@ describe("WorkerClient", () => {
       symbol: "EURUSD",
       bid: 100_000_000n,
       ask: 101_000_000n,
+      bidSize: 0n,
+      askSize: 0n,
+      ingressNanos: 0n,
       serverNanos: 1_000_000_000n,
+      publisherStackLatencyNanos: 0n,
+      endToEndLatencyNanos: 0n,
     };
 
     const batch: MessageBatchMsg = {

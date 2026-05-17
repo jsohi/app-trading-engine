@@ -39,7 +39,9 @@ final class AccountCommandEncoderTest {
                 "USD",
                 "Active",
                 "OK",
-                3L),
+                3L,
+                List.of(),
+                List.of()),
             new AccountRecord(
                 2L,
                 1L,
@@ -50,7 +52,9 @@ final class AccountCommandEncoderTest {
                 "EUR",
                 "Suspended",
                 "PendingReview",
-                1L));
+                1L,
+                List.of(),
+                List.of()));
 
     final int length = encoder.encodeBatch(records, 0, 2, buffer, 0);
     assertTrue(length > 0);
@@ -96,11 +100,44 @@ final class AccountCommandEncoderTest {
     final var records =
         List.of(
             new AccountRecord(
-                1L, 0L, "A1", "Internal", "First", "Client", "USD", "Active", "OK", 0L),
+                1L,
+                0L,
+                "A1",
+                "Internal",
+                "First",
+                "Client",
+                "USD",
+                "Active",
+                "OK",
+                0L,
+                List.of(),
+                List.of()),
             new AccountRecord(
-                2L, 0L, "A2", "Internal", "Second", "House", "GBP", "Active", "OK", 0L),
+                2L,
+                0L,
+                "A2",
+                "Internal",
+                "Second",
+                "House",
+                "GBP",
+                "Active",
+                "OK",
+                0L,
+                List.of(),
+                List.of()),
             new AccountRecord(
-                3L, 0L, "A3", "Internal", "Third", "MarketMaker", "JPY", "Closed", "Blocked", 0L));
+                3L,
+                0L,
+                "A3",
+                "Internal",
+                "Third",
+                "MarketMaker",
+                "JPY",
+                "Closed",
+                "Blocked",
+                0L,
+                List.of(),
+                List.of()));
 
     final int length = encoder.encodeBatch(records, 1, 3, buffer, 0);
     assertTrue(length > 0);
@@ -128,7 +165,18 @@ final class AccountCommandEncoderTest {
     final var records =
         List.of(
             new AccountRecord(
-                1L, 0L, "BAD", "Internal", "Bad Type", "InvalidType", "USD", "Active", "OK", 0L));
+                1L,
+                0L,
+                "BAD",
+                "Internal",
+                "Bad Type",
+                "InvalidType",
+                "USD",
+                "Active",
+                "OK",
+                0L,
+                List.of(),
+                List.of()));
 
     final var ex =
         assertThrows(
@@ -141,7 +189,18 @@ final class AccountCommandEncoderTest {
     final var records =
         List.of(
             new AccountRecord(
-                1L, 0L, "BAD", "Internal", "Bad Status", "Client", "USD", "BadStatus", "OK", 0L));
+                1L,
+                0L,
+                "BAD",
+                "Internal",
+                "Bad Status",
+                "Client",
+                "USD",
+                "BadStatus",
+                "OK",
+                0L,
+                List.of(),
+                List.of()));
 
     final var ex =
         assertThrows(
@@ -163,7 +222,9 @@ final class AccountCommandEncoderTest {
                 "USD",
                 "Active",
                 "OK",
-                0L));
+                0L,
+                List.of(),
+                List.of()));
 
     final var ex =
         assertThrows(
@@ -185,7 +246,9 @@ final class AccountCommandEncoderTest {
                 "USD",
                 "Active",
                 "BadCompliance",
-                0L));
+                0L,
+                List.of(),
+                List.of()));
 
     final var ex =
         assertThrows(
@@ -217,7 +280,9 @@ final class AccountCommandEncoderTest {
                 "USD",
                 "Active",
                 "OK",
-                0L));
+                0L,
+                List.of(),
+                List.of()));
 
     final int length = encoder.encodeBatch(records, 0, 1, buffer, 0);
 

@@ -29,7 +29,7 @@ import {
   WebSocketSnapshotDecoder,
 } from "@/sbe";
 
-import { type AuthAck } from "@/workers/session/AuthClient";
+import { type AuthAck, type PanelSlot } from "@/workers/session/AuthClient";
 import { type UuidComposite } from "@/workers/session/SessionState";
 
 /**
@@ -172,15 +172,44 @@ export class MessageRouter {
   private dispatchAuthAck(view: DataView): void {
     this.authAckDec.wrap(view, SBE_HEADER_BYTES);
     const session = this.authAckDec.sessionId();
+    const protocolVersion = this.authAckDec.protocolVersion();
+    const maxSubscriptions = this.authAckDec.maxSubscriptions();
+    const serverHeartbeatIntervalMs = this.authAckDec.serverHeartbeatIntervalMs();
+    const clientHeartbeatIntervalMs = this.authAckDec.clientHeartbeatIntervalMs();
+
+    // Phase 3 Commit B: drain symbolPreferences + panelLayout into immutable arrays
+    // BEFORE constructing the AuthAck DTO. SBE group decoders are stateful cursors and
+    // must be iterated in schema order — first symbolPreferences, then panelLayout —
+    // before any subsequent var-data or trailing fixed-block fields would be read.
+    // (No trailing fields exist on template 61 today, but the cursor discipline keeps
+    // the decoder consistent with the SBE contract.)
+    const prefsGroup = this.authAckDec.symbolPreferences();
+    const symbolPreferences: string[] = [];
+    while (prefsGroup.hasNext()) {
+      prefsGroup.next();
+      symbolPreferences.push(prefsGroup.symbol());
+    }
+    const panelsGroup = this.authAckDec.panelLayout();
+    const panelLayout: PanelSlot[] = [];
+    while (panelsGroup.hasNext()) {
+      panelsGroup.next();
+      panelLayout.push({
+        panelId: panelsGroup.panelId(),
+        slot: panelsGroup.slot(),
+      });
+    }
+
     const ack: AuthAck = {
       sessionId: {
         mostSignificantBits: session.msb,
         leastSignificantBits: session.lsb,
       },
-      protocolVersion: this.authAckDec.protocolVersion(),
-      maxSubscriptions: this.authAckDec.maxSubscriptions(),
-      serverHeartbeatIntervalMs: this.authAckDec.serverHeartbeatIntervalMs(),
-      clientHeartbeatIntervalMs: this.authAckDec.clientHeartbeatIntervalMs(),
+      protocolVersion,
+      maxSubscriptions,
+      serverHeartbeatIntervalMs,
+      clientHeartbeatIntervalMs,
+      symbolPreferences,
+      panelLayout,
     };
     this.handlers.onAuthAck(ack);
   }

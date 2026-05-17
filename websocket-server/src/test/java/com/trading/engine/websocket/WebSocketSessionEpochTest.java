@@ -73,7 +73,7 @@ final class WebSocketSessionEpochTest {
    */
   @Test
   void resume_firstCall_returnsOne_andClearsSubscriptionFilter() {
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, WebSocketMetrics.createWithDefaults());
     // Add 3 distinct subscriptions before the resume
     session.subscriptionFilter().addSubscription(0x4555525553440000L, 0x01); // EURUSD  , orders
     session.subscriptionFilter().addSubscription(0x4742505553440000L, 0x02); // GBPUSD  , positions

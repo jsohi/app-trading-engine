@@ -9,6 +9,20 @@ accounts:
     status: "Active"
     complianceStatus: "OK"
     capabilities: 3
+    # Phase 3 Commit B: per-account UI cohort + panel-to-slot mapping
+    # carried in WebSocketAuthAck (template 61). The worker subscribes to
+    # the union of these symbols ∪ DEFAULT_SUBSCRIBE_SYMBOLS; App.tsx
+    # mounts each panel into the requested slot, falling back to the
+    # registry default when unset.
+    symbolPreferences:
+      - "EURUSD"
+      - "GBPUSD"
+      - "USDJPY"
+    panelLayout:
+      - panelId: "order-entry"
+        slot: "right-top"
+      - panelId: "positions"
+        slot: "left-bottom"
 
   - accountId: 2
     parentAccountId: 0

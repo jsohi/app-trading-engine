@@ -38,12 +38,28 @@ import {
   WORKER_PROTOCOL_VERSION,
 } from "@/workers/WorkerTuning";
 import { type SessionState, type UuidComposite } from "@/workers/session/SessionState";
+import { validateJwtTiming } from "@/workers/session/JwtExpiryParser";
+
+/**
+ * Per-panel UI slot binding from the server (Phase 3 Commit B).
+ * Each entry is one panel id (e.g. "order-entry") and the slot identifier
+ * the React shell should mount it into (e.g. "right-top"). Both strings are
+ * char[16] on the wire (PanelString); decoder strips trailing NULs.
+ */
+export interface PanelSlot {
+  readonly panelId: string;
+  readonly slot: string;
+}
 
 /**
  * Decoded WebSocketAuthAck (template 61) values per APP-36 §A1.
  * Caller decodes via the generated SBE TS decoder (consumed in C6
  * `MessageRouter`); this interface is the worker-internal contract
  * AuthClient consumes.
+ *
+ * Phase 3 Commit B: extended with per-account `symbolPreferences` (cohort
+ * the worker subscribes to in addition to defaults) and `panelLayout`
+ * (UI slot bindings posted to the main thread for App.tsx to mount).
  */
 export interface AuthAck {
   readonly sessionId: UuidComposite;
@@ -51,6 +67,8 @@ export interface AuthAck {
   readonly maxSubscriptions: number;
   readonly serverHeartbeatIntervalMs: number;
   readonly clientHeartbeatIntervalMs: number;
+  readonly symbolPreferences: ReadonlyArray<string>;
+  readonly panelLayout: ReadonlyArray<PanelSlot>;
 }
 
 export const SENT_PROTOCOL_VERSION = WORKER_PROTOCOL_VERSION;
@@ -61,7 +79,8 @@ export type AuthFailureReason =
   | "ECHO_ATTACK"
   | "SERVER_ERROR"
   | "REAUTH_QUEUE_OVERFLOW"
-  | "CONNECTION_CLOSED";
+  | "CONNECTION_CLOSED"
+  | "REAUTH_TOKEN_INVALID";
 
 export interface AuthClientCallbacks {
   /** Caller writes the encoded bytes to the WebSocket. */
@@ -173,6 +192,40 @@ export class AuthClient {
         this.reauthQueue.length = 0;
         reject(err instanceof Error ? err : new Error(String(err)));
       }
+    });
+  }
+
+  /**
+   * Phase 3 Commit B — handle a {@code WebSocketError(AuthExpiringSoon)}
+   * (code 18) from the server. Acquires a fresh JWT from the supplied
+   * {@code tokenSource}, runs a defensive timing pre-flight (nbf + exp
+   * with a 60s leeway), and then calls {@link reauth}. The session is
+   * preserved on success; on failure the caller surfaces an error via
+   * {@link AuthClientCallbacks.onAuthFailure} — the next inbound frame
+   * carrying a stale token will trigger a hard {@code SessionExpired}
+   * close, which the reconnect path handles.
+   *
+   * Returns a promise that resolves once reauth completes (mirrors
+   * {@link reauth}) so the caller can chain or await it in tests.
+   *
+   * @param tokenSource async getter for a fresh JWT (caller goes to
+   *     the iframe issuer or {@code devTokenProvider}; AuthClient
+   *     stays decoupled from the issuer transport)
+   * @param nowSecondsFn current epoch-seconds clock; defaults to
+   *     {@code Date.now() / 1000} — injectable for tests
+   */
+  handleAuthExpiringSoon(
+    tokenSource: () => Promise<string>,
+    nowSecondsFn: () => number = () => Date.now() / 1000,
+  ): Promise<void> {
+    return tokenSource().then((token) => {
+      const verdict = validateJwtTiming(token, nowSecondsFn());
+      if (!verdict.ok) {
+        const message = `AuthExpiringSoon: fresh token failed timing pre-flight (${verdict.reason})`;
+        this.cb.onAuthFailure("REAUTH_TOKEN_INVALID", message);
+        return Promise.reject(new Error(message));
+      }
+      return this.reauth(token);
     });
   }
 

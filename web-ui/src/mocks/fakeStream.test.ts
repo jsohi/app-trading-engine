@@ -139,7 +139,11 @@ function stripNonDeterministic(msgs: readonly WorkerMessage[]): unknown[] {
   return msgs.map((m) => {
     const stripped: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(m as unknown as Record<string, unknown>)) {
-      if (key === "serverNanos") continue;
+      // serverNanos is wall-clock-derived in fakeStream; ingressNanos is derived from
+      // serverNanos and inherits the same per-run variance — strip both for deterministic
+      // assertion. Other latency fields (publisherStackLatencyNanos, endToEndLatencyNanos)
+      // are deterministic constants in the mock and are NOT stripped.
+      if (key === "serverNanos" || key === "ingressNanos") continue;
       stripped[key] = typeof value === "bigint" ? value.toString() : value;
     }
     return stripped;
