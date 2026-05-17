@@ -102,9 +102,10 @@ final class WebSocketSessionResumeRaceTest {
     channel = new EmbeddedChannel(DefaultChannelId.newInstance());
     session = sessionManager.tryRegister(channel);
 
-    // Init subscription filter with a broad subscription so reliable delivery is not blocked
-    // by an empty filter (the ack path calls writeReliableToSession which checks isWritable but
-    // not the filter directly; the filter check is on the writeReliableToAllChannels path).
+    // Init subscription filter with a broad subscription so reliable delivery is not blocked by
+    // an empty filter. The ack path calls writeReliableToSession which writes unconditionally
+    // (no isWritable guard per Gemini R2 G-3 fix); the filter check is only on the
+    // writeReliableToAllChannels broadcast path.
     session.initSubscriptionFilter(100);
     session.subscriptionFilter().addSubscription(0L, 0x1F);
     session.entitledAccounts(Set.of("TEST"));
