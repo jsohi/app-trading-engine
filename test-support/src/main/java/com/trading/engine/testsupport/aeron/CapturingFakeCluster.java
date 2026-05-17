@@ -8,6 +8,7 @@ import io.aeron.logbuffer.BufferClaim;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
@@ -86,7 +87,7 @@ public final class CapturingFakeCluster implements Cluster {
    * @param session the session to register (must not be null)
    */
   public void addClientSession(final ClientSession session) {
-    registeredSessions.add(java.util.Objects.requireNonNull(session, "session"));
+    registeredSessions.add(Objects.requireNonNull(session, "session"));
   }
 
   /** {@inheritDoc} */
@@ -147,7 +148,7 @@ public final class CapturingFakeCluster implements Cluster {
   /** {@inheritDoc} */
   @Override
   public void forEachClientSession(final Consumer<? super ClientSession> action) {
-    java.util.Objects.requireNonNull(action, "action must not be null");
+    Objects.requireNonNull(action, "action must not be null");
     // Index-based iteration — mirrors FakeCluster's no-Iterator contract so the broadcast loop
     // in production EventSink.emit() observes the same allocation profile in tests as in
     // production (no silent zero-alloc regression masking).

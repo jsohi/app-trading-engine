@@ -319,10 +319,15 @@ public final class PricingServiceLauncher {
         aeron.addExclusivePublication(MARKET_DATA_CHANNEL, MARKET_DATA_STREAM_ID);
     final Subscription mdSnapshotRequestSubscription =
         aeron.addSubscription(MARKET_DATA_CHANNEL, MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID);
-    // Bind the real ExclusivePublication to the BroadcastPublisher seam via method references.
-    // Captured once at construction so the SAM lives for the agent's lifetime — JIT can inline
-    // through it; no per-call allocation. The seam exists because ExclusivePublication is
-    // final and cannot be subclassed by unit tests.
+    // Bind the real ExclusivePublication to the BroadcastPublisher seam via an anonymous inner
+    // class. BroadcastPublisher is a 3-method interface (offer / position / termBufferLength —
+    // the forensic context needed for MAX_POSITION_EXCEEDED logging precludes a single-method
+    // SAM); the anonymous class is the standard JLS idiom for binding a multi-method interface
+    // and is the documented deviation from CLAUDE.md's canonical SAM-publisher pattern (see
+    // BroadcastPublisher's class-level Javadoc + docs/publishers.md). The instance is
+    // constructed ONCE at launcher startup (cold path) and lives for the agent's lifetime, so
+    // the allocation profile is equivalent to a method-reference SAM. The seam exists because
+    // ExclusivePublication is final and cannot be subclassed by unit tests.
     final BroadcastPublisher broadcastPublisher =
         new BroadcastPublisher() {
           @Override
