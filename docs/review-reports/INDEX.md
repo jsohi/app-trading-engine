@@ -14,3 +14,4 @@ Auto-populated by `/orchestrate` after each convergence. Do not edit manually.
 | 2026-05-09 | APP-232              | 5                          | 48       | 47/48                 | 100% (APP-232 scope)     | [report](APP-232-session-2026-05-09.md)            |
 | 2026-05-09 | APP-232              | R6–R12 (7)                 | 21       | 21/21                 | 100%                     | [report](APP-232-session-2026-05-09-r2.md)         |
 | 2026-05-10 | APP-40               | 3 iterations               | 30       | 30/30                 | 92% (Iter3)              | [report](APP-40-session-2026-05-10.md)             |
+| 2026-05-17 | APP-244 (Commit A)   | 3 iters + 4 Gemini rounds  | 27       | 27/27                 | ~98% (12/13 applicable)  | [report](APP-244-session-2026-05-17.md)            |
