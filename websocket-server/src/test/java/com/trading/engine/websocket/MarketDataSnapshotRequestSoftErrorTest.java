@@ -12,6 +12,7 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorDecoder;
 import com.trading.engine.projections.SymbolPacker;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -56,7 +57,7 @@ final class MarketDataSnapshotRequestSoftErrorTest {
 
   private EmbeddedChannel channel;
   private WebSocketSession session;
-  private io.micrometer.core.instrument.simple.SimpleMeterRegistry registry;
+  private SimpleMeterRegistry registry;
   private WebSocketMetrics metrics;
   private MarketDataAdmissionPipeline pipeline;
 
@@ -67,7 +68,7 @@ final class MarketDataSnapshotRequestSoftErrorTest {
 
   @BeforeEach
   void setUp() {
-    registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    registry = new SimpleMeterRegistry();
     metrics = new WebSocketMetrics(registry);
 
     final SnapshotRequestPublisher successPublisher = (buf, offset, length) -> 1L;

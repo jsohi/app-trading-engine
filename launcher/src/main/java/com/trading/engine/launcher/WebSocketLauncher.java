@@ -9,6 +9,7 @@ import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.projections.account.AccountReadModel;
 import com.trading.engine.websocket.AeronEgressThread;
 import com.trading.engine.websocket.AuthFailureTracker;
+import com.trading.engine.websocket.CommandEntryPool;
 import com.trading.engine.websocket.EgressEntry;
 import com.trading.engine.websocket.JtiRevocationCache;
 import com.trading.engine.websocket.JwtValidator;
@@ -245,17 +246,26 @@ public final class WebSocketLauncher {
 
     // 9. Netty WebSocket server (binds port). Wrap in try-catch to clean up the egress thread
     // and cluster client on partial failure — they are already started and must be closed.
+    // Pass the Phase 3 Commit A collaborators (Agent B review R1-F1/F2) so the per-channel
+    // MarketDataAdmissionPipeline is installed at auth time and the per-session entitlement +
+    // token-bucket state is initialised. Without these the admission pipeline is dead code in
+    // production (template-56 frames always rejected with CommandRejected).
     final var server =
         new WebSocketServerMain(
             config,
             egressQueue,
+            new ManyToOneConcurrentArrayQueue<>(config.commandQueueCapacity()),
+            new ManyToOneConcurrentArrayQueue<>(config.commandAckQueueCapacity()),
+            new CommandEntryPool(config.commandQueueCapacity(), config.replayBufferFrameSize()),
             egressListener,
             sessionManager,
             metrics,
             jwtValidator,
             jtiCache,
             entitlementService,
-            authFailureTracker);
+            authFailureTracker,
+            symbolEntitlementMap,
+            snapshotRequestPublisher);
     try {
       server.start();
     } catch (final Exception ex) {

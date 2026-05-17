@@ -15,6 +15,7 @@ import com.trading.engine.messages.sbe.WebSocketErrorDecoder;
 import com.trading.engine.projections.SymbolPacker;
 import com.trading.engine.testsupport.clock.ControllableNanoClock;
 import io.aeron.Publication;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -62,7 +63,7 @@ final class MarketDataSnapshotRequestAdmissionTest {
 
   private EmbeddedChannel channel;
   private WebSocketSession session;
-  private io.micrometer.core.instrument.simple.SimpleMeterRegistry registry;
+  private SimpleMeterRegistry registry;
   private WebSocketMetrics metrics;
   private ControllableNanoClock clock;
 
@@ -73,7 +74,7 @@ final class MarketDataSnapshotRequestAdmissionTest {
 
   @BeforeEach
   void setUp() {
-    registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    registry = new SimpleMeterRegistry();
     metrics = new WebSocketMetrics(registry);
     clock = new ControllableNanoClock(1_000_000_000L); // start at 1 s
 

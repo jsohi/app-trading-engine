@@ -21,6 +21,7 @@ import io.netty.util.ResourceLeakDetector;
 import java.util.Map;
 import java.util.Set;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.SystemNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -71,7 +72,7 @@ final class WebSocketFrameDispatcherMaxSymbolsTest {
 
     metrics = WebSocketMetrics.createWithDefaults();
 
-    final var clock = org.agrona.concurrent.SystemNanoClock.INSTANCE;
+    final var clock = SystemNanoClock.INSTANCE;
     sessionManager = new WebSocketSessionManager(config, metrics, clock);
 
     final var jtiCache = new JtiRevocationCache(1000, 15, clock);

@@ -7,6 +7,7 @@ import com.trading.engine.messages.sbe.MarketDataSnapshotRequestDecoder;
 import com.trading.engine.messages.sbe.MarketDataSnapshotRequestEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.projections.SymbolPacker;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -16,6 +17,7 @@ import io.netty.util.ResourceLeakDetector;
 import java.util.List;
 import java.util.Map;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -43,7 +45,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>Wiring.</b> Uses a real {@link SymbolEntitlementMap} containing {@code EURUSD → [ACME]}; a
  * {@link SnapshotRequestPublisher} stub that always returns success (≥ 0); a real {@link
- * WebSocketMetrics} backed by {@link io.micrometer.core.instrument.simple.SimpleMeterRegistry}.
+ * WebSocketMetrics} backed by {@link SimpleMeterRegistry}.
  */
 final class MarketDataSnapshotRequestMalformedTest {
 
@@ -53,7 +55,7 @@ final class MarketDataSnapshotRequestMalformedTest {
 
   private EmbeddedChannel channel;
   private WebSocketSession session;
-  private io.micrometer.core.instrument.simple.SimpleMeterRegistry registry;
+  private SimpleMeterRegistry registry;
   private WebSocketMetrics metrics;
   private MarketDataAdmissionPipeline pipeline;
 
@@ -64,7 +66,7 @@ final class MarketDataSnapshotRequestMalformedTest {
 
   @BeforeEach
   void setUp() {
-    registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    registry = new SimpleMeterRegistry();
     metrics = new WebSocketMetrics(registry);
 
     // SnapshotRequestPublisher: always success (position = 1L > 0).
@@ -94,7 +96,7 @@ final class MarketDataSnapshotRequestMalformedTest {
     session.initSnapshotTokenBucket(nowNs);
 
     // Publish EURUSD entitlement so admission path reaches the publish stage.
-    final var entitled = new org.agrona.collections.LongHashSet(4);
+    final var entitled = new LongHashSet(4);
     entitled.add(SymbolPacker.pack("EURUSD"));
     session.subscriptionFilter().publishEntitledSymbols(entitled);
   }

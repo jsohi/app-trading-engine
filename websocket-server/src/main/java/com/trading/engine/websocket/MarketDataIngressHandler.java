@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import java.nio.ByteOrder;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
@@ -170,6 +171,6 @@ public final class MarketDataIngressHandler implements FragmentHandler {
    */
   private static int extractTemplateId(final DirectBuffer buffer, final int offset) {
     // SBE header: blockLength[2] || templateId[2] || schemaId[2] || version[2], little-endian.
-    return buffer.getShort(offset + 2, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+    return buffer.getShort(offset + 2, ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
   }
 }

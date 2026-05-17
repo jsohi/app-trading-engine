@@ -9,8 +9,10 @@ import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.projections.SymbolPacker;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.LongHashSet;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -484,7 +486,7 @@ final class SubscriptionFilterTest {
     final long packedEur = SymbolPacker.pack("EURUSD");
     filter.addSubscription(packedEur, 0x01);
 
-    final var entitled = new org.agrona.collections.LongHashSet(4);
+    final var entitled = new LongHashSet(4);
     entitled.add(packedEur);
     filter.publishEntitledSymbols(entitled);
 
@@ -503,7 +505,7 @@ final class SubscriptionFilterTest {
    */
   @Test
   void matches_entitlementPublishedAndSymbolNotPermitted_returnsFalseAndIncrementsCounter() {
-    final var registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    final var registry = new SimpleMeterRegistry();
     final var metrics = new WebSocketMetrics(registry);
     final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
 
@@ -512,7 +514,7 @@ final class SubscriptionFilterTest {
 
     // Publish an entitlement set that does NOT include EURUSD.
     final long packedGbp = SymbolPacker.pack("GBPUSD");
-    final var entitled = new org.agrona.collections.LongHashSet(4);
+    final var entitled = new LongHashSet(4);
     entitled.add(packedGbp);
     filter.publishEntitledSymbols(entitled);
 
@@ -564,7 +566,7 @@ final class SubscriptionFilterTest {
     filter.addSubscription(packedGbp, 0x01);
 
     // Publish set A: only EURUSD entitled.
-    final var setA = new org.agrona.collections.LongHashSet(4);
+    final var setA = new LongHashSet(4);
     setA.add(packedEur);
     filter.publishEntitledSymbols(setA);
 
@@ -577,7 +579,7 @@ final class SubscriptionFilterTest {
     assertFalse(filter.matches(100, bytesGbp, 0, lenGbp), "After set A: GBPUSD must be denied");
 
     // Publish set B: only GBPUSD entitled.
-    final var setB = new org.agrona.collections.LongHashSet(4);
+    final var setB = new LongHashSet(4);
     setB.add(packedGbp);
     filter.publishEntitledSymbols(setB);
 
