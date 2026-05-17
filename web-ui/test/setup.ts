@@ -21,6 +21,11 @@
  *           `_subject` BehaviorSubject in connection-stream.
  *       (4) `__resetConnectionStoreForTests` — re-seeds the store's
  *           closure-local snapshot back to "CONNECTING".
+ *       (5) `__resetFeedStateStreamForTests` — swaps the private
+ *           `_subject` BehaviorSubject in feed-state-stream (Phase 3
+ *           Commit 6). Prevents a test that pushes a non-LIVE state
+ *           from leaking the state into a subsequent test in the same
+ *           worker.
  *     Reverse order would fire singleton resets while React subscribers
  *     are still alive → blotters log to `console.error` mid-teardown.
  *   - Stub browser globals not provided by jsdom but expected by
@@ -39,6 +44,7 @@ import { __installTestTracerProvider, __resetTelemetryForTests } from "@/shared/
 import { __resetMessageSourceForTests } from "@/main-thread/messageSource";
 import { __resetConnectionStreamForTests } from "@/streams/connection-stream";
 import { __resetConnectionStoreForTests } from "@/stores/connection-store";
+import { __resetFeedStateStreamForTests } from "@/streams/feed-state-stream";
 
 // Side-effect: register AG Grid v33+ Community modules globally so blotter
 // mounts under jsdom don't trip a missing-module console.error.
@@ -80,6 +86,9 @@ afterEach(() => {
   __resetConnectionStreamForTests();
   // (4) Reset connection-store closure-local snapshot.
   __resetConnectionStoreForTests();
+  // (5) Reset feed-state-stream singleton (private _subject BehaviorSubject;
+  //     Phase 3 Commit 6).
+  __resetFeedStateStreamForTests();
 });
 
 // OTel reset (jsdom-only).

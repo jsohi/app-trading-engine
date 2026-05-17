@@ -40,7 +40,9 @@ public final class SubscriptionFilter {
   // Event type bit positions (matching SBE schema comment on WebSocketSubscribe.eventTypes)
   private static final int BIT_ORDERS = 0x01; // bit 0: Order lifecycle (100-103, 112)
   private static final int BIT_POSITIONS = 0x02; // bit 1: Positions (204)
-  private static final int BIT_PRICES = 0x04; // bit 2: Prices (51)
+  private static final int BIT_PRICES =
+      0x04; // bit 2: Market-data broadcast (54 MarketDataTick, 55 MarketDataHeartbeat, 57
+  // MarketDataFeedStateChange)
   private static final int BIT_QUOTES = 0x08; // bit 3: Quotes (104-107)
   private static final int BIT_ACCOUNTS = 0x10; // bit 4: Account events (110, 111)
 
