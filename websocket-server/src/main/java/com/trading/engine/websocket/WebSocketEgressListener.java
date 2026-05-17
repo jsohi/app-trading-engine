@@ -235,7 +235,45 @@ public final class WebSocketEgressListener implements EgressListener {
    * @return a free entry, or {@code null} if the pool is exhausted
    */
   public EgressEntry borrowForAck() {
-    // Drain the return queue first so recently-returned entries become available again.
+    return borrowOnOwningThread();
+  }
+
+  /**
+   * Borrow a free entry from the pool for market-data ingest use. The market-data fragment handler
+   * runs on the same {@code AeronEgressThread} that owns the pool, so direct LIFO access is safe.
+   * Other threads must NOT call this.
+   *
+   * <p>Drains the return queue first so recently-returned entries become available again before the
+   * borrow. Returns {@code null} on pool exhaustion — the caller increments the drop counter and
+   * skips the fragment.
+   *
+   * @return a free entry, or {@code null} if the pool is exhausted
+   */
+  public EgressEntry borrowForMarketData() {
+    return borrowOnOwningThread();
+  }
+
+  /**
+   * Return an entry directly to the LIFO pool without going through the return queue. Safe ONLY
+   * when called from the same {@code AeronEgressThread} that owns the pool — i.e. immediately after
+   * a same-thread {@link #borrowForAck()} / {@link #borrowForMarketData()} when the subsequent
+   * {@code queue.offer(...)} fails or a bounds check rejects the borrowed entry. The drain handler
+   * (Netty event loop) must NEVER call this — it must use {@link #returnToPool(EgressEntry)} which
+   * crosses threads via {@link #returnQueue}.
+   *
+   * @param entry the entry to push back onto the LIFO pool
+   */
+  public void releaseDirectly(final EgressEntry entry) {
+    Objects.requireNonNull(entry, "entry");
+    entry.resetForPool();
+    if (poolCount < pool.length) {
+      pool[poolCount++] = entry;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Shared LIFO borrow on the owning thread. Drains the return queue first, then pops.
+  private EgressEntry borrowOnOwningThread() {
     EgressEntry returned;
     while ((returned = returnQueue.poll()) != null) {
       if (poolCount < pool.length) {

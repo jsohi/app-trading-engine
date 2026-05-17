@@ -211,11 +211,22 @@ public final class WebSocketDrainHandler {
     }
   }
 
+  /** Per-session 1-warn-per-second rate-limit window for channel-not-writable drop logs. */
+  private static final long CHANNEL_NOT_WRITABLE_WARN_INTERVAL_NS = 1_000_000_000L;
+
   /**
    * Encode and write a reliable frame for a single session, capturing it in the session's {@link
    * ReliableStreamTracker} so a later gap-request or session-resume can replay it. On any failure
    * (write throws, capture throws) the captured slot is evicted so replay never serves a frame the
    * client did not receive (which would produce phantom-gap on next ClientAck).
+   *
+   * <p><b>Back-pressure guard.</b> When {@code !ch.isWritable()} the drain handler drops the frame
+   * BEFORE allocating the {@link io.netty.buffer.ByteBuf} or assigning a reliable seqNo — preserves
+   * Netty's outbound water-mark contract and keeps the per-session reliable sequence gap-free (no
+   * seqNo is burned on a frame the client never received). A warn is emitted at most once per
+   * second per session via {@link WebSocketSession#lastChannelNotWritableWarnNs()}; the {@code
+   * egress.dropped.channel-not-writable} counter increments on every drop so dashboards still see
+   * the true rate.
    */
   private void writeReliableToSession(
       final WebSocketSession session,
@@ -223,6 +234,19 @@ public final class WebSocketDrainHandler {
       final int length,
       final int templateId,
       final Channel ch) {
+    if (!ch.isWritable()) {
+      metrics.egressDroppedChannelNotWritable();
+      final long nowNs = nanoClock.nanoTime();
+      if (nowNs - session.lastChannelNotWritableWarnNs() >= CHANNEL_NOT_WRITABLE_WARN_INTERVAL_NS) {
+        session.recordChannelNotWritableWarn(nowNs);
+        LOG.warn(
+            "Channel not writable — dropping reliable frame templateId={} sessionId={} "
+                + "(further drops within 1s suppressed)",
+            templateId,
+            session.sessionId());
+      }
+      return;
+    }
     final long seqNo = session.nextReliableSeqNo();
     final var tracker = session.reliableStreamTracker();
     final var buf =
@@ -327,12 +351,23 @@ public final class WebSocketDrainHandler {
    * Route an ack back-channel entry to the originating session. The entry's payload is a
    * pre-encoded {@code CommandAck} SBE message; we wrap it in a reliable envelope (capturing it in
    * the tracker) and write it to that session only.
+   *
+   * <p><b>Stale-epoch guard.</b> If the entry was captured with a specific session epoch (i.e.
+   * {@code epoch != EPOCH_ANY}) and that epoch no longer matches the session's current epoch
+   * (because the session was {@code resume()}d after enqueue), the entry is dropped with the {@code
+   * egress.dropped.stale-epoch} counter incremented. Prevents the resumed session from receiving an
+   * ack intended for a prior session epoch's command.
    */
   private void writeAckToTargetChannel(final EgressEntry entry) {
     final var sessionId = new UUID(entry.sessionIdMsb(), entry.sessionIdLsb());
     final var session = sessionManager.findById(sessionId);
     if (session == null) {
       return; // session disappeared — drop the ack silently
+    }
+    final long capturedEpoch = entry.sessionEpoch();
+    if (capturedEpoch != EgressEntry.EPOCH_ANY && capturedEpoch != session.currentEpoch()) {
+      metrics.egressDroppedStaleEpoch();
+      return;
     }
     final var ch = session.channel();
     if (!ch.isActive()) {

@@ -1,0 +1,13 @@
+# Phase 3 Commit A — per-symbol entitled-accounts table for the dev / E2E fixture.
+# Drives the websocket-server SymbolEntitlementMap which the SubscriptionFilter
+# consults to gate market-data delivery (template 54) + snapshot requests (template 56).
+#
+# Production deployments override this with a live AccountProjection driven by
+# cluster egress events (APP-244 follow-up). The dev cohort below lists the four
+# major-FX pairs the e2e suite drives and grants ACME the universal entitlement,
+# matching the permissive scope of integration-tests/e2e/data/accounts.yaml.
+symbols:
+  EURUSD: [ACME]
+  GBPUSD: [ACME]
+  USDJPY: [ACME]
+  AUDUSD: [ACME]

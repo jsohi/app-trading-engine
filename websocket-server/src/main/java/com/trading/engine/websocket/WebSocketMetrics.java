@@ -61,6 +61,17 @@ public final class WebSocketMetrics {
   private final Counter slowConsumerLevel4;
   private final Counter slowConsumerDisconnects;
 
+  // --- Phase 3 market-data + egress counters ---
+  private final Counter marketDataDropped;
+  private final Counter egressDroppedChannelNotWritable;
+  private final Counter marketDataFeedStateTransitions;
+  private final Counter marketDataSnapshotDeduped;
+  private final Counter marketDataSnapshotTimeout;
+  private final Counter symbolEntitlementDenied;
+  private final Counter dispatcherMalformed;
+  private final Counter dispatcherSymbolUnknown;
+  private final Counter egressDroppedStaleEpoch;
+
   // --- Subscription filtering gauges ---
   private final AtomicInteger activeSubscriptions = new AtomicInteger();
 
@@ -219,6 +230,60 @@ public final class WebSocketMetrics {
     this.slowConsumerDisconnects =
         Counter.builder("websocket.slow.consumer.disconnects")
             .description("Slow-consumer sessions disconnected after sustained level 4")
+            .register(registry);
+
+    // --- Phase 3 market-data + egress counters ---
+    this.marketDataDropped =
+        Counter.builder("websocket.marketdata.dropped")
+            .description(
+                "Market-data fragments dropped at ingest (unknown template, pool exhaustion, "
+                    + "oversize, or queue full)")
+            .register(registry);
+    this.egressDroppedChannelNotWritable =
+        Counter.builder("websocket.egress.dropped.channel-not-writable")
+            .description("Egress frames dropped because the Netty channel reported !isWritable()")
+            .register(registry);
+    this.marketDataFeedStateTransitions =
+        Counter.builder("websocket.marketdata.feed.state.transitions")
+            .description(
+                "MarketDataFeedStateChange transitions emitted by the liveness tracker "
+                    + "(LIVE/QUIET/STALE)")
+            .register(registry);
+    this.marketDataSnapshotDeduped =
+        Counter.builder("websocket.marketdata.snapshot.deduped")
+            .description(
+                "Snapshot requests deduplicated within the publisher drain cadence window "
+                    + "(token refunded)")
+            .register(registry);
+    this.marketDataSnapshotTimeout =
+        Counter.builder("websocket.marketdata.snapshot.timeout")
+            .description(
+                "Snapshot requests whose publisher response was not observed within the "
+                    + "snapshot-timeout budget (token NOT refunded)")
+            .register(registry);
+    this.symbolEntitlementDenied =
+        Counter.builder("websocket.subscription.entitlement.denied")
+            .description(
+                "Subscription matches denied by the per-account symbol entitlement guard "
+                    + "(filter rejected after symbol-bit match)")
+            .register(registry);
+    this.dispatcherMalformed =
+        Counter.builder("websocket.dispatcher.malformed")
+            .description(
+                "Frames rejected as malformed at the dispatcher admission pipeline (RFC 6455 "
+                    + "close 1003 — bad header, bad length, bad symbol encoding)")
+            .register(registry);
+    this.dispatcherSymbolUnknown =
+        Counter.builder("websocket.dispatcher.symbol.unknown")
+            .description(
+                "Snapshot requests for symbols not present in SymbolEntitlementMap (soft "
+                    + "WebSocketError 404 — session preserved)")
+            .register(registry);
+    this.egressDroppedStaleEpoch =
+        Counter.builder("websocket.egress.dropped.stale-epoch")
+            .description(
+                "Egress entries dropped because their captured sessionEpoch no longer matches "
+                    + "the session's current epoch (post-resume race guard)")
             .register(registry);
   }
 
@@ -411,5 +476,75 @@ public final class WebSocketMetrics {
   /** Record a slow-consumer disconnect (post-level-4 sustained). */
   public void slowConsumerDisconnect() {
     slowConsumerDisconnects.increment();
+  }
+
+  // --- Phase 3 market-data + egress counter accessors ---
+
+  /**
+   * Record a market-data fragment drop at the ingest path (unknown template, pool exhaustion,
+   * oversize fragment, or queue full).
+   */
+  public void marketDataDropped() {
+    marketDataDropped.increment();
+  }
+
+  /** Record an egress frame drop because the Netty channel reported {@code !isWritable()}. */
+  public void egressDroppedChannelNotWritable() {
+    egressDroppedChannelNotWritable.increment();
+  }
+
+  /**
+   * Record a market-data feed-state transition emission (LIVE/QUIET/STALE). Called by the {@link
+   * MarketDataSubscriptionLivenessTracker}'s transition callback after the template-57 frame has
+   * been enqueued.
+   */
+  public void marketDataFeedStateTransition() {
+    marketDataFeedStateTransitions.increment();
+  }
+
+  /**
+   * Record a snapshot request deduplicated within the publisher drain cadence window. The
+   * dispatcher refunds the token; the publisher does NOT receive a duplicate stream-205 publish.
+   */
+  public void marketDataSnapshotDeduped() {
+    marketDataSnapshotDeduped.increment();
+  }
+
+  /**
+   * Record a snapshot request whose publisher response was not observed within the snapshot-timeout
+   * budget. Per the dispatcher contract the token is NOT refunded on timeout (the stream-205
+   * publish already consumed a publisher slot).
+   */
+  public void marketDataSnapshotTimeout() {
+    marketDataSnapshotTimeout.increment();
+  }
+
+  /** Record a subscription match denied by the per-account symbol entitlement guard. */
+  public void symbolEntitlementDenied() {
+    symbolEntitlementDenied.increment();
+  }
+
+  /**
+   * Record a frame rejected as malformed by the dispatcher's admission pipeline (RFC 6455 close
+   * 1003 — bad SBE header, bad length, or bad symbol encoding).
+   */
+  public void dispatcherMalformed() {
+    dispatcherMalformed.increment();
+  }
+
+  /**
+   * Record a snapshot request for a symbol not present in the {@link SymbolEntitlementMap}. The
+   * dispatcher emits a {@code WebSocketError(code=404 SymbolUnknown)} and preserves the session.
+   */
+  public void dispatcherSymbolUnknown() {
+    dispatcherSymbolUnknown.increment();
+  }
+
+  /**
+   * Record an egress entry dropped because its captured {@code sessionEpoch} no longer matches the
+   * session's current epoch (post-resume race guard).
+   */
+  public void egressDroppedStaleEpoch() {
+    egressDroppedStaleEpoch.increment();
   }
 }

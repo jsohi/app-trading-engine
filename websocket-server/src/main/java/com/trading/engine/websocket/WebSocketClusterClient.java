@@ -164,6 +164,49 @@ public final class WebSocketClusterClient implements Agent, AutoCloseable {
     return workCount;
   }
 
+  /**
+   * Egress-fragment-only poll for DWRR accounting. Equivalent to the egress-poll branch of {@link
+   * #doWork()} but returns ONLY the fragments consumed by {@code AeronCluster.pollEgress()} — never
+   * the keep-alive's {@code +1}. The {@link AeronEgressThread.DWRRPollingAgent} uses this variant
+   * so the cluster source's deficit accounting reflects real fragments and not the keep-alive cycle
+   * bookkeeping (Agent B review F-3).
+   *
+   * <p>Keep-alive scheduling is NOT performed here — the DWRR agent must drive {@link
+   * #sendKeepAliveIfDue()} on its own cadence so the keep-alive contract is preserved.
+   *
+   * @return number of egress fragments handled this call; {@code 0} when the client is not in
+   *     {@link State#CONNECTED}
+   */
+  public int pollEgressForDwrr() {
+    if (state != State.CONNECTED) {
+      return 0;
+    }
+    return aeronCluster.pollEgress();
+  }
+
+  /**
+   * Send a keep-alive heartbeat if the interval has elapsed. Companion to {@link
+   * #pollEgressForDwrr()} — splits the keep-alive branch out of {@link #doWork()} so the DWRR agent
+   * can drive it on its own cadence without polluting the fragment accounting.
+   *
+   * @return {@code true} if a keep-alive was actually sent; {@code false} if the interval has not
+   *     elapsed or the send failed
+   */
+  public boolean sendKeepAliveIfDue() {
+    if (state != State.CONNECTED) {
+      return false;
+    }
+    final long nowNs = nanoClock.nanoTime();
+    if (nowNs - lastKeepAliveNs < keepAliveIntervalNs) {
+      return false;
+    }
+    if (aeronCluster.sendKeepAlive()) {
+      lastKeepAliveNs = nowNs;
+      return true;
+    }
+    return false;
+  }
+
   /** Close the client on agent shutdown. */
   @Override
   public void onClose() {

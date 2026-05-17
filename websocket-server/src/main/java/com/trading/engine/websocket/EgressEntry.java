@@ -40,6 +40,13 @@ public final class EgressEntry {
     BROWSER_TO_CLUSTER
   }
 
+  /**
+   * Sentinel indicating the entry has no captured session epoch — used by entries that target ALL
+   * sessions (broadcasts) or that originated before the epoch-stamping discipline shipped. The
+   * drain handler MUST treat {@link #EPOCH_ANY} as "always valid" so legacy paths continue to flow.
+   */
+  public static final long EPOCH_ANY = -1L;
+
   private final byte[] bytes;
   private int length;
   private int templateId;
@@ -48,6 +55,18 @@ public final class EgressEntry {
   private long sessionIdMsb;
   private long sessionIdLsb;
   private long clientCmdSeqNo;
+
+  /**
+   * Captured session epoch at the time this entry was enqueued. The drain handler compares it
+   * against the target session's current epoch (via {@link WebSocketSession#currentEpoch()}); a
+   * mismatch means the session was {@code resume()}d after the entry was enqueued and the entry
+   * must be dropped (else the new session would receive a frame intended for the prior epoch's
+   * subscription / entitlement state).
+   *
+   * <p>Default value is {@link #EPOCH_ANY} (-1) — entries that are NOT scoped to a specific session
+   * epoch (broadcasts, market-data ticks, control frames) flow through unconditionally.
+   */
+  private long sessionEpoch = EPOCH_ANY;
 
   /**
    * Create a new entry with the given backing array size.
@@ -213,6 +232,26 @@ public final class EgressEntry {
   }
 
   /**
+   * @return the captured session epoch, or {@link #EPOCH_ANY} if the entry is not scoped to a
+   *     specific session epoch
+   */
+  public long sessionEpoch() {
+    return sessionEpoch;
+  }
+
+  /**
+   * Stamp the captured session epoch on this entry. Called by the producer thread (typically the
+   * channel's own Netty event loop in {@code CommandDispatcher}) BEFORE the entry is enqueued so
+   * the drain handler can validate {@code epoch == session.currentEpoch()} before delivery.
+   *
+   * @param epoch the session epoch captured from {@link WebSocketSession#currentEpoch()} at enqueue
+   *     time; pass {@link #EPOCH_ANY} (-1) for entries that target all sessions
+   */
+  public void sessionEpoch(final long epoch) {
+    this.sessionEpoch = epoch;
+  }
+
+  /**
    * Reset the entry's transient routing fields. Called by the pool's release path so that a
    * subsequent {@code fill}/{@code fillCommand}/{@code fillAckBackChannel} starts from a clean
    * slate.
@@ -224,20 +263,25 @@ public final class EgressEntry {
     this.sessionIdMsb = 0L;
     this.sessionIdLsb = 0L;
     this.clientCmdSeqNo = 0L;
+    this.sessionEpoch = EPOCH_ANY;
   }
 
   /**
    * @return true if this message is a reliable-stream message (orders, fills, positions, errors,
-   *     CommandAck) as opposed to best-effort (prices, quotes, heartbeat)
+   *     CommandAck, MarketDataFeedStateChange) as opposed to best-effort (prices, quotes,
+   *     heartbeat, MarketDataTick, MarketDataHeartbeat)
    */
   public boolean isReliable() {
-    // Reliable: domain events (100+), ExecutionReport (5), CommandAck (70), errors (67)
-    // Best-effort: PriceResponse (51), Quote (2), WebSocketHeartbeat (64)
+    // Reliable: domain events (100+), ExecutionReport (5), CommandAck (70), errors (67),
+    //           MarketDataFeedStateChange (57 — sticky liveness transitions per-session)
+    // Best-effort: PriceResponse (51), MarketDataTick (54), MarketDataHeartbeat (55),
+    //              Quote (2), WebSocketHeartbeat (64)
     return templateId >= 100
         || templateId == 5
         || templateId == 70
         || templateId == 67
-        || templateId == 10; // OrderCancelReject
+        || templateId == 10 // OrderCancelReject
+        || templateId == 57; // MarketDataFeedStateChange (LIVE/QUIET/STALE)
   }
 
   /**

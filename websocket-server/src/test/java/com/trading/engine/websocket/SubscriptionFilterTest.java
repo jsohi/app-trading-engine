@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.messages.sbe.OrdTypeEnum;
@@ -468,6 +469,121 @@ final class SubscriptionFilterTest {
     assertFalse(
         filter.matches(100, new byte[20], 0, 20),
         "Truncated payload with symbol template should be dropped, not delivered");
+  }
+
+  // --- Entitlement enforcement (Phase 3 Commit A) ---
+
+  /**
+   * After {@link SubscriptionFilter#publishEntitledSymbols} is called with a set containing the
+   * subscribed symbol, {@link SubscriptionFilter#matches} must pass through the event. Verifies the
+   * entitlement-enforced latch flips and the entitled set is consulted on every call.
+   */
+  @Test
+  void matches_entitlementPublishedAndSymbolPermitted_returnsTrue() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final long packedEur = SymbolPacker.pack("EURUSD");
+    filter.addSubscription(packedEur, 0x01);
+
+    final var entitled = new org.agrona.collections.LongHashSet(4);
+    entitled.add(packedEur);
+    filter.publishEntitledSymbols(entitled);
+
+    final int len = encodeOrderCreated("EURUSD");
+    final byte[] bytes = toByteArray(buffer, len);
+
+    assertTrue(
+        filter.matches(100, bytes, 0, len),
+        "matches must return true when symbol is in the entitled set");
+  }
+
+  /**
+   * After {@link SubscriptionFilter#publishEntitledSymbols} is called, a symbol that is subscribed
+   * but NOT in the entitled set must be denied, and the {@code
+   * websocket.subscription.entitlement.denied} counter must increment by exactly 1.
+   */
+  @Test
+  void matches_entitlementPublishedAndSymbolNotPermitted_returnsFalseAndIncrementsCounter() {
+    final var registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    final var metrics = new WebSocketMetrics(registry);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
+
+    final long packedEur = SymbolPacker.pack("EURUSD");
+    filter.addSubscription(packedEur, 0x01);
+
+    // Publish an entitlement set that does NOT include EURUSD.
+    final long packedGbp = SymbolPacker.pack("GBPUSD");
+    final var entitled = new org.agrona.collections.LongHashSet(4);
+    entitled.add(packedGbp);
+    filter.publishEntitledSymbols(entitled);
+
+    final double before =
+        registry.get("websocket.subscription.entitlement.denied").counter().count();
+
+    final int len = encodeOrderCreated("EURUSD");
+    final byte[] bytes = toByteArray(buffer, len);
+    final boolean result = filter.matches(100, bytes, 0, len);
+
+    final double after =
+        registry.get("websocket.subscription.entitlement.denied").counter().count();
+
+    assertFalse(result, "matches must return false when symbol is not entitled");
+    assertEquals(
+        before + 1.0,
+        after,
+        1e-9,
+        "websocket.subscription.entitlement.denied counter must increment by exactly 1");
+  }
+
+  /**
+   * {@link SubscriptionFilter#publishEntitledSymbols} must throw {@link NullPointerException} when
+   * supplied a {@code null} set — callers should pass an empty set to revoke all entitlements.
+   */
+  @Test
+  void publishEntitledSymbols_nullSet_throwsNpe() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    assertThrows(
+        NullPointerException.class,
+        () -> filter.publishEntitledSymbols(null),
+        "publishEntitledSymbols(null) must throw NPE");
+  }
+
+  /**
+   * Single-threaded regression for the construct-then-publish discipline: publish set A, assert
+   * matches reflects A; then publish set B (disjoint symbols), assert matches transitions to B.
+   * Confirms the volatile-publish replacement semantics work correctly on a single thread (the
+   * drain thread always sees the latest published set after the volatile store completes).
+   */
+  @Test
+  void publishEntitledSymbols_twice_drainThreadSeesNewSet() {
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final long packedEur = SymbolPacker.pack("EURUSD");
+    final long packedGbp = SymbolPacker.pack("GBPUSD");
+
+    // Subscribe to both symbols with order events.
+    filter.addSubscription(packedEur, 0x01);
+    filter.addSubscription(packedGbp, 0x01);
+
+    // Publish set A: only EURUSD entitled.
+    final var setA = new org.agrona.collections.LongHashSet(4);
+    setA.add(packedEur);
+    filter.publishEntitledSymbols(setA);
+
+    final int lenEur = encodeOrderCreated("EURUSD");
+    final byte[] bytesEur = toByteArray(buffer, lenEur);
+    final int lenGbp = encodeOrderCreated("GBPUSD");
+    final byte[] bytesGbp = toByteArray(buffer, lenGbp);
+
+    assertTrue(filter.matches(100, bytesEur, 0, lenEur), "After set A: EURUSD must be entitled");
+    assertFalse(filter.matches(100, bytesGbp, 0, lenGbp), "After set A: GBPUSD must be denied");
+
+    // Publish set B: only GBPUSD entitled.
+    final var setB = new org.agrona.collections.LongHashSet(4);
+    setB.add(packedGbp);
+    filter.publishEntitledSymbols(setB);
+
+    assertFalse(filter.matches(100, bytesEur, 0, lenEur), "After set B: EURUSD must now be denied");
+    assertTrue(
+        filter.matches(100, bytesGbp, 0, lenGbp), "After set B: GBPUSD must now be entitled");
   }
 
   // --- Helper methods ---

@@ -75,7 +75,16 @@ const EXPECTED: Record<number, ExpectedBehaviour> = {
 // 5  (InvalidSubscription) — not routed to applyAppErrorCode.
 // 9  (SlowConsumer)        — routed to backpressure controller.
 // 12 (SnapshotEntityTooLarge) — discard partial; surface; do not close.
-const SURFACE_ONLY_CODES = new Set([5, 9, 12]);
+// 13 (SymbolUnknown)       — Phase 3 Commit A: snapshot-request soft error; surface; do not close.
+// 14 (EntitlementDenied)   — Phase 3 Commit A: snapshot-request soft error; surface; do not close.
+// 15 (SnapshotThrottled)   — Phase 3 Commit A: rate-limit reject; surface; do not close.
+// 16 (SnapshotBackpressured) — Phase 3 Commit A: stream-205 publish failure; surface; do not close.
+// 17 (Malformed)           — Phase 3 Commit A: only reaches the client as an RFC 6455 close 1003
+//                            (never as a WebSocketError frame); the close handler runs on the
+//                            transport layer outside applyAppErrorCode. SURFACE_ONLY for the drift
+//                            gate so a future server-side change that DOES emit this code is
+//                            forced through the mapping conversation.
+const SURFACE_ONLY_CODES = new Set([5, 9, 12, 13, 14, 15, 16, 17]);
 
 // ─── Individual named tests ───────────────────────────────────────────────────
 

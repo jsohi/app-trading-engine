@@ -1,10 +1,14 @@
 package com.trading.engine.websocket;
 
+import com.trading.engine.messages.MarketDataConstants;
 import io.netty.channel.Channel;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import org.agrona.collections.LongHashSet;
 
 /**
  * Per-client WebSocket session state. Created on successful authentication, held for the grace
@@ -122,15 +126,56 @@ public final class WebSocketSession {
   private volatile boolean slowConsumerErrorPending;
 
   /**
+   * Monotonic nanos of the most recent {@code channel-not-writable} drop warning emitted by the
+   * {@link WebSocketDrainHandler}. Used to implement per-session 1-warn-per-second rate-limiting on
+   * the back-pressure drop log so a sustained slow consumer does not flood the log. Read + written
+   * by the drain handler on its own Netty event loop only — no synchronisation required.
+   */
+  private long lastChannelNotWritableWarnNs;
+
+  /**
+   * Monotonically-increasing session epoch — bumped on every {@link #resume()} so the drain handler
+   * can detect and discard egress entries captured before the resume. Cross-thread writes use
+   * {@link VarHandle#getAndAdd(Object...)} + {@link VarHandle#releaseFence()} to give the drain
+   * thread a guaranteed happens-before edge on the new epoch (plain {@code long++} is NOT atomic on
+   * 32-bit JVMs and lacks the cross-thread visibility a compliance reviewer demands). The drain
+   * handler reads via {@link VarHandle#acquireFence()} + volatile read and compares against each
+   * {@link EgressEntry}'s captured epoch — entries whose epoch no longer matches the session's
+   * current epoch increment {@code egress.dropped.stale-epoch} and are dropped.
+   *
+   * <p>Declared as a primitive {@code long} (not {@code int}) for uniformity with the reliable
+   * seq-no discipline; matches the ICE Impact / LMAX exchange-core 64-bit session-epoch convention.
+   * Initial value zero; first resume bumps to one.
+   */
+  @SuppressWarnings("unused") // accessed via VAR_HANDLE_SESSION_EPOCH
+  private volatile long sessionEpoch;
+
+  /**
+   * {@link VarHandle} on {@link #sessionEpoch} — bound once per class load. The compile-time check
+   * is enforced by {@code MethodHandles.lookup().findVarHandle(...)} which throws on a missing
+   * field. Used for {@code getAndAdd}/{@code releaseFence}/{@code acquireFence} discipline around
+   * the volatile {@code sessionEpoch} field.
+   */
+  private static final VarHandle VAR_HANDLE_SESSION_EPOCH;
+
+  static {
+    try {
+      VAR_HANDLE_SESSION_EPOCH =
+          MethodHandles.lookup().findVarHandle(WebSocketSession.class, "sessionEpoch", long.class);
+    } catch (final ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  /**
    * Per-session snapshot-request token bucket state — Phase 3 Commit 5 continuation.
    *
    * <p>Two-element primitive array: {@code [0] = tokens (long)}, {@code [1] = lastRefillNanos
    * (long)}. Bucket capacity equals {@link
-   * com.trading.engine.messages.MarketDataConstants#MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND}
-   * (=10); refill rate is uniform at the same value per wall-second. Enforced by {@code
-   * WebSocketFrameDispatcher.handleSubscribe} on every newly-added subscription bit so a buggy or
-   * hostile client cannot drown the publisher with snapshot requests. CME MDP 3.0 §Channel Recovery
-   * rate-limit discipline.
+   * MarketDataConstants#MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND} (=10); refill rate is uniform at
+   * the same value per wall-second. Enforced by {@code WebSocketFrameDispatcher.handleSubscribe} on
+   * every newly-added subscription bit so a buggy or hostile client cannot drown the publisher with
+   * snapshot requests. CME MDP 3.0 §Channel Recovery rate-limit discipline.
    *
    * <p>Initialised lazily by {@link #initSnapshotTokenBucket(long)} at session-auth time (same call
    * site as {@link #initSubscriptionFilter}); remains {@code null} on the pre-auth path. Primitive
@@ -241,12 +286,70 @@ public final class WebSocketSession {
   }
 
   /**
-   * Initialize the subscription filter after successful authentication.
+   * Initialize the subscription filter after successful authentication. Legacy 1-arg overload — the
+   * filter has no metrics sink so the entitlement-denied counter is a no-op.
    *
    * @param maxSubscriptions the maximum number of symbol subscriptions allowed per session
    */
   public void initSubscriptionFilter(final int maxSubscriptions) {
-    this.subscriptionFilter = new SubscriptionFilter(maxSubscriptions);
+    initSubscriptionFilter(maxSubscriptions, null);
+  }
+
+  /**
+   * Initialize the subscription filter after successful authentication, wiring the metrics sink so
+   * the entitlement-denied counter increments when {@link SubscriptionFilter#matches(int, byte[],
+   * int, int)} rejects a symbol that is not in the session's published entitlement set.
+   *
+   * @param maxSubscriptions the maximum number of symbol subscriptions allowed per session
+   * @param metrics metrics sink for the entitlement-denied counter; may be {@code null}
+   */
+  public void initSubscriptionFilter(final int maxSubscriptions, final WebSocketMetrics metrics) {
+    this.subscriptionFilter = new SubscriptionFilter(maxSubscriptions, metrics);
+  }
+
+  /**
+   * Publish a fresh per-account symbol entitlement set on the session's {@link SubscriptionFilter}
+   * — Phase 3 Commit A construct-then-publish discipline. Allocates a NEW {@link LongHashSet} sized
+   * for the per-tenant cap of 32 symbols (capacity 64 with headroom — guarantees no rehash during
+   * populate), unions the entitled-symbols sets for every account code in {@code accountCodes},
+   * then volatile-assigns the populated set via {@link
+   * SubscriptionFilter#publishEntitledSymbols(LongHashSet)}.
+   *
+   * <p>Called from the auth / resume path. Idempotent across resume — each invocation publishes a
+   * fresh instance; the previous set becomes garbage. Pre-conditions: {@link
+   * #initSubscriptionFilter(int, WebSocketMetrics)} has been called.
+   *
+   * @param entitlementMap source of {@code account → entitled-packed-symbols} mappings, loaded by
+   *     the launcher from {@code symbols.yaml}
+   * @param accountCodes the validated account codes from the JWT {@code accounts} claim — typically
+   *     the same {@link Set} returned by {@link UserEntitlementService#validateAccounts(Set)}
+   * @throws IllegalStateException if the subscription filter has not been initialised
+   */
+  public void publishSymbolEntitlements(
+      final SymbolEntitlementMap entitlementMap, final Set<String> accountCodes) {
+    if (this.subscriptionFilter == null) {
+      throw new IllegalStateException(
+          "subscription filter not initialised — call initSubscriptionFilter(...) at auth");
+    }
+    Objects.requireNonNull(entitlementMap, "entitlementMap");
+    Objects.requireNonNull(accountCodes, "accountCodes");
+    // Initial capacity 64 — covers the per-tenant max of 32 symbols with headroom so no rehash
+    // happens during the populate loop (rehash would allocate; CME MDP §Channel Recovery
+    // discipline).
+    // Allocation note (Agent B review F-6): the inner for-each over ObjectHashSet<Long> unboxes
+    // each entitled-symbol element on this cold-path call (auth/resume). The SymbolEntitlementMap
+    // returns ObjectHashSet<Long> for cross-thread cold-path use; converting to a primitive
+    // LongHashSet here is the conversion seam. Allocations are bounded by the per-tenant 32-
+    // symbol cap × per-session resume frequency — cold-path, acceptable per the CLAUDE.md
+    // websocket-server carve-out.
+    final var fresh = new LongHashSet(64);
+    for (final var accountCode : accountCodes) {
+      final var perAccount = entitlementMap.entitledSymbolsFor(accountCode);
+      for (final Long packed : perAccount) {
+        fresh.add(packed.longValue());
+      }
+    }
+    this.subscriptionFilter.publishEntitledSymbols(fresh);
   }
 
   /**
@@ -287,11 +390,7 @@ public final class WebSocketSession {
   public void initSnapshotTokenBucket(final long nowNanos) {
     if (this.snapshotTokenBucket == null) {
       this.snapshotTokenBucket =
-          new long[] {
-            com.trading.engine.messages.MarketDataConstants
-                .MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND,
-            nowNanos
-          };
+          new long[] {MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND, nowNanos};
     }
   }
 
@@ -321,16 +420,29 @@ public final class WebSocketSession {
       throw new IllegalStateException(
           "snapshotTokenBucket not initialised — call initSnapshotTokenBucket(nowNanos) at auth");
     }
-    final long capacity =
-        com.trading.engine.messages.MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
+    final long capacity = MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
     final long secondNs = 1_000_000_000L;
-    final long elapsedNs = nowNanos - this.snapshotTokenBucket[1];
+    final long rawElapsedNs = nowNanos - this.snapshotTokenBucket[1];
+    // Agent B review F-9: cap elapsedNs so (elapsedNs * capacity) cannot overflow a signed long.
+    // The maximum useful elapsed time for a full-bucket refill is exactly (capacity × secondNs)
+    // — anything beyond fills to capacity anyway and the leftover would just be discarded by the
+    // cap below. Clamping here also defends against a session that idled for >15 minutes (which
+    // would otherwise overflow with capacity=10 since Long.MAX_VALUE / 10 ≈ 922 seconds).
+    final long maxUsefulElapsedNs = capacity * secondNs;
+    final long elapsedNs = rawElapsedNs > maxUsefulElapsedNs ? maxUsefulElapsedNs : rawElapsedNs;
     if (elapsedNs > 0L) {
       final long tokensToAdd = (elapsedNs * capacity) / secondNs;
       if (tokensToAdd > 0L) {
         // Advance the refill cursor by exactly the ns consumed by the integer-token refill so
-        // fractional remainder carries over to the next consume call.
+        // fractional remainder carries over to the next consume call. When the elapsed was
+        // clamped, fast-forward the cursor by the clamped amount so a subsequent call sees a
+        // fresh window (otherwise the cursor would lag behind nowNanos by the unclamped excess).
         this.snapshotTokenBucket[1] += (tokensToAdd * secondNs) / capacity;
+        if (rawElapsedNs > maxUsefulElapsedNs) {
+          // Snap the cursor to nowNanos when we hit the clamp — the bucket is at capacity already
+          // and there is no fractional remainder worth preserving.
+          this.snapshotTokenBucket[1] = nowNanos;
+        }
         final long newTokens = this.snapshotTokenBucket[0] + tokensToAdd;
         this.snapshotTokenBucket[0] = newTokens > capacity ? capacity : newTokens;
       }
@@ -358,8 +470,7 @@ public final class WebSocketSession {
     if (this.snapshotTokenBucket == null) {
       throw new IllegalStateException("snapshotTokenBucket not initialised");
     }
-    final long capacity =
-        com.trading.engine.messages.MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
+    final long capacity = MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
     final long refunded = this.snapshotTokenBucket[0] + 1L;
     this.snapshotTokenBucket[0] = refunded > capacity ? capacity : refunded;
   }
@@ -589,5 +700,72 @@ public final class WebSocketSession {
    */
   public void slowConsumerErrorPending(final boolean pending) {
     this.slowConsumerErrorPending = pending;
+  }
+
+  /**
+   * @return monotonic nanos of the most recent {@code channel-not-writable} drop warning emitted
+   *     for this session by the {@link WebSocketDrainHandler}. Drives the per-session 1-warn-per-
+   *     second log rate-limit.
+   */
+  public long lastChannelNotWritableWarnNs() {
+    return lastChannelNotWritableWarnNs;
+  }
+
+  /**
+   * Bump the session epoch on resume. Ordering is load-bearing — the side-effects that must be
+   * observable to the drain thread happen BEFORE the {@link VarHandle#releaseFence()} so the fence
+   * publishes them as a unit:
+   *
+   * <ol>
+   *   <li>Clear the per-session subscription bitmap so stale prior-session subscriptions cannot
+   *       survive into the resumed session.
+   *   <li>Atomically increment the {@code sessionEpoch} via {@link VarHandle#getAndAdd(Object...)}.
+   *   <li>Issue {@link VarHandle#releaseFence()} — this is the publish boundary.
+   * </ol>
+   *
+   * <p>A drain thread that issues {@link VarHandle#acquireFence()} and reads {@link
+   * #currentEpoch()} and observes the new epoch is guaranteed (per the JMM happens-before edge
+   * established by the matching release/acquire fences) to also observe the cleared subscription
+   * filter — the fence cannot reorder writes that precede it. The previous ordering (fence then
+   * clear) was racy: the drain thread could observe the new epoch but still see the pre-clear
+   * subscription snapshot in the window between {@code getAndAdd} and {@code clear()}.
+   *
+   * <p>Must be called BEFORE the resume thread re-publishes the session reference to the drain
+   * handler — the release fence anchors the cross-thread happens-before edge.
+   *
+   * @return the post-increment epoch value
+   */
+  public long resume() {
+    // Clear the subscription filter FIRST so the cleared state is part of the data the subsequent
+    // release fence publishes (Agent B review F-1).
+    final var filter = this.subscriptionFilter;
+    if (filter != null) {
+      filter.clear();
+    }
+    final long newEpoch = (long) VAR_HANDLE_SESSION_EPOCH.getAndAdd(this, 1L) + 1L;
+    VarHandle.releaseFence();
+    return newEpoch;
+  }
+
+  /**
+   * Returns the current session epoch. Drain handler MUST issue {@link VarHandle#acquireFence()}
+   * before reading this value (the acquire fence pairs with the {@link #resume()} release fence to
+   * give a guaranteed happens-before edge). The value is a {@code volatile long} read so the read
+   * is atomic on all JVMs (including 32-bit) and observes the most recent {@link #resume()} value.
+   *
+   * @return the current session epoch
+   */
+  public long currentEpoch() {
+    VarHandle.acquireFence();
+    return sessionEpoch; // volatile read
+  }
+
+  /**
+   * @param nowNs monotonic nanos at which a {@code channel-not-writable} warn was just emitted —
+   *     the drain handler updates this immediately after the log call so subsequent drops within
+   *     the next 1 s window stay silent
+   */
+  public void recordChannelNotWritableWarn(final long nowNs) {
+    this.lastChannelNotWritableWarnNs = nowNs;
   }
 }

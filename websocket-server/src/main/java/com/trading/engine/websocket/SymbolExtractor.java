@@ -51,6 +51,13 @@ public final class SymbolExtractor {
   private static final int OFFSET_QUOTE_EXPIRED = HEADER_SIZE + 56; // template 107
   private static final int OFFSET_PRICE_RESPONSE = HEADER_SIZE + 20; // template 51
 
+  /**
+   * Symbol offset for template 54 (MarketDataTick). Verified from {@code
+   * MarketDataTickEncoder.symbolEncodingOffset() == 0} — the {@code symbol} field is the first
+   * field in the body (FIX tag 55).
+   */
+  private static final int OFFSET_MARKET_DATA_TICK = HEADER_SIZE + 0; // template 54
+
   private SymbolExtractor() {}
 
   /**
@@ -59,7 +66,7 @@ public final class SymbolExtractor {
    * <p>Returns {@link #UNKNOWN_SYMBOL} if:
    *
    * <ul>
-   *   <li>The templateId has no symbol field (110, 111, 112, 204)
+   *   <li>The templateId has no symbol field (55, 57, 110, 111, 112, 204)
    *   <li>The templateId is not a recognized egress template
    *   <li>The payload is truncated (bounds check fails)
    * </ul>
@@ -110,10 +117,13 @@ public final class SymbolExtractor {
       case 106 -> OFFSET_QUOTE_REJECTED;
       case 107 -> OFFSET_QUOTE_EXPIRED;
       case 51 -> OFFSET_PRICE_RESPONSE;
+      case 54 -> OFFSET_MARKET_DATA_TICK;
       // Templates without a fixed-offset symbol field:
       // 110 (AccountLoaded), 111 (AccountLoadRejected) — no symbol
       // 112 (OrderCancelRejected) — no symbol
       // 204 (PositionSnapshot) — symbol in repeating group, not extractable
+      // 55 (MarketDataHeartbeat), 57 (MarketDataFeedStateChange) — no symbol;
+      //   route via SubscriptionFilter.globalEventBitMask to all BIT_PRICES subscribers
       // 108/109/113-116 — internal events, never delivered to WebSocket clients
       default -> -1;
     };

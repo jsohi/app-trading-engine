@@ -12,6 +12,11 @@
     { "name": "SlowConsumer", "value": 9 },
     { "name": "ServerShutdown", "value": 10 },
     { "name": "CommandRejected", "value": 11 },
-    { "name": "SnapshotEntityTooLarge", "value": 12 }
+    { "name": "SnapshotEntityTooLarge", "value": 12 },
+    { "name": "SymbolUnknown", "value": 13 },
+    { "name": "EntitlementDenied", "value": 14 },
+    { "name": "SnapshotThrottled", "value": 15 },
+    { "name": "SnapshotBackpressured", "value": 16 },
+    { "name": "Malformed", "value": 17 }
   ]
 }

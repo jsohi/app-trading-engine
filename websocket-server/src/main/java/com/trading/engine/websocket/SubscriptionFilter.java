@@ -2,6 +2,7 @@ package com.trading.engine.websocket;
 
 import java.util.Arrays;
 import org.agrona.collections.Long2LongHashMap;
+import org.agrona.collections.LongHashSet;
 
 /**
  * Per-session event filter that determines whether an egress SBE message should be delivered to a
@@ -60,6 +61,9 @@ public final class SubscriptionFilter {
   /** Maximum subscriptions per session. */
   private final int maxSubscriptions;
 
+  /** Metrics sink — entitlement-denied counter increments here. May be {@code null} in tests. */
+  private final WebSocketMetrics metrics;
+
   /** Mutable state — only accessed from the channel's Netty event loop thread. */
   private final Long2LongHashMap mutable;
 
@@ -70,13 +74,107 @@ public final class SubscriptionFilter {
   private volatile SubscriptionSnapshot snapshot = EMPTY;
 
   /**
-   * Create a new subscription filter.
+   * Per-session entitlement guard — the set of packed-symbol longs the session is permitted to
+   * receive based on its JWT {@code accounts} claim crossed against {@link SymbolEntitlementMap}.
+   *
+   * <p><b>Construct-then-publish discipline (CRITICAL).</b> On initial auth AND on every resume the
+   * channel thread allocates a FRESH {@link LongHashSet}, fully populates it, THEN volatile-assigns
+   * to this field. The drain thread sees only the fully-populated reference (volatile semantics
+   * give a happens-before edge). The previous instance becomes garbage. <b>Never {@code clear() +
+   * add()} in place</b> — a partial-rebuild observed across the volatile read would let the drain
+   * thread see a half-populated set and silently deliver an unentitled symbol.
+   *
+   * <p>Initial capacity of 64 covers the per-tenant max-symbol cap of 32 with headroom — guarantees
+   * no rehash allocation during the populate phase. Steady-state lookup ({@code contains(long)}) is
+   * O(1) on the primitive-keyed Agrona set with zero allocation.
+   *
+   * <p>Default value is an empty set ({@link #EMPTY_ENTITLEMENTS}) so a pre-auth session denies all
+   * symbols — fail-closed.
+   */
+  @SuppressWarnings("FieldMayBeFinal")
+  private volatile LongHashSet entitledSymbolsByAccount;
+
+  /**
+   * Latch flag — flips to {@code true} on the first call to {@link
+   * #publishEntitledSymbols(LongHashSet)} and never resets. While {@code false} the entitlement
+   * guard in {@link #matches(int, byte[], int, int)} is a no-op so the filter behaves as it did
+   * before the Phase 3 Commit A entitlement work (preserves backward compatibility for tests +
+   * pre-auth sessions that have not yet plumbed entitlement). The latch is volatile so the drain
+   * thread observes the flip atomically with the {@link #entitledSymbolsByAccount} field publish
+   * that immediately precedes it.
+   */
+  private volatile boolean entitlementEnforced;
+
+  /**
+   * Empty pre-populated {@link LongHashSet} used as the default value for {@link
+   * #entitledSymbolsByAccount} before the session has been authenticated. Shared / immutable — the
+   * channel thread never adds to this instance (it always allocates a fresh set on auth/resume).
+   */
+  private static final LongHashSet EMPTY_ENTITLEMENTS = new LongHashSet(0);
+
+  /**
+   * Create a new subscription filter with no metrics sink (legacy / test path — entitlement-denied
+   * counters become no-ops).
    *
    * @param maxSubscriptions the maximum number of symbol subscriptions allowed (from config)
    */
   public SubscriptionFilter(final int maxSubscriptions) {
+    this(maxSubscriptions, null);
+  }
+
+  /**
+   * Create a new subscription filter wired to the given metrics sink for entitlement-denied
+   * accounting.
+   *
+   * @param maxSubscriptions the maximum number of symbol subscriptions allowed (from config)
+   * @param metrics metrics sink for the {@code websocket.subscription.entitlement.denied} counter;
+   *     may be {@code null} to disable entitlement metric increments
+   */
+  public SubscriptionFilter(final int maxSubscriptions, final WebSocketMetrics metrics) {
     this.maxSubscriptions = maxSubscriptions;
+    this.metrics = metrics;
     this.mutable = new Long2LongHashMap(MISSING_VALUE);
+    this.entitledSymbolsByAccount = EMPTY_ENTITLEMENTS;
+  }
+
+  /**
+   * Publish a fresh per-account entitlement set, replacing any previously-published set in a single
+   * volatile write so the drain thread observes only fully-populated state. Caller MUST construct
+   * the {@link LongHashSet} on the channel thread, fully populate it BEFORE invoking this method,
+   * and never mutate the supplied instance after publication. The previous instance becomes
+   * garbage.
+   *
+   * <p>Typically wired from the auth / resume path:
+   *
+   * <pre>{@code
+   * final LongHashSet fresh = new LongHashSet(64);
+   * for (final long packed : symbolEntitlementMap.entitledSymbolsFor(accountCode)) {
+   *   fresh.add(packed);
+   * }
+   * filter.publishEntitledSymbols(fresh);
+   * }</pre>
+   *
+   * @param freshEntitledSet a freshly-allocated, fully-populated, immutable-post-publication {@link
+   *     LongHashSet} of packed-symbol longs. Must not be {@code null}; pass an empty {@code
+   *     LongHashSet} to revoke all entitlements.
+   */
+  public void publishEntitledSymbols(final LongHashSet freshEntitledSet) {
+    if (freshEntitledSet == null) {
+      throw new NullPointerException(
+          "freshEntitledSet must not be null — pass an empty set to revoke");
+    }
+    // Publish the set FIRST, then flip the enforcement latch. Both writes are volatile so the
+    // drain thread's happens-before edge sees a fully-populated set whenever the latch is true.
+    this.entitledSymbolsByAccount = freshEntitledSet;
+    this.entitlementEnforced = true;
+  }
+
+  /**
+   * @return the currently-published entitlement set (a fully-populated immutable instance). The
+   *     drain thread reads via volatile semantics; callers must NOT mutate the returned set.
+   */
+  public LongHashSet entitledSymbolsByAccount() {
+    return entitledSymbolsByAccount;
   }
 
   /**
@@ -126,7 +224,28 @@ public final class SubscriptionFilter {
       return false; // symbol not subscribed
     }
 
-    return (snap.eventBitmasks[idx] & eventBit) != 0;
+    if ((snap.eventBitmasks[idx] & eventBit) == 0) {
+      return false;
+    }
+
+    // Per-account entitlement guard — final fail-closed check, gated on the entitlement-enforced
+    // latch so legacy / pre-auth code paths that do not plumb entitlement keep the legacy filter
+    // semantics. Once publishEntitledSymbols(...) has been called the latch flips and the guard
+    // applies on every subsequent matches() call: deny if the symbol is not in this session's
+    // per-account entitlement set. Sourced from SymbolEntitlementMap.entitledSymbolsFor(account)
+    // and published at auth/resume time. Single volatile read + O(1) primitive-keyed
+    // LongHashSet.contains. Counter increments on every denial so dashboards can detect mis-
+    // configured tenants / token tampering.
+    if (entitlementEnforced) {
+      final LongHashSet entitled = entitledSymbolsByAccount; // volatile read
+      if (!entitled.contains(packedSymbol)) {
+        if (metrics != null) {
+          metrics.symbolEntitlementDenied();
+        }
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
