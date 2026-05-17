@@ -302,6 +302,11 @@
             <validValue name="ServerShutdown"         description="Server shutting down for maintenance">10</validValue>
             <validValue name="CommandRejected"        description="Command failed entitlement or validation check">11</validValue>
             <validValue name="SnapshotEntityTooLarge" description="Individual entity exceeds snapshot fragment size">12</validValue>
+            <validValue name="SymbolUnknown"          description="Snapshot request for a symbol not present in the SymbolEntitlementMap (Phase 3 Commit A — session preserved)">13</validValue>
+            <validValue name="EntitlementDenied"      description="Snapshot or subscription request denied by the per-account symbol entitlement guard (Phase 3 Commit A — session preserved)">14</validValue>
+            <validValue name="SnapshotThrottled"      description="Snapshot request rejected by the per-session token-bucket rate limit (Phase 3 Commit A — token NOT consumed on reject)">15</validValue>
+            <validValue name="SnapshotBackpressured"  description="Snapshot request rejected because the Aeron offer to stream 205 returned BACK_PRESSURED / NOT_CONNECTED / ADMIN_ACTION (Phase 3 Commit A — token refunded)">16</validValue>
+            <validValue name="Malformed"              description="Frame rejected as malformed by the dispatcher admission pipeline (bad SBE header, bad length, bad symbol encoding) — session torn down by RFC 6455 close 1003">17</validValue>
         </enum>
 
         <enum name="CommandAckStatus" encodingType="uint8"

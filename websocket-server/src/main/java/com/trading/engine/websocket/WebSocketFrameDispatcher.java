@@ -76,6 +76,15 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final Executor validationExecutor;
   private final CommandDispatcher commandDispatcher;
 
+  /**
+   * Per-channel admission pipeline for {@code MarketDataSnapshotRequest} (template 56). Constructed
+   * lazily on the first inbound template-56 frame because the dispatcher's legacy constructors do
+   * not require the pipeline collaborators (entitlement map / snapshot publisher) — keeps
+   * pre-Phase-3 unit tests passing while production paths install the pipeline via {@link
+   * #installMarketDataAdmissionPipeline(MarketDataAdmissionPipeline)}.
+   */
+  private MarketDataAdmissionPipeline marketDataAdmissionPipeline;
+
   // --- Reusable SBE decoders (per-channel, re-wrapped per channelRead) ---
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
   private final WebSocketSubscribeDecoder subscribeDecoder = new WebSocketSubscribeDecoder();
@@ -219,6 +228,16 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
             sendError(ctx, WebSocketErrorCode.CommandRejected);
           } else {
             commandDispatcher.dispatch(ctx, session, content, templateId, blockLength, version);
+          }
+        }
+        case 56 -> {
+          if (marketDataAdmissionPipeline == null) {
+            // Production pipelines install the admission pipeline at construction; reject if not
+            // wired so a tester cannot accidentally route stream-205 traffic into a no-op.
+            sendError(ctx, WebSocketErrorCode.CommandRejected);
+          } else {
+            // Outcome controlled inside the pipeline; MALFORMED_CLOSE already closed the channel.
+            marketDataAdmissionPipeline.admit(ctx, session, content, blockLength);
           }
         }
         case 60 -> handleReAuth(ctx, session, blockLength, version);
@@ -623,6 +642,21 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
         nettyBuf.release();
       }
     }
+  }
+
+  /**
+   * Install the per-channel {@link MarketDataAdmissionPipeline} on this dispatcher. Called by the
+   * launcher / pipeline-assembly code at construction; tests that exercise template-56 routing
+   * inject a fake pipeline via this method. Must be called before the first inbound template-56
+   * frame.
+   *
+   * @param pipeline the per-channel admission pipeline (must not be {@code null})
+   */
+  public void installMarketDataAdmissionPipeline(final MarketDataAdmissionPipeline pipeline) {
+    if (pipeline == null) {
+      throw new NullPointerException("pipeline must not be null");
+    }
+    this.marketDataAdmissionPipeline = pipeline;
   }
 
   @Override

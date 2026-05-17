@@ -1,5 +1,6 @@
 package com.trading.engine.launcher;
 
+import com.trading.engine.messages.MarketDataConstants;
 import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
@@ -11,6 +12,12 @@ import com.trading.engine.websocket.AuthFailureTracker;
 import com.trading.engine.websocket.EgressEntry;
 import com.trading.engine.websocket.JtiRevocationCache;
 import com.trading.engine.websocket.JwtValidator;
+import com.trading.engine.websocket.MarketDataIngressHandler;
+import com.trading.engine.websocket.MarketDataPoller;
+import com.trading.engine.websocket.MarketDataSubscriptionLivenessTracker;
+import com.trading.engine.websocket.SnapshotRequestPublisher;
+import com.trading.engine.websocket.SymbolEntitlementMap;
+import com.trading.engine.websocket.SymbolEntitlementYamlLoader;
 import com.trading.engine.websocket.UserEntitlementService;
 import com.trading.engine.websocket.WebSocketClusterClient;
 import com.trading.engine.websocket.WebSocketEgressListener;
@@ -21,6 +28,9 @@ import com.trading.engine.websocket.WebSocketSessionManager;
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.account.AccountRecord;
 import com.trading.refdata.account.YamlAccountLoader;
+import io.aeron.Aeron;
+import io.aeron.ExclusivePublication;
+import io.aeron.Subscription;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Locale;
@@ -125,9 +135,84 @@ public final class WebSocketLauncher {
     final var sessionManager =
         new WebSocketSessionManager(config, metrics, SystemNanoClock.INSTANCE);
 
-    // 8. Aeron egress thread (starts polling immediately)
+    // 7b. Phase 3 market-data wiring — separate Aeron client (same media driver) to attach the
+    //     stream-204 ingress subscription + stream-205 snapshot-request publication. The cluster
+    //     client owns its own internal Aeron client; we open a sibling client here rather than
+    //     trying to share it, because the cluster client treats its Aeron handle as private.
+    //     Both clients share the same external Media Driver via the aeronDir CnC.
+    //
+    //     Failure mode: any Phase 3 Aeron resource failing to open is fatal — we close the egress
+    //     listener + cluster client and rethrow. There is no graceful-degrade path because the
+    //     dispatcher's MarketDataAdmissionPipeline cannot function without the stream-205
+    //     publication, and the egress thread cannot deliver market-data without the stream-204
+    //     subscription. Always-on; no kill switch (per the plan).
+    final var marketDataAeron =
+        Aeron.connect(
+            new Aeron.Context()
+                .aeronDirectoryName(aeronDir)
+                .errorHandler(throwable -> LOG.error("Market-data Aeron client error", throwable)));
+    final Subscription marketDataSubscription;
+    final ExclusivePublication snapshotRequestPublication;
+    final SymbolEntitlementMap symbolEntitlementMap;
+    try {
+      marketDataSubscription =
+          marketDataAeron.addSubscription(
+              MarketDataConstants.MARKET_DATA_CHANNEL, MarketDataConstants.MARKET_DATA_STREAM_ID);
+      snapshotRequestPublication =
+          marketDataAeron.addExclusivePublication(
+              MarketDataConstants.MARKET_DATA_CHANNEL,
+              MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID);
+      symbolEntitlementMap = loadSymbolEntitlementMap();
+    } catch (final Exception ex) {
+      LOG.error("Market-data Aeron resource open failed", ex);
+      try {
+        marketDataAeron.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing Aeron client during partial-failure cleanup", closeEx);
+      }
+      try {
+        clusterClient.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
+      }
+      throw ex;
+    }
+
+    // Liveness tracker — transition callback synthesises template-57 frames onto the egress queue.
+    // The emitter is a final field on the tracker (bound at construction); the tracker invokes it
+    // on every state transition. Single-thread invariant: all entry points fire on the aeron-egress
+    // agent thread.
+    final var feedStateEmitter =
+        new AeronEgressThread.FeedStateChangeEmitter(
+            egressListener, egressQueue, metrics, SystemNanoClock.INSTANCE);
+    final var livenessTracker =
+        new MarketDataSubscriptionLivenessTracker(SystemNanoClock.INSTANCE, feedStateEmitter);
+    final var marketDataIngressHandler =
+        new MarketDataIngressHandler(
+            egressQueue, egressListener, livenessTracker, metrics, SystemNanoClock.INSTANCE);
+
+    // Bind the SAM-seam poller to the Subscription.poll method-reference once — zero per-cycle
+    // allocation thereafter.
+    final MarketDataPoller marketDataPoller = marketDataSubscription::poll;
+
+    // Bind the snapshot-request publisher seam to the Aeron offer method-reference once.
+    final SnapshotRequestPublisher snapshotRequestPublisher = snapshotRequestPublication::offer;
+
+    // 8. Aeron egress thread — full Phase 3 constructor with market-data wiring.
     final var egressThread =
-        new AeronEgressThread(clusterClient, egressQueue, metrics, config.egressQueueCapacity());
+        new AeronEgressThread(
+            clusterClient,
+            egressQueue,
+            null,
+            null,
+            null,
+            metrics,
+            config.egressQueueCapacity(),
+            marketDataPoller,
+            marketDataIngressHandler,
+            livenessTracker,
+            egressListener,
+            SystemNanoClock.INSTANCE);
     egressThread.start();
 
     // 8b. Auth dependencies
@@ -175,7 +260,8 @@ public final class WebSocketLauncher {
       server.start();
     } catch (final Exception ex) {
       LOG.error(
-          "WebSocket server start failed — cleaning up server, egress thread, and cluster client",
+          "WebSocket server start failed — cleaning up server, egress thread, market-data Aeron"
+              + " resources, and cluster client",
           ex);
       try {
         server.close(); // Shuts down EventLoopGroup threads created by TransportDetector.detect()
@@ -186,6 +272,26 @@ public final class WebSocketLauncher {
         egressThread.close();
       } catch (final Exception closeEx) {
         LOG.error("Error closing AeronEgressThread during partial-failure cleanup", closeEx);
+      }
+      // Agent A/B review F-4 / F-1: close the Phase 3 market-data Aeron resources too — they were
+      // opened above the server.start() guard and would otherwise leak on startup failure.
+      // marketDataAeron.close() closes the child Subscription + Publication, but we close them
+      // explicitly first to match the production shutdown order (resource → owner).
+      try {
+        snapshotRequestPublication.close();
+      } catch (final Exception closeEx) {
+        LOG.error(
+            "Error closing snapshot-request publication during partial-failure cleanup", closeEx);
+      }
+      try {
+        marketDataSubscription.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing market-data subscription during partial-failure cleanup", closeEx);
+      }
+      try {
+        marketDataAeron.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing market-data Aeron client during partial-failure cleanup", closeEx);
       }
       try {
         clusterClient.close();
@@ -200,7 +306,28 @@ public final class WebSocketLauncher {
         config.port(),
         config.egressQueueCapacity());
 
-    return new WebSocketComponents(server, egressThread, clusterClient);
+    return new WebSocketComponents(
+        server,
+        egressThread,
+        clusterClient,
+        marketDataAeron,
+        marketDataSubscription,
+        snapshotRequestPublication,
+        symbolEntitlementMap,
+        snapshotRequestPublisher);
+  }
+
+  /**
+   * Load the symbol-entitlement YAML and build the immutable {@link SymbolEntitlementMap}. Resolves
+   * the file path from the {@code symbols.file} system property (default {@code symbols.yaml}) —
+   * same rule shape used for {@code accounts.yaml} so launcher operators can override consistently.
+   *
+   * @return populated immutable {@link SymbolEntitlementMap}
+   * @throws java.io.IOException if the YAML file is missing or unreadable
+   */
+  private static SymbolEntitlementMap loadSymbolEntitlementMap() throws java.io.IOException {
+    final var path = Path.of(System.getProperty("symbols.file", "symbols.yaml"));
+    return new SymbolEntitlementYamlLoader(path).load();
   }
 
   /**
