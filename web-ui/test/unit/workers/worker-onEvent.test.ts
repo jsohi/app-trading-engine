@@ -866,4 +866,36 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
     expect(msg.state).toBe("QUIET");
     expect(msg.serverNanos).toBe(SERVER_NANOS);
   });
+
+  /**
+   * Verifies the defensive {@code "LIVE"} default in {@code feedStateToLabel} when the wire
+   * byte does not match any known {@link FeedStateEnum} ordinal. The documented safety
+   * invariant is that a malformed inbound state cannot tip the UI into a permanent STALE
+   * banner — an unknown byte must fall through to LIVE so the next legitimate template-57
+   * frame corrects it.
+   *
+   * <p>Uses ordinal {@code 0x99} (153) — outside the valid set {0 Live, 1 Quiet, 2 Stale} and
+   * below the SBE-codec NULL_VAL sentinel (255).
+   */
+  it("onEvent_template57_unknownByte_defaultsToFeedStateMsg_LIVE", () => {
+    const SERVER_NANOS = 1_700_000_000_000_000_007n;
+    const UNKNOWN_STATE_BYTE = 0x99;
+
+    const payload = makeMarketDataFeedStateChangePayload(UNKNOWN_STATE_BYTE, SERVER_NANOS);
+
+    const handled = decodeClusterEvent(MarketDataFeedStateChangeDecoder.TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+    });
+
+    expect(handled).toBe(true);
+    expect(capturedErrors).toHaveLength(0);
+    expect(capturedMessages).toHaveLength(1);
+
+    const msg = capturedMessages[0] as FeedStateMsg;
+    expect(msg.type).toBe("feed-state");
+    expect(msg.state).toBe("LIVE");
+    expect(msg.serverNanos).toBe(SERVER_NANOS);
+  });
 });

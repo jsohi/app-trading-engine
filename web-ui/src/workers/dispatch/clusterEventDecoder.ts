@@ -134,8 +134,8 @@ function feedStateToLabel(ord: number): FeedState {
  *     error was posted, or the misroute counter incremented). `false` if the
  *     templateId is not one the dispatcher handles — the caller must invoke
  *     its `onUnexpectedServerTemplate` fallback (today the worker drops these
- *     silently; templates 54/55/57 reserved for Phase 3 Commit 6 will land
- *     their handlers in that commit).
+ *     silently). The exhaustive handled-template set is documented in the
+ *     module-header bullet list above.
  */
 export function decodeClusterEvent(
   templateId: number,
@@ -267,8 +267,9 @@ export function decodeClusterEvent(
         return true;
       }
       default:
-        // Templates 54/55/57 (Phase 3 Commit 6) and any other unknown server
-        // template — caller's onUnexpectedServerTemplate handles.
+        // Unknown server template — caller's onUnexpectedServerTemplate fallback handles
+        // the silent-drop. The exhaustive set of explicitly-handled templates is documented
+        // in this module's class-level Javadoc.
         return false;
     }
   } catch (e: unknown) {
