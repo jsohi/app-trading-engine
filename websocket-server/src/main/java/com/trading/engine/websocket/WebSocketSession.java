@@ -122,6 +122,24 @@ public final class WebSocketSession {
   private volatile boolean slowConsumerErrorPending;
 
   /**
+   * Per-session snapshot-request token bucket state — Phase 3 Commit 5 continuation.
+   *
+   * <p>Two-element primitive array: {@code [0] = tokens (long)}, {@code [1] = lastRefillNanos
+   * (long)}. Bucket capacity equals {@link
+   * com.trading.engine.messages.MarketDataConstants#MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND}
+   * (=10); refill rate is uniform at the same value per wall-second. Enforced by {@code
+   * WebSocketFrameDispatcher.handleSubscribe} on every newly-added subscription bit so a buggy or
+   * hostile client cannot drown the publisher with snapshot requests. CME MDP 3.0 §Channel Recovery
+   * rate-limit discipline.
+   *
+   * <p>Initialised lazily by {@link #initSnapshotTokenBucket(long)} at session-auth time (same call
+   * site as {@link #initSubscriptionFilter}); remains {@code null} on the pre-auth path. Primitive
+   * {@code long[]} avoids the {@code AtomicLong} cross-thread-CAS overhead — the channel's own
+   * Netty event loop is the sole writer + reader of this field, so no synchronisation is needed.
+   */
+  private long[] snapshotTokenBucket;
+
+  /**
    * Create a new session for an authenticated client.
    *
    * @param channel the Netty channel for this client
@@ -251,6 +269,110 @@ public final class WebSocketSession {
    */
   public ReliableStreamTracker reliableStreamTracker() {
     return reliableStreamTracker;
+  }
+
+  /**
+   * Initialise the per-session snapshot-request token bucket after successful authentication.
+   * Allocates a 2-element primitive {@code long[]} carrying {@code [tokens, lastRefillNanos]}.
+   * Idempotent — re-init on session resume keeps the existing bucket state so a session that just
+   * exhausted its tokens cannot escape the rate-limit by reconnecting.
+   *
+   * <p>Phase 3 Commit 5 continuation. Called from the session's authenticated-init path alongside
+   * {@link #initSubscriptionFilter(int)} and {@link #initReliableStreamTracker(int, int,
+   * WebSocketMetrics)}.
+   *
+   * @param nowNanos current monotonic-clock nanos at session auth. Seeds the bucket's {@code
+   *     lastRefillNanos} so the first refill is timed from this anchor.
+   */
+  public void initSnapshotTokenBucket(final long nowNanos) {
+    if (this.snapshotTokenBucket == null) {
+      this.snapshotTokenBucket =
+          new long[] {
+            com.trading.engine.messages.MarketDataConstants
+                .MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND,
+            nowNanos
+          };
+    }
+  }
+
+  /**
+   * Attempts to consume one token from the snapshot-request bucket. Refills lazily based on the
+   * elapsed time since {@code lastRefillNanos}; if the refilled bucket has at least one token,
+   * decrements and returns {@code true}. Otherwise leaves the bucket unchanged (the token was NOT
+   * consumed) and returns {@code false}, signalling the dispatcher to reject the snapshot request
+   * with {@code WebSocketError code=429 SnapshotThrottled}.
+   *
+   * <p>Refill math: {@code tokensToAdd = floor(elapsedNs × CAPACITY / SECOND_NS)}; the bucket is
+   * capped at CAPACITY so a long idle period does not produce a burst above the steady-state rate
+   * (token-bucket leaky-refill contract). The {@code lastRefillNanos} cursor advances by the exact
+   * ns budget consumed by the refill — preserves fractional-second precision across many consume
+   * calls.
+   *
+   * <p>Threading: the channel's own Netty event loop is the sole reader/writer; no synchronisation.
+   * Allocation: zero (primitive {@code long[]} mutation in place).
+   *
+   * @param nowNanos current monotonic-clock nanos at consume time.
+   * @return {@code true} if a token was consumed, {@code false} if the bucket is empty.
+   * @throws IllegalStateException if the bucket has not been initialised via {@link
+   *     #initSnapshotTokenBucket(long)}.
+   */
+  public boolean tryConsumeSnapshotToken(final long nowNanos) {
+    if (this.snapshotTokenBucket == null) {
+      throw new IllegalStateException(
+          "snapshotTokenBucket not initialised — call initSnapshotTokenBucket(nowNanos) at auth");
+    }
+    final long capacity =
+        com.trading.engine.messages.MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
+    final long secondNs = 1_000_000_000L;
+    final long elapsedNs = nowNanos - this.snapshotTokenBucket[1];
+    if (elapsedNs > 0L) {
+      final long tokensToAdd = (elapsedNs * capacity) / secondNs;
+      if (tokensToAdd > 0L) {
+        // Advance the refill cursor by exactly the ns consumed by the integer-token refill so
+        // fractional remainder carries over to the next consume call.
+        this.snapshotTokenBucket[1] += (tokensToAdd * secondNs) / capacity;
+        final long newTokens = this.snapshotTokenBucket[0] + tokensToAdd;
+        this.snapshotTokenBucket[0] = newTokens > capacity ? capacity : newTokens;
+      }
+    }
+    if (this.snapshotTokenBucket[0] > 0L) {
+      this.snapshotTokenBucket[0]--;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Refunds one token to the snapshot-request bucket. Called by the dispatcher when a
+   * snapshot-request publish on stream 205 fails (e.g. Aeron offer returned BACK_PRESSURED /
+   * NOT_CONNECTED / ADMIN_ACTION) — the client's token was consumed at admission but the request
+   * never reached the publisher, so refunding lets the client retry without double-penalisation.
+   * NEVER called on a successful publish (the publisher consumed a slot — the rate-limit accounting
+   * must reflect that work).
+   *
+   * <p>Caps at the configured bucket capacity so a runaway refund cannot exceed steady-state rate.
+   *
+   * @throws IllegalStateException if the bucket has not been initialised.
+   */
+  public void refundSnapshotToken() {
+    if (this.snapshotTokenBucket == null) {
+      throw new IllegalStateException("snapshotTokenBucket not initialised");
+    }
+    final long capacity =
+        com.trading.engine.messages.MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUESTS_PER_SECOND;
+    final long refunded = this.snapshotTokenBucket[0] + 1L;
+    this.snapshotTokenBucket[0] = refunded > capacity ? capacity : refunded;
+  }
+
+  /**
+   * Returns the current number of tokens in the snapshot bucket without consuming or refilling.
+   * Intended for test assertions and Micrometer gauge sampling only; production code should call
+   * {@link #tryConsumeSnapshotToken(long)} which refills lazily.
+   *
+   * @return current token count; {@code -1L} if the bucket has not been initialised.
+   */
+  public long snapshotTokensAvailable() {
+    return this.snapshotTokenBucket == null ? -1L : this.snapshotTokenBucket[0];
   }
 
   /**
