@@ -365,7 +365,7 @@ public final class SubscriptionFilter {
     int globalMask = 0;
     int i = 0;
 
-    final Long2LongHashMap.EntryIterator it = mutable.entrySet().iterator();
+    final var it = mutable.entrySet().iterator();
     while (it.hasNext()) {
       it.next();
       symbols[i] = it.getLongKey();

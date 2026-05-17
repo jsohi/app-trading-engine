@@ -311,7 +311,10 @@ public final class WebSocketDrainHandler {
         }
       }
     } catch (final Exception e) {
-      LOG.warn("Failed to encode best-effort frame for templateId={}", templateId);
+      // Pass the throwable so the stack trace lands in the log — without it the encoder failure
+      // (truncated buffer, malformed templateId, etc.) reaches ops as a one-line "failed" with
+      // zero diagnostic surface (Agent B review F-2).
+      LOG.warn("Failed to encode best-effort frame for templateId={}", templateId, e);
     } finally {
       frameBuf.release();
     }

@@ -318,18 +318,15 @@ public final class WebSocketSession {
     // Initial capacity 64 — covers the per-tenant max of 32 symbols with headroom so no rehash
     // happens during the populate loop (rehash would allocate; CME MDP §Channel Recovery
     // discipline).
-    // Allocation note (Agent B review F-6): the inner for-each over ObjectHashSet<Long> unboxes
-    // each entitled-symbol element on this cold-path call (auth/resume). The SymbolEntitlementMap
-    // returns ObjectHashSet<Long> for cross-thread cold-path use; converting to a primitive
-    // LongHashSet here is the conversion seam. Allocations are bounded by the per-tenant 32-
-    // symbol cap × per-session resume frequency — cold-path, acceptable per the CLAUDE.md
-    // websocket-server carve-out.
+    // Agent A review F-1: SymbolEntitlementMap.entitledSymbolsFor returns a primitive
+    // LongHashSet, so the union loop uses the Agrona primitive addAll(LongHashSet) path — zero
+    // Long boxing across the auth/resume traversal. Reconnect storms iterate this hot enough
+    // that the prior ObjectHashSet<Long> for-each (which allocated an Iterator<Long> + a boxed
+    // Long per symbol) was a measurable per-connection cost.
     final var fresh = new LongHashSet(64);
     for (final var accountCode : accountCodes) {
       final var perAccount = entitlementMap.entitledSymbolsFor(accountCode);
-      for (final Long packed : perAccount) {
-        fresh.add(packed.longValue());
-      }
+      fresh.addAll(perAccount);
     }
     this.subscriptionFilter.publishEntitledSymbols(fresh);
   }
@@ -415,15 +412,17 @@ public final class WebSocketSession {
     if (elapsedNs > 0L) {
       final long tokensToAdd = (elapsedNs * capacity) / secondNs;
       if (tokensToAdd > 0L) {
-        // Advance the refill cursor by exactly the ns consumed by the integer-token refill so
-        // fractional remainder carries over to the next consume call. When the elapsed was
-        // clamped, fast-forward the cursor by the clamped amount so a subsequent call sees a
-        // fresh window (otherwise the cursor would lag behind nowNanos by the unclamped excess).
-        this.snapshotTokenBucket[1] += (tokensToAdd * secondNs) / capacity;
+        // Advance the refill cursor. Two paths (Agent B review F-5: separate the branches so
+        // the unclamped `+=` is not dead-computed and then overwritten in the clamped path):
+        //   1. Clamped (session idled past the maxUsefulElapsedNs window) — snap the cursor to
+        //      nowNanos. The bucket is at capacity already and there is no fractional remainder
+        //      worth preserving.
+        //   2. Unclamped (steady-state) — advance by exactly the ns consumed by the integer-
+        //      token refill so the fractional remainder carries over to the next consume call.
         if (rawElapsedNs > maxUsefulElapsedNs) {
-          // Snap the cursor to nowNanos when we hit the clamp — the bucket is at capacity already
-          // and there is no fractional remainder worth preserving.
           this.snapshotTokenBucket[1] = nowNanos;
+        } else {
+          this.snapshotTokenBucket[1] += (tokensToAdd * secondNs) / capacity;
         }
         final long newTokens = this.snapshotTokenBucket[0] + tokensToAdd;
         this.snapshotTokenBucket[0] = newTokens > capacity ? capacity : newTokens;

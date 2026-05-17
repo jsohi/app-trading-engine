@@ -34,7 +34,9 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -389,7 +391,7 @@ public final class WebSocketLauncher {
     final var path = Path.of(System.getProperty("accounts.file", "accounts.yaml"));
     final var loader = new YamlAccountLoader(path);
     final var records = loader.load();
-    final Map<String, AccountReadModel> map = new HashMap<>(records.size() * 2);
+    final var map = new HashMap<String, AccountReadModel>(records.size() * 2);
     for (final var rec : records) {
       map.put(rec.accountCode(), toReadModel(rec));
     }
@@ -413,7 +415,7 @@ public final class WebSocketLauncher {
     // is the cold-path source-of-truth; the projections.AccountReadModel is the read-side view
     // consumed by JwtAuthHandler.sendAuthAck. The launcher is the natural translation seam.
     final var translatedPanels =
-        new java.util.ArrayList<AccountReadModel.PanelSlot>(rec.panelLayout().size());
+        new ArrayList<AccountReadModel.PanelSlot>(rec.panelLayout().size());
     for (final var rp : rec.panelLayout()) {
       translatedPanels.add(new AccountReadModel.PanelSlot(rp.panelId(), rp.slot()));
     }
@@ -434,7 +436,7 @@ public final class WebSocketLauncher {
         0L,
         0L,
         rec.symbolPreferences(),
-        java.util.List.copyOf(translatedPanels));
+        List.copyOf(translatedPanels));
   }
 
   /**

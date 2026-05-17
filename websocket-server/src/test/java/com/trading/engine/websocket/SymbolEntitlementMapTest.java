@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trading.engine.projections.SymbolPacker;
 import java.util.List;
 import java.util.Map;
+import org.agrona.collections.LongHashSet;
 import org.agrona.collections.ObjectHashSet;
 import org.junit.jupiter.api.Test;
 
@@ -88,7 +89,7 @@ final class SymbolEntitlementMapTest {
                 "GBPUSD", List.of("ACME"),
                 "USDJPY", List.of("GLOBEX")));
 
-    final ObjectHashSet<Long> acmeSymbols = map.entitledSymbolsFor("ACME");
+    final LongHashSet acmeSymbols = map.entitledSymbolsFor("ACME");
 
     assertNotNull(acmeSymbols);
     assertEquals(2, acmeSymbols.size(), "ACME should be entitled to exactly 2 symbols");
@@ -105,7 +106,7 @@ final class SymbolEntitlementMapTest {
   void entitledSymbolsFor_unknownAccount_returnsEmptySet() {
     final var map = new SymbolEntitlementMap(Map.of("EURUSD", List.of("ACME")));
 
-    final ObjectHashSet<Long> result = map.entitledSymbolsFor("UNKNOWN_ACCT");
+    final LongHashSet result = map.entitledSymbolsFor("UNKNOWN_ACCT");
 
     assertNotNull(result, "Must return empty set, not null, for unknown accounts");
     assertTrue(result.isEmpty(), "Unknown account must yield empty symbol set");
@@ -184,14 +185,14 @@ final class SymbolEntitlementMapTest {
     final long usdJpy = SymbolPacker.pack("USDJPY");
 
     // --- Spot-check 1: GLOBEX is entitled to EURUSD and USDJPY but NOT GBPUSD ---
-    final ObjectHashSet<Long> globexSymbols = map.entitledSymbolsFor("GLOBEX");
+    final LongHashSet globexSymbols = map.entitledSymbolsFor("GLOBEX");
     assertEquals(2, globexSymbols.size(), "GLOBEX: expected 2 entitled symbols");
     assertTrue(globexSymbols.contains(eurUsd), "GLOBEX entitled to EURUSD");
     assertTrue(globexSymbols.contains(usdJpy), "GLOBEX entitled to USDJPY");
     assertFalse(globexSymbols.contains(gbpUsd), "GLOBEX NOT entitled to GBPUSD");
 
     // --- Spot-check 2: PRIME is entitled to GBPUSD and USDJPY but NOT EURUSD ---
-    final ObjectHashSet<Long> primeSymbols = map.entitledSymbolsFor("PRIME");
+    final LongHashSet primeSymbols = map.entitledSymbolsFor("PRIME");
     assertEquals(2, primeSymbols.size(), "PRIME: expected 2 entitled symbols");
     assertTrue(primeSymbols.contains(gbpUsd), "PRIME entitled to GBPUSD");
     assertTrue(primeSymbols.contains(usdJpy), "PRIME entitled to USDJPY");
