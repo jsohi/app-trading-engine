@@ -17,6 +17,7 @@
     { "name": "EntitlementDenied", "value": 14 },
     { "name": "SnapshotThrottled", "value": 15 },
     { "name": "SnapshotBackpressured", "value": 16 },
-    { "name": "Malformed", "value": 17 }
+    { "name": "Malformed", "value": 17 },
+    { "name": "AuthExpiringSoon", "value": 18 }
   ]
 }

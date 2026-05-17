@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
@@ -15,9 +16,11 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ResourceLeakDetector;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -78,8 +81,13 @@ final class WebSocketFrameDispatcherTest {
                     true,
                     0L,
                     0L,
-                    0L));
-    jwtValidator = null; // Re-auth tests would need a real validator — tested separately
+                    0L,
+                    List.of(),
+                    List.of()));
+    // Minimal stub validator — empty issuer registry so no JWKS URLs are fetched.
+    // Re-auth (templateId 60) is not exercised by these tests, so the validator is never invoked.
+    jwtValidator =
+        JwtValidator.forTesting(Map.of(), "wss://trading.test/ws", TradingClocks.epochNanoClock());
 
     channel = new EmbeddedChannel();
 
@@ -88,9 +96,33 @@ final class WebSocketFrameDispatcherTest {
     sessionManager.setUserId(session, "user-001");
     session.jti("old-jti-001");
     session.entitledAccounts(Set.of("ACME-001"));
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, metrics);
 
     // Add dispatcher to pipeline
+    final var commandDispatcher =
+        new CommandDispatcher(
+            config,
+            metrics,
+            SystemNanoClock.INSTANCE,
+            new ManyToOneConcurrentArrayQueue<>(16),
+            new CommandDispatcher.EgressEntryAllocator() {
+              private final CommandEntryPool pool = new CommandEntryPool(16, 256);
+
+              @Override
+              public EgressEntry tryAcquire() {
+                return pool.tryAcquire();
+              }
+
+              @Override
+              public void release(final EgressEntry entry) {
+                pool.release(entry);
+              }
+            });
+    final var symbolEntitlementMap =
+        new SymbolEntitlementMap(Map.of("EURUSD", List.of("ACME-001")));
+    final MarketDataAdmissionPipeline admissionPipeline =
+        new MarketDataAdmissionPipeline(
+            symbolEntitlementMap, (buf, offset, length) -> 1L, metrics, SystemNanoClock.INSTANCE);
     channel
         .pipeline()
         .addLast(
@@ -102,7 +134,9 @@ final class WebSocketFrameDispatcherTest {
                 config,
                 metrics,
                 SystemNanoClock.INSTANCE,
-                Runnable::run));
+                Runnable::run,
+                commandDispatcher,
+                admissionPipeline));
   }
 
   @AfterEach

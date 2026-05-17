@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link AeronEgressThread} — verifies constructor null-guards, start lifecycle, and
- * double-start rejection.
+ * double-start rejection using the canonical 12-arg constructor.
  *
  * <p>The {@link AeronEgressThread#start()} method launches a real thread that invokes the cluster
  * client's {@code onStart()} which calls {@code connect()}. Without a running Aeron Media Driver,
@@ -57,16 +57,26 @@ final class AeronEgressThreadTest {
   /** Queue capacity — power of 2 for ManyToOneConcurrentArrayQueue. */
   private static final int QUEUE_CAPACITY = 4;
 
+  /** Max SBE message size per pool entry. */
+  private static final int MAX_MESSAGE_SIZE = 256;
+
+  private ControllableNanoClock clock;
   private WebSocketClusterClient clusterClient;
   private ManyToOneConcurrentArrayQueue<EgressEntry> queue;
+  private ManyToOneConcurrentArrayQueue<EgressEntry> commandQueue;
+  private ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue;
+  private CommandEntryPool commandEntryPool;
   private WebSocketMetrics metrics;
+  private WebSocketEgressListener egressListener;
+  private MarketDataSubscriptionLivenessTracker livenessTracker;
+  private MarketDataIngressHandler marketDataIngressHandler;
 
   /** Track the thread for cleanup. */
   private AeronEgressThread egressThread;
 
   @BeforeEach
   void setUp() {
-    final var clock = new ControllableNanoClock(1_000_000_000L);
+    clock = new ControllableNanoClock(1_000_000_000L);
     clusterClient =
         WebSocketClusterClient.builder()
             .aeronDirectoryName("/tmp/aeron-test-egress")
@@ -76,7 +86,16 @@ final class AeronEgressThreadTest {
             .nanoClock(clock)
             .build();
     queue = new ManyToOneConcurrentArrayQueue<>(QUEUE_CAPACITY);
+    commandQueue = new ManyToOneConcurrentArrayQueue<>(QUEUE_CAPACITY);
+    ackQueue = new ManyToOneConcurrentArrayQueue<>(QUEUE_CAPACITY);
+    commandEntryPool = new CommandEntryPool(QUEUE_CAPACITY, MAX_MESSAGE_SIZE);
     metrics = WebSocketMetrics.createWithDefaults();
+    final var returnQueue = new ManyToOneConcurrentArrayQueue<EgressEntry>(QUEUE_CAPACITY);
+    egressListener =
+        new WebSocketEgressListener(queue, returnQueue, metrics, QUEUE_CAPACITY, MAX_MESSAGE_SIZE);
+    livenessTracker = new MarketDataSubscriptionLivenessTracker(clock, state -> {});
+    marketDataIngressHandler =
+        new MarketDataIngressHandler(queue, egressListener, livenessTracker, metrics, clock);
   }
 
   @AfterEach
@@ -89,11 +108,35 @@ final class AeronEgressThreadTest {
     }
   }
 
+  /**
+   * Build a complete canonical {@link AeronEgressThread} using all pre-wired fields. Callers may
+   * substitute {@code null} for a specific argument to exercise null-guard paths.
+   */
+  private AeronEgressThread build(
+      final WebSocketClusterClient client,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> mainQueue,
+      final WebSocketMetrics metricsArg) {
+    final MarketDataPoller noopPoller = (handler, limit) -> 0;
+    return new AeronEgressThread(
+        client,
+        mainQueue,
+        commandQueue,
+        ackQueue,
+        commandEntryPool,
+        metricsArg,
+        QUEUE_CAPACITY,
+        noopPoller,
+        marketDataIngressHandler,
+        livenessTracker,
+        egressListener,
+        clock);
+  }
+
   @Test
   void constructor_nullClusterClient_throwsNullPointerException() {
     assertThrows(
         NullPointerException.class,
-        () -> new AeronEgressThread(null, queue, metrics, QUEUE_CAPACITY),
+        () -> build(null, queue, metrics),
         "Constructor with null clusterClient must throw NullPointerException");
   }
 
@@ -101,7 +144,7 @@ final class AeronEgressThreadTest {
   void constructor_nullQueue_throwsNullPointerException() {
     assertThrows(
         NullPointerException.class,
-        () -> new AeronEgressThread(clusterClient, null, metrics, QUEUE_CAPACITY),
+        () -> build(clusterClient, null, metrics),
         "Constructor with null queue must throw NullPointerException");
   }
 
@@ -109,20 +152,20 @@ final class AeronEgressThreadTest {
   void constructor_nullMetrics_throwsNullPointerException() {
     assertThrows(
         NullPointerException.class,
-        () -> new AeronEgressThread(clusterClient, queue, null, QUEUE_CAPACITY),
+        () -> build(clusterClient, queue, null),
         "Constructor with null metrics must throw NullPointerException");
   }
 
   @Test
   void isStarted_beforeStart_returnsFalse() {
-    egressThread = new AeronEgressThread(clusterClient, queue, metrics, QUEUE_CAPACITY);
+    egressThread = build(clusterClient, queue, metrics);
 
     assertFalse(egressThread.isStarted(), "isStarted() must return false before start() is called");
   }
 
   @Test
   void start_calledOnce_startsSuccessfully() {
-    egressThread = new AeronEgressThread(clusterClient, queue, metrics, QUEUE_CAPACITY);
+    egressThread = build(clusterClient, queue, metrics);
 
     // start() launches a thread that calls connect(). Without a running cluster, the
     // connection will fail and the client will enter RECONNECTING state. That's fine.
@@ -133,7 +176,7 @@ final class AeronEgressThreadTest {
 
   @Test
   void start_calledTwice_throwsIllegalStateException() {
-    egressThread = new AeronEgressThread(clusterClient, queue, metrics, QUEUE_CAPACITY);
+    egressThread = build(clusterClient, queue, metrics);
     egressThread.start();
 
     assertThrows(

@@ -57,14 +57,12 @@ public final class WebSocketDrainHandler {
   private final long[] packedAccountBuf = new long[2];
 
   /**
-   * Create a drain handler with full command/ack wiring.
+   * Create a drain handler with full command/ack wiring. All collaborators required.
    *
    * @param queue the egress queue to drain
    * @param ackQueue the back-channel queue for CommandAck(THROTTLED) entries originating from
-   *     {@link AeronEgressThread} after BACK_PRESSURED retries; may be {@code null} if no command
-   *     dispatcher is wired
-   * @param commandEntryPool the pool that owns ack entries (for release after consume); required
-   *     when ackQueue is non-null
+   *     {@link AeronEgressThread} after BACK_PRESSURED retries
+   * @param commandEntryPool the pool that owns ack entries (for release after consume)
    * @param egressListener the listener (for returning entries to the pool)
    * @param sessionManager the session manager (for iterating active sessions)
    * @param metrics metrics instance for queue depth and filter metrics
@@ -79,33 +77,12 @@ public final class WebSocketDrainHandler {
       final WebSocketMetrics metrics,
       final NanoClock nanoClock) {
     this.queue = Objects.requireNonNull(queue, "queue");
-    this.ackQueue = ackQueue;
-    this.commandEntryPool = commandEntryPool;
+    this.ackQueue = Objects.requireNonNull(ackQueue, "ackQueue");
+    this.commandEntryPool = Objects.requireNonNull(commandEntryPool, "commandEntryPool");
     this.egressListener = Objects.requireNonNull(egressListener, "egressListener");
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
-    if (ackQueue != null && commandEntryPool == null) {
-      throw new IllegalArgumentException("commandEntryPool required when ackQueue is non-null");
-    }
-  }
-
-  /**
-   * Convenience overload for callers that don't wire the ack back-channel (e.g., legacy tests).
-   *
-   * @param queue the egress queue to drain
-   * @param egressListener the egress listener (for entry pool returns)
-   * @param sessionManager the session manager
-   * @param metrics metrics instance
-   * @param nanoClock monotonic clock
-   */
-  public WebSocketDrainHandler(
-      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
-      final WebSocketEgressListener egressListener,
-      final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics,
-      final NanoClock nanoClock) {
-    this(queue, null, null, egressListener, sessionManager, metrics, nanoClock);
   }
 
   /**
@@ -135,14 +112,12 @@ public final class WebSocketDrainHandler {
     }
 
     // Drain ack back-channel: CommandAck frames bound for a single session (carried by sessionId).
-    if (ackQueue != null && commandEntryPool != null) {
-      while ((entry = ackQueue.poll()) != null) {
-        try {
-          writeAckToTargetChannel(entry);
-          drained++;
-        } finally {
-          commandEntryPool.release(entry);
-        }
+    while ((entry = ackQueue.poll()) != null) {
+      try {
+        writeAckToTargetChannel(entry);
+        drained++;
+      } finally {
+        commandEntryPool.release(entry);
       }
     }
 

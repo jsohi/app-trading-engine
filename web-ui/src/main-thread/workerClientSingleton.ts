@@ -32,6 +32,20 @@ function realBackendModeEnabled(): boolean {
 }
 
 /**
+ * Read-only access to the existing singleton — never constructs a new one and
+ * never throws. Returns {@code null} when the singleton has not been started
+ * (real-backend mode disabled, or {@link getWorkerClient} not yet called).
+ *
+ * <p>Use this for shell-level reactive subscriptions (Phase 3 Commit B
+ * {@code panelLayout$} hook in {@code App.tsx}) that must render in BOTH
+ * fake-stream demo mode AND real-backend mode without forcing the worker to
+ * exist. The caller treats {@code null} as "no worker; use defaults".
+ */
+export function peekWorkerClient(): WorkerClient | null {
+  return _instance;
+}
+
+/**
  * Get-or-create the singleton WorkerClient. Calls {@code start()} on first
  * construction; subsequent calls return the same instance (already started).
  */

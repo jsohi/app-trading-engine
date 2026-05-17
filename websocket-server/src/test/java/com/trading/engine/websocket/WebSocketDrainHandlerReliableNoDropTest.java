@@ -81,7 +81,11 @@ final class WebSocketDrainHandlerReliableNoDropTest {
         new WebSocketEgressListener(queue, returnQueue, metrics, CAPACITY, MAX_MESSAGE_SIZE);
     final var config = WebSocketServerConfig.builder().build();
     sessionManager = new WebSocketSessionManager(config, metrics, clock);
-    drainHandler = new WebSocketDrainHandler(queue, egressListener, sessionManager, metrics, clock);
+    final var ackQueue = new ManyToOneConcurrentArrayQueue<EgressEntry>(CAPACITY);
+    final var commandEntryPool = new CommandEntryPool(CAPACITY, MAX_MESSAGE_SIZE);
+    drainHandler =
+        new WebSocketDrainHandler(
+            queue, ackQueue, commandEntryPool, egressListener, sessionManager, metrics, clock);
     sbeBuf = new ExpandableArrayBuffer(MAX_MESSAGE_SIZE);
 
     channel = new EmbeddedChannel(DefaultChannelId.newInstance());

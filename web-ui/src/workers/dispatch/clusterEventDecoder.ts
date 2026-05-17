@@ -61,6 +61,7 @@ import {
 } from "@trading/sbe-codecs";
 
 import { type ErrorMsg, type FeedState, type WorkerMessage } from "@/shared/transport/MessageShape";
+import { pack as packSymbolByString } from "@/shared/transport/SymbolPacking";
 import { type Stats } from "@/workers/protocol/Stats";
 
 /**
@@ -95,6 +96,53 @@ export interface ClusterEventDeps {
   readonly postError: (code: WorkerErrorCode, hint: string) => void;
   /** Counter surface — receives the misroute increment on template 51. */
   readonly stats: Stats;
+  /**
+   * Phase 3 Commit B — per-symbol conflation map + 30 Hz drain. Required: template 54 stages the
+   * tick into conflation; the conflation drain emits the `PriceUpdate` via its own sink which the
+   * worker bootstrap binds to the same `emit` callback.
+   */
+  readonly conflation: MarketDataConflationLike;
+  /**
+   * Phase 3 Commit B — per-symbol `symbolSeq` gap detector with publisher-vs-network attribution.
+   * Required.
+   */
+  readonly gapDetector: GapDetectorLike;
+}
+
+/**
+ * Structural type for {@link ../marketDataConflation.MarketDataConflation} — used as the
+ * dependency contract so the dispatcher can be tested with a tiny stub without importing the
+ * concrete class.
+ */
+export interface MarketDataConflationLike {
+  onTick(packedSymbol: number, frame: MarketDataTickFrameLike): void;
+}
+
+/** Structural mirror of {@link ../marketDataConflation.MarketDataTickFrame}. */
+export interface MarketDataTickFrameLike {
+  readonly symbol: string;
+  readonly bid: bigint;
+  readonly ask: bigint;
+  readonly bidSize: bigint;
+  readonly askSize: bigint;
+  readonly ingressNanos: bigint;
+  readonly serverNanos: bigint;
+}
+
+/**
+ * Structural type for {@link ../gapDetector.GapDetector} — used as the dependency contract.
+ */
+export interface GapDetectorLike {
+  onTick(
+    packedSymbol: number,
+    symbolSeq: number,
+  ): {
+    readonly outcome: string;
+    readonly publisherConflated: number;
+    readonly network: number;
+  };
+  onHeartbeat(packedSymbol: number, lastPublishedSeq: number): void;
+  onPublisherRestart(): void;
 }
 
 /**
@@ -217,39 +265,83 @@ export function decodeClusterEvent(
       }
       case MarketDataTickDecoder.TEMPLATE_ID: {
         const dec = new MarketDataTickDecoder().wrap(dv, SBE_HEADER_BYTES);
-        // MarketDataTick (template 54) — emit as PriceUpdate per the existing browser contract.
-        // The blotter consumes PriceUpdate via the price-stream operator; mid-rate is implicit
-        // (bid + ask). Note: bidSize/askSize/symbolSeq/ingressNanos are decoded but not exposed
-        // on the legacy PriceUpdate shape — extending PriceUpdate with these fields would
-        // ripple through every consumer; for Phase 3 the minimal-viable surface keeps
-        // bid/ask/serverNanos on the wire-contract while the publisher / wire bytes carry the
-        // full payload for future expansion.
-        deps.emit({
-          type: "price",
-          symbol: dec.symbol(),
+        const ingressNanos = dec.ingressNanos();
+        const serverNanos = dec.serverNanos();
+        const symbol = dec.symbol();
+        // symbolSeq is int64 on the wire. The gap-attribution math runs in pure Number
+        // space — bigint arithmetic on the hot path costs ~3x and per-symbol cursors stay
+        // far below 2^53. Convert via explicit BigInt → Number truncation. The
+        // `no-restricted-syntax` rule about Number coercion is for fixed-point money fields;
+        // this is a sequence counter, not a price or quantity.
+        // eslint-disable-next-line no-restricted-syntax
+        const symbolSeq = Number(dec.symbolSeq());
+
+        // Phase 3 Commit B routing: stage the tick into conflation + record gap attribution.
+        // The conflation drain (30 Hz setInterval) emits the consolidated PriceUpdate
+        // asynchronously via its own sink (the worker bootstrap binds it to the same `emit`
+        // callback). gap counts feed Prometheus via the worker stats surface.
+        const packedSymbol = packSymbolByString(symbol);
+        deps.conflation.onTick(packedSymbol, {
+          symbol,
           bid: dec.bidPrice(),
           ask: dec.askPrice(),
-          serverNanos: dec.serverNanos(),
+          bidSize: dec.bidSize(),
+          askSize: dec.askSize(),
+          ingressNanos,
+          serverNanos,
         });
+        const report = deps.gapDetector.onTick(packedSymbol, symbolSeq);
+        if (report.publisherConflated > 0) {
+          deps.stats.addGapsPublisherConflated(report.publisherConflated);
+        }
+        if (report.network > 0) {
+          deps.stats.addGapsNetwork(report.network);
+        }
         return true;
       }
       case MarketDataHeartbeatDecoder.TEMPLATE_ID: {
-        // Heartbeats are state signals only — they update the liveness tracker (a future
-        // commit's responsibility) but emit no WorkerMessage to the main thread. Decoding
-        // proves the frame is well-formed; returning `true` claims the template as handled so
-        // the worker's `onUnexpectedServerTemplate` does not double-fire.
         const dec = new MarketDataHeartbeatDecoder().wrap(dv, SBE_HEADER_BYTES);
-        // Touch the decoded serverNanos to ensure the decoder is actually exercised (a future
-        // alloc tripwire over the heartbeat path would catch any reintroduced allocation).
-        // The value is used by the (still-pending) MarketDataSubscriptionLivenessTracker.
+        // Touch the decoded serverNanos so the decoder is actually exercised (the alloc tripwire
+        // would catch any silent regression). The serverNanos is used by the server-side
+        // MarketDataSubscriptionLivenessTracker (Commit A) — the browser uses heartbeats for
+        // the gap-attribution cursor below.
         void dec.serverNanos();
+        // Phase 3 Commit B: update the gap detector's per-symbol publisher cursor from the
+        // heartbeat's lastPublishedSeq repeating group. CME MDP 3.0 §Gap Detection — the
+        // attribution math in gapDetector.onTick uses this cursor to discriminate publisher-
+        // conflated drops from network drops on a subsequent observed gap. Each entry carries
+        // (symbol, seq) where seq is the most-recently published symbolSeq for that symbol.
+        // bigint → Number conversion is safe up to 2^53-1; symbolSeq is int64 on the wire but
+        // realistic per-symbol counts stay far below that bound. Truncation guard via the
+        // explicit Number cast keeps the gap-attribution math in pure Number space (no bigint
+        // arithmetic on the hot path).
+        const group = dec.lastPublishedSeq();
+        while (group.hasNext()) {
+          group.next();
+          const packed = packSymbolByString(group.symbol());
+          // Heartbeat seq is the publisher cursor (int64 on wire); kept in Number space
+          // to match the gapDetector's Number-typed lastSeq map. Same rationale as the
+          // tick-path symbolSeq cast above.
+          // eslint-disable-next-line no-restricted-syntax
+          deps.gapDetector.onHeartbeat(packed, Number(group.seq()));
+        }
         return true;
       }
       case MarketDataFeedStateChangeDecoder.TEMPLATE_ID: {
         const dec = new MarketDataFeedStateChangeDecoder().wrap(dv, SBE_HEADER_BYTES);
+        const label = feedStateToLabel(dec.state());
+        // Phase 3 Commit B: on transition into LIVE the gap detector resets all per-symbol
+        // cursors so a publisher-1 tick at seq=1 does NOT compute a negative gap against a
+        // stale publisher-0 lastSeq. The liveness tracker re-emits LIVE on session attach so
+        // this fires on publisher-restart recovery. Reset BEFORE the FeedStateMsg emit so the
+        // main thread's `feedState$` transition and the worker's lastSeq clear are ordered
+        // consistently (drain timer ticks at 33 ms can interleave with the dispatch).
+        if (label === "LIVE") {
+          deps.gapDetector.onPublisherRestart();
+        }
         deps.emit({
           type: "feed-state",
-          state: feedStateToLabel(dec.state()),
+          state: label,
           serverNanos: dec.serverNanos(),
         });
         return true;

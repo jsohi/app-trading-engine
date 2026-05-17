@@ -162,7 +162,12 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
           requireString(entry, "baseCurrency"),
           status,
           requireStringOrDefault(entry, "complianceStatus", "OK"),
-          toLong(entry, "capabilities"));
+          toLong(entry, "capabilities"),
+          // Phase 3 Commit B — optional per-account preferences. Missing keys default to empty
+          // lists (legacy behaviour); malformed entries throw via AccountRecord's compact ctor
+          // which the surrounding catch re-wraps as ReferenceDataLoadException.
+          toStringList(entry, "symbolPreferences"),
+          toPanelLayout(entry, "panelLayout"));
     } catch (final ReferenceDataLoadException e) {
       throw e;
     } catch (final IllegalArgumentException e) {
@@ -173,6 +178,71 @@ public final class YamlAccountLoader implements ReferenceDataLoader<AccountRecor
       throw new ReferenceDataLoadException(
           ENTITY_TYPE, "invalid entry " + index + " in " + filePath, e);
     }
+  }
+
+  /**
+   * Parse an optional YAML list of strings. Missing key → empty list. Non-list value → throws. Used
+   * for the Phase 3 {@code symbolPreferences} field (entries are validated against {@code
+   * ^[A-Z]{6,8}$} downstream by the {@link AccountRecord} compact constructor).
+   */
+  private static List<String> toStringList(final Map<String, Object> map, final String key)
+      throws ReferenceDataLoadException {
+    if (!map.containsKey(key)) {
+      return List.of();
+    }
+    final var value = map.get(key);
+    if (value == null) {
+      return List.of();
+    }
+    if (!(value instanceof List<?> rawList)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' must be a list, got " + value.getClass().getSimpleName());
+    }
+    final var out = new ArrayList<String>(rawList.size());
+    for (int i = 0; i < rawList.size(); i++) {
+      final var item = rawList.get(i);
+      if (!(item instanceof String s)) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "field '" + key + "' entry " + i + " must be a string, got " + item);
+      }
+      out.add(s);
+    }
+    return out;
+  }
+
+  /**
+   * Parse an optional YAML list of {@code panelLayout} entries. Each entry must be a map with
+   * {@code panelId} + {@code slot} string keys. Used for the Phase 3 {@code panelLayout} field.
+   */
+  private static List<AccountRecord.PanelSlot> toPanelLayout(
+      final Map<String, Object> map, final String key) throws ReferenceDataLoadException {
+    if (!map.containsKey(key)) {
+      return List.of();
+    }
+    final var value = map.get(key);
+    if (value == null) {
+      return List.of();
+    }
+    if (!(value instanceof List<?> rawList)) {
+      throw new ReferenceDataLoadException(
+          ENTITY_TYPE,
+          "field '" + key + "' must be a list, got " + value.getClass().getSimpleName());
+    }
+    final var out = new ArrayList<AccountRecord.PanelSlot>(rawList.size());
+    for (int i = 0; i < rawList.size(); i++) {
+      final var item = rawList.get(i);
+      if (!(item instanceof Map<?, ?> entryMap)) {
+        throw new ReferenceDataLoadException(
+            ENTITY_TYPE, "field '" + key + "' entry " + i + " must be a map, got " + item);
+      }
+      @SuppressWarnings("unchecked")
+      final var typed = (Map<String, Object>) entryMap;
+      final var panelId = requireString(typed, "panelId");
+      final var slot = requireString(typed, "slot");
+      out.add(new AccountRecord.PanelSlot(panelId, slot));
+    }
+    return out;
   }
 
   /**

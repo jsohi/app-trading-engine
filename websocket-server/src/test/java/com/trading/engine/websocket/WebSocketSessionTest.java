@@ -130,7 +130,7 @@ final class WebSocketSessionTest {
     final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
 
     assertNull(session.subscriptionFilter(), "Filter must be null before init");
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, WebSocketMetrics.createWithDefaults());
     assertNotNull(session.subscriptionFilter(), "Filter must be non-null after init");
     assertEquals(0, session.subscriptionFilter().subscriptionCount());
 
@@ -154,7 +154,7 @@ final class WebSocketSessionTest {
     final var channel = new EmbeddedChannel();
     final var session = new WebSocketSession(channel, 0L, "127.0.0.1");
 
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, WebSocketMetrics.createWithDefaults());
     session.subscriptionFilter().addSubscription(0x4555525553440000L, 0x01);
     session.entitledAccounts(Set.of("ACC1"));
 

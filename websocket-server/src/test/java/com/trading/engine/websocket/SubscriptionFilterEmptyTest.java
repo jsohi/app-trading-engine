@@ -104,10 +104,10 @@ final class SubscriptionFilterEmptyTest {
    */
   @Test
   void matches_emptyEntitlementSet_doesNotAllocate() {
-    // Use the no-metrics ctor so the hot path exercises the null-metrics branch
-    // (no counter allocation on deny). Entitlement still enforced because
-    // publishEntitledSymbols() flips the latch regardless of the metrics sink.
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    // Use createWithDefaults() so the hot path exercises the deny counter without
+    // asserting on its exact value (this test only checks allocation and correctness).
+    final var filter =
+        new SubscriptionFilter(MAX_SUBSCRIPTIONS, WebSocketMetrics.createWithDefaults());
     final long packedEur = SymbolPacker.pack("EURUSD");
     filter.addSubscription(packedEur, 0x1F);
     filter.publishEntitledSymbols(new LongHashSet(0));

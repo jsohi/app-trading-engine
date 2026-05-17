@@ -296,7 +296,8 @@ public final class WebSocketLauncher {
             entitlementService,
             authFailureTracker,
             symbolEntitlementMap,
-            snapshotRequestPublisher);
+            snapshotRequestPublisher,
+            accountLookup::get);
     try {
       server.start();
     } catch (final Exception ex) {
@@ -406,6 +407,16 @@ public final class WebSocketLauncher {
     final long capabilities = rec.capabilities();
     final boolean canTrade = (capabilities & 1L) != 0L;
     final boolean canRequestQuotes = (capabilities & 2L) != 0L;
+    // Phase 3 Commit B: bridge the refdata PanelSlot type to the projections PanelSlot type.
+    // Both modules define a parallel record with identical shape because the projections module
+    // does not (and should not) depend on reference-data — the YAML-loaded refdata.AccountRecord
+    // is the cold-path source-of-truth; the projections.AccountReadModel is the read-side view
+    // consumed by JwtAuthHandler.sendAuthAck. The launcher is the natural translation seam.
+    final var translatedPanels =
+        new java.util.ArrayList<AccountReadModel.PanelSlot>(rec.panelLayout().size());
+    for (final var rp : rec.panelLayout()) {
+      translatedPanels.add(new AccountReadModel.PanelSlot(rp.panelId(), rp.slot()));
+    }
     return new AccountReadModel(
         rec.accountId(),
         rec.parentAccountId(),
@@ -421,7 +432,9 @@ public final class WebSocketLauncher {
         canRequestQuotes,
         0L,
         0L,
-        0L);
+        0L,
+        rec.symbolPreferences(),
+        java.util.List.copyOf(translatedPanels));
   }
 
   /**

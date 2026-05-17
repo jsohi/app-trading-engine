@@ -5,6 +5,7 @@ import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
 import com.trading.engine.messages.sbe.ComplianceStatusEnum;
 import com.trading.engine.projections.ProjectionUtil;
+import java.util.List;
 
 /**
  * Immutable snapshot of an account's state at a point in time. Returned by {@link
@@ -36,6 +37,10 @@ import com.trading.engine.projections.ProjectionUtil;
  * @param transactTime FIX tag 60: transaction time (epoch nanos)
  * @param sequenceNumber event sequence number of the most recently applied event
  * @param lastUpdatedAt cluster timestamp (epoch nanos) of the most recent event
+ * @param symbolPreferences Phase 3 Commit B — per-account default subscription symbols (validated
+ *     against {@code ^[A-Z]{6,8}$} at YAML load time); empty list = use cohort defaults
+ * @param panelLayout Phase 3 Commit B — per-account panel-mount preferences; empty list = fall back
+ *     to UI defaults
  */
 public record AccountReadModel(
     long accountId,
@@ -52,7 +57,29 @@ public record AccountReadModel(
     boolean canRequestQuotes,
     long transactTime,
     long sequenceNumber,
-    long lastUpdatedAt) {
+    long lastUpdatedAt,
+    List<String> symbolPreferences,
+    List<AccountReadModel.PanelSlot> panelLayout) {
+
+  /**
+   * Phase 3 Commit B — sibling of {@code com.trading.refdata.account.AccountRecord.PanelSlot}.
+   * Defined here so the {@code projections} module does not need a (wrong-direction) Gradle
+   * dependency on {@code reference-data}. The launcher's {@code toReadModel} converts the refdata
+   * type into this one at the projections boundary.
+   *
+   * @param panelId layout-side identifier; e.g. {@code "order-entry"}
+   * @param slot grid-slot name; e.g. {@code "right-top"}
+   */
+  public record PanelSlot(String panelId, String slot) {
+    public PanelSlot {
+      if (panelId == null || panelId.isBlank()) {
+        throw new IllegalArgumentException("PanelSlot.panelId must not be blank");
+      }
+      if (slot == null || slot.isBlank()) {
+        throw new IllegalArgumentException("PanelSlot.slot must not be blank");
+      }
+    }
+  }
 
   /**
    * Creates an immutable read model by copying all fields from a mutable {@link AccountView}.
@@ -80,6 +107,13 @@ public record AccountReadModel(
         v.canRequestQuotes(),
         v.transactTime(),
         v.sequenceNumber(),
-        v.lastUpdatedAt());
+        v.lastUpdatedAt(),
+        // Phase 3 Commit B — projection-internal AccountView does NOT yet carry these fields
+        // (extending the cluster's snapshot is out-of-scope for Commit B; the snapshot path is
+        // covered by APP-244 follow-up). Default to empty so the read model is well-formed;
+        // the LIVE source of preferences is the launcher's toReadModel which propagates from the
+        // YAML-loaded AccountRecord directly.
+        List.of(),
+        List.of());
   }
 }

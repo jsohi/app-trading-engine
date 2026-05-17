@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.AccountTypeEnum;
 import com.trading.engine.messages.sbe.AcctIDSourceEnum;
@@ -18,9 +19,11 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.util.ResourceLeakDetector;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
@@ -76,6 +79,10 @@ final class WebSocketFrameDispatcherMaxSymbolsTest {
     sessionManager = new WebSocketSessionManager(config, metrics, clock);
 
     final var jtiCache = new JtiRevocationCache(1000, 15, clock);
+    // Minimal stub validator — empty processor map so no JWKS fetches happen. Re-auth
+    // (templateId 60) is not exercised by this test, so the validator is never invoked.
+    final var jwtValidator =
+        JwtValidator.forTesting(Map.of(), "wss://trading.test/ws", TradingClocks.epochNanoClock());
     final var entitlementService =
         new UserEntitlementService(
             code ->
@@ -94,27 +101,55 @@ final class WebSocketFrameDispatcherMaxSymbolsTest {
                     true,
                     0L,
                     0L,
-                    0L));
+                    0L,
+                    List.of(),
+                    List.of()));
 
     channel = new EmbeddedChannel();
     session = sessionManager.tryRegister(channel);
     sessionManager.setUserId(session, "user-001");
     session.jti("jti-001");
     session.entitledAccounts(Set.of("ACME-001"));
-    session.initSubscriptionFilter(MAX_SUBSCRIPTIONS);
+    session.initSubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
 
+    final var commandDispatcher =
+        new CommandDispatcher(
+            config,
+            metrics,
+            clock,
+            new ManyToOneConcurrentArrayQueue<>(16),
+            new CommandDispatcher.EgressEntryAllocator() {
+              private final CommandEntryPool pool = new CommandEntryPool(16, 256);
+
+              @Override
+              public EgressEntry tryAcquire() {
+                return pool.tryAcquire();
+              }
+
+              @Override
+              public void release(final EgressEntry entry) {
+                pool.release(entry);
+              }
+            });
+    final var symbolEntitlementMap =
+        new SymbolEntitlementMap(Map.of("EURUSD", List.of("ACME-001")));
+    final var admissionPipeline =
+        new MarketDataAdmissionPipeline(
+            symbolEntitlementMap, (buf, offset, length) -> 1L, metrics, clock);
     channel
         .pipeline()
         .addLast(
             new WebSocketFrameDispatcher(
                 sessionManager,
-                null,
+                jwtValidator,
                 jtiCache,
                 entitlementService,
                 config,
                 metrics,
                 clock,
-                Runnable::run));
+                Runnable::run,
+                commandDispatcher,
+                admissionPipeline));
   }
 
   @AfterEach

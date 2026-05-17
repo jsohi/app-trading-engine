@@ -111,6 +111,8 @@ function makeValidAck(overrides?: Partial<AuthAck>): AuthAck {
     maxSubscriptions: 50,
     serverHeartbeatIntervalMs: 5_000,
     clientHeartbeatIntervalMs: 10_000,
+    symbolPreferences: [],
+    panelLayout: [],
     ...overrides,
   };
 }
@@ -207,6 +209,8 @@ describe("AuthClient (initial handshake)", () => {
         maxSubscriptions: 100,
         serverHeartbeatIntervalMs: 3_000,
         clientHeartbeatIntervalMs: 7_500,
+        symbolPreferences: [],
+        panelLayout: [],
       },
       "my-sub",
     );

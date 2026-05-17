@@ -40,6 +40,8 @@ import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
 import { decodeClusterEvent } from "@/workers/dispatch/clusterEventDecoder";
+import { GapDetector } from "@/workers/gapDetector";
+import { MarketDataConflation } from "@/workers/marketDataConflation";
 import { MessageRouter, type RouterHandlers } from "@/workers/dispatch/MessageRouter";
 import { CommandAckDecoder, CommandAckStatus } from "@trading/sbe-codecs";
 
@@ -138,6 +140,21 @@ startSpan.end();
 
 const state = new SessionState();
 const stats = new Stats();
+
+/**
+ * Phase 3 Commit B — per-symbol gap detector. Tracks `lastSeq` per packed-symbol number and
+ * attributes observed gaps to publisher-conflated vs network. Reset on every
+ * `MarketDataFeedStateChange` LIVE transition (publisher-restart recovery).
+ */
+const gapDetector = new GapDetector();
+
+/**
+ * Phase 3 Commit B — per-symbol latest-value conflation map + 30 Hz drain. Sink is `emit` so
+ * drained `PriceUpdate`s flow through the same outbound batch as every other WorkerMessage.
+ * The setInterval is armed via {@link MarketDataConflation.install} once worker bootstrap
+ * completes (after `emit` is defined).
+ */
+const marketDataConflation = new MarketDataConflation((msg) => { emit(msg); });
 
 let ws: WebSocket | null = null;
 let parser: FrameParser | null = null;
@@ -276,7 +293,12 @@ async function handleInit(
     const mode: "prod" | "dev" = import.meta.env.PROD ? "prod" : "dev";
     validateWsUrl(wsUrl, mode);
 
-    // 2. Acquire the JWT from the issuer's MessagePort.
+    // 2. Acquire the JWT from the issuer's MessagePort. Phase 3 Commit B:
+    // the port is held open after the first read so the AuthExpiringSoon
+    // handler can request a refreshed token mid-session via
+    // {@link requestFreshToken}. Module-scope ref lets the router
+    // callbacks (which live outside handleInit) reach it.
+    sessionTokenPort = tokenPort;
     const token = await acquireToken(tokenPort);
 
     // Per Gemini review (HIGH): extract the JWT `sub` claim and store
@@ -592,6 +614,13 @@ function extractJwtSubClaim(token: string): string {
   }
 }
 
+// Phase 3 Commit B: token port is now persistent across the session
+// lifetime (was: one-shot, closed after first read). The session-level
+// reauth flow posts {type: "REAUTH_REQUEST"} on this port and awaits a
+// new {type: "TOKEN", value} response. Held as a module-scope ref so
+// the AuthExpiringSoon handler can reach it after handleInit returns.
+let sessionTokenPort: MessagePort | null = null;
+
 async function acquireToken(port: MessagePort): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -607,12 +636,47 @@ async function acquireToken(port: MessagePort): Promise<string> {
         typeof (data as { value?: unknown }).value === "string"
       ) {
         const value = (data as { value: string }).value;
-        port.close();
+        // Do NOT close the port — keep it open for reauth requests.
+        // The handler below is replaced (not stacked) on the next
+        // acquireToken call, so no listener leak.
         resolve(value);
       } else {
         reject(new Error("token-port: malformed TOKEN message"));
       }
     };
+  });
+}
+
+/**
+ * Request a freshly-minted JWT via the persistent token port. Used by
+ * the {@code WebSocketError(AuthExpiringSoon)} handler. The main-thread
+ * {@code WorkerClient} listens for {@code REAUTH_REQUEST} and replies
+ * with a {@code TOKEN} message after consulting its tokenProvider.
+ */
+async function requestFreshToken(): Promise<string> {
+  const port = sessionTokenPort;
+  if (port === null) {
+    return Promise.reject(new Error("requestFreshToken: token port not initialised"));
+  }
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("token-port reauth timeout"));
+    }, TOKEN_ACQUIRE_TIMEOUT_MS);
+    port.onmessage = (ev: MessageEvent<unknown>): void => {
+      clearTimeout(timeout);
+      const data = ev.data;
+      if (
+        data !== null &&
+        typeof data === "object" &&
+        (data as { type?: unknown }).type === "TOKEN" &&
+        typeof (data as { value?: unknown }).value === "string"
+      ) {
+        resolve((data as { value: string }).value);
+      } else {
+        reject(new Error("token-port: malformed REAUTH TOKEN message"));
+      }
+    };
+    port.postMessage({ type: "REAUTH_REQUEST" });
   });
 }
 
@@ -683,12 +747,23 @@ function buildRouterHandlers(): RouterHandlers {
       activateSessionLayer();
       reconnect.notifyAuthAckSuccess(state);
       transitionConnection("CONNECTED");
-      // Subscribe the dev-default symbol set so the panels (Prices, Orders,
-      // Positions, Quotes, Events) start receiving server-pushed frames.
-      // In production this list comes from a per-user preferences store; for
-      // dev/e2e we hard-code the major-FX cohort matching pricing-service's
-      // emitter. eventTypes=0xFFFFFFFF subscribes to every category.
-      sendDefaultSubscriptions();
+      // Phase 3 Commit B: post the per-account UI panel layout to the main
+      // thread so App.tsx can mount each panel into its server-asserted
+      // slot. Empty layout → main thread keeps default slot bindings.
+      // Emit through the batched WorkerMessage pipeline so the main thread
+      // receives it via the existing MESSAGE_BATCH dispatch (no separate
+      // top-level envelope needed).
+      emit({ type: "PANEL_LAYOUT", panels: ack.panelLayout });
+      // Phase 3 Commit B: subscribe to the UNION of per-account
+      // `symbolPreferences` ∪ DEFAULT_SUBSCRIBE_SYMBOLS so a user with an
+      // empty preferences list still gets the dev default cohort, and a
+      // user with a preferences list still receives the defaults that
+      // power the cross-panel demos.
+      const cohort =
+        ack.symbolPreferences.length === 0
+          ? DEFAULT_SUBSCRIBE_SYMBOLS
+          : Array.from(new Set([...ack.symbolPreferences, ...DEFAULT_SUBSCRIBE_SYMBOLS]));
+      sendDefaultSubscriptions(cohort);
     },
     onAnyInbound: () => {
       const nowNs = nowEpochNs();
@@ -715,6 +790,21 @@ function buildRouterHandlers(): RouterHandlers {
       // consults the §2.13 matrix.
       if (code === 9) {
         backpressureController?.onSlowConsumerSignal();
+        return;
+      }
+      if (code === 18) {
+        // Phase 3 Commit B — AuthExpiringSoon. Server warned that the JWT is
+        // within the soft-expiry window. Acquire a fresh token via the
+        // persistent token port, defensive timing pre-flight (nbf + exp ± 60s),
+        // then in-session reauth. Session preserved; no close. Errors surface
+        // via AuthClient.onAuthFailure → existing onAuthError path, NOT the
+        // freeze counter (an expiring token is not an attacker signal).
+        if (authClient !== null) {
+          authClient.handleAuthExpiringSoon(requestFreshToken).catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            postError("AUTH", `AuthExpiringSoon reauth failed: ${msg}`);
+          });
+        }
         return;
       }
       if (code === 12) {
@@ -807,7 +897,15 @@ function buildRouterHandlers(): RouterHandlers {
       // PriceUpdate, Commit 6), 55 (MarketDataHeartbeat, decoded for the
       // future liveness tracker, no main-thread message), 57
       // (MarketDataFeedStateChange → FeedStateMsg, Commit 6).
-      if (decodeClusterEvent(templateId, payload, { emit, postError, stats })) {
+      if (
+        decodeClusterEvent(templateId, payload, {
+          emit,
+          postError,
+          stats,
+          conflation: marketDataConflation,
+          gapDetector,
+        })
+      ) {
         return;
       }
       void templateId;
@@ -976,6 +1074,10 @@ function activateSessionLayer(): void {
     heartbeat?.checkServerDeadline(state.lastServerActivityNs);
   }, SESSION_TICK_MS);
 
+  // Phase 3 Commit B — arm the 30 Hz market-data conflation drain. Idempotent across multiple
+  // INIT calls (e.g. session re-handshake) — install() is a no-op when already armed.
+  marketDataConflation.install();
+
   // Per /review HIGH (Agent B): 1 s STATS emitter — drains the Stats
   // snapshot into `MESSAGE_BATCH` so the main thread sees throughput,
   // CRC mismatch counts, gap counts, etc. APP-245 will bridge to OTel.
@@ -996,6 +1098,8 @@ function activateSessionLayer(): void {
       snapshotBytes: snap.snapshotBytes,
       bufferedAmountPeak: snap.bufferedAmountPeak,
       marketdataMisroutedRfq: snap.marketdataMisroutedRfq,
+      marketdataGapsPublisherConflated: snap.marketdataGapsPublisherConflated,
+      marketdataGapsNetwork: snap.marketdataGapsNetwork,
       degradedTimingMode: snap.degradedTimingMode,
       serverNanos: nowEpochNs(),
     });
@@ -1022,12 +1126,12 @@ function activateSessionLayer(): void {
  * of the WS binary frame with no 13-byte envelope (only inbound, server→client
  * frames carry the framing envelope consumed by the client's FrameParser).
  */
-function sendDefaultSubscriptions(): void {
+function sendDefaultSubscriptions(symbols: readonly string[] = DEFAULT_SUBSCRIBE_SYMBOLS): void {
   if (ws?.readyState !== WebSocket.OPEN) return;
   const HEADER_BYTES = 8;
   const GROUP_HEADER_BYTES = 4; // groupSizeEncoding: blockLength u16 | numInGroup u16
   const ENTRY_BYTES = 12; // Symbol(8) + eventTypes(4)
-  const numEntries = DEFAULT_SUBSCRIBE_SYMBOLS.length;
+  const numEntries = symbols.length;
   const sbeLength = HEADER_BYTES + GROUP_HEADER_BYTES + ENTRY_BYTES * numEntries;
   const sbe = new Uint8Array(sbeLength);
   const view = new DataView(sbe.buffer);
@@ -1038,7 +1142,7 @@ function sendDefaultSubscriptions(): void {
   view.setUint16(HEADER_BYTES, ENTRY_BYTES, true);
   view.setUint16(HEADER_BYTES + 2, numEntries, true);
   for (let i = 0; i < numEntries; i++) {
-    const symbol = DEFAULT_SUBSCRIBE_SYMBOLS[i];
+    const symbol = symbols[i];
     if (symbol === undefined) continue;
     const entryOffset = HEADER_BYTES + GROUP_HEADER_BYTES + i * ENTRY_BYTES;
     // Encode 8 bytes printable ASCII; throw on non-printable so a future
@@ -1196,6 +1300,10 @@ function shutdown(): void {
   backpressureController?.stop();
   backpressureController = null;
   gapTracker = null;
+  // Phase 3 Commit B — tear down the market-data conflation drain timer + clear gap-detector
+  // cursors. Idempotent.
+  marketDataConflation.dispose();
+  gapDetector.dispose();
   snapshotAssembler = null;
   ackSender = null;
   if (sessionTickTimer !== null) {

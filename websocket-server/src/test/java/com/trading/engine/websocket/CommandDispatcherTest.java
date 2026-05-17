@@ -79,7 +79,7 @@ final class CommandDispatcherTest {
     session = sessionManager.tryRegister(channel);
     sessionManager.setUserId(session, "user-001");
     session.entitledAccounts(Set.of("ACME-001"));
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, metrics);
     session.initReliableStreamTracker(8, 256, metrics);
   }
 

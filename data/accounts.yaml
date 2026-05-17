@@ -11,7 +11,20 @@ accounts:
     baseCurrency: "USD"
     status: "Active"
     complianceStatus: "OK"
-    capabilities: 3  # CAN_TRADE | CAN_RFQ
+    capabilities: 3 # CAN_TRADE | CAN_RFQ
+    # Phase 3 Commit B — per-account UI cohort + panel slot bindings
+    # surfaced in WebSocketAuthAck (template 61). symbolPreferences ⊆
+    # major-FX cohort matches pricing-service emitter; panelLayout pins
+    # OrderEntryForm into right-top and Positions into left-bottom.
+    symbolPreferences:
+      - "EURUSD"
+      - "GBPUSD"
+      - "USDJPY"
+    panelLayout:
+      - panelId: "order-entry"
+        slot: "right-top"
+      - panelId: "positions"
+        slot: "left-bottom"
 
   - accountId: 2
     parentAccountId: 0
@@ -66,7 +79,7 @@ accounts:
     baseCurrency: "EUR"
     status: "Active"
     complianceStatus: "PendingReview"
-    capabilities: 1  # CAN_TRADE only
+    capabilities: 1 # CAN_TRADE only
 
   - accountId: 7
     parentAccountId: 0

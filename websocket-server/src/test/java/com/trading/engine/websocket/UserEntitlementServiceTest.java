@@ -177,6 +177,8 @@ final class UserEntitlementServiceTest {
         true, // canRequestQuotes
         0L, // transactTime
         0L, // sequenceNumber
-        0L); // lastUpdatedAt
+        0L,
+        List.of(),
+        List.of()); // lastUpdatedAt
   }
 }

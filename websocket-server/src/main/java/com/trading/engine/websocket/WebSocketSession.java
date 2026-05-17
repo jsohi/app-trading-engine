@@ -278,22 +278,12 @@ public final class WebSocketSession {
   }
 
   /**
-   * Initialize the subscription filter after successful authentication. Legacy 1-arg overload — the
-   * filter has no metrics sink so the entitlement-denied counter is a no-op.
+   * Initialize the subscription filter after successful authentication. Metrics sink required
+   * (non-null) so the entitlement-denied counter increments whenever the per-account guard rejects
+   * a symbol not in the published entitlement set.
    *
    * @param maxSubscriptions the maximum number of symbol subscriptions allowed per session
-   */
-  public void initSubscriptionFilter(final int maxSubscriptions) {
-    initSubscriptionFilter(maxSubscriptions, null);
-  }
-
-  /**
-   * Initialize the subscription filter after successful authentication, wiring the metrics sink so
-   * the entitlement-denied counter increments when {@link SubscriptionFilter#matches(int, byte[],
-   * int, int)} rejects a symbol that is not in the session's published entitlement set.
-   *
-   * @param maxSubscriptions the maximum number of symbol subscriptions allowed per session
-   * @param metrics metrics sink for the entitlement-denied counter; may be {@code null}
+   * @param metrics metrics sink for the entitlement-denied counter; required
    */
   public void initSubscriptionFilter(final int maxSubscriptions, final WebSocketMetrics metrics) {
     this.subscriptionFilter = new SubscriptionFilter(maxSubscriptions, metrics);

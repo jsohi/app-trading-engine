@@ -85,7 +85,7 @@ final class MarketDataSnapshotTimeoutNoRefundTest {
             });
     final long nowNs = SystemNanoClock.INSTANCE.nanoTime();
     session = new WebSocketSession(channel, nowNs, "127.0.0.1");
-    session.initSubscriptionFilter(100);
+    session.initSubscriptionFilter(100, WebSocketMetrics.createWithDefaults());
     session.initSnapshotTokenBucket(nowNs);
 
     // Entitle EURUSD on this session.

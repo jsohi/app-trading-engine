@@ -38,7 +38,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -68,7 +70,10 @@ final class JwtAuthHandlerTest {
   private JtiRevocationCache jtiCache;
   private AuthFailureTracker authFailureTracker;
   private UserEntitlementService entitlementService;
+  private Function<String, AccountReadModel> accountLookup;
   private AtomicInteger pendingAuthCount;
+  private CommandDispatcher commandDispatcher;
+  private SymbolEntitlementMap symbolEntitlementMap;
   private EmbeddedChannel channel;
 
   @BeforeAll
@@ -92,28 +97,51 @@ final class JwtAuthHandlerTest {
     jtiCache = new JtiRevocationCache(1000, 15, SystemNanoClock.INSTANCE);
     authFailureTracker = new AuthFailureTracker(5, 60, SystemNanoClock.INSTANCE);
     // Provide a stub that returns an Active account for any code — enables auth success tests.
-    // The stub creates a minimal AccountReadModel with Active status.
-    entitlementService =
-        new UserEntitlementService(
-            code ->
-                new AccountReadModel(
-                    1L,
-                    0L,
-                    code,
-                    AcctIDSourceEnum.Other,
-                    "Test Account",
-                    AccountTypeEnum.Client,
-                    "USD",
-                    AccountStatusEnum.Active,
-                    ComplianceStatusEnum.OK,
-                    0L,
-                    true,
-                    true,
-                    0L,
-                    0L,
-                    0L));
+    // The stub creates a minimal AccountReadModel with Active status. Reused for both the
+    // entitlement validator and the Phase 3 Commit B per-account AuthAck lookup.
+    accountLookup =
+        code ->
+            new AccountReadModel(
+                1L,
+                0L,
+                code,
+                AcctIDSourceEnum.Other,
+                "Test Account",
+                AccountTypeEnum.Client,
+                "USD",
+                AccountStatusEnum.Active,
+                ComplianceStatusEnum.OK,
+                0L,
+                true,
+                true,
+                0L,
+                0L,
+                0L,
+                List.of(),
+                List.of());
+    entitlementService = new UserEntitlementService(accountLookup);
     pendingAuthCount = new AtomicInteger(0);
     jwtValidator = buildTestValidator();
+    commandDispatcher =
+        new CommandDispatcher(
+            config,
+            metrics,
+            SystemNanoClock.INSTANCE,
+            new ManyToOneConcurrentArrayQueue<>(16),
+            new CommandDispatcher.EgressEntryAllocator() {
+              private final CommandEntryPool pool = new CommandEntryPool(16, 256);
+
+              @Override
+              public EgressEntry tryAcquire() {
+                return pool.tryAcquire();
+              }
+
+              @Override
+              public void release(final EgressEntry entry) {
+                pool.release(entry);
+              }
+            });
+    symbolEntitlementMap = new SymbolEntitlementMap(Map.of("EURUSD", List.of("TEST-ACCT")));
 
     channel = createChannel();
   }
@@ -284,7 +312,12 @@ final class JwtAuthHandlerTest {
   private EmbeddedChannel createChannel() {
     // Runnable::run executes JWT validation synchronously on the event loop — eliminates
     // Thread.sleep flakiness. In production, ForkJoinPool.commonPool() is used instead.
+    // WriteByteCounterHandler is added before JwtAuthHandler in the production pipeline;
+    // for tests we create a standalone instance and pass it directly — it is wired into the
+    // session pendingBytesRef on auth success without needing to be in the pipeline itself.
+    final var byteCounter = new WriteByteCounterHandler();
     return new EmbeddedChannel(
+        byteCounter,
         new JwtAuthHandler(
             pendingAuthCount,
             jwtValidator,
@@ -295,7 +328,12 @@ final class JwtAuthHandlerTest {
             metrics,
             config,
             SystemNanoClock.INSTANCE,
-            Runnable::run));
+            Runnable::run,
+            commandDispatcher,
+            byteCounter,
+            symbolEntitlementMap,
+            (buf, offset, length) -> 1L,
+            accountLookup));
   }
 
   private BinaryWebSocketFrame encodeAuthFrame(final SignedJWT jwt) {

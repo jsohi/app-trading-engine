@@ -39,7 +39,12 @@ describe("agGridResolvers", () => {
       symbol: "GBPUSD",
       bid: 130_000_000n,
       ask: 131_000_000n,
+      bidSize: 0n,
+      askSize: 0n,
+      ingressNanos: 0n,
       serverNanos: 1_000_000_000n,
+      publisherStackLatencyNanos: 0n,
+      endToEndLatencyNanos: 0n,
     };
 
     expect(getPriceRowId(price)).toBe("GBPUSD");

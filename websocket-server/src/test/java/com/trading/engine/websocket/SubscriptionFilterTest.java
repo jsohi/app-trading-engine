@@ -13,6 +13,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.LongHashSet;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -26,12 +27,20 @@ final class SubscriptionFilterTest {
 
   private final MutableDirectBuffer buffer = new ExpandableArrayBuffer(512);
 
+  private WebSocketMetrics metrics;
+
+  @BeforeEach
+  void setUp() {
+    metrics = new WebSocketMetrics(new SimpleMeterRegistry());
+  }
+
   // --- Basic matching ---
 
   @Test
   void matches_subscribedSymbolAndEventType_returnsTrue() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01); // orders only
+    publishEntitled(filter, "EURUSD");
 
     final int len = encodeOrderCreated("EURUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -41,7 +50,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_subscribedSymbolWrongEventType_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x04); // prices only
 
     final int len = encodeOrderCreated("EURUSD");
@@ -52,7 +61,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_unsubscribedSymbol_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x01);
 
     final int len = encodeOrderCreated("EURUSD");
@@ -63,7 +72,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_emptyFilter_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
 
     final int len = encodeOrderCreated("EURUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -75,9 +84,10 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_allEventTypesBitmask_matchesOrderEvent() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     // 0xFFFFFFFF masked to 0x1F by addSubscription
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0xFFFFFFFF);
+    publishEntitled(filter, "EURUSD");
 
     final int len = encodeOrderCreated("EURUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -90,7 +100,7 @@ final class SubscriptionFilterTest {
     // Phase 3 Commit 5: template 51 (PriceResponse) is orchestrator-bound and is now mapped to
     // -1 by templateIdToEventBit. Even an all-bits-set subscription MUST NOT match it; the
     // egress filter actively rejects misrouted PriceResponses.
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("USDJPY"), 0x1F); // all valid bits
 
     final int len =
@@ -105,7 +115,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_accountLoadedEvent_noSymbol_matchesViaGlobalBitMask() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x10); // account events
 
     // Template 110 has no symbol — matched via globalEventBitMask
@@ -114,7 +124,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_accountLoadedEvent_noAccountBitSubscribed_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01); // orders only, not accounts
 
     assertFalse(filter.matches(110, new byte[256], 0, 256));
@@ -122,7 +132,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_orderCancelRejected_noSymbol_matchesViaGlobalBitMask() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01); // orders — includes template 112
 
     // Template 112 has no symbol but maps to BIT_ORDERS
@@ -131,7 +141,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_positionSnapshot_noSymbol_matchesViaGlobalBitMask() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x02); // positions
 
     assertTrue(filter.matches(204, new byte[256], 0, 256));
@@ -141,7 +151,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_internalEvent108_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x1F); // all types
 
     assertFalse(filter.matches(108, new byte[256], 0, 256));
@@ -149,7 +159,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_unknownTemplateId_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x1F);
 
     assertFalse(filter.matches(999, new byte[256], 0, 256));
@@ -159,8 +169,9 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_thenRemove_noLongerMatches() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01);
+    publishEntitled(filter, "EURUSD");
 
     final int len = encodeOrderCreated("EURUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -177,8 +188,9 @@ final class SubscriptionFilterTest {
     // verifying the overwrite semantics here uses an order-lifecycle template (100) instead so
     // the assertion still exercises the "bitmask grew → match flips false→true" behaviour
     // without touching the misrouted-RFQ regression-guard template.
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x04); // prices only
+    publishEntitled(filter, "EURUSD"); // entitle EURUSD so bitmask is the only discriminator
 
     final int len =
         SbeTestEncoder.encodeOrderCreatedEvent(
@@ -205,7 +217,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void clear_removesAllSubscriptions() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x1F);
     filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x1F);
 
@@ -219,7 +231,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_atCapacity_returnsFalse() {
-    final var filter = new SubscriptionFilter(2); // max 2 subscriptions
+    final var filter = new SubscriptionFilter(2, metrics); // max 2 subscriptions
     assertTrue(filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01));
     assertTrue(filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x01));
     assertFalse(filter.addSubscription(SymbolPacker.pack("USDJPY"), 0x01)); // at capacity
@@ -229,7 +241,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_updateExistingAtCapacity_succeeds() {
-    final var filter = new SubscriptionFilter(2);
+    final var filter = new SubscriptionFilter(2, metrics);
     assertTrue(filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01));
     assertTrue(filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x01));
 
@@ -242,7 +254,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void subscriptionCount_afterAddAndRemove_reflectsState() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     assertEquals(0, filter.subscriptionCount());
     assertTrue(filter.isEmpty());
 
@@ -325,10 +337,12 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_multipleSymbols_onlyMatchesSubscribed() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01);
     filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x04);
     filter.addSubscription(SymbolPacker.pack("USDJPY"), 0x1F);
+    // Entitle all three so bitmask is the only discriminator for the assertFalse case.
+    publishEntitled(filter, "EURUSD", "GBPUSD", "USDJPY");
 
     final int lenEur = encodeOrderCreated("EURUSD");
     final byte[] bytesEur = toByteArray(buffer, lenEur);
@@ -347,9 +361,10 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_undefinedBitsStripped() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     // Pass 0xFF — only bits 0-4 should be retained (0x1F)
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0xFF);
+    publishEntitled(filter, "EURUSD");
 
     final int len = encodeOrderCreated("EURUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -361,14 +376,14 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscription_zeroBitmask_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     assertFalse(filter.addSubscription(SymbolPacker.pack("EURUSD"), 0));
     assertEquals(0, filter.subscriptionCount());
   }
 
   @Test
   void addSubscription_zeroBitmaskAfterMasking_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     // 0xE0 has no valid bits (bits 5-7 only) — after masking with 0x1F → 0
     assertFalse(filter.addSubscription(SymbolPacker.pack("EURUSD"), 0xE0));
     assertEquals(0, filter.subscriptionCount());
@@ -378,7 +393,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void removeSubscription_nonExistentSymbol_noOp() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01);
 
     filter.removeSubscription(SymbolPacker.pack("GBPUSD")); // never added
@@ -389,7 +404,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_noSymbolTemplate_mixedSubscriptions_matchesOnlyIfAnyHasEventBit() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01); // orders only
     filter.addSubscription(SymbolPacker.pack("GBPUSD"), 0x04); // prices only
     // globalEventBitMask = 0x01 | 0x04 = 0x05
@@ -409,8 +424,9 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_singleSubscription_binarySearchWorks() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("AUDUSD"), 0x1F);
+    publishEntitled(filter, "AUDUSD");
 
     final int len = encodeOrderCreated("AUDUSD");
     final byte[] bytes = toByteArray(buffer, len);
@@ -422,7 +438,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscriptionsBatch_multipleSymbols_rebuildsSnapshotOnce() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     final long[] symbols = {
       SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD"), SymbolPacker.pack("USDJPY")
     };
@@ -436,7 +452,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscriptionsBatch_atCapacity_returnsPartialCount() {
-    final var filter = new SubscriptionFilter(2);
+    final var filter = new SubscriptionFilter(2, metrics);
     final long[] symbols = {
       SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD"), SymbolPacker.pack("USDJPY")
     };
@@ -450,7 +466,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void addSubscriptionsBatch_zeroBitmaskEntries_skipped() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     final long[] symbols = {SymbolPacker.pack("EURUSD"), SymbolPacker.pack("GBPUSD")};
     final int[] types = {0x01, 0x00}; // second has zero bitmask
 
@@ -464,7 +480,7 @@ final class SubscriptionFilterTest {
 
   @Test
   void matches_truncatedPayloadOnSymbolTemplate_returnsFalse() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     filter.addSubscription(SymbolPacker.pack("EURUSD"), 0x01);
 
     // Template 100 (OrderCreated) has a symbol field, but provide truncated payload (20 bytes)
@@ -482,7 +498,7 @@ final class SubscriptionFilterTest {
    */
   @Test
   void matches_entitlementPublishedAndSymbolPermitted_returnsTrue() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     final long packedEur = SymbolPacker.pack("EURUSD");
     filter.addSubscription(packedEur, 0x01);
 
@@ -542,7 +558,7 @@ final class SubscriptionFilterTest {
    */
   @Test
   void publishEntitledSymbols_nullSet_throwsNpe() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     assertThrows(
         NullPointerException.class,
         () -> filter.publishEntitledSymbols(null),
@@ -557,7 +573,7 @@ final class SubscriptionFilterTest {
    */
   @Test
   void publishEntitledSymbols_twice_drainThreadSeesNewSet() {
-    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS);
+    final var filter = new SubscriptionFilter(MAX_SUBSCRIPTIONS, metrics);
     final long packedEur = SymbolPacker.pack("EURUSD");
     final long packedGbp = SymbolPacker.pack("GBPUSD");
 
@@ -611,5 +627,18 @@ final class SubscriptionFilterTest {
     final byte[] bytes = new byte[length];
     buffer.getBytes(0, bytes);
     return bytes;
+  }
+
+  /**
+   * Publish an entitlement set containing the given symbols so that {@link
+   * SubscriptionFilter#matches} passes the entitlement guard. Tests that verify matching behaviour
+   * (not entitlement enforcement) must call this after subscribing but before calling matches().
+   */
+  private static void publishEntitled(final SubscriptionFilter filter, final String... symbols) {
+    final var entitled = new LongHashSet(symbols.length * 2);
+    for (final String symbol : symbols) {
+      entitled.add(SymbolPacker.pack(symbol));
+    }
+    filter.publishEntitledSymbols(entitled);
   }
 }

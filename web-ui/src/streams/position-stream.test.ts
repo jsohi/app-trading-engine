@@ -115,7 +115,18 @@ describe("positionStream", () => {
     const firstEmission = firstValueFrom(result$.pipe(take(1)));
 
     // Emit one fill and several non-fills.
-    source$.next({ type: "price", symbol: "EUR/USD", bid: 108n, ask: 109n, serverNanos: 0n });
+    source$.next({
+      type: "price",
+      symbol: "EUR/USD",
+      bid: 108n,
+      ask: 109n,
+      bidSize: 0n,
+      askSize: 0n,
+      ingressNanos: 0n,
+      serverNanos: 0n,
+      publisherStackLatencyNanos: 0n,
+      endToEndLatencyNanos: 0n,
+    });
     source$.next({ type: "event", seq: 1n, eventType: "Test", details: "", serverNanos: 0n });
     source$.next({
       type: "order",

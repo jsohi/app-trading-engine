@@ -78,17 +78,27 @@ export interface CommandAckPortMessage {
 // ─── Token-port channel (one-way, single-message) ──────────────────
 
 /**
- * The single message a `tokenPort` may carry, written by the issuer
- * (e.g. APP-160 auth iframe) and read once by the worker.
- *
- * After receipt, the worker `close()`s the port on its side; the main
- * thread closed its side at port creation. The token is captured in
- * a worker-local `let` closure and never re-emitted.
+ * Main → worker token-port message: an issued JWT. The first one is
+ * consumed at INIT-time auth; subsequent ones are responses to a
+ * worker-issued {@link TokenReauthRequestMessage} (Phase 3 Commit B).
+ * The worker keeps the port open across the session lifetime to support
+ * in-session reauth on {@code WebSocketError(AuthExpiringSoon)}.
  */
 export interface TokenPortMessage {
   readonly type: "TOKEN";
   /** Opaque JWT bytes; treated as opaque by the worker. */
   readonly value: string;
+}
+
+/**
+ * Worker → main token-port message: request a freshly-minted JWT
+ * triggered by a server {@code WebSocketError(AuthExpiringSoon)}
+ * (code 18). Main responds with a {@link TokenPortMessage}; the
+ * worker validates the response's timing claims (nbf + exp ± 60s
+ * leeway) and then runs the in-session reauth.
+ */
+export interface TokenReauthRequestMessage {
+  readonly type: "REAUTH_REQUEST";
 }
 
 // ─── Main → worker ─────────────────────────────────────────────────

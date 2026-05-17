@@ -42,22 +42,8 @@ public final class WebSocketComponents implements AutoCloseable {
   private final SnapshotRequestPublisher snapshotRequestPublisher;
 
   /**
-   * Legacy 3-arg constructor — used by tests that don't exercise the Phase 3 market-data path.
-   *
-   * @param server the Netty WebSocket server
-   * @param egressThread the Aeron egress polling thread
-   * @param clusterClient the Aeron cluster client
-   */
-  public WebSocketComponents(
-      final WebSocketServerMain server,
-      final AeronEgressThread egressThread,
-      final WebSocketClusterClient clusterClient) {
-    this(server, egressThread, clusterClient, null, null, null, null, null);
-  }
-
-  /**
    * Create a lifecycle holder for the WebSocket server components including Phase 3 market-data
-   * resources.
+   * resources. All collaborators required.
    *
    * @param server the Netty WebSocket server
    * @param egressThread the Aeron egress polling thread
@@ -67,12 +53,11 @@ public final class WebSocketComponents implements AutoCloseable {
    * @param marketDataSubscription Aeron subscription on the market-data IPC stream ({@code
    *     MARKET_DATA_STREAM_ID = 204}); may be {@code null}
    * @param snapshotRequestPublication Aeron exclusive publication on the snapshot-request stream
-   *     ({@code MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID = 205}); may be {@code null}
+   *     ({@code MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID = 205})
    * @param symbolEntitlementMap immutable per-symbol → permitted-accounts map loaded at launcher
-   *     boot; may be {@code null}
+   *     boot
    * @param snapshotRequestPublisher SAM seam over the snapshot-request publication's {@code
-   *     offer(...)} — exposed so the launcher's dispatcher-pipeline wiring code can install the
-   *     {@code MarketDataAdmissionPipeline} on each authenticated channel; may be {@code null}
+   *     offer(...)}
    */
   public WebSocketComponents(
       final WebSocketServerMain server,
@@ -86,11 +71,15 @@ public final class WebSocketComponents implements AutoCloseable {
     this.server = Objects.requireNonNull(server, "server");
     this.egressThread = Objects.requireNonNull(egressThread, "egressThread");
     this.clusterClient = Objects.requireNonNull(clusterClient, "clusterClient");
-    this.marketDataAeron = marketDataAeron;
-    this.marketDataSubscription = marketDataSubscription;
-    this.snapshotRequestPublication = snapshotRequestPublication;
-    this.symbolEntitlementMap = symbolEntitlementMap;
-    this.snapshotRequestPublisher = snapshotRequestPublisher;
+    this.marketDataAeron = Objects.requireNonNull(marketDataAeron, "marketDataAeron");
+    this.marketDataSubscription =
+        Objects.requireNonNull(marketDataSubscription, "marketDataSubscription");
+    this.snapshotRequestPublication =
+        Objects.requireNonNull(snapshotRequestPublication, "snapshotRequestPublication");
+    this.symbolEntitlementMap =
+        Objects.requireNonNull(symbolEntitlementMap, "symbolEntitlementMap");
+    this.snapshotRequestPublisher =
+        Objects.requireNonNull(snapshotRequestPublisher, "snapshotRequestPublisher");
   }
 
   /**
@@ -143,29 +132,23 @@ public final class WebSocketComponents implements AutoCloseable {
     } catch (final Exception e) {
       LOG.error("Error closing AeronEgressThread", e);
     }
-    // Close Phase 3 market-data resources before the cluster client — the egress thread is stopped
-    // so neither resource is still in use. Publication first, then subscription, then the Aeron
-    // client they share — matches Aeron lifecycle conventions (resource → owner).
-    if (snapshotRequestPublication != null) {
-      try {
-        snapshotRequestPublication.close();
-      } catch (final Exception e) {
-        LOG.error("Error closing snapshot-request publication", e);
-      }
+    // Close Phase 3 market-data resources before the cluster client — the egress thread is
+    // stopped so neither resource is still in use. Publication first, then subscription, then
+    // the Aeron client they share — matches Aeron lifecycle conventions (resource → owner).
+    try {
+      snapshotRequestPublication.close();
+    } catch (final Exception e) {
+      LOG.error("Error closing snapshot-request publication", e);
     }
-    if (marketDataSubscription != null) {
-      try {
-        marketDataSubscription.close();
-      } catch (final Exception e) {
-        LOG.error("Error closing market-data subscription", e);
-      }
+    try {
+      marketDataSubscription.close();
+    } catch (final Exception e) {
+      LOG.error("Error closing market-data subscription", e);
     }
-    if (marketDataAeron != null) {
-      try {
-        marketDataAeron.close();
-      } catch (final Exception e) {
-        LOG.error("Error closing market-data Aeron client", e);
-      }
+    try {
+      marketDataAeron.close();
+    } catch (final Exception e) {
+      LOG.error("Error closing market-data Aeron client", e);
     }
     try {
       clusterClient.close();

@@ -6,6 +6,7 @@ import com.trading.engine.messages.sbe.WebSocketAuthAckEncoder;
 import com.trading.engine.messages.sbe.WebSocketAuthDecoder;
 import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorEncoder;
+import com.trading.engine.projections.account.AccountReadModel;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -13,11 +14,13 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -87,23 +90,22 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   /** This channel's WriteByteCounterHandler, captured for wiring into the session post-auth. */
   private final WriteByteCounterHandler byteCounter;
 
-  /**
-   * Phase 3 Commit A — symbol → permitted-accounts map loaded at launcher boot. Required for the
-   * per-session entitlement set publish ({@link
-   * WebSocketSession#publishSymbolEntitlements(SymbolEntitlementMap, java.util.Set)}) and for the
-   * per-channel {@link MarketDataAdmissionPipeline} install. May be {@code null} in legacy / test
-   * wirings; when {@code null}, the entitlement set publish and admission pipeline install are both
-   * skipped.
-   */
+  /** Phase 3 — symbol → permitted-accounts map loaded at launcher boot. Required. */
   private final SymbolEntitlementMap symbolEntitlementMap;
 
   /**
-   * Phase 3 Commit A — SAM seam over the stream-205 snapshot-request Aeron publication. Required to
-   * construct the per-channel {@link MarketDataAdmissionPipeline}. May be {@code null} in legacy /
-   * test wirings; when {@code null}, the admission pipeline install is skipped (template- 56 frames
-   * are rejected with {@code WebSocketError(CommandRejected)} as the legacy contract).
+   * Phase 3 — SAM seam over the stream-205 snapshot-request Aeron publication used to construct the
+   * per-channel {@link MarketDataAdmissionPipeline}. Required.
    */
   private final SnapshotRequestPublisher snapshotRequestPublisher;
+
+  /**
+   * Phase 3 Commit B — account-code → {@link AccountReadModel} lookup. Used in {@link #sendAuthAck}
+   * to materialize per-account {@code symbolPreferences} and {@code panelLayout} into the {@code
+   * WebSocketAuthAck} (template 61) groups. Required — the launcher YAML pipeline is the only
+   * source of truth; a missing primary account is a server-side bug, not a runtime branch.
+   */
+  private final Function<String, AccountReadModel> accountLookup;
 
   // --- Per-channel state ---
   private volatile boolean authResolved;
@@ -132,89 +134,12 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
    *     ForkJoinPool.commonPool()} in production, {@code Runnable::run} in tests for deterministic
    *     behavior without Thread.sleep
    */
-  public JwtAuthHandler(
-      final AtomicInteger pendingAuthCount,
-      final JwtValidator jwtValidator,
-      final JtiRevocationCache jtiCache,
-      final UserEntitlementService entitlementService,
-      final AuthFailureTracker authFailureTracker,
-      final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics,
-      final WebSocketServerConfig config,
-      final NanoClock nanoClock,
-      final Executor validationExecutor) {
-    this(
-        pendingAuthCount,
-        jwtValidator,
-        jtiCache,
-        entitlementService,
-        authFailureTracker,
-        sessionManager,
-        metrics,
-        config,
-        nanoClock,
-        validationExecutor,
-        null,
-        null,
-        null,
-        null);
-  }
-
   /**
-   * Create a per-channel auth handler with full APP-242 wiring.
-   *
-   * @param pendingAuthCount shared counter
-   * @param jwtValidator JWT validator
-   * @param jtiCache JTI cache
-   * @param entitlementService entitlement validator
-   * @param authFailureTracker auth failure tracker
-   * @param sessionManager session manager
-   * @param metrics metrics
-   * @param config config
-   * @param nanoClock clock
-   * @param validationExecutor JWT validation executor
-   * @param commandDispatcher singleton command dispatcher (may be null in tests)
-   * @param byteCounter the per-channel byte counter installed earlier in the pipeline (may be null
-   *     in tests)
-   */
-  public JwtAuthHandler(
-      final AtomicInteger pendingAuthCount,
-      final JwtValidator jwtValidator,
-      final JtiRevocationCache jtiCache,
-      final UserEntitlementService entitlementService,
-      final AuthFailureTracker authFailureTracker,
-      final WebSocketSessionManager sessionManager,
-      final WebSocketMetrics metrics,
-      final WebSocketServerConfig config,
-      final NanoClock nanoClock,
-      final Executor validationExecutor,
-      final CommandDispatcher commandDispatcher,
-      final WriteByteCounterHandler byteCounter) {
-    this(
-        pendingAuthCount,
-        jwtValidator,
-        jtiCache,
-        entitlementService,
-        authFailureTracker,
-        sessionManager,
-        metrics,
-        config,
-        nanoClock,
-        validationExecutor,
-        commandDispatcher,
-        byteCounter,
-        null,
-        null);
-  }
-
-  /**
-   * Full Phase 3 Commit A constructor — adds the symbol-entitlement map and snapshot-request
-   * publisher SAM seam so the post-auth path can wire the per-channel {@link
-   * MarketDataAdmissionPipeline} on the dispatcher AND call {@link
-   * WebSocketSession#initSnapshotTokenBucket(long)} + {@link
+   * Canonical Phase 3 per-channel auth handler. All collaborators required — there is no legacy
+   * overload. The post-auth path wires the per-channel {@link MarketDataAdmissionPipeline} on the
+   * dispatcher AND calls {@link WebSocketSession#initSnapshotTokenBucket(long)} + {@link
    * WebSocketSession#publishSymbolEntitlements(SymbolEntitlementMap, java.util.Set)} on the
-   * session. Both Phase 3 collaborators are nullable for legacy / test wirings; when {@code null}
-   * the corresponding wiring step is silently skipped.
+   * session.
    *
    * @param pendingAuthCount shared counter
    * @param jwtValidator JWT validator
@@ -226,14 +151,12 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
    * @param config config
    * @param nanoClock clock
    * @param validationExecutor JWT validation executor
-   * @param commandDispatcher singleton command dispatcher (may be null in tests)
-   * @param byteCounter the per-channel byte counter installed earlier in the pipeline (may be null
-   *     in tests)
-   * @param symbolEntitlementMap launcher-loaded symbol → permitted-accounts map (may be null in
-   *     legacy / test wirings to preserve pre-Phase-3 behavior)
-   * @param snapshotRequestPublisher SAM seam over the stream-205 Aeron publication used to
-   *     construct the per-channel {@link MarketDataAdmissionPipeline} (may be null in legacy / test
-   *     wirings)
+   * @param commandDispatcher singleton command dispatcher
+   * @param byteCounter per-channel byte counter installed earlier in the pipeline
+   * @param symbolEntitlementMap launcher-loaded symbol → permitted-accounts map
+   * @param snapshotRequestPublisher SAM seam over the stream-205 Aeron publication
+   * @param accountLookup account-code → {@link AccountReadModel} lookup for per-account {@code
+   *     symbolPreferences} + {@code panelLayout} in the AuthAck (template 61)
    */
   public JwtAuthHandler(
       final AtomicInteger pendingAuthCount,
@@ -249,21 +172,25 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       final CommandDispatcher commandDispatcher,
       final WriteByteCounterHandler byteCounter,
       final SymbolEntitlementMap symbolEntitlementMap,
-      final SnapshotRequestPublisher snapshotRequestPublisher) {
-    this.pendingAuthCount = pendingAuthCount;
-    this.jwtValidator = jwtValidator;
-    this.jtiCache = jtiCache;
-    this.entitlementService = entitlementService;
-    this.authFailureTracker = authFailureTracker;
-    this.sessionManager = sessionManager;
-    this.metrics = metrics;
-    this.config = config;
-    this.nanoClock = nanoClock;
-    this.validationExecutor = validationExecutor;
-    this.commandDispatcher = commandDispatcher;
-    this.byteCounter = byteCounter;
-    this.symbolEntitlementMap = symbolEntitlementMap;
-    this.snapshotRequestPublisher = snapshotRequestPublisher;
+      final SnapshotRequestPublisher snapshotRequestPublisher,
+      final Function<String, AccountReadModel> accountLookup) {
+    this.pendingAuthCount = Objects.requireNonNull(pendingAuthCount, "pendingAuthCount");
+    this.jwtValidator = Objects.requireNonNull(jwtValidator, "jwtValidator");
+    this.jtiCache = Objects.requireNonNull(jtiCache, "jtiCache");
+    this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
+    this.authFailureTracker = Objects.requireNonNull(authFailureTracker, "authFailureTracker");
+    this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
+    this.metrics = Objects.requireNonNull(metrics, "metrics");
+    this.config = Objects.requireNonNull(config, "config");
+    this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+    this.validationExecutor = Objects.requireNonNull(validationExecutor, "validationExecutor");
+    this.commandDispatcher = Objects.requireNonNull(commandDispatcher, "commandDispatcher");
+    this.byteCounter = Objects.requireNonNull(byteCounter, "byteCounter");
+    this.symbolEntitlementMap =
+        Objects.requireNonNull(symbolEntitlementMap, "symbolEntitlementMap");
+    this.snapshotRequestPublisher =
+        Objects.requireNonNull(snapshotRequestPublisher, "snapshotRequestPublisher");
+    this.accountLookup = Objects.requireNonNull(accountLookup, "accountLookup");
   }
 
   @Override
@@ -448,20 +375,16 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     registeredSession.originalAuthJti(claims.jti());
     registeredSession.entitledAccounts(validatedAccounts);
     // Wire the subscription filter WITH the metrics sink so the Phase 3 Commit A entitlement-
-    // denied counter increments on every denial (Agent B review R1-F2).
+    // Phase 3: initialise the per-session subscription filter (with metrics), reliable-stream
+    // tracker, snapshot-request token bucket, and publish the per-account entitled-symbols set.
+    // The entitlement publish is load-bearing for SubscriptionFilter.matches() — without it the
+    // empty default fails closed and every market-data fan-out drops for this session.
     registeredSession.initSubscriptionFilter(config.maxSubscriptionsPerClient(), metrics);
     registeredSession.initReliableStreamTracker(
         config.replayBufferFrames(), config.replayBufferFrameSize(), metrics);
-    // Phase 3 Commit A: initialise the per-session snapshot-request token bucket and publish the
-    // per-account entitled-symbols set so the MarketDataAdmissionPipeline can consume tokens and
-    // SubscriptionFilter.matches() can enforce fail-closed entitlement (Agent B review R1-F2).
     registeredSession.initSnapshotTokenBucket(nanoClock.nanoTime());
-    if (symbolEntitlementMap != null) {
-      registeredSession.publishSymbolEntitlements(symbolEntitlementMap, validatedAccounts);
-    }
-    if (byteCounter != null) {
-      registeredSession.pendingBytesRef(byteCounter.pendingBytesRef());
-    }
+    registeredSession.publishSymbolEntitlements(symbolEntitlementMap, validatedAccounts);
+    registeredSession.pendingBytesRef(byteCounter.pendingBytesRef());
 
     // 14. Cancel auth timeout
     cancelTimeout();
@@ -470,16 +393,32 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     final long authDurationNs = nanoClock.nanoTime() - authStartNs;
     metrics.authLatency().record(authDurationNs, TimeUnit.NANOSECONDS);
 
-    // 16. Send WebSocketAuthAck
+    // 16. Send WebSocketAuthAck.
+    // The "primary" account whose UI preferences ship in AuthAck is the first JWT-claim account
+    // that is also entitled — preserves the issuer's intended ordering so a UI cohort change
+    // (e.g. trader switches desks) is reflected by re-ordering claim accounts at the IdP, no
+    // server-side state needed. validatedAccounts is guaranteed non-empty (early-return above)
+    // and UserEntitlementService.validateAccounts only returns codes with a non-null
+    // AccountReadModel
+    // lookup, so the lookup below is fail-fast non-null.
+    String primaryAccountCode = null;
+    for (final var code : claims.accounts()) {
+      if (validatedAccounts.contains(code)) {
+        primaryAccountCode = code;
+        break;
+      }
+    }
+    final var primaryAccount = accountLookup.apply(primaryAccountCode);
     final var sessionId = registeredSession.sessionId();
-    sendAuthAck(ctx, sessionId.getMostSignificantBits(), sessionId.getLeastSignificantBits());
+    sendAuthAck(
+        ctx,
+        sessionId.getMostSignificantBits(),
+        sessionId.getLeastSignificantBits(),
+        primaryAccount);
 
-    // 17. Add WebSocketFrameDispatcher to pipeline after this handler. If Phase 3 Commit A
-    // collaborators are wired (symbolEntitlementMap + snapshotRequestPublisher), construct a
-    // per-channel MarketDataAdmissionPipeline and install it on the dispatcher so template-56
-    // snapshot requests admit through the 4-stage fail-closed pipeline. Without this install
-    // template-56 frames are rejected with WebSocketError(CommandRejected) per the legacy
-    // contract (Agent B review R1-F1).
+    // 17. Add WebSocketFrameDispatcher to pipeline after this handler. The per-channel
+    // MarketDataAdmissionPipeline is constructed inline and passed to the dispatcher's
+    // canonical ctor — required, fail-closed.
     final var frameDispatcher =
         new WebSocketFrameDispatcher(
             sessionManager,
@@ -490,12 +429,9 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
             metrics,
             nanoClock,
             validationExecutor,
-            commandDispatcher);
-    if (symbolEntitlementMap != null && snapshotRequestPublisher != null) {
-      frameDispatcher.installMarketDataAdmissionPipeline(
-          new MarketDataAdmissionPipeline(
-              symbolEntitlementMap, snapshotRequestPublisher, metrics, nanoClock));
-    }
+            commandDispatcher,
+            new MarketDataAdmissionPipeline(
+                symbolEntitlementMap, snapshotRequestPublisher, metrics, nanoClock));
     ctx.pipeline().addAfter(ctx.name(), "frame-dispatcher", frameDispatcher);
 
     // 18. Remove self from pipeline
@@ -582,7 +518,10 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   }
 
   private void sendAuthAck(
-      final ChannelHandlerContext ctx, final long sessionIdMsb, final long sessionIdLsb) {
+      final ChannelHandlerContext ctx,
+      final long sessionIdMsb,
+      final long sessionIdLsb,
+      final AccountReadModel primaryAccount) {
     final var enc = new WebSocketAuthAckEncoder();
     final var header = new MessageHeaderEncoder();
     enc.wrapAndApplyHeader(responseBuf, 0, header);
@@ -598,6 +537,21 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     // a defensive fail-fast even if validation is bypassed.
     enc.serverHeartbeatIntervalMs(Math.toIntExact(config.heartbeatIntervalMs()));
     enc.clientHeartbeatIntervalMs(Math.toIntExact(config.negotiatedClientHeartbeatIntervalMs()));
+
+    // Phase 3 Commit B: per-account UI preferences. Empty groups when no slots configured —
+    // the worker falls back to DEFAULT_SUBSCRIBE_SYMBOLS / the default OrderEntryForm slot.
+    // YAML AccountRecord guarantees both lists are non-null (immutable List.copyOf at load),
+    // so unconditional iteration is safe; SBE group encoder accepts count=0.
+    final var prefs = primaryAccount.symbolPreferences();
+    final var prefsEnc = enc.symbolPreferencesCount(prefs.size());
+    for (final var symbol : prefs) {
+      prefsEnc.next().symbol(symbol);
+    }
+    final var panels = primaryAccount.panelLayout();
+    final var panelEnc = enc.panelLayoutCount(panels.size());
+    for (final var slot : panels) {
+      panelEnc.next().panelId(slot.panelId()).slot(slot.slot());
+    }
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     // The client's worker pipeline is FrameParser-first: every inbound binary

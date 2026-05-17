@@ -68,7 +68,12 @@ function makePrice(symbol: string, bid: bigint, ask: bigint): PriceUpdate {
     symbol,
     bid,
     ask,
+    bidSize: 0n,
+    askSize: 0n,
+    ingressNanos: 0n,
     serverNanos: 1_700_000_000_000_000_000n,
+    publisherStackLatencyNanos: 0n,
+    endToEndLatencyNanos: 0n,
   };
 }
 

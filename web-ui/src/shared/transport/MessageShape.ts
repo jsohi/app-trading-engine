@@ -31,8 +31,38 @@ export interface PriceUpdate {
   readonly bid: bigint;
   /** Fixed-point ask (scaled by 1e8). */
   readonly ask: bigint;
+  /**
+   * Phase 3 Commit B — bid size (units, fixed-point scale 1e8 — matches `bid` / `ask`). Decoded
+   * from the {@code MarketDataTick} (template 54) {@code bidSize} field. Surfaced for grid display
+   * of top-of-book depth.
+   */
+  readonly bidSize: bigint;
+  /** Phase 3 Commit B — ask size; see {@link bidSize}. */
+  readonly askSize: bigint;
+  /**
+   * Phase 3 Commit B — publisher-stack ingress timestamp in epoch nanoseconds (the moment the
+   * pricing-service adapter consumed the inbound mid-rate). Required to compute
+   * {@link publisherStackLatencyNanos}; pinned on the wire-contract shape so a worker decoder
+   * that omits the dual-timestamp read fails TypeScript exhaustiveness.
+   */
+  readonly ingressNanos: bigint;
   /** Server-side emit timestamp in epoch nanoseconds. */
   readonly serverNanos: bigint;
+  /**
+   * Phase 3 Commit B — derived publisher-stack latency: {@code serverNanos - ingressNanos}. Recorded
+   * into the {@code marketdata.publish.latency.nanos} histogram via the periodic STATS surface.
+   * Negative values indicate clock skew on the publisher box (should not happen — both stamps come
+   * from the same monotonic clock); the worker decoder writes the raw subtraction with no clamp.
+   */
+  readonly publisherStackLatencyNanos: bigint;
+  /**
+   * Phase 3 Commit B — end-to-end latency: {@code performance.now()*1e6 - serverNanos} computed at
+   * worker decode time. Meaningful within a single host; cross-box accuracy requires PTP / chrony
+   * (see {@code docs/clock-sync.md}). Recorded into the {@code marketdata.end-to-end.latency.nanos}
+   * histogram. Negative values indicate worker-host clock lag; the worker decoder writes the raw
+   * subtraction with no clamp.
+   */
+  readonly endToEndLatencyNanos: bigint;
 }
 
 export interface OrderUpdate {
@@ -210,6 +240,18 @@ export interface StatsMsg {
    * stays at zero. Surfaced from the worker's per-second STATS emission.
    */
   readonly marketdataMisroutedRfq: bigint;
+  /**
+   * Phase 3 Commit B — cumulative market-data gaps attributed to publisher-side conflation
+   * (publisher dropped before publish). Counterpart to {@link marketdataGapsNetwork}; together
+   * they fully account for an observed gap. Bridged to `marketdata.gaps{reason="publisher-
+   * conflated"}` by APP-245.
+   */
+  readonly marketdataGapsPublisherConflated: bigint;
+  /**
+   * Phase 3 Commit B — cumulative market-data gaps attributed to network / transport loss.
+   * Bridged to `marketdata.gaps{reason="network"}`.
+   */
+  readonly marketdataGapsNetwork: bigint;
   /** True for Firefox-RF / Safari low-resolution `performance.now()` users. */
   readonly degradedTimingMode: boolean;
   readonly serverNanos: bigint;
@@ -231,6 +273,18 @@ export interface ErrorMsg {
 }
 
 /**
+ * Phase 3 Commit B — per-account UI panel-to-slot mapping decoded from the
+ * server's {@code WebSocketAuthAck} (template 61) {@code panelLayout} group.
+ * The main thread reads this once at AuthAck time and mounts each panel
+ * (e.g. {@code OrderEntryForm}) into its server-asserted slot. Empty
+ * {@code panels} → main thread uses default slot bindings.
+ */
+export interface PanelLayoutMsg {
+  readonly type: "PANEL_LAYOUT";
+  readonly panels: ReadonlyArray<{ readonly panelId: string; readonly slot: string }>;
+}
+
+/**
  * Discriminated union of every message a worker can post to the main
  * thread. Sole versioned barrel for the transport contract.
  */
@@ -246,7 +300,8 @@ export type WorkerMessage =
   | BackpressureWarning
   | SchemaMismatch
   | StatsMsg
-  | ErrorMsg;
+  | ErrorMsg
+  | PanelLayoutMsg;
 
 /**
  * Versioned shape contract — bumped on any non-additive change to

@@ -38,8 +38,12 @@ import {
 import {
   decodeClusterEvent,
   PRICE_RESPONSE_TEMPLATE_ID,
+  type MarketDataConflationLike,
+  type GapDetectorLike,
 } from "@/workers/dispatch/clusterEventDecoder";
 import { Stats } from "@/workers/protocol/Stats";
+import { GapDetector } from "@/workers/gapDetector";
+import { MarketDataConflation } from "@/workers/marketDataConflation";
 
 import type {
   EventUpdate,
@@ -49,6 +53,29 @@ import type {
   PriceUpdate,
   WorkerMessage,
 } from "@/shared/transport/MessageShape";
+
+// ─── No-op stubs ─────────────────────────────────────────────────────────────
+
+/**
+ * No-op conflation stub for tests that do not exercise the template 54 (MarketDataTick)
+ * conflation path. Satisfies the {@link MarketDataConflationLike} structural type without
+ * pulling in a real {@link MarketDataConflation} instance or a setInterval timer.
+ */
+const noopConflation: MarketDataConflationLike = {
+  onTick: () => undefined,
+};
+
+/**
+ * No-op gap-detector stub for tests that do not exercise the template 54 tick path or the
+ * template 57 LIVE-transition path. Satisfies the {@link GapDetectorLike} structural type.
+ * The {@code onTick} return value uses {@code publisherConflated: 0} and {@code network: 0}
+ * so the stats surface is unaffected even if the stub is accidentally invoked.
+ */
+const noopGapDetector: GapDetectorLike = {
+  onTick: () => ({ outcome: "in-order", publisherConflated: 0, network: 0 }),
+  onHeartbeat: () => undefined,
+  onPublisherRestart: () => undefined,
+};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -342,11 +369,25 @@ function makeMarketDataFeedStateChangePayload(state: number, serverNanos: bigint
 
 describe("worker-onEvent — cluster domain-event decoder switch", () => {
   let stats: Stats;
+  /**
+   * Real {@link MarketDataConflation} instance bound to the test-local {@link emit} callback.
+   * Used only by template 54 (MarketDataTick) tests — reset in {@code beforeEach} so each test
+   * starts with an empty conflation map. Non-template-54 tests use {@link noopConflation}.
+   */
+  let conflation: MarketDataConflation;
+  /**
+   * Real {@link GapDetector} instance. Used by template 54 tests (onTick attribution) and by
+   * template 57 LIVE-transition tests (onPublisherRestart). Non-market-data tests use
+   * {@link noopGapDetector}.
+   */
+  let gapDetector: GapDetector;
 
   beforeEach(() => {
     capturedMessages = [];
     capturedErrors = [];
     stats = new Stats();
+    conflation = new MarketDataConflation(emit);
+    gapDetector = new GapDetector();
   });
 
   /**
@@ -373,6 +414,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -413,6 +456,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -449,6 +494,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -492,6 +539,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -530,6 +579,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -567,6 +618,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -602,6 +655,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     // Misroute IS handled — return true so the worker does not double-fire its
@@ -639,7 +694,13 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
     const UNKNOWN_TEMPLATE_ID = 999;
     const payload = prependSbeHeader(new Uint8Array(16));
 
-    const handled = decodeClusterEvent(UNKNOWN_TEMPLATE_ID, payload, { emit, postError, stats });
+    const handled = decodeClusterEvent(UNKNOWN_TEMPLATE_ID, payload, {
+      emit,
+      postError,
+      stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
+    });
 
     expect(handled).toBe(false);
     expect(capturedMessages).toHaveLength(0);
@@ -664,6 +725,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     // The production function returns true on error (handled — error posted).
@@ -710,7 +773,12 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation,
+      gapDetector,
     });
+    // Template 54 routes through conflation — drain synchronously to flush the
+    // PriceUpdate into capturedMessages before asserting.
+    conflation.drain();
 
     expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
@@ -747,7 +815,12 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation,
+      gapDetector,
     });
+    // Template 54 routes through conflation — drain synchronously to flush the
+    // PriceUpdate into capturedMessages before asserting.
+    conflation.drain();
 
     expect(handled).toBe(true);
     expect(capturedErrors).toHaveLength(0);
@@ -777,6 +850,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -803,6 +878,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector,
     });
 
     expect(handled).toBe(true);
@@ -829,6 +906,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -855,6 +934,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector: noopGapDetector,
     });
 
     expect(handled).toBe(true);
@@ -887,6 +968,8 @@ describe("worker-onEvent — cluster domain-event decoder switch", () => {
       emit,
       postError,
       stats,
+      conflation: noopConflation,
+      gapDetector,
     });
 
     expect(handled).toBe(true);
