@@ -148,11 +148,27 @@ public final class WebSocketLauncher {
     //     dispatcher's MarketDataAdmissionPipeline cannot function without the stream-205
     //     publication, and the egress thread cannot deliver market-data without the stream-204
     //     subscription. Always-on; no kill switch (per the plan).
-    final var marketDataAeron =
-        Aeron.connect(
-            new Aeron.Context()
-                .aeronDirectoryName(aeronDir)
-                .errorHandler(throwable -> LOG.error("Market-data Aeron client error", throwable)));
+    // Gemini cloud-review R3 G-7: Aeron.connect must be guarded by a try-catch that closes the
+    // clusterClient if it throws. Use two phases so partial-success on Aeron.connect (followed by
+    // a later subscription/publication open failure) ALSO closes the connected Aeron client.
+    final Aeron marketDataAeron;
+    try {
+      marketDataAeron =
+          Aeron.connect(
+              new Aeron.Context()
+                  .aeronDirectoryName(aeronDir)
+                  .errorHandler(
+                      throwable -> LOG.error("Market-data Aeron client error", throwable)));
+    } catch (final Exception ex) {
+      LOG.error("Market-data Aeron.connect failed", ex);
+      try {
+        clusterClient.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
+      }
+      throw ex;
+    }
+
     final Subscription marketDataSubscription;
     final ExclusivePublication snapshotRequestPublication;
     final SymbolEntitlementMap symbolEntitlementMap;
@@ -166,11 +182,11 @@ public final class WebSocketLauncher {
               MarketDataConstants.MARKET_DATA_SNAPSHOT_REQUEST_STREAM_ID);
       symbolEntitlementMap = loadSymbolEntitlementMap();
     } catch (final Exception ex) {
-      LOG.error("Market-data Aeron resource open failed", ex);
+      LOG.error("Market-data Aeron resource open failed (post-connect)", ex);
       try {
         marketDataAeron.close();
       } catch (final Exception closeEx) {
-        LOG.error("Error closing Aeron client during partial-failure cleanup", closeEx);
+        LOG.error("Error closing market-data Aeron client during partial-failure cleanup", closeEx);
       }
       try {
         clusterClient.close();
@@ -200,14 +216,28 @@ public final class WebSocketLauncher {
     // Bind the snapshot-request publisher seam to the Aeron offer method-reference once.
     final SnapshotRequestPublisher snapshotRequestPublisher = snapshotRequestPublication::offer;
 
-    // 8. Aeron egress thread — full Phase 3 constructor with market-data wiring.
+    // 7c. Browser→cluster command pipeline queues + pool — must be SHARED between the egress
+    // thread (consumer of commandQueue, producer of ackQueue) and WebSocketServerMain (producer
+    // of commandQueue via the per-channel CommandDispatcher, consumer of ackQueue via the drain
+    // handler). Earlier wirings created separate instances on each side, which severed the
+    // command pipeline (Gemini cloud-review R3 G-6).
+    final var commandQueue =
+        new ManyToOneConcurrentArrayQueue<EgressEntry>(config.commandQueueCapacity());
+    final var ackQueue =
+        new ManyToOneConcurrentArrayQueue<EgressEntry>(config.commandAckQueueCapacity());
+    final var commandEntryPool =
+        new CommandEntryPool(config.commandQueueCapacity(), config.replayBufferFrameSize());
+
+    // 8. Aeron egress thread — full Phase 3 constructor with market-data wiring AND the shared
+    // command/ack/pool instances so the browser→cluster command pump and the THROTTLED-ack back-
+    // channel are wired end-to-end.
     final var egressThread =
         new AeronEgressThread(
             clusterClient,
             egressQueue,
-            null,
-            null,
-            null,
+            commandQueue,
+            ackQueue,
+            commandEntryPool,
             metrics,
             config.egressQueueCapacity(),
             marketDataPoller,
@@ -255,9 +285,9 @@ public final class WebSocketLauncher {
         new WebSocketServerMain(
             config,
             egressQueue,
-            new ManyToOneConcurrentArrayQueue<>(config.commandQueueCapacity()),
-            new ManyToOneConcurrentArrayQueue<>(config.commandAckQueueCapacity()),
-            new CommandEntryPool(config.commandQueueCapacity(), config.replayBufferFrameSize()),
+            commandQueue,
+            ackQueue,
+            commandEntryPool,
             egressListener,
             sessionManager,
             metrics,
