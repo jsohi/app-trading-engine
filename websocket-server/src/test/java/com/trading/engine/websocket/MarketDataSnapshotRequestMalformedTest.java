@@ -8,12 +8,15 @@ import com.trading.engine.messages.sbe.MarketDataSnapshotRequestEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.projections.SymbolPacker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.ResourceLeakDetector;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.Map;
 import org.agrona.ExpandableArrayBuffer;
@@ -180,7 +183,7 @@ final class MarketDataSnapshotRequestMalformedTest {
     encoder.symbol("EURUSD");
 
     // Overwrite schemaId (offset 4, 2 bytes, little-endian in the SBE header).
-    buf.putShort(4, (short) 0, java.nio.ByteOrder.LITTLE_ENDIAN);
+    buf.putShort(4, (short) 0, ByteOrder.LITTLE_ENDIAN);
 
     final var content = Unpooled.wrappedBuffer(buf.byteArray(), 0, VALID_FRAME_SIZE);
     final var ctx = channel.pipeline().firstContext();
@@ -248,7 +251,7 @@ final class MarketDataSnapshotRequestMalformedTest {
    * Build a correctly-encoded {@code MarketDataSnapshotRequest} frame for "EURUSD" as a Netty
    * {@link io.netty.buffer.ByteBuf} with the right header and block length. Caller must release.
    */
-  private static io.netty.buffer.ByteBuf buildValidFrame() {
+  private static ByteBuf buildValidFrame() {
     final var buf = new ExpandableArrayBuffer(VALID_FRAME_SIZE);
     final var headerEncoder = new MessageHeaderEncoder();
     final var encoder = new MarketDataSnapshotRequestEncoder();
@@ -274,7 +277,7 @@ final class MarketDataSnapshotRequestMalformedTest {
         found = true;
         break;
       }
-      if (frame instanceof io.netty.util.ReferenceCounted rc) {
+      if (frame instanceof ReferenceCounted rc) {
         rc.release();
       }
     }

@@ -211,22 +211,22 @@ public final class WebSocketDrainHandler {
     }
   }
 
-  /** Per-session 1-warn-per-second rate-limit window for channel-not-writable drop logs. */
-  private static final long CHANNEL_NOT_WRITABLE_WARN_INTERVAL_NS = 1_000_000_000L;
-
   /**
    * Encode and write a reliable frame for a single session, capturing it in the session's {@link
    * ReliableStreamTracker} so a later gap-request or session-resume can replay it. On any failure
    * (write throws, capture throws) the captured slot is evicted so replay never serves a frame the
    * client did not receive (which would produce phantom-gap on next ClientAck).
    *
-   * <p><b>Back-pressure guard.</b> When {@code !ch.isWritable()} the drain handler drops the frame
-   * BEFORE allocating the {@link io.netty.buffer.ByteBuf} or assigning a reliable seqNo — preserves
-   * Netty's outbound water-mark contract and keeps the per-session reliable sequence gap-free (no
-   * seqNo is burned on a frame the client never received). A warn is emitted at most once per
-   * second per session via {@link WebSocketSession#lastChannelNotWritableWarnNs()}; the {@code
-   * egress.dropped.channel-not-writable} counter increments on every drop so dashboards still see
-   * the true rate.
+   * <p><b>No back-pressure drop on the reliable path.</b> Gemini cloud-review R2 G-3 correctly
+   * identified that dropping a reliable frame when {@code !ch.isWritable()} would violate the
+   * reliable-stream contract: no seqNo would be burned, so the client could not detect the gap via
+   * {@code ClientAck}, and the message would be permanently lost. The reliable path therefore
+   * ALWAYS proceeds to write the frame; Netty buffers it past the water-mark, and the existing
+   * {@link SlowConsumerHandler} ladder (level 1 → 2 → 3 → 4 → disconnect) is the correct mechanism
+   * for handling sustained slow consumers — it eventually disconnects the session, after which the
+   * client reconnects and replays from its last-acknowledged seqNo. Best-effort frames retain the
+   * pre-existing {@code isWritable()} skip in {@link #writeBestEffortToAllChannels} because
+   * dropping a best-effort frame is by definition acceptable.
    */
   private void writeReliableToSession(
       final WebSocketSession session,
@@ -234,19 +234,6 @@ public final class WebSocketDrainHandler {
       final int length,
       final int templateId,
       final Channel ch) {
-    if (!ch.isWritable()) {
-      metrics.egressDroppedChannelNotWritable();
-      final long nowNs = nanoClock.nanoTime();
-      if (nowNs - session.lastChannelNotWritableWarnNs() >= CHANNEL_NOT_WRITABLE_WARN_INTERVAL_NS) {
-        session.recordChannelNotWritableWarn(nowNs);
-        LOG.warn(
-            "Channel not writable — dropping reliable frame templateId={} sessionId={} "
-                + "(further drops within 1s suppressed)",
-            templateId,
-            session.sessionId());
-      }
-      return;
-    }
     final long seqNo = session.nextReliableSeqNo();
     final var tracker = session.reliableStreamTracker();
     final var buf =
@@ -310,7 +297,15 @@ public final class WebSocketDrainHandler {
         }
 
         final var ch = session.channel();
-        if (!ch.isActive() || !ch.isWritable()) {
+        if (!ch.isActive()) {
+          continue;
+        }
+        if (!ch.isWritable()) {
+          // Acceptable drop site: best-effort frames have no replay contract, so dropping when
+          // the channel is back-pressured is correct (the SlowConsumerHandler ladder will
+          // disconnect persistent slow consumers separately). Increment the metric so dashboards
+          // can detect sustained back-pressure on best-effort flow.
+          metrics.egressDroppedChannelNotWritable();
           continue;
         }
         // SlowConsumerHandler may have flagged this session for best-effort drop at level 2.
@@ -357,21 +352,30 @@ public final class WebSocketDrainHandler {
    * (because the session was {@code resume()}d after enqueue), the entry is dropped with the {@code
    * egress.dropped.stale-epoch} counter incremented. Prevents the resumed session from receiving an
    * ack intended for a prior session epoch's command.
+   *
+   * <p><b>Pool-release contract.</b> The {@code entry} is NOT released to {@code commandEntryPool}
+   * inside this method on any of its early-return branches. Release is the responsibility of the
+   * SOLE caller — the {@code drain()} loop wraps every invocation in {@code try { ... } finally {
+   * commandEntryPool.release(entry); }} (see {@link #drain()} lines around the ack-queue poll).
+   * This ensures correct release on every return path including exceptions thrown by {@link
+   * #writeReliableToSession}. Gemini cloud-review R1 flagged a potential leak here — the finding
+   * was a false positive because Gemini read this method in isolation; this comment documents the
+   * contract so future reviewers don't re-trip on the same issue.
    */
   private void writeAckToTargetChannel(final EgressEntry entry) {
     final var sessionId = new UUID(entry.sessionIdMsb(), entry.sessionIdLsb());
     final var session = sessionManager.findById(sessionId);
     if (session == null) {
-      return; // session disappeared — drop the ack silently
+      return; // session disappeared — drop the ack silently (caller's finally releases entry)
     }
     final long capturedEpoch = entry.sessionEpoch();
     if (capturedEpoch != EgressEntry.EPOCH_ANY && capturedEpoch != session.currentEpoch()) {
       metrics.egressDroppedStaleEpoch();
-      return;
+      return; // stale epoch — caller's finally releases entry
     }
     final var ch = session.channel();
     if (!ch.isActive()) {
-      return;
+      return; // channel closed — caller's finally releases entry
     }
     writeReliableToSession(session, entry.bytes(), entry.length(), entry.templateId(), ch);
     metrics.filterMatched();

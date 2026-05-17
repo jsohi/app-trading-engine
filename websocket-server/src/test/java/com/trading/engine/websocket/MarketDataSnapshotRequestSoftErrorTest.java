@@ -13,6 +13,7 @@ import com.trading.engine.messages.sbe.WebSocketErrorCode;
 import com.trading.engine.messages.sbe.WebSocketErrorDecoder;
 import com.trading.engine.projections.SymbolPacker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -190,7 +191,7 @@ final class MarketDataSnapshotRequestSoftErrorTest {
    * Build a correctly-encoded {@code MarketDataSnapshotRequest} for the given symbol. Caller must
    * release the returned ByteBuf.
    */
-  private static io.netty.buffer.ByteBuf buildFrame(final String symbol) {
+  private static ByteBuf buildFrame(final String symbol) {
     final var buf = new ExpandableArrayBuffer(VALID_FRAME_SIZE);
     final var headerEncoder = new MessageHeaderEncoder();
     final var encoder = new MarketDataSnapshotRequestEncoder();

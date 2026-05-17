@@ -126,14 +126,6 @@ public final class WebSocketSession {
   private volatile boolean slowConsumerErrorPending;
 
   /**
-   * Monotonic nanos of the most recent {@code channel-not-writable} drop warning emitted by the
-   * {@link WebSocketDrainHandler}. Used to implement per-session 1-warn-per-second rate-limiting on
-   * the back-pressure drop log so a sustained slow consumer does not flood the log. Read + written
-   * by the drain handler on its own Netty event loop only — no synchronisation required.
-   */
-  private long lastChannelNotWritableWarnNs;
-
-  /**
    * Monotonically-increasing session epoch — bumped on every {@link #resume()} so the drain handler
    * can detect and discard egress entries captured before the resume. Cross-thread writes use
    * {@link VarHandle#getAndAdd(Object...)} + {@link VarHandle#releaseFence()} to give the drain
@@ -703,15 +695,6 @@ public final class WebSocketSession {
   }
 
   /**
-   * @return monotonic nanos of the most recent {@code channel-not-writable} drop warning emitted
-   *     for this session by the {@link WebSocketDrainHandler}. Drives the per-session 1-warn-per-
-   *     second log rate-limit.
-   */
-  public long lastChannelNotWritableWarnNs() {
-    return lastChannelNotWritableWarnNs;
-  }
-
-  /**
    * Bump the session epoch on resume. Ordering is load-bearing — the side-effects that must be
    * observable to the drain thread happen BEFORE the {@link VarHandle#releaseFence()} so the fence
    * publishes them as a unit:
@@ -758,14 +741,5 @@ public final class WebSocketSession {
   public long currentEpoch() {
     VarHandle.acquireFence();
     return sessionEpoch; // volatile read
-  }
-
-  /**
-   * @param nowNs monotonic nanos at which a {@code channel-not-writable} warn was just emitted —
-   *     the drain handler updates this immediately after the log call so subsequent drops within
-   *     the next 1 s window stay silent
-   */
-  public void recordChannelNotWritableWarn(final long nowNs) {
-    this.lastChannelNotWritableWarnNs = nowNs;
   }
 }
