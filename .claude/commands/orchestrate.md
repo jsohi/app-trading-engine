@@ -158,6 +158,25 @@ After executing ALL scans, print the MEASURED score:
 
 If `spotlessCheck` fails after `spotlessApply`, something is wrong — investigate, fix, add to ledger (source: "Spotless"), and **restart from Step 1**.
 
+## Step 3b: Pre-Push /review Gate — MANDATORY, FULL `main...HEAD`
+
+**This step is non-negotiable. Every push from Step 4 MUST be preceded by a fresh /review run on the full `main...HEAD` diff (NOT the per-commit delta), with zero findings across both agents, performed in THIS iteration AFTER any Step 1-3 fixes have been committed.**
+
+The motivation: Step 1's /review ran BEFORE any fix commits were made this iteration. The fixes themselves (made in Steps 1-3 in response to those findings) can introduce new defects — typos in the fix, broken cross-file invariants, accidentally re-introducing the very pattern that was just fixed. Without a re-run after the fix lands, those new defects ship.
+
+Procedure:
+
+1. Determine the current HEAD SHA + ensure all Step 1-3 changes are committed (no uncommitted work — those would not be seen by the review agents that look at git state).
+2. Invoke `/review` via the Skill tool. Both Agents A + B run on the full `main...HEAD` diff (NOT just the latest commit, NOT just the delta since the prior /review).
+3. Collect findings. If EITHER agent returns ANY finding (BLOCKER / HIGH / MEDIUM / LOW), append to the ledger and **restart from Step 1** — fix, re-test, re-format, re-review.
+4. Only when BOTH agents return `0 BLOCKER, 0 HIGH, 0 MEDIUM, 0 LOW` may you proceed to Step 4.
+
+**Why this exists as a separate step (not just "Step 1 again"):** Step 1's /review runs on the diff state at iteration START. Step 3b's /review runs on the diff state at iteration END (after all fix commits this iteration). They are NOT the same review, even if the file list overlaps. Skipping Step 3b silently ships unreviewed fix-deltas.
+
+**You may not push or open a PR without a Step 3b /review that returned 0/0/0/0 since the last commit landed.** "I just ran /review in Step 1" is not a valid substitute. "The fix was small" is not a valid substitute. "Tests pass" is not a valid substitute.
+
+If the surface to review hasn't changed since the last 0/0/0/0 /review (no commits landed, no working-tree edits), Step 3b may cite the prior /review by run-id and skip the re-spawn — but ONLY in that exact case.
+
 ## Step 4: Commit and Push
 
 If there are any uncommitted changes from Steps 1-3:

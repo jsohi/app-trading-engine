@@ -636,9 +636,20 @@ let reauthInFlight: Promise<string> | null = null;
 async function acquireToken(port: MessagePort): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      // /review R5 (LOW): symmetric handler clear on the timeout path so a delayed TOKEN
+      // arriving after timeout cannot resolve a Promise that was already rejected (which
+      // would be a no-op on the Promise but would consume the message and confuse a later
+      // `requestFreshToken` call that re-installs a handler expecting the next message).
+      port.onmessage = null;
       reject(new Error("token-port acquire timeout"));
     }, TOKEN_ACQUIRE_TIMEOUT_MS);
     port.onmessage = (ev: MessageEvent<unknown>): void => {
+      // /review R5 (LOW): clear the handler on both resolve AND reject paths so a stray
+      // unsolicited TOKEN from the issuer (e.g. IdP push) does NOT silently re-resolve
+      // an already-settled Promise or get swallowed before the next `requestFreshToken`
+      // installs its own handler. Matches the symmetric clearing already done in
+      // `requestFreshToken` (Gemini iter-2 MEDIUM).
+      port.onmessage = null;
       clearTimeout(timeout);
       const data = ev.data;
       if (
@@ -649,8 +660,7 @@ async function acquireToken(port: MessagePort): Promise<string> {
       ) {
         const value = (data as { value: string }).value;
         // Do NOT close the port — keep it open for reauth requests.
-        // The handler below is replaced (not stacked) on the next
-        // acquireToken call, so no listener leak.
+        // The next `requestFreshToken` installs a fresh handler before posting REAUTH_REQUEST.
         resolve(value);
       } else {
         reject(new Error("token-port: malformed TOKEN message"));
