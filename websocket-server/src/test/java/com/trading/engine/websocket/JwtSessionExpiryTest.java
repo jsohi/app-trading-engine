@@ -17,16 +17,16 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link JwtExpirySweeper} — verifies pre-auth skip, soft-expiry warning latch,
- * hard-expiry channel close, inactive-channel skip, cadence guard, multi-session independence,
- * and the {@link WebSocketSession#expEpochNanos(long)} setter contract (latch reset + validation).
+ * hard-expiry channel close, inactive-channel skip, cadence guard, multi-session independence, and
+ * the {@link WebSocketSession#expEpochNanos(long)} setter contract (latch reset + validation).
  *
  * <p><b>Threading.</b> All tests run single-threaded on the JUnit runner, matching the
  * single-threaded drain-worker contract of the sweeper.
  *
- * <p><b>Clock strategy.</b> {@link ControllableNanoClock} from {@code test-support} implements
- * both {@link org.agrona.concurrent.NanoClock} and
- * {@link org.agrona.concurrent.EpochNanoClock} so a single instance serves the
- * {@link WebSocketSessionManager} (monotonic) and the {@link JwtExpirySweeper} (epoch-nanos).
+ * <p><b>Clock strategy.</b> {@link ControllableNanoClock} from {@code test-support} implements both
+ * {@link org.agrona.concurrent.NanoClock} and {@link org.agrona.concurrent.EpochNanoClock} so a
+ * single instance serves the {@link WebSocketSessionManager} (monotonic) and the {@link
+ * JwtExpirySweeper} (epoch-nanos).
  *
  * <p><b>Metrics assertion.</b> {@link SimpleMeterRegistry} is used so counter values are readable
  * via {@code registry.get("name").counter().count()}.
@@ -35,8 +35,8 @@ final class JwtSessionExpiryTest {
 
   /**
    * A fixed epoch-nanos anchor well above zero — chosen as 5 minutes in nanos to represent a
-   * session authenticated 5 minutes after the server started. Keeps relative math readable:
-   * {@code NOW_ANCHOR + WARN_LEAD_NANOS + X} places the expiry inside the warn window.
+   * session authenticated 5 minutes after the server started. Keeps relative math readable: {@code
+   * NOW_ANCHOR + WARN_LEAD_NANOS + X} places the expiry inside the warn window.
    */
   private static final long NOW_ANCHOR = TimeUnit.MINUTES.toNanos(5L);
 
@@ -91,7 +91,8 @@ final class JwtSessionExpiryTest {
     sweeper.scan();
 
     // No warning frame emitted.
-    assertFalse(session.expiringWarningSent(), "warning latch must not be set for pre-auth session");
+    assertFalse(
+        session.expiringWarningSent(), "warning latch must not be set for pre-auth session");
     // No counter increments.
     assertEquals(
         0.0,
@@ -139,10 +140,10 @@ final class JwtSessionExpiryTest {
   /**
    * Verifies that when the clock is exactly inside the warn window ({@code expEpochNanos = now +
    * WARN_LEAD_NANOS - 1ns} places expiry 1 ns inside the warn-lead boundary, so the condition
-   * {@code now >= exp - WARN_LEAD} is satisfied) the sweeper emits exactly one
-   * {@code AuthExpiringSoon} frame, sets the latch, and increments the
-   * {@code authExpiringSoonEmitted} counter. A subsequent call while still inside the window must
-   * NOT emit another frame (latch held).
+   * {@code now >= exp - WARN_LEAD} is satisfied) the sweeper emits exactly one {@code
+   * AuthExpiringSoon} frame, sets the latch, and increments the {@code authExpiringSoonEmitted}
+   * counter. A subsequent call while still inside the window must NOT emit another frame (latch
+   * held).
    */
   @Test
   void scan_atWarnBoundary_emitsAuthExpiringSoonOnce() {
@@ -225,9 +226,9 @@ final class JwtSessionExpiryTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Verifies that when {@code nowNanos >= expEpochNanos} the sweeper closes the channel,
-   * increments {@code authSessionExpired}, and does NOT emit a warning frame (immediate close,
-   * no warn-then-close dance).
+   * Verifies that when {@code nowNanos >= expEpochNanos} the sweeper closes the channel, increments
+   * {@code authSessionExpired}, and does NOT emit a warning frame (immediate close, no
+   * warn-then-close dance).
    */
   @Test
   void scan_atHardExpiry_closesChannel() {
@@ -257,8 +258,8 @@ final class JwtSessionExpiryTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Verifies that a session whose channel has been closed (isActive() == false) is skipped
-   * entirely — no warning frame emitted, no metric incremented.
+   * Verifies that a session whose channel has been closed (isActive() == false) is skipped entirely
+   * — no warning frame emitted, no metric incremented.
    */
   @Test
   void scan_inactiveChannel_skipped() {
@@ -345,16 +346,15 @@ final class JwtSessionExpiryTest {
    * markExpiringWarningSent()} on one does not spill into the other.
    *
    * <p><b>EmbeddedChannel collision note.</b> Netty's {@link EmbeddedChannel} uses a singleton
-   * {@link io.netty.channel.embedded.EmbeddedChannelId} whose {@code equals()} returns {@code
-   * true} for any other {@code EmbeddedChannelId} and whose {@code hashCode()} is always {@code
-   * 0}. Registering two {@code EmbeddedChannel} instances via {@link
+   * {@link io.netty.channel.embedded.EmbeddedChannelId} whose {@code equals()} returns {@code true}
+   * for any other {@code EmbeddedChannelId} and whose {@code hashCode()} is always {@code 0}.
+   * Registering two {@code EmbeddedChannel} instances via {@link
    * WebSocketSessionManager#tryRegister} would overwrite the first entry in the map because both
    * share the same key. To isolate the per-session latch contract from this Netty test-channel
    * limitation, two {@link WebSocketSession} objects are constructed directly (the constructor is
-   * public) and driven through the sweeper-relevant API ({@code expEpochNanos},
-   * {@code markExpiringWarningSent}, {@code expiringWarningSent}) without routing through the
-   * session manager. The sweeper's iteration over the manager is already covered by TC 3, TC 4,
-   * and TC 7.
+   * public) and driven through the sweeper-relevant API ({@code expEpochNanos}, {@code
+   * markExpiringWarningSent}, {@code expiringWarningSent}) without routing through the session
+   * manager. The sweeper's iteration over the manager is already covered by TC 3, TC 4, and TC 7.
    */
   @Test
   void scan_multipleSessions_independentLatches() {
@@ -379,8 +379,7 @@ final class JwtSessionExpiryTest {
       // Mark only sessionAlpha's latch.
       sessionAlpha.markExpiringWarningSent();
 
-      assertTrue(
-          sessionAlpha.expiringWarningSent(), "sessionAlpha latch must be set after mark");
+      assertTrue(sessionAlpha.expiringWarningSent(), "sessionAlpha latch must be set after mark");
       assertFalse(
           sessionBeta.expiringWarningSent(),
           "sessionBeta latch must remain clear — latches are independent");
@@ -388,8 +387,7 @@ final class JwtSessionExpiryTest {
       // Mark only sessionBeta's latch.
       sessionBeta.markExpiringWarningSent();
 
-      assertTrue(
-          sessionBeta.expiringWarningSent(), "sessionBeta latch must be set after mark");
+      assertTrue(sessionBeta.expiringWarningSent(), "sessionBeta latch must be set after mark");
       assertTrue(
           sessionAlpha.expiringWarningSent(),
           "sessionAlpha latch must still be set — unaffected by sessionBeta mark");
@@ -458,10 +456,10 @@ final class JwtSessionExpiryTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Verifies that {@link WebSocketSession#expEpochNanos(long)} throws
-   * {@link IllegalArgumentException} for both zero and negative values, enforcing the contract
-   * that only positive epoch-nanos are valid (RFC 7519 {@code exp} is always in the future
-   * relative to issuance; zero is the pre-auth sentinel and must not be written by auth code).
+   * Verifies that {@link WebSocketSession#expEpochNanos(long)} throws {@link
+   * IllegalArgumentException} for both zero and negative values, enforcing the contract that only
+   * positive epoch-nanos are valid (RFC 7519 {@code exp} is always in the future relative to
+   * issuance; zero is the pre-auth sentinel and must not be written by auth code).
    */
   @Test
   void expEpochNanosSetter_rejectsZeroOrNegative() {

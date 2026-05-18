@@ -93,6 +93,15 @@ public final class JwtValidator implements AutoCloseable {
   private final EpochNanoClock wallClock;
 
   /**
+   * Optional metrics sink. {@code null} in the standard constructor (no metrics dependency at
+   * construction time — the caller wires metrics at the caller layer, e.g. {@code JwtAuthHandler}).
+   * Set to a non-null value only via the package-private {@link #forTesting} factory overload that
+   * accepts metrics, so rotation tests can assert the JWKS-failure counter without spying on
+   * production code.
+   */
+  private WebSocketMetrics metrics;
+
+  /**
    * Create a JWT validator.
    *
    * <p>For each entry in the issuer registry, a JWKS-backed JWT processor is created. The JWKS
@@ -173,6 +182,27 @@ public final class JwtValidator implements AutoCloseable {
   }
 
   /**
+   * Package-private static factory for testing — identical to {@link #forTesting} but also injects
+   * a {@link WebSocketMetrics} sink so rotation tests can assert JWKS-failure counters.
+   *
+   * @param processors pre-built JWT processor map (issuer -> processor)
+   * @param expectedAudience the expected audience claim
+   * @param wallClock epoch nanosecond clock
+   * @param metrics metrics sink for JWKS refresh failure counters (non-null)
+   * @return a JwtValidator backed by the given processors with metrics instrumentation
+   */
+  static JwtValidator forTesting(
+      final Map<String, DefaultJWTProcessor<SecurityContext>> processors,
+      final String expectedAudience,
+      final EpochNanoClock wallClock,
+      final WebSocketMetrics metrics) {
+    final var validator = new JwtValidator(Map.of(), expectedAudience, wallClock);
+    validator.processors.putAll(processors);
+    validator.metrics = Objects.requireNonNull(metrics, "metrics");
+    return validator;
+  }
+
+  /**
    * Validate a JWT token string and extract claims.
    *
    * @param jwt the raw JWT token string (compact serialization)
@@ -223,7 +253,7 @@ public final class JwtValidator implements AutoCloseable {
     // This handles IdP key rotation where the local cache may have a stale key set.
     // RemoteJWKSet automatically refreshes its cache on the next get() call after a failed
     // verification, so re-processing the same JWT triggers a JWKS fetch.
-    final var claims = processWithRetry(signedJwt, processor);
+    final var claims = processWithRetry(signedJwt, processor, metrics);
 
     // Validate iat (issued-at): reject tokens issued more than 15 minutes ago or too far in future
     final var iat = claims.getIssueTime();
@@ -317,13 +347,22 @@ public final class JwtValidator implements AutoCloseable {
    * BadJWSException}, the processor's {@link RemoteJWKSet} will automatically refresh its JWKS
    * cache on the next key selection attempt, so re-processing the JWT triggers a fresh fetch.
    *
+   * <p>When a JWKS fetch fails with an HTTP 5xx error during the retry (i.e. the JWKS endpoint is
+   * temporarily unavailable), the {@code jwks.refresh.failure{reason="5xx"}} counter is incremented
+   * if a {@link WebSocketMetrics} sink has been injected via {@link #forTesting(Map, String,
+   * EpochNanoClock, WebSocketMetrics)}.
+   *
    * @param signedJwt the parsed JWT
    * @param processor the issuer-specific JWT processor
+   * @param metricsOrNull optional metrics sink; {@code null} when metrics are managed by the caller
+   *     layer (e.g. {@code JwtAuthHandler}) rather than the validator itself
    * @return the validated claims set
    * @throws JwtValidationException if validation fails after retry
    */
   private static JWTClaimsSet processWithRetry(
-      final SignedJWT signedJwt, final DefaultJWTProcessor<SecurityContext> processor)
+      final SignedJWT signedJwt,
+      final DefaultJWTProcessor<SecurityContext> processor,
+      final WebSocketMetrics metricsOrNull)
       throws JwtValidationException {
     try {
       return processor.process(signedJwt, null);
@@ -337,14 +376,55 @@ public final class JwtValidator implements AutoCloseable {
       try {
         return processor.process(SignedJWT.parse(signedJwt.serialize()), null);
       } catch (final Exception retryEx) {
+        // If the JWKS endpoint returned a 5xx during the refresh attempt, track the transient
+        // failure. The message check is defensive — Nimbus wraps the HTTP status in the
+        // RemoteKeySourceException message as "HTTP <status>", so "HTTP 5" covers 500–599.
+        if (metricsOrNull != null && isHttp5xxCause(retryEx)) {
+          metricsOrNull.jwksRefreshFailure5xx();
+        }
         throw new JwtValidationException(
             "JWT verification failed after JWKS refresh: " + retryEx.getMessage(), retryEx);
       }
     } catch (final BadJOSEException e) {
       throw new JwtValidationException("JWT verification failed: " + e.getMessage(), e);
     } catch (final Exception e) {
+      // Non-signature failures (network error, parse error) on the first attempt. Check for 5xx
+      // before wrapping, so callers can observe JWKS endpoint health via metrics.
+      if (metricsOrNull != null && isHttp5xxCause(e)) {
+        metricsOrNull.jwksRefreshFailure5xx();
+      }
       throw new JwtValidationException("JWT processing error: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * Returns {@code true} when the exception (or any cause in its chain) carries a message that
+   * indicates an HTTP 5xx response from the JWKS endpoint. Nimbus's {@code
+   * DefaultResourceRetriever} formats the status line as {@code "HTTP <status>"} in the {@code
+   * IOException} message, which surfaces through {@code RemoteKeySourceException}.
+   *
+   * <p>This heuristic is specific to Nimbus 10.3. A future upgrade to JWKSourceBuilder (nimbus
+   * 10.7+) should replace this with the structured {@code JWKSetUnavailableException} hierarchy.
+   *
+   * @param t the exception to inspect
+   * @return {@code true} if any cause in the chain looks like an HTTP 5xx response
+   */
+  private static boolean isHttp5xxCause(final Throwable t) {
+    Throwable current = t;
+    while (current != null) {
+      final var msg = current.getMessage();
+      if (msg != null
+          && (msg.contains("HTTP 5")
+              || msg.contains("503")
+              || msg.contains("502")
+              || msg.contains("500")
+              || msg.contains("504")
+              || msg.contains("jwks_unreachable"))) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   /**
