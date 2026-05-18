@@ -146,8 +146,8 @@ public final class WebSocketSession {
    * JWT {@code exp} claim converted to epoch-nanos at auth time. {@code 0L} until {@link
    * #expEpochNanos(long)} is called. Compared against the injected {@link
    * io.aeron.archive.client.AeronArchive AeronArchive}-grade {@link
-   * org.agrona.concurrent.EpochNanoClock} on each {@link JwtExpirySweeper#scan(long)} tick (every
-   * ~1 s). Volatile because the sweeper runs on a different worker event loop than the channel that
+   * org.agrona.concurrent.EpochNanoClock} on each {@link JwtExpirySweeper#scan()} tick (every ~1
+   * s). Volatile because the sweeper runs on a different worker event loop than the channel that
    * set the value at auth time.
    *
    * <p>Plan §Commit 8 + Gemini iter-4: nano-precision comparison — never truncating integer
@@ -314,7 +314,7 @@ public final class WebSocketSession {
 
   /**
    * @return {@code true} iff the {@code AuthExpiringSoon} warning has already been emitted for the
-   *     current token (set by {@link JwtExpirySweeper#scan(long)} on first crossing of the warn
+   *     current token (set by {@link JwtExpirySweeper#scan()} on first crossing of the warn
    *     boundary).
    */
   public boolean expiringWarningSent() {

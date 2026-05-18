@@ -412,7 +412,20 @@ public final class WebSocketDrainHandler {
         try {
           ch.write(new BinaryWebSocketFrame(dup));
         } catch (final Exception writeEx) {
-          dup.release(); // prevent leak if write throws
+          // Persistent per-session write failures must not vanish silently: ops needs both a
+          // counter (Prometheus alert surface) AND a debug breadcrumb naming the channel and the
+          // failure reason so the offender can be identified. The duplicated buffer is released
+          // here to prevent a refcount leak, and the loop continues so other channels still
+          // receive the broadcast.
+          dup.release();
+          metrics.egressWriteException();
+          if (LOG.isDebugEnabled()) {
+            LOG.debug(
+                "Best-effort write failed for channel={} templateId={}: {}",
+                ch.id(),
+                templateId,
+                writeEx.getMessage());
+          }
         }
       }
     } catch (final Exception e) {

@@ -49,11 +49,13 @@ import org.apache.logging.log4j.core.appender.ConsoleAppender;
  * #installAll(LoggerContext, ConsoleAppender, MeterRegistry)} and bound via {@link
  * Appender#setHandler(ErrorHandler)}. The handler holds no resources requiring shutdown.
  *
- * <p><b>Allocation.</b> The hot path ({@link #error(String, LogEvent, Throwable)}) is allocation-
- * free: the cause walk uses a local reference, the kind classification returns interned string
- * constants, and Micrometer tagged counters were pre-registered at construction. The non-{@link
- * LogEvent} overload ({@link #error(String, Throwable)}) cannot reroute because there is no event
- * to forward, so it only classifies, counts, and delegates.
+ * <p><b>Allocation.</b> The hot path ({@link #error(String, LogEvent, Throwable)}) is
+ * allocation-free: the cause walk uses local references, classification returns interned string
+ * constants ({@link #KIND_DISK_FULL} / {@link #KIND_OTHER}), the substring match uses {@link
+ * String#regionMatches(boolean, int, String, int, int)} so no lower-cased copy of the exception
+ * message is allocated per cause-walk step, and Micrometer tagged counters were pre-registered at
+ * construction. The non-{@link LogEvent} overload ({@link #error(String, Throwable)}) cannot
+ * reroute because there is no event to forward, so it only classifies, counts, and delegates.
  *
  * @see ErrorHandler
  * @see ConsoleAppender
@@ -69,6 +71,13 @@ public final class Log4j2DiskFullErrorHandler implements ErrorHandler {
 
   /** Classification tag value for any other appender error (delegated to the wrapped handler). */
   public static final String KIND_OTHER = "other";
+
+  /**
+   * Maximum cause-chain hops walked by {@link #classify(Throwable)}. Defends against pathological
+   * self-referential chains while comfortably exceeding the depth of any real JDK / Log4j2 wrapping
+   * pattern (observed max: 6).
+   */
+  private static final int MAX_CAUSE_HOPS = 16;
 
   /**
    * Substrings checked against the {@link IOException} message (lower-cased, ASCII-only). These are
@@ -288,30 +297,54 @@ public final class Log4j2DiskFullErrorHandler implements ErrorHandler {
    * one of the {@link #DISK_FULL_MARKERS}. Returns {@link #KIND_DISK_FULL} on the first hit, {@link
    * #KIND_OTHER} otherwise (including for a {@code null} throwable).
    *
-   * <p>Bounded to 16 hops to defend against pathological self-referential chains.
+   * <p>Bounded to {@value #MAX_CAUSE_HOPS} hops to defend against pathological self-referential
+   * chains.
    *
    * @param t the throwable to classify; may be {@code null}
    * @return {@link #KIND_DISK_FULL} or {@link #KIND_OTHER} — never {@code null}
    */
   static String classify(final Throwable t) {
-    Throwable cursor = t;
+    // `cursor` and `hops` are loop-control state under the carve-out for tight scan loops:
+    // `cursor` walks the cause chain via re-assignment in the for-header, `hops` is a counter.
     int hops = 0;
-    while (cursor != null && hops < 16) {
+    for (Throwable cursor = t;
+        cursor != null && hops < MAX_CAUSE_HOPS;
+        cursor = cursor.getCause(), hops++) {
       if (cursor instanceof IOException) {
         final var raw = cursor.getMessage();
-        if (raw != null) {
-          final var lower = raw.toLowerCase(java.util.Locale.ROOT);
-          for (final var marker : DISK_FULL_MARKERS) {
-            if (lower.contains(marker)) {
-              return KIND_DISK_FULL;
-            }
-          }
+        if (raw != null && containsAnyIgnoreCase(raw, DISK_FULL_MARKERS)) {
+          return KIND_DISK_FULL;
         }
       }
-      cursor = cursor.getCause();
-      hops++;
     }
     return KIND_OTHER;
+  }
+
+  /**
+   * Case-insensitive substring scan of {@code raw} against each entry in {@code markers} (which
+   * MUST already be lowercase). Allocation-free: walks {@code raw} once per marker using {@link
+   * String#regionMatches(boolean, int, String, int, int)} instead of allocating a lower-cased copy
+   * via {@link String#toLowerCase(java.util.Locale)}.
+   *
+   * @param raw the message to scan; must not be {@code null}
+   * @param markers lowercase markers to look for; must not be {@code null}
+   * @return {@code true} if any marker is found (case-insensitive) within {@code raw}
+   */
+  private static boolean containsAnyIgnoreCase(final String raw, final String[] markers) {
+    final int rawLen = raw.length();
+    for (final var m : markers) {
+      final int mLen = m.length();
+      if (mLen == 0 || mLen > rawLen) {
+        continue;
+      }
+      final int last = rawLen - mLen;
+      for (int i = 0; i <= last; i++) {
+        if (raw.regionMatches(true, i, m, 0, mLen)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private void bump(final String kind) {
