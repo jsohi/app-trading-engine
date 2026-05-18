@@ -23,6 +23,7 @@
  *      - __E2E_JWT_OVERRIDE__
  *      - __connStates
  *      - __connStatesUnsub
+ *      - feedState$ (plan §Commit 9 / spec 09 feed-stale; exposed via E2EHooks)
  *
  * 2. Sum of gzipped JS files ≤ baseline + 10% headroom.
  * 3. Sum of brotli-compressed JS files ≤ baseline + 10% headroom (matches
@@ -53,6 +54,9 @@ const FORBIDDEN_SYMBOLS = [
   "__E2E_JWT_OVERRIDE__",
   "__connStates",
   "__connStatesUnsub",
+  // Phase 3 Commit 9 additions — plan §Q + §Commit 9 bundle-guard extension.
+  // feedState$ is exposed via E2EHooks in e2eHooks.ts (DCE'd in prod builds).
+  "feedState$",
 ];
 const FORBIDDEN_JWT_REGEX = /eyJ[A-Za-z0-9_-]{20,}/;
 

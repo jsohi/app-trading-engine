@@ -18,6 +18,9 @@
  *   <li>{@code __e2eHooks}                (this module's own ready-marker)
  * </ul>
  *
+ * <p>{@code feedState$} (plan §Commit 9, spec 09 feed-stale) is exposed via
+ * {@link E2EHooks#feedState$} — it is bundle-guarded alongside the hooks above.
+ *
  * <p>Other UI components register into the hooks via {@link installEarlyHooks}
  * (called from `main.tsx`) and {@link registerOrdersGridApi}. Tests then
  * manipulate / read these fields through Playwright's {@code page.evaluate}.
@@ -29,6 +32,7 @@
  */
 
 import { connectionStream$ } from "@/streams/connection-stream";
+import { feedState$ } from "@/streams/feed-state-stream";
 
 /** Ambient type for the global hooks namespace (typed access from inside the project). */
 declare global {
@@ -51,6 +55,15 @@ declare global {
 export interface E2EHooks {
   /** RxJS connection-state Observable, exposed for the test 7 recorder. */
   readonly connectionState$: typeof connectionStream$;
+  /**
+   * RxJS market-data feed-state Observable ({@code "LIVE" | "QUIET" | "STALE"}), exposed for
+   * spec 09 (feed-stale). Separate from {@link connectionState$} — a STALE feed MUST NOT trip
+   * the WS reconnect breaker; the transport remains healthy only the pricing feed is down.
+   *
+   * <p><b>Bundle-guard:</b> the literal {@code feedState$} is grepped by the bundle-guard test
+   * to assert zero leakage into the production build.
+   */
+  readonly feedState$: typeof feedState$;
   /** Marker the spec waits on to confirm hooks are wired. */
   readonly ready: true;
 }
@@ -70,7 +83,7 @@ function e2eEnabled(): boolean {
  */
 export function installEarlyHooks(): void {
   if (!e2eEnabled()) return;
-  globalThis.__e2eHooks = { connectionState$: connectionStream$, ready: true };
+  globalThis.__e2eHooks = { connectionState$: connectionStream$, feedState$, ready: true };
   // __forceWsClose is registered by the WorkerClient setup site (in messageSource.ts) once the
   // WorkerClient instance exists. Pre-register a stub so a stale page.evaluate during the
   // bootstrap window doesn't blow up — replaced by the real implementation immediately after.
