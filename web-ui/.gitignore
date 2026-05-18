@@ -1,5 +1,9 @@
 node_modules/
 dist/
+# E2E-mode bundle output produced by the bundle-guard test
+# (web-ui/test/integration/build-bundle.test.ts) when it builds with
+# VITE_E2E_REAL_BACKEND=true to assert the conditional-export mechanism.
+dist-e2e/
 .env.local
 .dev-certs/
 playwright-report/
