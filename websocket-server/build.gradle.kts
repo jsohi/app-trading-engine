@@ -31,6 +31,12 @@ dependencies {
     runtimeOnly(libs.netty.transport.native.kqueue) { artifact { classifier = "osx-aarch_64" } }
 
     implementation(libs.micrometer.registry.prometheus)
+
+    // Log4j2 core is required for Log4j2DiskFullErrorHandler — implements
+    // org.apache.logging.log4j.core.ErrorHandler and dispatches to ConsoleAppender on disk-full.
+    // The rest of websocket-server uses log4j-api only (transitive via Aeron/Netty).
+    implementation(libs.log4j.core)
+
     implementation(libs.nimbus.jose.jwt)
     implementation(libs.snakeyaml)
     // Jackson for OIDC discovery doc parsing (RFC 8414 — see OidcDiscoveryClient).

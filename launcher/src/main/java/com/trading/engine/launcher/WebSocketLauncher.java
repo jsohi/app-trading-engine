@@ -13,6 +13,7 @@ import com.trading.engine.websocket.CommandEntryPool;
 import com.trading.engine.websocket.EgressEntry;
 import com.trading.engine.websocket.JtiRevocationCache;
 import com.trading.engine.websocket.JwtValidator;
+import com.trading.engine.websocket.Log4j2DiskFullErrorHandler;
 import com.trading.engine.websocket.MarketDataIngressHandler;
 import com.trading.engine.websocket.MarketDataPoller;
 import com.trading.engine.websocket.MarketDataSubscriptionLivenessTracker;
@@ -44,6 +45,9 @@ import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.SystemNanoClock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.ConsoleAppender;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 
 /**
  * Static factory that wires and starts the Netty WebSocket server with its own Aeron Cluster client
@@ -106,6 +110,26 @@ public final class WebSocketLauncher {
 
     // 2. Metrics (uses WebSocketMetrics.createWithDefaults() — SimpleMeterRegistry for dev/test)
     final var metrics = WebSocketMetrics.createWithDefaults();
+
+    // 2a. Bind Log4j2DiskFullErrorHandler to every non-console appender so disk-full / IO errors
+    // reroute to ConsoleAppender + increment log.appender.failure counter. Failure to install is
+    // logged but never fatal — the process must still come up if Log4j2 reflection breaks.
+    try {
+      final var loggerContext = (LoggerContext) LogManager.getContext(false);
+      final var fallback =
+          ConsoleAppender.createDefaultAppenderForLayout(PatternLayout.createDefaultLayout());
+      if (!fallback.isStarted()) {
+        fallback.start();
+      }
+      final int installed =
+          Log4j2DiskFullErrorHandler.installAll(loggerContext, fallback, metrics.registry());
+      LOG.info("Log4j2DiskFullErrorHandler bound to {} appenders", installed);
+    } catch (final RuntimeException e) {
+      LOG.warn(
+          "Failed to install Log4j2DiskFullErrorHandler — appender errors will fall back "
+              + "to Log4j2 DefaultErrorHandler",
+          e);
+    }
 
     // 3. Egress queues (MpscArrayQueue: Aeron → Netty, return: Netty → Aeron pool)
     final var egressQueue =

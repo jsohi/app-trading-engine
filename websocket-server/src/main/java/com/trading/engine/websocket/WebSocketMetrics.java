@@ -26,6 +26,13 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class WebSocketMetrics {
 
+  /**
+   * Underlying registry, exposed for cross-cutting subsystems (e.g. {@link
+   * Log4j2DiskFullErrorHandler}) that need to register their own tagged counter families against
+   * the same Prometheus scrape surface.
+   */
+  private final MeterRegistry registry;
+
   // --- Gauge holders (updated by owning threads, read by Prometheus scraper) ---
   private final AtomicInteger activeConnections = new AtomicInteger();
   private final AtomicLong queueDepth = new AtomicLong();
@@ -122,6 +129,7 @@ public final class WebSocketMetrics {
    */
   public WebSocketMetrics(final MeterRegistry registry) {
     Objects.requireNonNull(registry, "registry");
+    this.registry = registry;
     // Architecture doc Section 6 — 6 required metrics
     this.aeronPollLatency =
         Timer.builder("websocket.aeron.poll.latency")
@@ -610,5 +618,18 @@ public final class WebSocketMetrics {
    */
   public void egressDroppedStaleEpoch() {
     egressDroppedStaleEpoch.increment();
+  }
+
+  /**
+   * Expose the underlying Micrometer registry so cross-cutting subsystems can register their own
+   * tagged counter families against the same Prometheus scrape surface.
+   *
+   * <p>Currently consumed by {@link Log4j2DiskFullErrorHandler#installAll} so each Log4j2 appender
+   * gets its own {@code log.appender.failure{appender=...,kind=...}} counter pair.
+   *
+   * @return the {@link MeterRegistry} this instance was constructed with — never {@code null}
+   */
+  public MeterRegistry registry() {
+    return registry;
   }
 }
