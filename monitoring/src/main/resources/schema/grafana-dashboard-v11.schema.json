@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading.engine/schema/grafana-dashboard-v11.schema.json",
+  "title": "Grafana 11 dashboard (project-pinned subset)",
+  "description": "Validates the load-bearing fields of a Grafana 11 dashboard JSON model. This is a project-maintained subset of the upstream Grafana dashboard schema (https://grafana.com/docs/grafana/latest/dashboards/build-dashboards/view-dashboard-json-model/) — it enforces the fields the import path actually reads. Adding new dashboards or panels does NOT require schema changes; bumping Grafana major versions does.",
+  "type": "object",
+  "required": [
+    "title",
+    "uid",
+    "schemaVersion",
+    "panels",
+    "tags",
+    "time",
+    "timepicker",
+    "refresh"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "uid": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$" },
+    "schemaVersion": { "type": "integer", "minimum": 36, "maximum": 41 },
+    "version": { "type": "integer", "minimum": 0 },
+    "editable": { "type": "boolean" },
+    "graphTooltip": { "type": "integer", "minimum": 0, "maximum": 2 },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "time": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "timepicker": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "refresh": { "type": "string", "pattern": "^([0-9]+[smhd]|)$" },
+    "templating": {
+      "type": "object",
+      "properties": {
+        "list": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "type": "object",
+      "properties": {
+        "list": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": true
+    },
+    "panels": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/panel" }
+    }
+  },
+  "$defs": {
+    "panel": {
+      "type": "object",
+      "required": ["id", "type", "title", "gridPos"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "timeseries",
+            "stat",
+            "gauge",
+            "bargauge",
+            "table",
+            "piechart",
+            "heatmap",
+            "histogram",
+            "alertlist",
+            "row",
+            "text",
+            "logs",
+            "state-timeline",
+            "status-history"
+          ]
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "datasource": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "required": ["type", "uid"],
+              "properties": {
+                "type": { "type": "string" },
+                "uid": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            { "type": "null" }
+          ]
+        },
+        "gridPos": {
+          "type": "object",
+          "required": ["x", "y", "w", "h"],
+          "properties": {
+            "x": { "type": "integer", "minimum": 0, "maximum": 24 },
+            "y": { "type": "integer", "minimum": 0 },
+            "w": { "type": "integer", "minimum": 1, "maximum": 24 },
+            "h": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "targets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/target" }
+        },
+        "fieldConfig": { "type": "object" },
+        "options": { "type": "object" },
+        "panels": {
+          "description": "Row panels carry their own collapsed child panels.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/panel" }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["refId"],
+      "additionalProperties": true,
+      "properties": {
+        "refId": { "type": "string", "pattern": "^[A-Z][A-Z0-9]?$" },
+        "expr": { "type": "string" },
+        "legendFormat": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["time_series", "table", "heatmap"]
+        },
+        "instant": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "datasource": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "required": ["type", "uid"],
+              "properties": {
+                "type": { "type": "string" },
+                "uid": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      }
+    }
+  }
+}
