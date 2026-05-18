@@ -61,7 +61,10 @@ import {
 } from "@trading/sbe-codecs";
 
 import { type ErrorMsg, type FeedState, type WorkerMessage } from "@/shared/transport/MessageShape";
-import { pack as packSymbolByString } from "@/shared/transport/SymbolPacking";
+import {
+  pack as packSymbolByString,
+  packView as packSymbolFromView,
+} from "@/shared/transport/SymbolPacking";
 import { type Stats } from "@/workers/protocol/Stats";
 
 /**
@@ -116,6 +119,13 @@ export interface ClusterEventDeps {
  */
 export interface MarketDataConflationLike {
   onTick(packedSymbol: number, frame: MarketDataTickFrameLike): void;
+  /**
+   * Returns the symbol string of the latest buffered frame for {@code packedSymbol}, or
+   * {@code undefined} if no frame is currently in the conflation map for that key. Used
+   * by the dispatcher to short-circuit the per-tick {@code dec.symbol()} String allocation
+   * (Gemini iter-2 review, MEDIUM, clusterEventDecoder.ts:283).
+   */
+  peekSymbol(packedSymbol: number): string | undefined;
 }
 
 /** Structural mirror of {@link ../marketDataConflation.MarketDataTickFrame}. */
@@ -267,7 +277,15 @@ export function decodeClusterEvent(
         const dec = new MarketDataTickDecoder().wrap(dv, SBE_HEADER_BYTES);
         const ingressNanos = dec.ingressNanos();
         const serverNanos = dec.serverNanos();
-        const symbol = dec.symbol();
+        // Gemini iter-2 review (MEDIUM, clusterEventDecoder.ts:283): avoid per-tick
+        // String allocation from `dec.symbol()`. Pack directly from the underlying
+        // DataView (zero alloc) and reuse the cached symbol string from the conflation
+        // map if a prior tick within the same drain window already populated it. First
+        // sight per symbol still allocates the String exactly once (via `dec.symbol()`),
+        // but subsequent ticks for the same symbol pull from the cache.
+        const packedSymbol = packSymbolFromView(dv, SBE_HEADER_BYTES + 0);
+        const cachedSymbol = deps.conflation.peekSymbol(packedSymbol);
+        const symbol = cachedSymbol ?? dec.symbol();
         // symbolSeq is int64 on the wire. The gap-attribution math runs in pure Number
         // space — bigint arithmetic on the hot path costs ~3x and per-symbol cursors stay
         // far below 2^53. Convert via explicit BigInt → Number truncation. The
@@ -280,7 +298,6 @@ export function decodeClusterEvent(
         // The conflation drain (30 Hz setInterval) emits the consolidated PriceUpdate
         // asynchronously via its own sink (the worker bootstrap binds it to the same `emit`
         // callback). gap counts feed Prometheus via the worker stats surface.
-        const packedSymbol = packSymbolByString(symbol);
         deps.conflation.onTick(packedSymbol, {
           symbol,
           bid: dec.bidPrice(),

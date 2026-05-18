@@ -57,17 +57,20 @@ describe("GapDetector", () => {
     expect(report.network).toBe(2);
   });
 
-  it("onTick_gapAfterHeartbeatCursorCoversGap_attributesEntireGapToPublisher", () => {
+  it("onTick_gapWithHeartbeatCursorCovers_stillAttributesToNetwork_perGeminiR2Fix", () => {
     detector.onTick(EUR, 1); // cursor = 1
-    // Heartbeat says publisher has published up to seq=5
-    // So the missing seqs 2,3 (total gap=2) are covered by the publisher cursor
+    // Heartbeat says publisher has published up to seq=5.
+    // Per Gemini iter-2 review (HIGH, gapDetector.ts:207): publisher conflation reduces
+    // the COUNT of emitted messages — conflated updates are never assigned a seq, so a
+    // seq-counter gap ALWAYS reflects messages the publisher DID publish but the browser
+    // failed to receive (network drop). The publisher cursor being current means the
+    // publisher SENT those missing seqs → they are network drops, NOT conflation drops.
     detector.onHeartbeat(EUR, 5);
     const report = detector.onTick(EUR, 4); // seqs 2,3 missing
 
     expect(report.outcome).toBe("gap");
-    // publisherCursor (5) >= symbolSeq (4) → full gap attributed to publisher
-    expect(report.publisherConflated).toBe(2);
-    expect(report.network).toBe(0);
+    expect(report.publisherConflated).toBe(0);
+    expect(report.network).toBe(2);
   });
 
   it("onTick_olderSeqThanCursor_returnsOutOfOrderOutcome", () => {
@@ -82,26 +85,33 @@ describe("GapDetector", () => {
     expect(nextInOrder.outcome).toBe("in-order");
   });
 
-  it("onTick_symbolSeqZero_returnsSnapshotOutcomeAndSetsNextLiveTick", () => {
+  it("onTick_symbolSeqZero_returnsSnapshotOutcome_nextLiveTickIsFirstTick", () => {
     const snapshotReport = detector.onTick(EUR, 0);
 
     expect(snapshotReport.outcome).toBe("snapshot");
     expect(snapshotReport.publisherConflated).toBe(0);
     expect(snapshotReport.network).toBe(0);
 
-    // Next live tick at seq=1 should be in-order (cursor was set to 0)
-    const liveReport = detector.onTick(EUR, 1);
-    expect(liveReport.outcome).toBe("in-order");
+    // Per Gemini iter-2 review (HIGH, gapDetector.ts:161): snapshots in this protocol
+    // do not carry the actual sequence number of the latest published update, so the
+    // snapshot resets the cursor to NO_PRIOR_SEQ — the next live tick (regardless of
+    // its sequence number) is classified as `first-tick`, NOT in-order. This avoids
+    // a false gap when the next live tick has a seq number > 1.
+    const liveReport = detector.onTick(EUR, 5);
+    expect(liveReport.outcome).toBe("first-tick");
+    expect(liveReport.publisherConflated).toBe(0);
+    expect(liveReport.network).toBe(0);
   });
 
-  it("onTick_multipleConsecutiveSnapshotFrames_allReturnSnapshot_noGap", () => {
-    // Burst of snapshot frames (seq=0) must be idempotent and never gap
+  it("onTick_multipleConsecutiveSnapshotFrames_allReturnSnapshot_noGap_nextLiveIsFirstTick", () => {
+    // Burst of snapshot frames (seq=0) must be idempotent and never gap.
     expect(detector.onTick(EUR, 0).outcome).toBe("snapshot");
     expect(detector.onTick(EUR, 0).outcome).toBe("snapshot");
     expect(detector.onTick(EUR, 0).outcome).toBe("snapshot");
 
-    // Live tick at seq=1 is still in-order
-    expect(detector.onTick(EUR, 1).outcome).toBe("in-order");
+    // Per Gemini iter-2 review (HIGH, gapDetector.ts:161): the next live tick after a
+    // snapshot burst is `first-tick` (cursor was reset to NO_PRIOR_SEQ), not in-order.
+    expect(detector.onTick(EUR, 1).outcome).toBe("first-tick");
   });
 
   it("onPublisherRestart_clearsCursors_nextTickIsTreatedAsFirstTick", () => {

@@ -63,6 +63,7 @@ import type {
  */
 const noopConflation: MarketDataConflationLike = {
   onTick: () => undefined,
+  peekSymbol: () => undefined,
 };
 
 /**
