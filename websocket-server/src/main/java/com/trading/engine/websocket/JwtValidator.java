@@ -99,7 +99,7 @@ public final class JwtValidator implements AutoCloseable {
    * accepts metrics, so rotation tests can assert the JWKS-failure counter without spying on
    * production code.
    */
-  private WebSocketMetrics metrics;
+  private volatile WebSocketMetrics metrics;
 
   /**
    * Create a JWT validator.
@@ -107,6 +107,11 @@ public final class JwtValidator implements AutoCloseable {
    * <p>For each entry in the issuer registry, a JWKS-backed JWT processor is created. The JWKS
    * endpoint must use HTTPS. A preflight fetch is attempted at construction time — failures are
    * logged but do not prevent startup (the JWKS will be fetched on first auth attempt).
+   *
+   * <p><b>Threading constraint:</b> This constructor performs blocking JWKS HTTP I/O during the
+   * best-effort preflight loop. It MUST be invoked from a startup / blocking thread. Never call
+   * from a Netty event loop or an Aeron agent thread — doing so would block the event loop for up
+   * to the preflight timeout.
    *
    * @param issuerRegistry map of JWT issuer identifier to JWKS endpoint URL (HTTPS required)
    * @param expectedAudience the expected {@code aud} claim value (must not be null or empty)
@@ -410,19 +415,26 @@ public final class JwtValidator implements AutoCloseable {
    * @return {@code true} if any cause in the chain looks like an HTTP 5xx response
    */
   private static boolean isHttp5xxCause(final Throwable t) {
-    Throwable current = t;
-    while (current != null) {
-      final var msg = current.getMessage();
-      if (msg != null
-          && (msg.contains("HTTP 5")
-              || msg.contains("503")
-              || msg.contains("502")
-              || msg.contains("500")
-              || msg.contains("504")
-              || msg.contains("jwks_unreachable"))) {
+    for (Throwable c = t; c != null; c = c.getCause()) {
+      final var msg = c.getMessage();
+      if (msg == null) {
+        continue;
+      }
+      // We need to recognise three distinct phrasings observed in the wild on Nimbus 10.3:
+      //   1. JDK HttpURLConnection.getInputStream() — "Server returned HTTP response code: 503 for
+      //      URL: ..." (this is what Nimbus's RemoteJWKSet currently surfaces in practice; see
+      //      JwksRotationTransientFailureTest).
+      //   2. Nimbus DefaultResourceRetriever's own error path — "HTTP" + responseCode + ":" +
+      //      responseMessage (no space after "HTTP", e.g. "HTTP503:Service Unavailable").
+      //   3. Generic diagnostic strings — "HTTP 5xx" (with the conventional space).
+      // We anchor on either "HTTP response code: 5" OR "HTTP 5" OR "HTTP5" so unrelated tokens
+      // that happen to contain a 5xx-shaped substring (port numbers, byte offsets, account IDs)
+      // do not produce false positives — the literal "HTTP" prefix in each pattern is the guard.
+      if (msg.contains("HTTP response code: 5")
+          || msg.contains("HTTP 5")
+          || msg.contains("HTTP5")) {
         return true;
       }
-      current = current.getCause();
     }
     return false;
   }

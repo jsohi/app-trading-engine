@@ -189,265 +189,267 @@ test.describe("feed-stale lifecycle", () => {
       );
     }
   });
-});
 
-test(
-  "feedState$ transitions LIVE→STALE on pricing-service kill and STALE→LIVE on restart",
-  {
-    annotation: {
-      type: "plan-ref",
-      description: "Phase 3 Commit 9 / spec 09 feed-stale",
+  test(
+    "feedState$ transitions LIVE→STALE on pricing-service kill and STALE→LIVE on restart",
+    {
+      annotation: {
+        type: "plan-ref",
+        description: "Phase 3 Commit 9 / spec 09 feed-stale",
+      },
     },
-  },
-  async ({ page }) => {
-    // Guard: skip when harness infrastructure is absent.
-    test.skip(
-      !process.env.E2E_PRICING_SERVICE_PID,
-      "E2E_PRICING_SERVICE_PID not set — pricing-service separate-process harness not wired. " +
-        "See §Harness Gap in 09-feed-stale.spec.ts.",
-    );
+    async ({ page }) => {
+      // Guard: skip when harness infrastructure is absent.
+      test.skip(
+        !process.env.E2E_PRICING_SERVICE_PID,
+        "E2E_PRICING_SERVICE_PID not set — pricing-service separate-process harness not wired. " +
+          "See §Harness Gap in 09-feed-stale.spec.ts.",
+      );
 
-    // -----------------------------------------------------------------------
-    // Step 1: Navigate + readiness gate + drain quiescence.
-    // -----------------------------------------------------------------------
-    await page.goto("/");
-    await readinessGate(page);
-    await drainQuiescenceAndBaseline(page);
+      // -----------------------------------------------------------------------
+      // Step 1: Navigate + readiness gate + drain quiescence.
+      // -----------------------------------------------------------------------
+      await page.goto("/");
+      await readinessGate(page);
+      await drainQuiescenceAndBaseline(page);
 
-    // -----------------------------------------------------------------------
-    // Step 2: Assert baseline feedState$ is "LIVE".
-    //
-    // The spec subscribes to __e2eHooks.feedState$ and captures the current
-    // value. If feedState$ is not LIVE at baseline the test environment is not
-    // in a valid starting state and we abort early with a clear message.
-    // -----------------------------------------------------------------------
-    const baselineFeedState = await page.evaluate(
-      (): Promise<string> =>
-        new Promise<string>((resolve) => {
-          const g = globalThis as unknown as {
-            __e2eHooks?: {
-              feedState$: {
-                subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+      // -----------------------------------------------------------------------
+      // Step 2: Assert baseline feedState$ is "LIVE".
+      //
+      // The spec subscribes to __e2eHooks.feedState$ and captures the current
+      // value. If feedState$ is not LIVE at baseline the test environment is not
+      // in a valid starting state and we abort early with a clear message.
+      // -----------------------------------------------------------------------
+      const baselineFeedState = await page.evaluate(
+        (): Promise<string> =>
+          new Promise<string>((resolve) => {
+            const g = globalThis as unknown as {
+              __e2eHooks?: {
+                feedState$: {
+                  subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+                };
               };
             };
+            const hooks = g.__e2eHooks;
+            if (!hooks?.feedState$) {
+              resolve("HOOKS_UNAVAILABLE");
+              return;
+            }
+            // BehaviorSubject: first emission is the current value (synchronous).
+            const sub = hooks.feedState$.subscribe({
+              next: (s) => {
+                sub.unsubscribe();
+                resolve(s);
+              },
+            });
+          }),
+      );
+      expect(
+        baselineFeedState,
+        `feedState$ must be LIVE at test start (got ${baselineFeedState}); ` +
+          "check that the pricing-service is running and emitting ticks.",
+      ).toBe("LIVE");
+
+      // -----------------------------------------------------------------------
+      // Step 3: Install feed-state + connection-state recorders BEFORE the kill.
+      //
+      // Both recorders capture transitions in real time — no Playwright poll
+      // interval can miss a sub-100 ms flash. The connectionState$ recorder is
+      // the guard that proves the WS transport stayed healthy throughout.
+      // -----------------------------------------------------------------------
+      await page.evaluate(() => {
+        const g = globalThis as unknown as {
+          __feedStates?: Array<{ s: string; t: number }>;
+          __feedStatesUnsub?: () => void;
+          __connStatesDuringFeedTest?: Array<{ s: string; t: number }>;
+          __connStatesDuringFeedTestUnsub?: () => void;
+          __e2eHooks?: {
+            feedState$: {
+              subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+            };
+            connectionState$: {
+              subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+            };
           };
-          const hooks = g.__e2eHooks;
-          if (!hooks?.feedState$) {
-            resolve("HOOKS_UNAVAILABLE");
-            return;
-          }
-          // BehaviorSubject: first emission is the current value (synchronous).
+        };
+        g.__feedStates = [];
+        g.__connStatesDuringFeedTest = [];
+        const hooks = g.__e2eHooks;
+        if (hooks?.feedState$) {
           const sub = hooks.feedState$.subscribe({
             next: (s) => {
-              sub.unsubscribe();
-              resolve(s);
+              if (Array.isArray(g.__feedStates)) {
+                g.__feedStates.push({ s, t: performance.now() });
+              }
             },
           });
-        }),
-    );
-    expect(
-      baselineFeedState,
-      `feedState$ must be LIVE at test start (got ${baselineFeedState}); ` +
-        "check that the pricing-service is running and emitting ticks.",
-    ).toBe("LIVE");
-
-    // -----------------------------------------------------------------------
-    // Step 3: Install feed-state + connection-state recorders BEFORE the kill.
-    //
-    // Both recorders capture transitions in real time — no Playwright poll
-    // interval can miss a sub-100 ms flash. The connectionState$ recorder is
-    // the guard that proves the WS transport stayed healthy throughout.
-    // -----------------------------------------------------------------------
-    await page.evaluate(() => {
-      const g = globalThis as unknown as {
-        __feedStates?: Array<{ s: string; t: number }>;
-        __feedStatesUnsub?: () => void;
-        __connStatesDuringFeedTest?: Array<{ s: string; t: number }>;
-        __connStatesDuringFeedTestUnsub?: () => void;
-        __e2eHooks?: {
-          feedState$: {
-            subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+          g.__feedStatesUnsub = () => {
+            sub.unsubscribe();
           };
-          connectionState$: {
-            subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+        }
+        if (hooks?.connectionState$) {
+          const sub = hooks.connectionState$.subscribe({
+            next: (s) => {
+              if (Array.isArray(g.__connStatesDuringFeedTest)) {
+                g.__connStatesDuringFeedTest.push({ s, t: performance.now() });
+              }
+            },
+          });
+          g.__connStatesDuringFeedTestUnsub = () => {
+            sub.unsubscribe();
           };
-        };
-      };
-      g.__feedStates = [];
-      g.__connStatesDuringFeedTest = [];
-      const hooks = g.__e2eHooks;
-      if (hooks?.feedState$) {
-        const sub = hooks.feedState$.subscribe({
-          next: (s) => {
-            if (Array.isArray(g.__feedStates)) {
-              g.__feedStates.push({ s, t: performance.now() });
-            }
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // Step 4: Kill the pricing-service.
+      //
+      // After the kill, Aeron stream 204 goes silent. The WS server's
+      // MarketDataSubscriptionLivenessTracker (on the aeron-egress thread)
+      // detects no ticks for MARKET_DATA_STALE_THRESHOLD_NANOS = 3 s, then
+      // emits MarketDataFeedStateChange(STALE) (template 57) to the browser.
+      // The browser worker routes the template-57 frame through FeedStateMsg to
+      // pushFeedState("STALE") on the main thread's feedState$ BehaviorSubject.
+      // -----------------------------------------------------------------------
+      const tKill = Date.now();
+      killPricingService();
+      console.log(`[spec 09] pricing-service killed at t=${String(tKill)}ms`);
+
+      // -----------------------------------------------------------------------
+      // Step 5: Assert feedState$ reaches "STALE" within 5 s.
+      //
+      // Poll by reading __feedStates[] — the recorder installed in step 3 never
+      // misses a transition regardless of poll cadence. The 5 s budget is the
+      // stale threshold (3 s) plus 2 s of headroom.
+      // -----------------------------------------------------------------------
+      await expect
+        .poll(
+          async (): Promise<string> => {
+            const states = await page.evaluate(
+              () =>
+                (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ??
+                [],
+            );
+            // Return the latest recorded state; empty array → "LIVE" (no change yet).
+            return states.length > 0 ? (states[states.length - 1]?.s ?? "LIVE") : "LIVE";
           },
-        });
-        g.__feedStatesUnsub = () => {
-          sub.unsubscribe();
-        };
-      }
-      if (hooks?.connectionState$) {
-        const sub = hooks.connectionState$.subscribe({
-          next: (s) => {
-            if (Array.isArray(g.__connStatesDuringFeedTest)) {
-              g.__connStatesDuringFeedTest.push({ s, t: performance.now() });
-            }
+          {
+            timeout: STALE_BUDGET_MS,
+            message: `expected feedState$ to reach "STALE" within ${String(STALE_BUDGET_MS)} ms after pricing-service kill`,
           },
-        });
-        g.__connStatesDuringFeedTestUnsub = () => {
-          sub.unsubscribe();
+        )
+        .toBe("STALE");
+
+      const tStale = Date.now();
+      console.log(
+        `[spec 09] STALE observed: elapsed=${String(tStale - tKill)} ms (budget=${String(STALE_BUDGET_MS)} ms)`,
+      );
+
+      // -----------------------------------------------------------------------
+      // Step 6: Assert WS transport stayed healthy — connectionState$ unchanged.
+      //
+      // The feed-state and connection-state streams are orthogonal by design:
+      // a STALE market-data feed MUST NOT trip the WS reconnect breaker.
+      // The connectionState$ recorder captured every transition since step 3.
+      // We assert no state OTHER THAN "CONNECTED" was observed.
+      // -----------------------------------------------------------------------
+      const connTransitions = await page.evaluate(
+        () =>
+          (
+            globalThis as unknown as {
+              __connStatesDuringFeedTest?: Array<{ s: string; t: number }>;
+            }
+          ).__connStatesDuringFeedTest ?? [],
+      );
+      const nonConnectedTransitions = connTransitions.filter((t) => t.s !== "CONNECTED");
+      expect(
+        nonConnectedTransitions,
+        `connectionState$ must stay CONNECTED throughout feed-stale test; ` +
+          `observed non-CONNECTED transitions: ${JSON.stringify(nonConnectedTransitions)}`,
+      ).toHaveLength(0);
+
+      // -----------------------------------------------------------------------
+      // Step 7: Restart pricing-service.
+      //
+      // The restart script re-forks the pricing-service JVM, waits for it to
+      // connect to the shared Media Driver, and begins emitting ticks on Aeron
+      // stream 204. The first tick (template 54) clears STALE on the server-side
+      // liveness tracker (per EBS Direct discipline: only a real tick, NOT a
+      // heartbeat, clears STALE). The tracker emits MarketDataFeedStateChange(LIVE)
+      // (template 57) to the browser. The browser worker routes this through
+      // FeedStateMsg to pushFeedState("LIVE").
+      // -----------------------------------------------------------------------
+      const tRestart = Date.now();
+      restartPricingService();
+      console.log(`[spec 09] pricing-service restarted at t=${String(tRestart)}ms`);
+
+      // -----------------------------------------------------------------------
+      // Step 8: Assert feedState$ returns to "LIVE" within 2 s.
+      //
+      // The synthetic adapter's publish cadence is MARKET_DATA_PUBLISH_CADENCE_MICROS
+      // = 5_000 µs (5 ms). The first tick arrives within 5 ms of agent thread
+      // start; cold JVM adds ~200–500 ms; total is well under 2 s.
+      // -----------------------------------------------------------------------
+      await expect
+        .poll(
+          async (): Promise<string> => {
+            const states = await page.evaluate(
+              () =>
+                (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ??
+                [],
+            );
+            return states.length > 0 ? (states[states.length - 1]?.s ?? "LIVE") : "LIVE";
+          },
+          {
+            timeout: LIVE_RECOVERY_BUDGET_MS,
+            message: `expected feedState$ to return to "LIVE" within ${String(LIVE_RECOVERY_BUDGET_MS)} ms after pricing-service restart`,
+          },
+        )
+        .toBe("LIVE");
+
+      const tLive = Date.now();
+      console.log(
+        `[spec 09] LIVE restored: elapsed from restart=${String(tLive - tRestart)} ms ` +
+          `(budget=${String(LIVE_RECOVERY_BUDGET_MS)} ms); ` +
+          `total STALE duration=${String(tLive - tKill)} ms`,
+      );
+
+      // -----------------------------------------------------------------------
+      // Step 9: Per-spec metric — marketdata.feed.state{state=STALE} >= 1.
+      //
+      // The Prometheus scrape endpoint (ws-server /metrics) is not yet wired in
+      // the current harness (PR 3/4 per WebSocketLauncher Javadoc). Until it is,
+      // we assert via the transition counter: feedState$ went through at least one
+      // STALE transition (captured in __feedStates above).
+      //
+      // When the /metrics endpoint is available, replace this block with:
+      //   const resp = await page.request.get("http://localhost:<port>/metrics");
+      //   const body = await resp.text();
+      //   const match = body.match(/marketdata_feed_state_total\{.*state="STALE".*\} (\d+)/);
+      //   expect(Number(match?.[1] ?? 0)).toBeGreaterThanOrEqual(1);
+      // -----------------------------------------------------------------------
+      const allFeedStates = await page.evaluate(
+        () => (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ?? [],
+      );
+      const staleTransitions = allFeedStates.filter((t) => t.s === "STALE");
+      expect(
+        staleTransitions.length,
+        `per-spec metric: expected at least 1 STALE transition in feedState$ (proxy for ` +
+          `marketdata.feed.state{state=STALE} >= 1 until Prometheus endpoint is wired)`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // -----------------------------------------------------------------------
+      // Step 10: Tear down recorders.
+      // -----------------------------------------------------------------------
+      await page.evaluate(() => {
+        const g = globalThis as unknown as {
+          __feedStatesUnsub?: () => void;
+          __connStatesDuringFeedTestUnsub?: () => void;
         };
-      }
-    });
-
-    // -----------------------------------------------------------------------
-    // Step 4: Kill the pricing-service.
-    //
-    // After the kill, Aeron stream 204 goes silent. The WS server's
-    // MarketDataSubscriptionLivenessTracker (on the aeron-egress thread)
-    // detects no ticks for MARKET_DATA_STALE_THRESHOLD_NANOS = 3 s, then
-    // emits MarketDataFeedStateChange(STALE) (template 57) to the browser.
-    // The browser worker routes the template-57 frame through FeedStateMsg to
-    // pushFeedState("STALE") on the main thread's feedState$ BehaviorSubject.
-    // -----------------------------------------------------------------------
-    const tKill = Date.now();
-    killPricingService();
-    console.log(`[spec 09] pricing-service killed at t=${String(tKill)}ms`);
-
-    // -----------------------------------------------------------------------
-    // Step 5: Assert feedState$ reaches "STALE" within 5 s.
-    //
-    // Poll by reading __feedStates[] — the recorder installed in step 3 never
-    // misses a transition regardless of poll cadence. The 5 s budget is the
-    // stale threshold (3 s) plus 2 s of headroom.
-    // -----------------------------------------------------------------------
-    await expect
-      .poll(
-        async (): Promise<string> => {
-          const states = await page.evaluate(
-            () =>
-              (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ?? [],
-          );
-          // Return the latest recorded state; empty array → "LIVE" (no change yet).
-          return states.length > 0 ? (states[states.length - 1]?.s ?? "LIVE") : "LIVE";
-        },
-        {
-          timeout: STALE_BUDGET_MS,
-          message: `expected feedState$ to reach "STALE" within ${String(STALE_BUDGET_MS)} ms after pricing-service kill`,
-        },
-      )
-      .toBe("STALE");
-
-    const tStale = Date.now();
-    console.log(
-      `[spec 09] STALE observed: elapsed=${String(tStale - tKill)} ms (budget=${String(STALE_BUDGET_MS)} ms)`,
-    );
-
-    // -----------------------------------------------------------------------
-    // Step 6: Assert WS transport stayed healthy — connectionState$ unchanged.
-    //
-    // The feed-state and connection-state streams are orthogonal by design:
-    // a STALE market-data feed MUST NOT trip the WS reconnect breaker.
-    // The connectionState$ recorder captured every transition since step 3.
-    // We assert no state OTHER THAN "CONNECTED" was observed.
-    // -----------------------------------------------------------------------
-    const connTransitions = await page.evaluate(
-      () =>
-        (
-          globalThis as unknown as {
-            __connStatesDuringFeedTest?: Array<{ s: string; t: number }>;
-          }
-        ).__connStatesDuringFeedTest ?? [],
-    );
-    const nonConnectedTransitions = connTransitions.filter((t) => t.s !== "CONNECTED");
-    expect(
-      nonConnectedTransitions,
-      `connectionState$ must stay CONNECTED throughout feed-stale test; ` +
-        `observed non-CONNECTED transitions: ${JSON.stringify(nonConnectedTransitions)}`,
-    ).toHaveLength(0);
-
-    // -----------------------------------------------------------------------
-    // Step 7: Restart pricing-service.
-    //
-    // The restart script re-forks the pricing-service JVM, waits for it to
-    // connect to the shared Media Driver, and begins emitting ticks on Aeron
-    // stream 204. The first tick (template 54) clears STALE on the server-side
-    // liveness tracker (per EBS Direct discipline: only a real tick, NOT a
-    // heartbeat, clears STALE). The tracker emits MarketDataFeedStateChange(LIVE)
-    // (template 57) to the browser. The browser worker routes this through
-    // FeedStateMsg to pushFeedState("LIVE").
-    // -----------------------------------------------------------------------
-    const tRestart = Date.now();
-    restartPricingService();
-    console.log(`[spec 09] pricing-service restarted at t=${String(tRestart)}ms`);
-
-    // -----------------------------------------------------------------------
-    // Step 8: Assert feedState$ returns to "LIVE" within 2 s.
-    //
-    // The synthetic adapter's publish cadence is MARKET_DATA_PUBLISH_CADENCE_MICROS
-    // = 5_000 µs (5 ms). The first tick arrives within 5 ms of agent thread
-    // start; cold JVM adds ~200–500 ms; total is well under 2 s.
-    // -----------------------------------------------------------------------
-    await expect
-      .poll(
-        async (): Promise<string> => {
-          const states = await page.evaluate(
-            () =>
-              (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ?? [],
-          );
-          return states.length > 0 ? (states[states.length - 1]?.s ?? "LIVE") : "LIVE";
-        },
-        {
-          timeout: LIVE_RECOVERY_BUDGET_MS,
-          message: `expected feedState$ to return to "LIVE" within ${String(LIVE_RECOVERY_BUDGET_MS)} ms after pricing-service restart`,
-        },
-      )
-      .toBe("LIVE");
-
-    const tLive = Date.now();
-    console.log(
-      `[spec 09] LIVE restored: elapsed from restart=${String(tLive - tRestart)} ms ` +
-        `(budget=${String(LIVE_RECOVERY_BUDGET_MS)} ms); ` +
-        `total STALE duration=${String(tLive - tKill)} ms`,
-    );
-
-    // -----------------------------------------------------------------------
-    // Step 9: Per-spec metric — marketdata.feed.state{state=STALE} >= 1.
-    //
-    // The Prometheus scrape endpoint (ws-server /metrics) is not yet wired in
-    // the current harness (PR 3/4 per WebSocketLauncher Javadoc). Until it is,
-    // we assert via the transition counter: feedState$ went through at least one
-    // STALE transition (captured in __feedStates above).
-    //
-    // When the /metrics endpoint is available, replace this block with:
-    //   const resp = await page.request.get("http://localhost:<port>/metrics");
-    //   const body = await resp.text();
-    //   const match = body.match(/marketdata_feed_state_total\{.*state="STALE".*\} (\d+)/);
-    //   expect(Number(match?.[1] ?? 0)).toBeGreaterThanOrEqual(1);
-    // -----------------------------------------------------------------------
-    const allFeedStates = await page.evaluate(
-      () => (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ?? [],
-    );
-    const staleTransitions = allFeedStates.filter((t) => t.s === "STALE");
-    expect(
-      staleTransitions.length,
-      `per-spec metric: expected at least 1 STALE transition in feedState$ (proxy for ` +
-        `marketdata.feed.state{state=STALE} >= 1 until Prometheus endpoint is wired)`,
-    ).toBeGreaterThanOrEqual(1);
-
-    // -----------------------------------------------------------------------
-    // Step 10: Tear down recorders.
-    // -----------------------------------------------------------------------
-    await page.evaluate(() => {
-      const g = globalThis as unknown as {
-        __feedStatesUnsub?: () => void;
-        __connStatesDuringFeedTestUnsub?: () => void;
-      };
-      if (typeof g.__feedStatesUnsub === "function") g.__feedStatesUnsub();
-      if (typeof g.__connStatesDuringFeedTestUnsub === "function")
-        g.__connStatesDuringFeedTestUnsub();
-    });
-  },
-);
+        if (typeof g.__feedStatesUnsub === "function") g.__feedStatesUnsub();
+        if (typeof g.__connStatesDuringFeedTestUnsub === "function")
+          g.__connStatesDuringFeedTestUnsub();
+      });
+    },
+  );
+});

@@ -99,6 +99,7 @@ public final class WebSocketMetrics {
   private final Counter dispatcherMalformed;
   private final Counter dispatcherSymbolUnknown;
   private final Counter egressDroppedStaleEpoch;
+  private final Counter egressWriteException;
 
   // --- Subscription filtering gauges ---
   private final AtomicInteger activeSubscriptions = new AtomicInteger();
@@ -335,6 +336,15 @@ public final class WebSocketMetrics {
             .description(
                 "Egress entries dropped because their captured sessionEpoch no longer matches "
                     + "the session's current epoch (post-resume race guard)")
+            .register(registry);
+    this.egressWriteException =
+        Counter.builder("websocket.egress.write.exception")
+            .description(
+                "Best-effort egress writes that threw a per-channel exception "
+                    + "(WebSocketDrainHandler.writeBestEffortToAllChannels). The duplicated "
+                    + "frame buffer was released and the per-channel write was skipped; other "
+                    + "channels in the broadcast continue. A sustained spike indicates a "
+                    + "broken pipe / encoder failure on one or more sessions.")
             .register(registry);
   }
 
@@ -618,6 +628,17 @@ public final class WebSocketMetrics {
    */
   public void egressDroppedStaleEpoch() {
     egressDroppedStaleEpoch.increment();
+  }
+
+  /**
+   * Record a per-channel exception thrown while writing a best-effort frame inside {@code
+   * WebSocketDrainHandler.writeBestEffortToAllChannels}. The duplicated frame buffer is released by
+   * the caller and the per-channel write is skipped; other channels continue to receive the
+   * broadcast. Operators should alert on a sustained spike — it indicates broken pipes / encoder
+   * failure on one or more sessions.
+   */
+  public void egressWriteException() {
+    egressWriteException.increment();
   }
 
   /**

@@ -174,6 +174,15 @@ public final class MarketDataPublisher implements Agent {
   private long ticksPublished;
   private long heartbeatsPublished;
 
+  /**
+   * Cumulative on-demand snapshot publications successfully completed. Tracked SEPARATELY from
+   * {@link #ticksPublished} so the Prometheus recording rule {@code marketdata_conflation_ratio =
+   * onTick.count / ticks.published.count} is not biased downward by snapshot emissions (which are
+   * not produced by an {@code onTick} call and therefore have no matching numerator). Exposed via
+   * {@link #snapshotsPublished()}.
+   */
+  private long snapshotsPublished;
+
   /** Last drain wall-time in monotonic ns; used to gate the 5 ms cadence. */
   private long lastDrainNanos;
 
@@ -284,6 +293,8 @@ public final class MarketDataPublisher implements Agent {
         .append(ticksPublished)
         .append(" heartbeatsPublished=")
         .append(heartbeatsPublished)
+        .append(" snapshotsPublished=")
+        .append(snapshotsPublished)
         .commit();
   }
 
@@ -389,7 +400,7 @@ public final class MarketDataPublisher implements Agent {
     final long savedSeq = slot.symbolSeq;
     slot.symbolSeq = -1L;
     try {
-      publishOneSlot(packedSymbol, slot);
+      publishOneSlotInternal(packedSymbol, slot, true);
     } finally {
       slot.symbolSeq = savedSeq;
     }
@@ -421,6 +432,19 @@ public final class MarketDataPublisher implements Agent {
   }
 
   /**
+   * Cumulative successful on-demand snapshot publications (i.e. {@link #snapshotForSymbol(long)}
+   * calls that succeeded on the Aeron offer). Tracked separately from {@link #ticksPublished()} so
+   * the Prometheus rule {@code marketdata_conflation_ratio = onTick.count / ticks.published.count}
+   * is not biased downward by snapshot emissions, which are not triggered by an {@code onTick}
+   * call.
+   *
+   * @return monotonic counter.
+   */
+  public long snapshotsPublished() {
+    return snapshotsPublished;
+  }
+
+  /**
    * @param reason the categorical drop reason.
    * @return cumulative drops for that reason.
    */
@@ -445,13 +469,37 @@ public final class MarketDataPublisher implements Agent {
   }
 
   /**
-   * Publishes one slot. {@link Long2ObjectHashMap#forEachLong} invokes this consumer once per
-   * registered entry; the consumer SAM is the {@code final}-field {@link #drainConsumer}.
+   * Drain-path entry: publishes one slot. {@link Long2ObjectHashMap#forEachLong} invokes this
+   * consumer once per registered entry; the consumer SAM is the {@code final}-field {@link
+   * #drainConsumer}.
+   *
+   * <p>Delegates to {@link #publishOneSlotInternal(long, MarketDataTickSlot, boolean)} with the
+   * snapshot flag set to {@code false} so the publish increments {@link #ticksPublished} (used in
+   * the {@code marketdata_conflation_ratio} Prometheus rule). The snapshot path goes through the
+   * same internal method with the flag set to {@code true} and increments {@link
+   * #snapshotsPublished} instead — keeping the {@code onTick}/{@code ticks.published} ratio
+   * undistorted by on-demand snapshot emissions.
    *
    * @param packedSymbol the map key.
    * @param slot the per-symbol conflation slot.
    */
   private void publishOneSlot(final long packedSymbol, final MarketDataTickSlot slot) {
+    publishOneSlotInternal(packedSymbol, slot, false);
+  }
+
+  /**
+   * Encodes and publishes a single slot, accounting the success on the correct counter: {@link
+   * #ticksPublished} for drain-path publishes, {@link #snapshotsPublished} for on-demand snapshot
+   * publishes. All Aeron return-code branches (back-pressure retry, NOT_CONNECTED, ADMIN_ACTION,
+   * MAX_POSITION_EXCEEDED, CLOSED) behave identically regardless of the flag.
+   *
+   * @param packedSymbol the map key.
+   * @param slot the per-symbol conflation slot.
+   * @param isSnapshot {@code true} when invoked from {@link #snapshotForSymbol(long)}; {@code
+   *     false} when invoked from the drain path.
+   */
+  private void publishOneSlotInternal(
+      final long packedSymbol, final MarketDataTickSlot slot, final boolean isSnapshot) {
     slot.symbolSeq++;
     final long serverNanos = epochNanoClock.nanoTime();
     final long ingressNanos = slot.ingressNanos;
@@ -472,7 +520,11 @@ public final class MarketDataPublisher implements Agent {
     }
 
     if (result >= 0L) {
-      ticksPublished++;
+      if (isSnapshot) {
+        snapshotsPublished++;
+      } else {
+        ticksPublished++;
+      }
       currentPublishPackedSymbol = 0L;
       // JFR publish event — zero-alloc when shouldCommit() is false (outside the 100 ms window
       // or JFR not recording). The shouldCommit() guard short-circuits before any field write.

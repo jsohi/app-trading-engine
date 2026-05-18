@@ -41,7 +41,7 @@ import org.apache.logging.log4j.Logger;
  * so the actual session-iteration only fires roughly once per second — the 1 ms outer loop's no-op
  * overhead is one volatile read + one comparison per cycle.
  *
- * <p><b>Threading.</b> Single-threaded — {@link #scan(long)} runs on the drain worker event loop.
+ * <p><b>Threading.</b> Single-threaded — {@link #scan()} runs on the drain worker event loop.
  * Per-session fields ({@code expEpochNanos}, {@code expiringWarningSent}) are {@code volatile} so
  * visibility is maintained for the channel's own event loop that wrote them at auth time.
  *
@@ -95,7 +95,7 @@ public final class JwtExpirySweeper {
   /**
    * Create a sweeper.
    *
-   * @param sessionManager session registry to iterate during {@link #scan(long)}
+   * @param sessionManager session registry to iterate during {@link #scan()}
    * @param metrics metrics instance for the expired + emitted counters
    * @param epochNanoClock epoch-nanos clock; compared against {@link
    *     WebSocketSession#expEpochNanos()} on each tick. {@code EpochNanoClock} (not a monotonic
