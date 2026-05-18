@@ -140,22 +140,39 @@ export class MarketDataConflation {
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
 
   /**
-   * Monotonic-time source. Injected as a constructor parameter so the alloc-tripwire test can
-   * pass a deterministic source (per CLAUDE.md §Clock Usage — worker hot path uses
-   * `performance.now()` not `Date.now()`). Default is the global `performance.now` bound to the
-   * worker's `performance` object.
+   * Epoch-time source in milliseconds. Gemini iter-2 review (CRITICAL,
+   * marketDataConflation.ts:239): the previous default of bare {@code performance.now()}
+   * returned milliseconds since {@code performance.timeOrigin} (page load), NOT since the
+   * Unix epoch. Subtracting that from {@code value.serverNanos} (which IS epoch nanos from
+   * the server's {@code EpochNanoClock}) produced nonsense — the two clocks have different
+   * origins and the result was off by the elapsed time since page load.
+   *
+   * <p>The fix: default to {@code performance.timeOrigin + performance.now()} which IS
+   * monotonic AND epoch-based — {@code performance.timeOrigin} is a constant epoch-ms value
+   * captured at page-load, and {@code performance.now()} contributes the monotonic
+   * high-resolution delta. The sum is therefore epoch milliseconds with sub-millisecond
+   * precision, suitable for subtraction with server-side epoch nanos.
+   *
+   * <p>Injected via the constructor so the alloc-tripwire test can pass a deterministic
+   * source. Cross-box latency math still requires PTP / chrony for clock sync; see
+   * {@code docs/clock-sync.md}.
    */
-  private readonly nowMillis: () => number;
+  private readonly nowEpochMillis: () => number;
 
   /**
    * @param sink callback invoked once per drained {@link PriceUpdate}; typically pushes onto the
    *     worker's `outboundBatch` for batched postMessage transfer
-   * @param nowMillis monotonic time source (worker hot path forbids `Date.now()`); defaults to
-   *     `performance.now`. Inject a fake in alloc-tripwire tests
+   * @param nowEpochMillis epoch-millisecond clock (worker hot path forbids
+   *     {@code Date.now()}, but the {@code performance.timeOrigin + performance.now()}
+   *     compound IS allowed because it is monotonic AND epoch-based). Defaults to that
+   *     compound; inject a fake in tests
    */
-  constructor(sink: DrainSink, nowMillis: () => number = () => performance.now()) {
+  constructor(
+    sink: DrainSink,
+    nowEpochMillis: () => number = () => performance.timeOrigin + performance.now(),
+  ) {
     this.sink = sink;
-    this.nowMillis = nowMillis;
+    this.nowEpochMillis = nowEpochMillis;
     // Bind once at construction so the `setInterval` and `Map.forEach` callbacks reuse the same
     // closure reference across cycles — no per-tick allocation. The arrow-fn variant would
     // ALSO be allocated only once for the same reason, but explicit `bind` makes the intent
@@ -178,6 +195,18 @@ export class MarketDataConflation {
   }
 
   /**
+   * Cold accessor returning the symbol-string of the latest buffered frame for the given
+   * packed-symbol key, or {@code undefined} if no frame has been recorded since the last
+   * drain. Used by the worker dispatcher to avoid allocating a fresh String via the SBE
+   * decoder's {@code symbol()} method on every tick when the conflation map already holds
+   * the canonical string from a prior tick within the same drain window (Gemini iter-2
+   * review, MEDIUM, clusterEventDecoder.ts:283).
+   */
+  peekSymbol(packedSymbol: number): string | undefined {
+    return this.latest.get(packedSymbol)?.symbol;
+  }
+
+  /**
    * Arm the periodic drain timer. Idempotent — a second call is a no-op so the worker's init
    * path can be re-entrant. Must be called once after construction in production; tests that
    * drive {@link drain} synchronously may skip it.
@@ -187,7 +216,9 @@ export class MarketDataConflation {
     // `setInterval` with a STABLE top-level callback reference — drainConsumer is the bound
     // method, but here we use a thin wrapper that calls this.drain() directly. The wrapper
     // arrow is allocated ONCE here at install time, not per tick.
-    this.intervalHandle = setInterval(() => { this.drain(); }, MARKET_DATA_RENDER_MS);
+    this.intervalHandle = setInterval(() => {
+      this.drain();
+    }, MARKET_DATA_RENDER_MS);
   }
 
   /**
@@ -233,10 +264,12 @@ export class MarketDataConflation {
    * Alloc-tripwire budget: 24 bytes/frame (Plan §Commit 6 tests).
    */
   private emitOne(value: MarketDataTickFrame): void {
-    // performance.now() returns milliseconds; multiply by 1e6 for nanos. Worker hot path —
-    // performance.now() is monotonic and NTP-immune per CLAUDE.md §Clock Usage.
-    const nowMillis = this.nowMillis();
-    const endToEndLatencyNanos = BigInt(Math.trunc(nowMillis * 1e6)) - value.serverNanos;
+    // Epoch-millis × 1e6 → epoch-nanos, comparable with `value.serverNanos` (also epoch-ns
+    // from the server's EpochNanoClock). The clock source is
+    // `performance.timeOrigin + performance.now()` by default — see the field Javadoc for
+    // why this compound (vs bare `performance.now()`) is the correct latency basis.
+    const nowEpochMillis = this.nowEpochMillis();
+    const endToEndLatencyNanos = BigInt(Math.trunc(nowEpochMillis * 1e6)) - value.serverNanos;
     const publisherStackLatencyNanos = value.serverNanos - value.ingressNanos;
     this.sink({
       type: "price",

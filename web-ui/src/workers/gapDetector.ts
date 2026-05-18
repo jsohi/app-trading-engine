@@ -155,10 +155,13 @@ export class GapDetector {
     }
 
     if (symbolSeq === 0) {
-      // Snapshot frame (or unconfigured-symbol sentinel). Set cursor to 0 so the next live tick
-      // at seq=1 matches `1 === 0 + 1` and produces an in-order report. Multiple consecutive
-      // snapshots are idempotent.
-      this.lastSeq.set(packedSymbol, 0);
+      // Snapshot frame (or unconfigured-symbol sentinel). Gemini iter-2 review (HIGH,
+      // gapDetector.ts:161): snapshots in this protocol do not carry the actual sequence
+      // number of the latest published update, so setting the cursor to 0 would emit a
+      // false gap on the next live tick if that tick's seq is >1. Reset to NO_PRIOR_SEQ
+      // so the next live tick is classified as `first-tick` (which records the seq without
+      // claiming a gap). Multiple consecutive snapshots remain idempotent.
+      this.lastSeq.set(packedSymbol, NO_PRIOR_SEQ);
       return REPORT_SNAPSHOT;
     }
 
@@ -181,41 +184,33 @@ export class GapDetector {
       return REPORT_OUT_OF_ORDER;
     }
 
-    // Gap: symbolSeq > expected. Compute attribution.
-    //   total_gap        = symbolSeq - expected
-    //   publisher_share  = max(0, min(total_gap, publisher_lastPublishedSeq - prior - in_flight))
-    //   network_share    = total_gap - publisher_share
+    // Gap: symbolSeq > expected. Attribution semantics (Gemini iter-2 review, HIGH,
+    // gapDetector.ts:207):
     //
-    // `in_flight` is the number of ticks the publisher has emitted that have not yet been
-    // observed by THIS browser. With the cursor pair we have:
-    //   in_flight = publisher_lastPublishedSeq - symbolSeq
-    // (post-arrival of the current tick at symbolSeq). If `publisher_lastPublishedSeq` is not
-    // known (no heartbeat yet for this symbol), attribute the full gap to network — without the
-    // publisher cursor we cannot prove publisher-conflated involvement, and network is the safer
-    // default for alerting.
+    // The publisher's `lastPublishedSeq` heartbeat advertises the highest symbolSeq the
+    // publisher has PUBLISHED — it does NOT advertise a count of conflated-but-not-published
+    // ticks. Publisher conflation reduces the COUNT of emitted messages but leaves no trace
+    // in the seq counter: conflated updates are never assigned a seq, so a gap observed via
+    // `symbolSeq !== prior + 1` ALWAYS corresponds to messages the publisher chose to
+    // publish but the browser failed to receive — i.e. a NETWORK / transport drop.
+    //
+    // The previous formula (`publisherShare = totalGap` when `publisherCursor >= symbolSeq`)
+    // mis-attributed every cursor-current gap to "publisher conflation" and masked real
+    // network drops — exactly the inverse of the desired signal. The honest fix: the
+    // symbol-seq gap mechanism reports ONLY network drops. Distinguishing
+    // publisher-conflated drops requires a separate publisher-side counter
+    // (e.g. `totalTicksGenerated`) that is not yet on the wire; that counter is the
+    // follow-up work tracked under the Phase 3 Commit C plan §gap-attribution-extension.
+    // Until then `publisherConflated` is held at zero across all gap reports — under-
+    // counting publisher conflation is preferable to mis-counting network drops as
+    // publisher conflation (the alert rule would then incorrectly clear during real
+    // network incidents).
     const totalGap = symbolSeq - expected;
-    const publisherCursor = this.lastPublishedSeq.get(packedSymbol);
-    let publisherShare = 0;
-    if (publisherCursor !== undefined && publisherCursor >= symbolSeq) {
-      // `publisher_dropped_before_publish = publisher_lastPublishedSeq - prior - in_flight`
-      //                                  = publisher_lastPublishedSeq - prior - (publisher_lastPublishedSeq - symbolSeq)
-      //                                  = symbolSeq - prior
-      //                                  = totalGap + 1
-      // — that would over-attribute. The correct formula: of the `totalGap` missing sequences,
-      // `min(totalGap, publisherCursor - prior - (publisherCursor - symbolSeq)) = totalGap`
-      // is the absolute upper bound; we cap at `totalGap` and treat any residual as network.
-      // When publisherCursor >= symbolSeq, the publisher acknowledges every missing sequence
-      // was either published (network drop) or conflated (publisher drop) — we cannot distinguish
-      // further without per-sequence ack from the publisher. Conservative attribution: assume
-      // publisher-conflated for any gap below the publisher cursor.
-      publisherShare = totalGap;
-    }
-    const networkShare = totalGap - publisherShare;
     this.lastSeq.set(packedSymbol, symbolSeq);
     return {
       outcome: "gap",
-      publisherConflated: publisherShare,
-      network: networkShare,
+      publisherConflated: 0,
+      network: totalGap,
     };
   }
 

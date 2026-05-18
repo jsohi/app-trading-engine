@@ -154,7 +154,9 @@ const gapDetector = new GapDetector();
  * The setInterval is armed via {@link MarketDataConflation.install} once worker bootstrap
  * completes (after `emit` is defined).
  */
-const marketDataConflation = new MarketDataConflation((msg) => { emit(msg); });
+const marketDataConflation = new MarketDataConflation((msg) => {
+  emit(msg);
+});
 
 let ws: WebSocket | null = null;
 let parser: FrameParser | null = null;
@@ -621,6 +623,16 @@ function extractJwtSubClaim(token: string): string {
 // the AuthExpiringSoon handler can reach it after handleInit returns.
 let sessionTokenPort: MessagePort | null = null;
 
+/**
+ * Reauth-token in-flight guard. Gemini iter-2 review (MEDIUM, worker.ts:679): the previous
+ * `requestFreshToken` overwrote `port.onmessage` on every call — if two concurrent
+ * `AuthExpiringSoon` errors arrived before the first reauth completed, the second call
+ * replaced the first call's handler and the first promise hung until its `setTimeout`
+ * timeout fired. Guard via a single in-flight Promise — concurrent callers share the same
+ * fetch outcome.
+ */
+let reauthInFlight: Promise<string> | null = null;
+
 async function acquireToken(port: MessagePort): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -658,11 +670,23 @@ async function requestFreshToken(): Promise<string> {
   if (port === null) {
     return Promise.reject(new Error("requestFreshToken: token port not initialised"));
   }
-  return new Promise<string>((resolve, reject) => {
+  // Gemini iter-2 review (MEDIUM, worker.ts:679): coalesce concurrent reauth requests
+  // through a single in-flight Promise so a second AuthExpiringSoon arriving before the
+  // first resolves does NOT overwrite the first call's `port.onmessage` handler. The
+  // shared Promise resolves/rejects exactly once; both callers see the same outcome and
+  // the handler is cleared on completion so a delayed stray message doesn't trigger a
+  // spurious second resolve. Clearing `reauthInFlight` in `.finally` allows a subsequent
+  // expiry warning to drive a new request after this one completes.
+  if (reauthInFlight !== null) {
+    return reauthInFlight;
+  }
+  const pending = new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      port.onmessage = null;
       reject(new Error("token-port reauth timeout"));
     }, TOKEN_ACQUIRE_TIMEOUT_MS);
     port.onmessage = (ev: MessageEvent<unknown>): void => {
+      port.onmessage = null;
       clearTimeout(timeout);
       const data = ev.data;
       if (
@@ -678,6 +702,15 @@ async function requestFreshToken(): Promise<string> {
     };
     port.postMessage({ type: "REAUTH_REQUEST" });
   });
+  reauthInFlight = pending;
+  // `void` the .finally chain — the cleanup side-effect must run but the returned
+  // Promise is uninteresting (callers await `pending`, not this cleanup chain).
+  void pending.finally(() => {
+    if (reauthInFlight === pending) {
+      reauthInFlight = null;
+    }
+  });
+  return pending;
 }
 
 // ─── FrameParser callbacks ──────────────────────────────────────────

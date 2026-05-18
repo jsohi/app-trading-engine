@@ -84,6 +84,50 @@ export function pack(symbol: string): number {
 }
 
 /**
+ * Pack 8 bytes from a {@link DataView} at the given offset into a 48-bit `number`. Identical
+ * semantics to {@link packBytes} but consumes a `DataView` directly — no need to allocate a
+ * `Uint8Array` view over the SBE wire buffer. The decoder hot path (`clusterEventDecoder`
+ * template 54) uses this to avoid the per-tick {@code dec.symbol()} String allocation
+ * (Gemini iter-2 review, MEDIUM, clusterEventDecoder.ts:283).
+ *
+ * @param view a `DataView` containing at least {@code offset + SYMBOL_MAX_CHARS} bytes
+ * @param offset byte offset within `view` where the 8-byte Symbol field starts
+ * @returns 48-bit packed value as a `number`
+ * @throws RangeError when the first byte is not an upper-case ASCII letter, OR when a NUL
+ *     byte is followed by a non-NUL byte (embedded NUL — malformed wire input)
+ */
+export function packView(view: DataView, offset: number): number {
+  const firstByte = view.getUint8(offset);
+  if (firstByte < 0x41 /* 'A' */ || firstByte > 0x5a /* 'Z' */) {
+    throw new RangeError(
+      `SymbolPacking.packView: first byte 0x${firstByte.toString(16)} at offset ${String(offset)} is not an upper-case ASCII letter`,
+    );
+  }
+  let packed = 0;
+  let sawTrailingNul = false;
+  for (let i = 0; i < SYMBOL_MAX_CHARS; i++) {
+    const byte = view.getUint8(offset + i);
+    let charValue: number;
+    if (byte === 0x00) {
+      sawTrailingNul = true;
+      charValue = NO_CHAR;
+    } else if (sawTrailingNul) {
+      throw new RangeError(
+        `SymbolPacking.packView: embedded NUL at slot < ${String(i)} followed by non-NUL byte 0x${byte.toString(16)}`,
+      );
+    } else if (byte >= 0x41 /* 'A' */ && byte <= 0x5a /* 'Z' */) {
+      charValue = byte - 0x40;
+    } else {
+      throw new RangeError(
+        `SymbolPacking.packView: byte 0x${byte.toString(16)} at slot ${String(i)} is not an upper-case ASCII letter`,
+      );
+    }
+    packed = packed * (1 << BITS_PER_CHAR) + charValue;
+  }
+  return packed;
+}
+
+/**
  * Pack 8 raw bytes (from an SBE Symbol char[8] field) into a 48-bit `number`. Trailing NUL
  * bytes (0x00) are treated as the "no character" sentinel — matches the SBE convention of
  * right-padding short symbols with NUL.
