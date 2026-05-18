@@ -32,6 +32,17 @@ dependencies {
     testImplementation(libs.aeron.test.support)
     // HdrHistogram for RfqLatencyRegressionIT P50/P99/P999 budgeting (APP-232 §11.3).
     testImplementation(libs.hdr.histogram)
+
+    // APP-244 Phase 3 C.8 — MultiIssuerLauncherRebootArtioTest: needs the websocket-server
+    // module (JwtValidator, OidcDiscoveryClient, WebSocketServerConfig), the Nimbus JOSE/JWT
+    // library (RSA key generation + JWT signing on the test side), and Jetty 11 (in-process
+    // JWKS stub servers for issuers A and B). The Artio "reboot" is simulated by cycling the
+    // FIX-side Artio FixEngine in-test; full launcher boot remains owned by
+    // scripts/full-stack-e2e.sh §14.
+    testImplementation(project(":websocket-server"))
+    testImplementation(libs.nimbus.jose.jwt)
+    testImplementation(libs.jetty.server)
+    testImplementation(libs.jetty.servlet)
 }
 
 // ─── perfTest task (APP-232 §7.9) ───────────────────────────────────────────
