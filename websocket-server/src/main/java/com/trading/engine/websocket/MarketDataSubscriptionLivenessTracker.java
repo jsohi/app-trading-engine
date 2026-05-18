@@ -4,6 +4,7 @@ import static com.trading.engine.messages.MarketDataConstants.MARKET_DATA_HEARTB
 import static com.trading.engine.messages.MarketDataConstants.MARKET_DATA_STALE_THRESHOLD_NANOS;
 
 import com.trading.engine.messages.sbe.FeedStateEnum;
+import com.trading.engine.messages.telemetry.MarketDataFeedStateTransition;
 import java.util.Objects;
 import java.util.function.LongConsumer;
 import org.agrona.concurrent.NanoClock;
@@ -78,6 +79,18 @@ public final class MarketDataSubscriptionLivenessTracker {
 
   /** STALE state ordinal — matches {@link FeedStateEnum#Stale}. */
   public static final int STATE_STALE = (int) FeedStateEnum.Stale.value();
+
+  /**
+   * Pre-interned state name strings for use in {@link MarketDataFeedStateTransition} JFR events.
+   * Stored as constants to avoid per-transition {@code String} allocation; the JFR event commit is
+   * guarded by {@code shouldCommit()} so the reference assignment is skipped when JFR is not
+   * recording.
+   */
+  private static final String STATE_NAME_LIVE = "Live";
+
+  private static final String STATE_NAME_QUIET = "Quiet";
+
+  private static final String STATE_NAME_STALE = "Stale";
 
   private final NanoClock nanoClock;
   private final LongConsumer onTransition;
@@ -207,7 +220,35 @@ public final class MarketDataSubscriptionLivenessTracker {
   // ────────────────────────────────────────────────────────────────────────
 
   private void transitionTo(final int newState) {
+    final int oldState = this.state;
     this.state = newState;
+    // Emit JFR event BEFORE the wire emission so the record is captured even if the
+    // encode/enqueue path throws (EBS Direct / ICE Impact audit-trail ordering invariant).
+    // The shouldCommit() guard short-circuits before any field write when JFR is not recording,
+    // preserving the zero-alloc invariant on the cold path. The state-name String constants are
+    // pre-interned class-level fields — no per-transition allocation on the recording path either.
+    final var jfrTransition = new MarketDataFeedStateTransition();
+    if (jfrTransition.shouldCommit()) {
+      jfrTransition.from = stateOrdinalToName(oldState);
+      jfrTransition.to = stateOrdinalToName(newState);
+      jfrTransition.lastFragmentNs = lastFragmentNs;
+      jfrTransition.commit();
+    }
     onTransition.accept((long) newState);
+  }
+
+  /**
+   * Maps a state ordinal to its human-readable name for JFR events. Returns the pre-interned
+   * constant string to avoid allocation. Falls back to {@code "Unknown"} for unexpected values
+   * (defensive; the state machine should never produce an unrecognised ordinal).
+   *
+   * @param stateOrdinal one of {@link #STATE_LIVE}, {@link #STATE_QUIET}, {@link #STATE_STALE}.
+   * @return the human-readable state name.
+   */
+  private static String stateOrdinalToName(final int stateOrdinal) {
+    if (stateOrdinal == STATE_LIVE) return STATE_NAME_LIVE;
+    if (stateOrdinal == STATE_QUIET) return STATE_NAME_QUIET;
+    if (stateOrdinal == STATE_STALE) return STATE_NAME_STALE;
+    return "Unknown";
   }
 }

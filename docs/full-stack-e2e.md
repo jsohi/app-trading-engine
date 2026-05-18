@@ -477,3 +477,74 @@ The websocket-server and cluster sides are fully implemented. Land the browser s
 7. Full automated: `./gradlew fullStackE2e`. Expected green within the 40-minute Gradle ceiling (typical wall-clock 28–35 min including parallel JCStress).
 8. Negative paths: kill JWKS-A mid-run → fail-fast at readiness probe; remove mkcert root CA → SPKI sanity assertion fires; corrupt one byte in a replayed frame → CRC mismatch fails test 7.
 9. Determinism: `npm audit --audit-level=high` and `messages/build/generated-codec.sha256` integrity check both green.
+
+---
+
+## JFR custom events
+
+Three JDK Flight Recorder custom event classes ship in `messages/src/main/java/com/trading/engine/messages/telemetry/`. They are emitted on the pricing-service agent thread and the websocket-server egress thread respectively; the launcher's existing JFR recording (Phase 1 §1, `settings=default`) captures them automatically — no new launcher wiring is required.
+
+| Event name                              | Class                           | Emitter                                                | Sampling                                                    |
+| --------------------------------------- | ------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------- |
+| `trading.MarketDataTickPublished`       | `MarketDataTickPublished`       | `MarketDataPublisher.publishOneSlot()`                 | `@Period("100 ms")` — 10 Hz sampled; see rationale below    |
+| `trading.MarketDataTickRejected`        | `MarketDataTickRejected`        | `MarketDataPublisher.dropWithSymbol()` / `drop()`      | `@Threshold("0 ms")` — every reject emits unconditionally   |
+| `trading.MarketDataFeedStateTransition` | `MarketDataFeedStateTransition` | `MarketDataSubscriptionLivenessTracker.transitionTo()` | No threshold/period — transitions are rare lifecycle events |
+
+### Fields
+
+**`trading.MarketDataTickPublished`**
+
+| Field                 | Type     | Description                                                                                               |
+| --------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `symbol`              | `String` | ASCII symbol name (e.g. `EURUSD`), stripped of padding                                                    |
+| `symbolSeq`           | `long`   | Per-symbol monotonic sequence number at drain time; `0` is the snapshot sentinel                          |
+| `publishLatencyNanos` | `long`   | `serverNanos − ingressNanos` in nanoseconds; measures conflation delay from adapter-sample to Aeron-offer |
+
+**`trading.MarketDataTickRejected`**
+
+| Field           | Type     | Description                                                                                                                                     |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reasonOrdinal` | `int`    | `RejectReason.ordinal()`: 0=CROSSED, 1=NON_POSITIVE, 2=UNCONFIGURED, 3=BACK_PRESSURED, 4=NOT_CONNECTED, 5=ADMIN_ACTION, 6=MAX_POSITION_EXCEEDED |
+| `symbol`        | `String` | Symbol at rejection site; empty string when not determinable (heartbeat path)                                                                   |
+
+**`trading.MarketDataFeedStateTransition`**
+
+| Field            | Type     | Description                                                                                                                                               |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`           | `String` | Prior state name: `"Live"`, `"Quiet"`, or `"Stale"`                                                                                                       |
+| `to`             | `String` | New state name: `"Live"`, `"Quiet"`, or `"Stale"`                                                                                                         |
+| `lastFragmentNs` | `long`   | Monotonic ns of the last inbound Aeron fragment (tick or heartbeat) at transition time; `transitionNs − lastFragmentNs` reconstructs the silence duration |
+
+### Threshold / Period rationale
+
+- **`@Period("100 ms")` on `MarketDataTickPublished`**: at 5 ms drain cadence × 4 symbols, the publisher offers up to ~800 ticks/s. Recording every publish at that rate would saturate the JFR chunk buffer within seconds. `@Threshold(value = "0 ms")` would be incorrect here — `@Threshold` gates on event _duration_, which is undefined for a point-in-time publish call (~0 µs); every event would fall below any non-zero threshold and emit zero records. `@Period` is the standard JDK pattern for periodic sampling of high-frequency point events (mirrors CME MDP 3.0 instrumentation).
+
+- **`@Threshold("0 ms")` on `MarketDataTickRejected`**: rejects are pathological. Missing one reject event under a sampling window defeats the diagnostic purpose. Volume is self-limiting: a healthy publisher produces zero rejects/s; an unhealthy publisher whose rejects are detectable via JFR is exactly the scenario this event was designed for.
+
+- **No annotation on `MarketDataFeedStateTransition`**: state transitions occur at most once per ~1–3 s in failure conditions and once per session in normal operation. Volume is negligible; unconditional emit guarantees complete post-incident audit trails per the EBS Direct / ICE Impact pattern.
+
+### Zero-allocation guarantee
+
+All three event commits are wrapped in the `shouldCommit()` guard:
+
+```java
+final var e = new MarketDataTickPublished();
+if (e.shouldCommit()) {
+    e.symbol = unpackSymbol(packedSymbol); // only allocates when JFR is recording
+    e.symbolSeq = slot.symbolSeq;
+    e.publishLatencyNanos = serverNanos - ingressNanos;
+    e.commit();
+}
+```
+
+When JFR is not recording (the default in production without an explicit `jcmd` or `-XX:StartFlightRecording`), `shouldCommit()` returns `false` in nanoseconds and the field writes — including the `unpackSymbol` String allocation — are skipped. The `MarketDataPublisherAllocTest` zero-alloc regression test continues to pass with this wiring in place.
+
+### Querying
+
+```bash
+# List all trading events in a JFR dump
+jfr print --events trading.MarketDataTickPublished,trading.MarketDataTickRejected,trading.MarketDataFeedStateTransition launcher.jfr
+
+# Count rejects by reason (requires jfr + jq)
+jfr print --json --events trading.MarketDataTickRejected launcher.jfr | jq '[.recording.events[].values.reasonOrdinal] | group_by(.) | map({reason: .[0], count: length})'
+```

@@ -11,6 +11,8 @@ import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.MarketDataHeartbeatEncoder;
 import com.trading.engine.messages.sbe.MarketDataTickEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
+import com.trading.engine.messages.telemetry.MarketDataTickPublished;
+import com.trading.engine.messages.telemetry.MarketDataTickRejected;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
@@ -204,6 +206,16 @@ public final class MarketDataPublisher implements Agent {
   private volatile Thread agentThread;
 
   /**
+   * Stash used to propagate the packed symbol into {@link #drop(RejectReason)} when a rejection
+   * occurs inside {@link #publishOneSlot(long, MarketDataTickSlot)}. Set before the Aeron offer
+   * block and read by the JFR emit helper. The field is not {@code final} because it is reset to
+   * {@code 0L} after each emit; the single-writer guarantee means no synchronisation is needed. Not
+   * used in {@code onTick} input-validation rejects — those call {@link
+   * #dropWithSymbol(RejectReason, long)} directly so the packedSymbol argument is in scope.
+   */
+  private long currentPublishPackedSymbol;
+
+  /**
    * Constructs the publisher.
    *
    * @param publication outbound publication seam on Aeron stream 204; in production this is bound
@@ -298,11 +310,11 @@ public final class MarketDataPublisher implements Agent {
 
     // Sanity rejects — drop before any allocation / publish.
     if (bid <= 0L || ask <= 0L) {
-      drop(RejectReason.NON_POSITIVE);
+      dropWithSymbol(RejectReason.NON_POSITIVE, packedSymbol);
       return;
     }
     if (bid >= ask) {
-      drop(RejectReason.CROSSED);
+      dropWithSymbol(RejectReason.CROSSED, packedSymbol);
       return;
     }
 
@@ -364,7 +376,7 @@ public final class MarketDataPublisher implements Agent {
     assertAgentThread();
     final MarketDataTickSlot slot = slots.get(packedSymbol);
     if (slot == null) {
-      drop(RejectReason.UNCONFIGURED);
+      dropWithSymbol(RejectReason.UNCONFIGURED, packedSymbol);
       return false;
     }
     // Stash + restore the live symbolSeq. publishOneSlot pre-increments slot.symbolSeq before
@@ -442,7 +454,12 @@ public final class MarketDataPublisher implements Agent {
   private void publishOneSlot(final long packedSymbol, final MarketDataTickSlot slot) {
     slot.symbolSeq++;
     final long serverNanos = epochNanoClock.nanoTime();
+    final long ingressNanos = slot.ingressNanos;
     final int encodedLen = encodeTick(packedSymbol, slot, serverNanos);
+
+    // Stash packed symbol so dropWithSymbol() can forward it to the JFR reject event
+    // if the Aeron offer fails. Reset after the offer block (success or reject).
+    currentPublishPackedSymbol = packedSymbol;
 
     long result = publication.offer(scratch, 0, encodedLen);
     if (result == BACK_PRESSURED) {
@@ -456,18 +473,32 @@ public final class MarketDataPublisher implements Agent {
 
     if (result >= 0L) {
       ticksPublished++;
+      currentPublishPackedSymbol = 0L;
+      // JFR publish event — zero-alloc when shouldCommit() is false (outside the 100 ms window
+      // or JFR not recording). The shouldCommit() guard short-circuits before any field write.
+      final var jfrPublish = new MarketDataTickPublished();
+      if (jfrPublish.shouldCommit()) {
+        jfrPublish.symbol = unpackSymbol(packedSymbol);
+        jfrPublish.symbolSeq = slot.symbolSeq;
+        jfrPublish.publishLatencyNanos = serverNanos - ingressNanos;
+        jfrPublish.commit();
+      }
       return;
     }
+
     if (result == BACK_PRESSURED) {
-      drop(RejectReason.BACK_PRESSURED);
+      dropWithSymbol(RejectReason.BACK_PRESSURED, packedSymbol);
+      currentPublishPackedSymbol = 0L;
       return;
     }
     if (result == NOT_CONNECTED) {
-      drop(RejectReason.NOT_CONNECTED);
+      dropWithSymbol(RejectReason.NOT_CONNECTED, packedSymbol);
+      currentPublishPackedSymbol = 0L;
       return;
     }
     if (result == ADMIN_ACTION) {
-      drop(RejectReason.ADMIN_ACTION);
+      dropWithSymbol(RejectReason.ADMIN_ACTION, packedSymbol);
+      currentPublishPackedSymbol = 0L;
       return;
     }
     if (result == MAX_POSITION_EXCEEDED) {
@@ -477,17 +508,20 @@ public final class MarketDataPublisher implements Agent {
           .append(" termLength=")
           .append(publication.termBufferLength())
           .commit();
-      drop(RejectReason.MAX_POSITION_EXCEEDED);
+      dropWithSymbol(RejectReason.MAX_POSITION_EXCEEDED, packedSymbol);
+      currentPublishPackedSymbol = 0L;
       return;
     }
     if (result == CLOSED) {
+      currentPublishPackedSymbol = 0L;
       LOG.error()
           .append("MarketDataPublisher publication CLOSED — fatal, agent will terminate")
           .commit();
       throw new IllegalStateException("publication CLOSED");
     }
     // Unknown negative return — treat as transient drop for forensic safety.
-    drop(RejectReason.ADMIN_ACTION);
+    dropWithSymbol(RejectReason.ADMIN_ACTION, packedSymbol);
+    currentPublishPackedSymbol = 0L;
   }
 
   private int encodeTick(
@@ -560,9 +594,91 @@ public final class MarketDataPublisher implements Agent {
     snapshotForSymbol(packed);
   }
 
+  /**
+   * Records a drop for the given reason, rate-limits the log entry, and emits a {@link
+   * MarketDataTickRejected} JFR event with an empty symbol string. Used for Aeron-level rejects
+   * inside {@code publishOneSlot} where {@link #dropWithSymbol(RejectReason, long)} is preferred
+   * (this overload is retained only for the {@code heartbeat} path which has no symbol context).
+   *
+   * @param reason categorical drop reason.
+   */
   private void drop(final RejectReason reason) {
     droppedByReason[reason.ordinal()]++;
     maybeLog(nanoClock.nanoTime(), reason);
+    emitRejectJfrEvent(reason, "");
+  }
+
+  /**
+   * Records a drop for the given reason, rate-limits the log entry, and emits a {@link
+   * MarketDataTickRejected} JFR event with the unpacked symbol string.
+   *
+   * <p>Zero allocation on the hot path when JFR is not recording: the {@code shouldCommit()} guard
+   * short-circuits before {@link #unpackSymbol(long)} is called. The symbol string is only
+   * allocated when JFR is actively recording.
+   *
+   * @param reason categorical drop reason.
+   * @param packedSymbol the 8-byte symbol packed into a {@code long}.
+   */
+  private void dropWithSymbol(final RejectReason reason, final long packedSymbol) {
+    droppedByReason[reason.ordinal()]++;
+    maybeLog(nanoClock.nanoTime(), reason);
+    emitRejectJfrEvent(reason, packedSymbol);
+  }
+
+  /**
+   * Emits a {@link MarketDataTickRejected} JFR event. When JFR is not recording, {@code
+   * shouldCommit()} returns {@code false} before any field write — zero allocation on the hot path.
+   * On the recording path, {@link #unpackSymbol(long)} allocates a short {@code String}; this is
+   * acceptable because rejects are pathological and the recording path is the diagnostic case.
+   *
+   * @param reason categorical drop reason.
+   * @param packedSymbol the 8-byte symbol packed into a {@code long} (little-endian).
+   */
+  private void emitRejectJfrEvent(final RejectReason reason, final long packedSymbol) {
+    final var e = new MarketDataTickRejected();
+    if (e.shouldCommit()) {
+      e.reasonOrdinal = reason.ordinal();
+      e.symbol = unpackSymbol(packedSymbol);
+      e.commit();
+    }
+  }
+
+  /**
+   * Emits a {@link MarketDataTickRejected} JFR event with a pre-resolved symbol string. Used when
+   * the symbol string is already available (e.g. from the heartbeat path) to avoid
+   * double-unpacking.
+   *
+   * @param reason categorical drop reason.
+   * @param symbolStr pre-resolved symbol string; empty string {@code ""} when unknown.
+   */
+  private void emitRejectJfrEvent(final RejectReason reason, final String symbolStr) {
+    final var e = new MarketDataTickRejected();
+    if (e.shouldCommit()) {
+      e.reasonOrdinal = reason.ordinal();
+      e.symbol = symbolStr;
+      e.commit();
+    }
+  }
+
+  /**
+   * Unpacks a little-endian 8-byte packed symbol {@code long} into its ASCII string representation.
+   * Trailing space padding ({@code 0x20}) and null bytes ({@code 0x00}) are stripped. Allocates a
+   * new {@code String} on every call — callers MUST guard behind {@code shouldCommit()} or the
+   * equivalent to prevent allocation on the zero-alloc hot path.
+   *
+   * @param packedSymbol the 8-byte symbol packed little-endian into a {@code long}.
+   * @return the trimmed ASCII symbol string, e.g. {@code "EURUSD"}.
+   */
+  private static String unpackSymbol(final long packedSymbol) {
+    final byte[] bytes = new byte[8];
+    for (int i = 0; i < 8; i++) {
+      bytes[i] = (byte) ((packedSymbol >>> (i * 8)) & 0xFFL);
+    }
+    int len = 8;
+    while (len > 0 && (bytes[len - 1] == (byte) ' ' || bytes[len - 1] == 0)) {
+      len--;
+    }
+    return new String(bytes, 0, len, java.nio.charset.StandardCharsets.US_ASCII);
   }
 
   private void maybeLog(final long monotonicNow, final RejectReason reason) {
