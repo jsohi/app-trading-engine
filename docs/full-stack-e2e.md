@@ -31,6 +31,19 @@ Pinned constants (verified against current code):
 - JWKS primary: `7000` (HTTPS); JWKS secondary (multi-issuer test): `7001` (HTTPS).
 - JWT issuers pinned: `iss-A=https://dev-issuer.local`, `iss-B=https://dev-issuer-b.local`. `aud=trading-ui`. `dev-token.mjs` must accept `--iss` and `--kid` (Step 15 adds these flags if absent).
 
+## Test-coverage matrix
+
+| Layer / Concern                       | Where it is tested                                                                                                                                                                                                                                          |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FIX → cluster → WS → browser          | `web-ui/e2e/full-stack/01-connection.spec.ts` … `08-multi-issuer.spec.ts` + this plan                                                                                                                                                                       |
+| Cluster determinism + log replay      | `:cluster:test`, `:integration-tests:test`                                                                                                                                                                                                                  |
+| SBE codec round-trips (Phase 3 54-57) | `:messages:test` (jqwik property tests)                                                                                                                                                                                                                     |
+| Browser-side allocation tripwire      | `web-ui/test/browser/*-alloc.browser.test.ts` (Vitest browser project)                                                                                                                                                                                      |
+| Reliable-stream concurrency           | `:websocket-server:jcstress` (`ReliableStreamTrackerCaptureReplayJCStress` + `…EvictReplayJCStress`)                                                                                                                                                        |
+| JWT mid-session expiry                | `:websocket-server:test` `JwtSessionExpiryTest`; browser-side `AuthClient-expiring-soon.test.ts`; Playwright `08-multi-issuer.spec.ts`                                                                                                                      |
+| Multi-issuer launcher reboot          | `:integration-tests:test` `MultiIssuerLauncherRebootArtioTest`                                                                                                                                                                                              |
+| **Bundle-guard self-test**            | `web-ui/test/integration/build-bundle.test.ts` (the guard itself) + a meta self-test that intentionally seeds each forbidden token into a fixture bundle and asserts the guard fails — wired into `:web-ui:bundleGuard` (`check`-only, not `:web-ui:test`). |
+
 ---
 
 ## Architecture
@@ -548,3 +561,50 @@ jfr print --events trading.MarketDataTickPublished,trading.MarketDataTickRejecte
 # Count rejects by reason (requires jfr + jq)
 jfr print --json --events trading.MarketDataTickRejected launcher.jfr | jq '[.recording.events[].values.reasonOrdinal] | group_by(.) | map({reason: .[0], count: length})'
 ```
+
+---
+
+## Production observability
+
+Phase 3 ships first-class telemetry across the JVM, the host, and the
+control-plane so any post-incident review can answer "what was the
+publisher doing" and "what was the subscriber seeing" without re-running
+the workload. The pieces:
+
+| Signal                                       | Source                                                                                                                                                 | Where to look                                                                                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| JFR custom events (`trading.MarketData*`)    | `messages/src/main/java/com/trading/engine/messages/telemetry/` (`MarketDataTickPublished`, `MarketDataTickRejected`, `MarketDataFeedStateTransition`) | `e2e/logs/launcher.jfr` — `jfr print --events trading.MarketData*` (see [JFR custom events](#jfr-custom-events) for fields + sampling). |
+| OTel cold-path drain-cycle span              | `WebSocketDrainHandler.DRAIN_CYCLE_SPAN_NAME = "ws.drain.cycle"` (`websocket-server/.../WebSocketDrainHandler.java`)                                   | Configured OTel collector → traces backend. Span attributes: `drain.cycle.items`, `drain.cycle.duration_nanos`.                         |
+| Grafana — cluster                            | `monitoring/dashboards/cluster.json`                                                                                                                   | Grafana instance pointed at the Prometheus scraper bundled in `monitoring/`.                                                            |
+| Grafana — pricing-service                    | `monitoring/dashboards/pricing-service.json`                                                                                                           | Same; panels for tick publish rate, reject reasons, drain latency p50/p95/p99.                                                          |
+| Grafana — websocket-server                   | `monitoring/dashboards/websocket-server.json`                                                                                                          | Drain-cycle histograms (`websocket_drain_cycle_latency_seconds_bucket`), session counters, JWKS refresh health.                         |
+| Prometheus alert — slow-consumer disconnects | `monitoring/alerts.yaml` — `HighSlowConsumerDisconnects`                                                                                               | Routed via Alertmanager; runbook in `docs/ops-guide.md`.                                                                                |
+| Prometheus alert — JWKS refresh 5xx          | `monitoring/alerts.yaml` — `JwksRefreshFailures5xx`                                                                                                    | Fires when JWKS fetch errors exceed the configured rate; pairs with `JwksRotationTransientFailureTest`.                                 |
+| Prometheus alert — log appender failures     | `monitoring/alerts.yaml` — `LogAppenderFailures`                                                                                                       | Fires when `Log4j2DiskFullErrorHandler` reroute counter (`websocket_log_appender_dropped_total{kind="disk_full"}`) rises — see below.   |
+| Prometheus alert — feed stale prolonged      | `monitoring/alerts.yaml` — `FeedStateStaleProlonged`                                                                                                   | Fires when `MarketDataSubscriptionLivenessTracker` reports `STALE` past the suppression window.                                         |
+| Prometheus alert — market-data reject rate   | `monitoring/alerts.yaml` — `MarketDataRejectRateHigh`                                                                                                  | Mirrors the JFR `MarketDataTickRejected` event count via the Prometheus exporter.                                                       |
+| Log4j2 disk-full reroute counter             | `websocket-server/.../Log4j2DiskFullErrorHandler.java` (`KIND_DISK_FULL = "disk_full"`)                                                                | Counter `websocket_log_appender_dropped_total{kind="disk_full"}` in `WebSocketMetrics`; feeds the alert above.                          |
+
+The Log4j2 disk-full handler classifies appender errors (`no space`, `disk
+full`, `read-only file system`, `permission denied`), reroutes the rejected
+event to a `ConsoleAppender` so the line is not lost to the Log4j2
+`StatusLogger` once-per-minute throttle, and increments the metric counter
+exactly once per rerouted event. The corresponding test
+(`Log4j2DiskFullErrorHandlerTest`) injects each error class and asserts
+both the console fallback and the counter increment.
+
+### Mid-session auth lifecycle
+
+JWTs accepted at WebSocket handshake are revalidated for liveness inside
+the session — the engine does **not** rely on the original
+`Sec-WebSocket-Protocol` token surviving an arbitrarily long session.
+
+| Component                                     | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JwtExpirySweeper` (server)                   | Periodic sweep on the WebSocket egress thread. Soft-expiry warning lead time `WARN_LEAD_NANOS = 60s`. When `nowNanos >= expEpochNanos − 60s` the sweeper emits one `WebSocketError(AuthExpiringSoon)` frame (template 67) and latches so it does not spam. At `nowNanos >= expEpochNanos` it issues a hard close with `WebSocketErrorCode.SessionExpired` and tears the session down. Wall-clock source is `EpochNanoClock` — see `docs/clock-sync.md` "JWT expiry comparison" for why monotonic clocks are wrong here. |
+| `AuthExpiringSoon` (wire)                     | WebSocket error code `4401`, SBE `WebSocketErrorCode` enum value **18** (`messages/src/main/resources/trading-schema.xml:310`). Informational only — session is preserved; the client is expected to issue an in-session reauth with a fresh token **before** the hard expiry.                                                                                                                                                                                                                                          |
+| `AuthClient.handleAuthExpiringSoon` (browser) | `web-ui/src/workers/session/AuthClient.ts` (~line 217). Fetches a fresh JWT, runs the `JwtExpiryParser` timing pre-flight (rejects already-expired or about-to-expire candidates), and on success calls `reauth(newToken)` which atomically swaps the session credential. Entitlement-sensitive frames sent while the reauth is in flight are queued onto a fixed-size ring; overflow rejects the reauth with `PROTOCOL_VIOLATION`. Covered by `web-ui/test/unit/auth/AuthClient-expiring-soon.test.ts`.                |
+
+The end-to-end flow is exercised by `JwtSessionExpiryTest` on the server
+side and by the Playwright `08-multi-issuer.spec.ts` on the browser side
+(which additionally exercises issuer-B credentials minted from JWKS-B).
