@@ -380,27 +380,62 @@ test.describe("feed-stale lifecycle", () => {
       );
 
       // -----------------------------------------------------------------------
-      // Step 9: Per-spec metric — marketdata.feed.state{state=STALE} >= 1.
+      // Step 9: Per-spec metric — Prometheus counter
+      // websocket_marketdata_feed_state_transitions_total >= 1.
       //
-      // The Prometheus scrape endpoint (ws-server /metrics) is not yet wired in
-      // the current harness (PR 3/4 per WebSocketLauncher Javadoc). Until it is,
-      // we assert via the transition counter: feedState$ went through at least one
-      // STALE transition (captured in __feedStates above).
+      // Primary assertion: fetch the launcher's Prometheus scrape endpoint
+      // (MetricsHttpServer, default 127.0.0.1:9100) and look for the counter
+      // emitted by MarketDataSubscriptionLivenessTracker on every LIVE/STALE/QUIET
+      // transition. Micrometer maps the registered Counter name
+      // "websocket.marketdata.feed.state.transitions" to
+      // "websocket_marketdata_feed_state_transitions_total" in the Prometheus
+      // exposition format (dots → underscores; "_total" suffix for Counter).
       //
-      // When the /metrics endpoint is available, replace this block with:
-      //   const resp = await page.request.get("http://localhost:<port>/metrics");
-      //   const body = await resp.text();
-      //   const match = body.match(/marketdata_feed_state_total\{.*state="STALE".*\} (\d+)/);
-      //   expect(Number(match?.[1] ?? 0)).toBeGreaterThanOrEqual(1);
+      // The endpoint port is configurable via TRADING_METRICS_PORT (default 9100);
+      // the harness sets this when it spawns the launcher with the management
+      // endpoint enabled. We allow the env var to override the default so CI
+      // lanes that use a non-default port still pass.
       // -----------------------------------------------------------------------
+      const metricsPort = process.env.TRADING_METRICS_PORT ?? "9100";
+      const metricsUrl = `http://127.0.0.1:${metricsPort}/metrics`;
+      const metricsResp = await page.request.get(metricsUrl);
+      expect(
+        metricsResp.status(),
+        `Prometheus scrape at ${metricsUrl} must return 200; got ${String(metricsResp.status())}`,
+      ).toBe(200);
+      const metricsBody = await metricsResp.text();
+      // Match the counter line with any (or no) label set. Micrometer emits the
+      // counter without state-labelled cardinality; only the cumulative total is
+      // exposed. The value is a float (Prometheus convention) so we match a
+      // permissive numeric pattern.
+      const counterMatch = /^websocket_marketdata_feed_state_transitions_total(?:\{[^}]*\})?\s+([0-9.eE+-]+)/m.exec(metricsBody);
+      expect(
+        counterMatch,
+        `per-spec metric: scrape body must contain ` +
+          `websocket_marketdata_feed_state_transitions_total; full body=\n${metricsBody}`,
+      ).not.toBeNull();
+      // Prometheus counter values are emitted as plain floats in text format
+      // (e.g. "3" or "3.0e0"); parseFloat is the canonical text-format parser.
+      // Not a bigint coercion — these are scrape-format scalars, not SBE int64 fields.
+      const counterValue = parseFloat(counterMatch?.[1] ?? "0");
+      expect(
+        counterValue,
+        `per-spec metric: websocket_marketdata_feed_state_transitions_total must be ` +
+          `>= 1 after LIVE→STALE→LIVE; got ${String(counterValue)}`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // Secondary defence-in-depth check: the __feedStates recorder must also
+      // have observed at least one STALE transition. This catches the case where
+      // the scrape endpoint returns a stale total (e.g. previous test run) but
+      // this specific run did not actually trigger a transition.
       const allFeedStates = await page.evaluate(
         () => (globalThis as unknown as { __feedStates?: Array<{ s: string }> }).__feedStates ?? [],
       );
       const staleTransitions = allFeedStates.filter((t) => t.s === "STALE");
       expect(
         staleTransitions.length,
-        `per-spec metric: expected at least 1 STALE transition in feedState$ (proxy for ` +
-          `marketdata.feed.state{state=STALE} >= 1 until Prometheus endpoint is wired)`,
+        `defence-in-depth: __feedStates recorder must observe >= 1 STALE transition ` +
+          `in this run (secondary to the Prometheus counter assertion above)`,
       ).toBeGreaterThanOrEqual(1);
 
       // -----------------------------------------------------------------------

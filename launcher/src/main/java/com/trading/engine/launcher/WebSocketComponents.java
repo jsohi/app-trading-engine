@@ -16,12 +16,13 @@ import org.apache.logging.log4j.Logger;
  * Lifecycle holder for WebSocket server components. Groups the cluster client, egress thread, and
  * Netty server for coordinated startup and shutdown.
  *
- * <p><b>Shutdown order.</b> Graceful drain: close Netty server (stops accepting new connections) →
- * stop AeronEgressThread (stops polling cluster egress) → close market-data Aeron resources
- * (snapshot-request publication first, then ingress subscription, then sibling Aeron client) →
- * close WebSocketClusterClient (closes cluster session). The market-data resources are closed
- * BEFORE the cluster client because the egress thread is already stopped (no more polling) — the
- * publication/subscription teardown is then safe.
+ * <p><b>Shutdown order.</b> Graceful drain: close MetricsHttpServer (stops Prometheus scrapes
+ * BEFORE the meters they read disappear — avoids spurious 500s during the shutdown window) → close
+ * Netty server (stops accepting new connections) → stop AeronEgressThread (stops polling cluster
+ * egress) → close market-data Aeron resources (snapshot-request publication first, then ingress
+ * subscription, then sibling Aeron client) → close WebSocketClusterClient (closes cluster session).
+ * The market-data resources are closed BEFORE the cluster client because the egress thread is
+ * already stopped (no more polling) — the publication/subscription teardown is then safe.
  *
  * <p><b>Threading.</b> Created and closed from the launcher main thread and shutdown hook thread
  * respectively. Fields are final — safe for cross-thread access.
@@ -40,6 +41,7 @@ public final class WebSocketComponents implements AutoCloseable {
   private final ExclusivePublication snapshotRequestPublication;
   private final SymbolEntitlementMap symbolEntitlementMap;
   private final SnapshotRequestPublisher snapshotRequestPublisher;
+  private final MetricsHttpServer metricsServer;
 
   /**
    * Create a lifecycle holder for the WebSocket server components including Phase 3 market-data
@@ -58,6 +60,8 @@ public final class WebSocketComponents implements AutoCloseable {
    *     boot
    * @param snapshotRequestPublisher SAM seam over the snapshot-request publication's {@code
    *     offer(...)}
+   * @param metricsServer the Prometheus metrics HTTP endpoint; closed first during shutdown so
+   *     scrapes stop before downstream meters disappear
    */
   public WebSocketComponents(
       final WebSocketServerMain server,
@@ -67,7 +71,8 @@ public final class WebSocketComponents implements AutoCloseable {
       final Subscription marketDataSubscription,
       final ExclusivePublication snapshotRequestPublication,
       final SymbolEntitlementMap symbolEntitlementMap,
-      final SnapshotRequestPublisher snapshotRequestPublisher) {
+      final SnapshotRequestPublisher snapshotRequestPublisher,
+      final MetricsHttpServer metricsServer) {
     this.server = Objects.requireNonNull(server, "server");
     this.egressThread = Objects.requireNonNull(egressThread, "egressThread");
     this.clusterClient = Objects.requireNonNull(clusterClient, "clusterClient");
@@ -80,6 +85,7 @@ public final class WebSocketComponents implements AutoCloseable {
         Objects.requireNonNull(symbolEntitlementMap, "symbolEntitlementMap");
     this.snapshotRequestPublisher =
         Objects.requireNonNull(snapshotRequestPublisher, "snapshotRequestPublisher");
+    this.metricsServer = Objects.requireNonNull(metricsServer, "metricsServer");
   }
 
   /**
@@ -122,6 +128,13 @@ public final class WebSocketComponents implements AutoCloseable {
   @Override
   public void close() {
     LOG.info("Shutting down WebSocket server components...");
+    // Metrics endpoint first — stops Prometheus scrapes BEFORE the downstream meters disappear so
+    // a scrape that races the shutdown does not see a partially-torn-down registry.
+    try {
+      metricsServer.close();
+    } catch (final Exception e) {
+      LOG.error("Error closing MetricsHttpServer", e);
+    }
     try {
       server.close();
     } catch (final Exception e) {

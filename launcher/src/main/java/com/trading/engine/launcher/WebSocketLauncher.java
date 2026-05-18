@@ -33,6 +33,8 @@ import com.trading.refdata.account.YamlAccountLoader;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -66,8 +68,10 @@ import org.apache.logging.log4j.core.layout.PatternLayout;
  * <p><b>Aeron directory.</b> Shares the gateway's external Media Driver ({@code
  * aeronDirs[gwIndex]}) for IPC. Multiple cluster sessions per JVM are fully supported.
  *
- * <p><b>Metrics.</b> Creates a {@link WebSocketMetrics} instance internally. The Prometheus
- * registry for production scraping will be wired when the metrics endpoint is added (PR 3/4).
+ * <p><b>Metrics.</b> Creates a {@link PrometheusMeterRegistry} and a {@link WebSocketMetrics}
+ * wrapped around it, then starts a {@link MetricsHttpServer} so Prometheus can scrape the registry
+ * over HTTP. The metrics server binds to {@code 127.0.0.1:9100} by default — see {@link
+ * MetricsHttpServer} for the env-var-overridable bind/port and the security rationale.
  *
  * <p><b>Threading.</b> Creates: "aeron-egress" thread (cluster polling) + Netty boss (1 thread) +
  * Netty worker (N threads).
@@ -108,8 +112,20 @@ public final class WebSocketLauncher {
     // 1. Config
     final var config = WebSocketServerConfig.fromYaml(configPath);
 
-    // 2. Metrics (uses WebSocketMetrics.createWithDefaults() — SimpleMeterRegistry for dev/test)
-    final var metrics = WebSocketMetrics.createWithDefaults();
+    // 2. Metrics — production wiring uses a PrometheusMeterRegistry so the /metrics scrape
+    // endpoint installed below has something to expose. The default-config registry uses no
+    // common tags and no histogram baseline buckets; both can be added later without touching
+    // any counter call-site (Micrometer composes config + meter tags at scrape time).
+    final var prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+    final var metrics = new WebSocketMetrics(prometheusRegistry);
+
+    // 2a. Metrics HTTP endpoint (production scrape surface). Bind defaults to 127.0.0.1:9100 —
+    // see MetricsHttpServer Javadoc for the security rationale. Started immediately so Prometheus
+    // can begin scraping even before the WebSocket server binds its port; counters that have not
+    // yet recorded a sample still appear in scrape output (Micrometer's eager-registration model).
+    final var metricsServer = MetricsHttpServer.fromEnvironment(prometheusRegistry);
+    metricsServer.start();
+    LOG.info("Metrics endpoint started: {}", metricsServer.metricsUrl());
 
     // 2a. Bind Log4j2DiskFullErrorHandler to every non-console appender so disk-full / IO errors
     // reroute to ConsoleAppender + increment log.appender.failure counter. Failure to install is
@@ -192,6 +208,11 @@ public final class WebSocketLauncher {
       } catch (final Exception closeEx) {
         LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
       }
+      try {
+        metricsServer.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing MetricsHttpServer during partial-failure cleanup", closeEx);
+      }
       throw ex;
     }
 
@@ -218,6 +239,11 @@ public final class WebSocketLauncher {
         clusterClient.close();
       } catch (final Exception closeEx) {
         LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
+      }
+      try {
+        metricsServer.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing MetricsHttpServer during partial-failure cleanup", closeEx);
       }
       throw ex;
     }
@@ -366,6 +392,11 @@ public final class WebSocketLauncher {
       } catch (final Exception closeEx) {
         LOG.error("Error closing WebSocketClusterClient during partial-failure cleanup", closeEx);
       }
+      try {
+        metricsServer.close();
+      } catch (final Exception closeEx) {
+        LOG.error("Error closing MetricsHttpServer during partial-failure cleanup", closeEx);
+      }
       throw ex;
     }
 
@@ -382,7 +413,8 @@ public final class WebSocketLauncher {
         marketDataSubscription,
         snapshotRequestPublication,
         symbolEntitlementMap,
-        snapshotRequestPublisher);
+        snapshotRequestPublisher,
+        metricsServer);
   }
 
   /**

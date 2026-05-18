@@ -26,6 +26,11 @@ dependencies {
     // into Log4j2DiskFullErrorHandler.installAll(...). The transitive log4j-core dependency
     // alone is not enough — Micrometer's MeterRegistry must be on launcher's classpath.
     implementation(libs.micrometer.core)
+    // PrometheusMeterRegistry is instantiated directly by WebSocketLauncher (production scrape
+    // surface) and consumed by MetricsHttpServer.scrape(). The websocket-server module has its
+    // own copy of this same dep, but the launcher must declare it explicitly — its own source
+    // imports io.micrometer.prometheusmetrics.PrometheusMeterRegistry.
+    implementation(libs.micrometer.registry.prometheus)
 
     testImplementation(project(":test-support"))
 }
