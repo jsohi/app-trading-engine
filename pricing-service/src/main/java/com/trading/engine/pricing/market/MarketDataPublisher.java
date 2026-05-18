@@ -45,6 +45,20 @@ import org.agrona.concurrent.UnsafeBuffer;
  * The drain consumer is also a {@code final} field, bound to a method reference once at
  * construction. Encoders + scratch buffer are pre-allocated.
  *
+ * <p><b>JFR emit-site allocation gate.</b> Custom JFR events ({@link MarketDataTickPublished},
+ * {@link MarketDataTickRejected}) are emitted using the pre-construction {@link
+ * jdk.jfr.EventType#isEnabled()} gate on the cached {@code TYPE} field of each event class — NOT
+ * the post-construction {@code Event.shouldCommit()} guard. The {@code shouldCommit()} pattern
+ * relied on HotSpot escape analysis to scalar-replace the {@code new Event()} allocation when JFR
+ * is recording but the sample window has not opened; in practice EA cannot prove the
+ * native-method-backed {@code shouldCommit()} is pure, so the {@code Event} object escapes to the
+ * heap on every emit (~96 B per call, ~480 B per drain across the FX cohort). The {@code
+ * EventType.isEnabled()} fast-path is a cheap volatile read that returns {@code false} when no
+ * recording has subscribed to the event — so when the type is disabled (steady-state production AND
+ * the JFR-off case) no {@code Event} subclass is constructed at all. When enabled, the per-sample
+ * allocation is paid in exchange for the JFR record. This matches the canonical OpenJDK JFR team
+ * emit-site recommendation.
+ *
  * <p><b>Design rationale.</b>
  *
  * <ul>
@@ -526,10 +540,14 @@ public final class MarketDataPublisher implements Agent {
         ticksPublished++;
       }
       currentPublishPackedSymbol = 0L;
-      // JFR publish event — zero-alloc when shouldCommit() is false (outside the 100 ms window
-      // or JFR not recording). The shouldCommit() guard short-circuits before any field write.
-      final var jfrPublish = new MarketDataTickPublished();
-      if (jfrPublish.shouldCommit()) {
+      // JFR publish event — gated by the cheap pre-construction EventType.isEnabled() volatile
+      // read on the cached TYPE field. When no recording has subscribed to this event the gate is
+      // false and NO Event object is allocated. The post-construction Event.shouldCommit() pattern
+      // was abandoned because HotSpot escape analysis cannot scalar-replace the new-Event() call
+      // (shouldCommit() dispatches through a native method whose purity EA cannot prove), causing
+      // ~480 B/drain to escape to the heap on every emit when JFR was recording.
+      if (MarketDataTickPublished.TYPE.isEnabled()) {
+        final var jfrPublish = new MarketDataTickPublished();
         jfrPublish.symbol = unpackSymbol(packedSymbol);
         jfrPublish.symbolSeq = slot.symbolSeq;
         jfrPublish.publishLatencyNanos = serverNanos - ingressNanos;
@@ -678,17 +696,20 @@ public final class MarketDataPublisher implements Agent {
   }
 
   /**
-   * Emits a {@link MarketDataTickRejected} JFR event. When JFR is not recording, {@code
-   * shouldCommit()} returns {@code false} before any field write — zero allocation on the hot path.
-   * On the recording path, {@link #unpackSymbol(long)} allocates a short {@code String}; this is
-   * acceptable because rejects are pathological and the recording path is the diagnostic case.
+   * Emits a {@link MarketDataTickRejected} JFR event. Gated by the cheap pre-construction {@link
+   * jdk.jfr.EventType#isEnabled()} volatile read on the cached {@link MarketDataTickRejected#TYPE}
+   * field — when no recording has subscribed to this event the {@code Event} object is NEVER
+   * allocated and {@link #unpackSymbol(long)} is never called. On the recording path the per-event
+   * allocation plus the short {@code String} from {@code unpackSymbol} are paid in exchange for the
+   * JFR record; acceptable because rejects are pathological and the recording path is the
+   * diagnostic case.
    *
    * @param reason categorical drop reason.
    * @param packedSymbol the 8-byte symbol packed into a {@code long} (little-endian).
    */
   private void emitRejectJfrEvent(final RejectReason reason, final long packedSymbol) {
-    final var e = new MarketDataTickRejected();
-    if (e.shouldCommit()) {
+    if (MarketDataTickRejected.TYPE.isEnabled()) {
+      final var e = new MarketDataTickRejected();
       e.reasonOrdinal = reason.ordinal();
       e.symbol = unpackSymbol(packedSymbol);
       e.commit();
@@ -698,14 +719,15 @@ public final class MarketDataPublisher implements Agent {
   /**
    * Emits a {@link MarketDataTickRejected} JFR event with a pre-resolved symbol string. Used when
    * the symbol string is already available (e.g. from the heartbeat path) to avoid
-   * double-unpacking.
+   * double-unpacking. Same {@link jdk.jfr.EventType#isEnabled()} pre-construction gate as the
+   * packed-symbol overload — no {@code Event} object is allocated when no recording has subscribed.
    *
    * @param reason categorical drop reason.
    * @param symbolStr pre-resolved symbol string; empty string {@code ""} when unknown.
    */
   private void emitRejectJfrEvent(final RejectReason reason, final String symbolStr) {
-    final var e = new MarketDataTickRejected();
-    if (e.shouldCommit()) {
+    if (MarketDataTickRejected.TYPE.isEnabled()) {
+      final var e = new MarketDataTickRejected();
       e.reasonOrdinal = reason.ordinal();
       e.symbol = symbolStr;
       e.commit();

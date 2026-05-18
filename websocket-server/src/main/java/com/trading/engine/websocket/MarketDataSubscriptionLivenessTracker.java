@@ -224,11 +224,14 @@ public final class MarketDataSubscriptionLivenessTracker {
     this.state = newState;
     // Emit JFR event BEFORE the wire emission so the record is captured even if the
     // encode/enqueue path throws (EBS Direct / ICE Impact audit-trail ordering invariant).
-    // The shouldCommit() guard short-circuits before any field write when JFR is not recording,
-    // preserving the zero-alloc invariant on the cold path. The state-name String constants are
-    // pre-interned class-level fields — no per-transition allocation on the recording path either.
-    final var jfrTransition = new MarketDataFeedStateTransition();
-    if (jfrTransition.shouldCommit()) {
+    // Gated by the cheap pre-construction EventType.isEnabled() volatile read on the cached TYPE
+    // field — when no recording has subscribed to this event the Event object is NEVER allocated.
+    // The post-construction Event.shouldCommit() pattern was abandoned because HotSpot escape
+    // analysis cannot scalar-replace the new-Event() call (shouldCommit() dispatches through a
+    // native method whose purity EA cannot prove). The state-name String constants are pre-interned
+    // class-level fields — no per-transition allocation on the recording path either.
+    if (MarketDataFeedStateTransition.TYPE.isEnabled()) {
+      final var jfrTransition = new MarketDataFeedStateTransition();
       jfrTransition.from = stateOrdinalToName(oldState);
       jfrTransition.to = stateOrdinalToName(newState);
       jfrTransition.lastFragmentNs = lastFragmentNs;
