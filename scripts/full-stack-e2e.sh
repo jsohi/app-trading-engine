@@ -92,8 +92,16 @@ command -v lsof >/dev/null 2>&1 || { echo "FATAL: install lsof (apt install lsof
 command -v mkcert >/dev/null 2>&1 || { echo "FATAL: install mkcert (brew install mkcert nss / apt install mkcert libnss3-tools)" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "FATAL: install node 22+ (matches engines.node in package.json)" >&2; exit 2; }
 
+# ----- 2b. E2E management endpoint port (Option A — spec 09 feed-stale) -----
+# The launcher exposes a JDK HttpServer on 127.0.0.1:$TRADING_E2E_MGMT_PORT when
+# TRADING_E2E_MGMT_ENABLED=1, used by Playwright spec 09 to pause/resume the
+# pricing-service AgentRunner without killing the launcher JVM. Production
+# deployments never set these env vars — see launcher/E2eManagementServer.java.
+export TRADING_E2E_MGMT_ENABLED=1
+export TRADING_E2E_MGMT_PORT="${TRADING_E2E_MGMT_PORT:-9876}"
+
 # ----- 3. Pre-flight ports -----
-PORTS_TO_CHECK=(5173 7100 7101 8443 19880 20110 21110 22110 20220 21220 22220 8010 8011 8012)
+PORTS_TO_CHECK=(5173 7100 7101 8443 19880 20110 21110 22110 20220 21220 22220 8010 8011 8012 "$TRADING_E2E_MGMT_PORT")
 PORT_FAIL=0
 for p in "${PORTS_TO_CHECK[@]}"; do
   if lsof -i ":$p" -sTCP:LISTEN >/dev/null 2>&1; then
