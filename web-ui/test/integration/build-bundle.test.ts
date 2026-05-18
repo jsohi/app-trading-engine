@@ -2,63 +2,59 @@
  * Bundle-guard test — proves the test-mode escape hatch never ships to a
  * production bundle and that the gzip+brotli sizes stay under budget.
  *
- * Plan §4 + §9. Runs in the `unit` (node) vitest project — NOT the browser
- * project (vite build cannot execute under vitest-browser-playwright). Wired
- * into the `:web-ui:bundleGuard` Gradle task; explicitly NOT wired into
- * `:web-ui:test` because `vite build` cold-cost (~30s) is too high for the
- * inner dev loop.
+ * Plan §4 + §9 + APP-244 §Commit C.9. Runs in the `unit` (node) vitest
+ * project — NOT the browser project (vite build cannot execute under
+ * vitest-browser-playwright). Wired into the `:web-ui:bundleGuard` Gradle
+ * task; explicitly NOT wired into `:web-ui:test` because `vite build`
+ * cold-cost (~30s) is too high for the inner dev loop.
  *
- * Invariants asserted:
+ * <p><b>Bundle modes covered (Commit C.9 extension):</b>
  *
- * 1. Every emitted .js file under `web-ui/dist/` is FREE of these symbol
- *    names — they are test-mode escape hatches and must be DCE'd by esbuild
- *    in production:
- *      - VITE_E2E_REAL_BACKEND
- *      - VITE_DEV_JWT
- *      - any literal JWT (regex `eyJ[A-Za-z0-9_-]{20,}`)
- *      - __ordersGridApi
- *      - __forceWsClose
- *      - __cellFlashes
- *      - __e2eHooks
- *      - __E2E_JWT_OVERRIDE__
- *      - __connStates
- *      - __connStatesUnsub
- *      - feedState$ (plan §Commit 9 / spec 09 feed-stale; exposed via E2EHooks)
+ * <ol>
+ *   <li><b>Production bundle</b> — built with {@code VITE_E2E_REAL_BACKEND}
+ *       unset. Asserts every {@link FORBIDDEN_SYMBOLS} row whose
+ *       {@code prodForbidden} flag is true is ABSENT, and no JWT-shaped
+ *       literal leaks.</li>
+ *   <li><b>E2E bundle</b> — built with {@code VITE_E2E_REAL_BACKEND=true}.
+ *       Asserts every row whose {@code e2eRequired} flag is true is PRESENT
+ *       — proves the conditional-export mechanism actually ships the
+ *       test-mode globals when the flag is set, so spec 09 and friends can
+ *       rely on them. Without this mirror assertion, an accidental "no-op
+ *       even in e2e mode" regression would silently break the Playwright
+ *       suite at the wrong layer (test failure instead of a build assertion).</li>
+ * </ol>
  *
- * 2. Sum of gzipped JS files ≤ baseline + 10% headroom.
- * 3. Sum of brotli-compressed JS files ≤ baseline + 10% headroom (matches
- *    what the production CDN serves).
+ * <p><b>Size budget</b> (gzip + brotli ≤ baseline + 10% headroom) runs over
+ * the prod bundle only; the e2e bundle is allowed to be larger because it
+ * ships the test-mode escape hatches.
  *
- * Baselines are checked into `web-ui/bundle-budget.json`. Regenerate with
+ * <p>Baselines are checked into `web-ui/bundle-budget.json`. Regenerate with
  * `npm run e2e:full-stack -- --update-baselines` after a deliberate bump.
+ *
+ * <p>{@link FORBIDDEN_SYMBOLS} + the search routines live in
+ * {@code build-bundle.guard.ts} so the sibling
+ * {@code build-bundle.self-test.test.ts} can exercise the matcher against
+ * synthetic bundles without duplicating logic.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { gzipSync, brotliCompressSync } from "node:zlib";
 import { resolve, join } from "node:path";
 
+import {
+  FORBIDDEN_SYMBOLS,
+  findForbiddenInProd,
+  findJwtLiteral,
+  findMissingInE2e,
+} from "./build-bundle.guard";
+
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
 const WEB_UI = resolve(REPO_ROOT, "web-ui");
-const DIST = join(WEB_UI, "dist");
+const DIST_PROD = join(WEB_UI, "dist");
+const DIST_E2E = join(WEB_UI, "dist-e2e");
 const BUDGET_FILE = join(WEB_UI, "bundle-budget.json");
 const BUDGET_HEADROOM = 0.1;
-
-const FORBIDDEN_SYMBOLS = [
-  "VITE_E2E_REAL_BACKEND",
-  "VITE_DEV_JWT",
-  "__ordersGridApi",
-  "__forceWsClose",
-  "__cellFlashes",
-  "__e2eHooks",
-  "__E2E_JWT_OVERRIDE__",
-  "__connStates",
-  "__connStatesUnsub",
-  // Phase 3 Commit 9 additions — plan §Q + §Commit 9 bundle-guard extension.
-  // feedState$ is exposed via E2EHooks in e2eHooks.ts (DCE'd in prod builds).
-  "feedState$",
-];
-const FORBIDDEN_JWT_REGEX = /eyJ[A-Za-z0-9_-]{20,}/;
 
 interface BundleBudget {
   /** Recorded sum of gzipped *.js bytes (baseline). */
@@ -68,23 +64,47 @@ interface BundleBudget {
 }
 
 beforeAll(() => {
-  // The test owns its own vite build so the assertions cannot pass against a
+  // The test owns BOTH vite builds so the assertions cannot pass against a
   // stale dist/ from a previous run. The cwd is the web-ui workspace because
-  // npm run build resolves the local vite binary.
-  execSync("npm run build", { cwd: WEB_UI, stdio: "inherit" });
-}, 180_000);
+  // `npm run build` resolves the local vite binary.
+  //
+  // Prod build: VITE_E2E_REAL_BACKEND deliberately UNSET (we strip it from
+  // the inherited env so a developer running the suite with the var set in
+  // their shell — e.g. while debugging full-stack — does not pollute the
+  // prod-bundle assertion).
+  const prodEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete prodEnv.VITE_E2E_REAL_BACKEND;
+  rmSync(DIST_PROD, { recursive: true, force: true });
+  execSync("npm run build", { cwd: WEB_UI, stdio: "inherit", env: prodEnv });
+
+  // E2E build: VITE_E2E_REAL_BACKEND=true → vite inlines the comparison as
+  // true so the e2eHooks branch survives DCE. --outDir points at dist-e2e
+  // so we keep both bundles side-by-side for inspection.
+  const e2eEnv: NodeJS.ProcessEnv = { ...process.env, VITE_E2E_REAL_BACKEND: "true" };
+  rmSync(DIST_E2E, { recursive: true, force: true });
+  execSync("npm run build -- --outDir dist-e2e", {
+    cwd: WEB_UI,
+    stdio: "inherit",
+    env: e2eEnv,
+  });
+}, 360_000);
 
 describe("bundle-guard: production-bundle escape-hatch leakage", () => {
   it("does not contain any test-mode escape-hatch symbol", () => {
-    const offenders: { file: string; symbol: string }[] = [];
-    for (const f of jsFiles(DIST)) {
+    const offenders: { file: string; symbol: string; rationale: string }[] = [];
+    for (const f of jsFiles(DIST_PROD)) {
       const contents = readFileSync(f, "utf8");
-      for (const sym of FORBIDDEN_SYMBOLS) {
-        if (contents.includes(sym)) offenders.push({ file: f, symbol: sym });
+      for (const o of findForbiddenInProd(contents)) {
+        offenders.push({ file: f, symbol: o.symbol, rationale: o.rationale });
       }
-      const jwtMatch = FORBIDDEN_JWT_REGEX.exec(contents);
-      if (jwtMatch)
-        offenders.push({ file: f, symbol: `JWT pattern '${jwtMatch[0].slice(0, 20)}…'` });
+      const jwt = findJwtLiteral(contents);
+      if (jwt !== null) {
+        offenders.push({
+          file: f,
+          symbol: `JWT pattern '${jwt.slice(0, 20)}…'`,
+          rationale: "Any literal JWT in a shipped bundle is a credential leak.",
+        });
+      }
     }
     expect(
       offenders,
@@ -93,10 +113,38 @@ describe("bundle-guard: production-bundle escape-hatch leakage", () => {
   });
 });
 
+describe("bundle-guard: e2e-bundle conditional-export proof", () => {
+  it("ships every e2eRequired escape-hatch symbol when VITE_E2E_REAL_BACKEND=true", () => {
+    // Concatenate every emitted .js so a symbol that lives in a chunk other
+    // than the main entry still satisfies the e2eRequired assertion.
+    const concatenated = jsFiles(DIST_E2E)
+      .map((f) => readFileSync(f, "utf8"))
+      .join("\n");
+    const missing = findMissingInE2e(concatenated);
+    expect(
+      missing,
+      `e2eRequired symbols absent from e2e bundle (conditional-export regression?): ` +
+        `${JSON.stringify(missing, null, 2)}\n` +
+        `If a symbol stopped shipping in e2e mode, full-stack Playwright specs that ` +
+        `depend on it will silently break — fix the e2eHooks wiring or remove the ` +
+        `e2eRequired flag in build-bundle.guard.ts with rationale.`,
+    ).toEqual([]);
+  });
+
+  it("the e2e bundle is built from the same FORBIDDEN_SYMBOLS table the prod assertion uses", () => {
+    // Defence-in-depth: a future refactor that splits FORBIDDEN_SYMBOLS into
+    // two tables would silently desync the two assertions. Pin the count + a
+    // hash-equivalent (sorted symbol list) so any such refactor trips a test.
+    expect(FORBIDDEN_SYMBOLS.length).toBeGreaterThan(0);
+    const symbolsSorted = [...FORBIDDEN_SYMBOLS].map((e) => e.symbol).sort();
+    expect(new Set(symbolsSorted).size).toBe(symbolsSorted.length);
+  });
+});
+
 describe("bundle-guard: size budget", () => {
   it("gzipped + brotli sums stay within budget + 10% headroom", () => {
     const budget = readBudget();
-    const totals = computeTotals();
+    const totals = computeTotals(DIST_PROD);
     const gzipMax = Math.floor(budget.gzipBytes * (1 + BUDGET_HEADROOM));
     const brotliMax = Math.floor(budget.brotliBytes * (1 + BUDGET_HEADROOM));
     expect(
@@ -127,10 +175,10 @@ function readBudget(): BundleBudget {
   return JSON.parse(raw) as BundleBudget;
 }
 
-function computeTotals(): BundleBudget {
+function computeTotals(dir: string): BundleBudget {
   let gz = 0;
   let br = 0;
-  for (const f of jsFiles(DIST)) {
+  for (const f of jsFiles(dir)) {
     const buf = readFileSync(f);
     gz += gzipSync(buf).length;
     br += brotliCompressSync(buf).length;
