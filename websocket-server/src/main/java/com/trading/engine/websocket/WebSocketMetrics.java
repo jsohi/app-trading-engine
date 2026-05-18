@@ -49,6 +49,17 @@ public final class WebSocketMetrics {
    */
   private final Counter authExpiringSoonEmitted;
 
+  /**
+   * C.2 — JWKS refresh failures for HTTP 5xx responses from the JWKS endpoint.
+   *
+   * <p>Incremented by {@link JwtValidator} when a JWKS fetch fails with an HTTP server error during
+   * the key-refresh path triggered by a signature-verification retry. Tagged with {@code
+   * reason="5xx"} to distinguish transient server-side failures from network errors or
+   * configuration problems. The tagged counter pattern allows Prometheus to aggregate or filter by
+   * failure class without a combinatorial counter explosion.
+   */
+  private final Counter jwksRefreshFailure5xx;
+
   private final Counter rateLimited;
   private final Counter filterMatched;
   private final Counter filterFiltered;
@@ -158,6 +169,14 @@ public final class WebSocketMetrics {
             .description(
                 "Soft-expiry AuthExpiringSoon warning frames emitted to clients ahead of "
                     + "the hard expiry (C.1 — JwtExpirySweeper). One per session per token.")
+            .register(registry);
+
+    this.jwksRefreshFailure5xx =
+        Counter.builder("jwks.refresh.failure")
+            .tag("reason", "5xx")
+            .description(
+                "JWKS refresh failures caused by HTTP 5xx responses from the JWKS endpoint "
+                    + "(C.2 — JwtValidator key-rotation retry path). Tagged reason=\"5xx\".")
             .register(registry);
 
     this.rateLimited =
@@ -384,6 +403,17 @@ public final class WebSocketMetrics {
   /** C.1 — Record an emitted AuthExpiringSoon warning frame. */
   public void authExpiringSoonEmitted() {
     authExpiringSoonEmitted.increment();
+  }
+
+  /**
+   * C.2 — Record a JWKS refresh failure caused by an HTTP 5xx response from the JWKS endpoint.
+   *
+   * <p>Called by {@link JwtValidator} when a JWKS fetch during the signature-verification retry
+   * path receives an HTTP server error (5xx). Increments the {@code jwks.refresh.failure} counter
+   * tagged with {@code reason="5xx"}.
+   */
+  public void jwksRefreshFailure5xx() {
+    jwksRefreshFailure5xx.increment();
   }
 
   /** Record a rate-limited command rejection. */
