@@ -518,7 +518,9 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     }
     currentSession.replayInProgress(true);
     try {
-      // Use the tracker's payload capacity for a one-time scratch alloc per range.
+      // Allocation: cold path — one scratch buffer per gap-replay invocation, not per
+      // delivered message. Sized to the tracker's per-frame capacity (worst case). Triggered
+      // only on SessionResume + observed gap (R6 Agent A LOW annotation request).
       final var scratch = new byte[tracker.payloadCapacity()];
       for (long s = fromSeqNo; s <= toSeqNo; s++) {
         final int len = tracker.lookupLength(s);

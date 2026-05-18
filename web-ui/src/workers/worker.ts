@@ -801,12 +801,9 @@ function buildRouterHandlers(): RouterHandlers {
       // `symbolPreferences` ∪ DEFAULT_SUBSCRIBE_SYMBOLS so a user with an
       // empty preferences list still gets the dev default cohort, and a
       // user with a preferences list still receives the defaults that
-      // power the cross-panel demos.
-      const cohort =
-        ack.symbolPreferences.length === 0
-          ? DEFAULT_SUBSCRIBE_SYMBOLS
-          : Array.from(new Set([...ack.symbolPreferences, ...DEFAULT_SUBSCRIBE_SYMBOLS]));
-      sendDefaultSubscriptions(cohort);
+      // power the cross-panel demos. Helper extraction per /review R6
+      // Agent B LOW (cohort-merge clarity); cold path (one call per AuthAck).
+      sendDefaultSubscriptions(mergeSymbolCohort(ack.symbolPreferences, DEFAULT_SUBSCRIBE_SYMBOLS));
     },
     onAnyInbound: () => {
       const nowNs = nowEpochNs();
@@ -1150,6 +1147,21 @@ function activateSessionLayer(): void {
 }
 
 // ─── Subscriptions ──────────────────────────────────────────────────
+
+/**
+ * Merge per-account `symbolPreferences` with the dev-default cohort, deduplicating in
+ * insertion order (account preferences first). Empty preferences → defaults verbatim, no
+ * allocation. /review R6 Agent B LOW extraction of the prior inline
+ * `Array.from(new Set([...]))` expression for clarity at the call site. Cold path —
+ * called once per AuthAck; the Set + spread allocations are acceptable.
+ */
+function mergeSymbolCohort(
+  preferences: ReadonlyArray<string>,
+  defaults: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  if (preferences.length === 0) return defaults;
+  return Array.from(new Set([...preferences, ...defaults]));
+}
 
 /**
  * Encode + send a {@code WebSocketSubscribe} (template 62) frame for
