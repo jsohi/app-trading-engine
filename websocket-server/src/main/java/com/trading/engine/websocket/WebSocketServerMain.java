@@ -1,5 +1,6 @@
 package com.trading.engine.websocket;
 
+import com.trading.engine.messages.clock.TradingClocks;
 import com.trading.engine.projections.account.AccountReadModel;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -274,6 +275,12 @@ public final class WebSocketServerMain implements AutoCloseable {
             queue, ackQueue, commandEntryPool, egressListener, sessionManager, metrics, nanoClock);
     final var slowConsumerHandler =
         new SlowConsumerHandler(sessionManager, config, metrics, nanoClock);
+    // C.1 — JWT mid-session expiry sweeper. Piggybacks on the 1 ms drain task; the sweeper
+    // carries its own 1 sec cadence guard so the per-tick overhead is one volatile read +
+    // one comparison when the cadence window has not elapsed. EpochNanoClock (not the
+    // monotonic NanoClock) because the JWT `exp` claim is wall-clock by RFC 7519 def.
+    final var jwtExpirySweeper =
+        new JwtExpirySweeper(sessionManager, metrics, TradingClocks.epochNanoClock());
     transport
         .workerGroup()
         .next()
@@ -282,6 +289,7 @@ public final class WebSocketServerMain implements AutoCloseable {
               try {
                 drainHandler.drain();
                 slowConsumerHandler.scan();
+                jwtExpirySweeper.scan();
               } catch (final Exception e) {
                 LOG.error("Drain handler exception — task continues", e);
               }
