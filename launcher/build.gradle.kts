@@ -22,6 +22,10 @@ dependencies {
     implementation(libs.log4j.api)
     implementation(libs.log4j.core)
     implementation(libs.disruptor)
+    // Required by WebSocketLauncher to plumb the Micrometer registry from WebSocketMetrics
+    // into Log4j2DiskFullErrorHandler.installAll(...). The transitive log4j-core dependency
+    // alone is not enough — Micrometer's MeterRegistry must be on launcher's classpath.
+    implementation(libs.micrometer.core)
 
     testImplementation(project(":test-support"))
 }
