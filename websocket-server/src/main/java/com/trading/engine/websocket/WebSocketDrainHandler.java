@@ -3,6 +3,8 @@ package com.trading.engine.websocket;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import java.util.Objects;
 import java.util.UUID;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
@@ -45,6 +47,22 @@ public final class WebSocketDrainHandler {
 
   private static final Logger LOG = LogManager.getLogger(WebSocketDrainHandler.class);
 
+  /**
+   * OpenTelemetry instrumentation-scope name for the drain-cycle span. Stable string used by the
+   * launcher's SDK configuration (resource attributes, sampling rules) and by the
+   * InMemorySpanExporter-based test to look up emitted spans by scope.
+   */
+  static final String OTEL_INSTRUMENTATION_SCOPE = "com.trading.engine.websocket";
+
+  /** Cold-path drain-cycle span name. APP-244 Phase 3 C.5. */
+  static final String DRAIN_CYCLE_SPAN_NAME = "ws.drain.cycle";
+
+  /** Span attribute key — number of frames drained on this cycle (always > 0 when span fires). */
+  static final String ATTR_DRAIN_CYCLE_ITEMS = "drain.cycle.items";
+
+  /** Span attribute key — wall-time nanos spent in the drain cycle, measured via the NanoClock. */
+  static final String ATTR_DRAIN_CYCLE_DURATION_NANOS = "drain.cycle.duration_nanos";
+
   private final ManyToOneConcurrentArrayQueue<EgressEntry> queue;
   private final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue;
   private final CommandEntryPool commandEntryPool;
@@ -52,6 +70,16 @@ public final class WebSocketDrainHandler {
   private final WebSocketSessionManager sessionManager;
   private final WebSocketMetrics metrics;
   private final NanoClock nanoClock;
+
+  /**
+   * Tracer used for the per-cycle {@code ws.drain.cycle} cold-path span. Resolved once at
+   * construction via {@link GlobalOpenTelemetry#getTracer(String)}; when no SDK is installed (the
+   * default in dev / when {@code OTEL_EXPORTER_OTLP_ENDPOINT} is unset) this is the no-op tracer —
+   * {@code spanBuilder(...).startSpan()} returns a singleton {@code DefaultSpan} that does NO
+   * allocation. Span emission is additionally gated on {@code drained > 0} so even an installed SDK
+   * only sees one span per non-empty cycle.
+   */
+  private final Tracer tracer;
 
   /** Pre-allocated flyweight for zero-alloc packed account extraction on the drain hot path. */
   private final long[] packedAccountBuf = new long[2];
@@ -76,6 +104,34 @@ public final class WebSocketDrainHandler {
       final WebSocketSessionManager sessionManager,
       final WebSocketMetrics metrics,
       final NanoClock nanoClock) {
+    this(
+        queue,
+        ackQueue,
+        commandEntryPool,
+        egressListener,
+        sessionManager,
+        metrics,
+        nanoClock,
+        GlobalOpenTelemetry.getTracer(OTEL_INSTRUMENTATION_SCOPE));
+  }
+
+  /**
+   * Test seam — accepts an explicit {@link Tracer} so {@code WebSocketDrainHandlerOtelSpanTest} can
+   * wire an {@code SdkTracerProvider} backed by {@code InMemorySpanExporter} without touching the
+   * JVM-global singleton (which would race with parallel-running tests).
+   *
+   * @param tracer the tracer to use for cold-path drain-cycle spans; must not be null. Pass the
+   *     no-op tracer if span emission should be effectively disabled.
+   */
+  public WebSocketDrainHandler(
+      final ManyToOneConcurrentArrayQueue<EgressEntry> queue,
+      final ManyToOneConcurrentArrayQueue<EgressEntry> ackQueue,
+      final CommandEntryPool commandEntryPool,
+      final WebSocketEgressListener egressListener,
+      final WebSocketSessionManager sessionManager,
+      final WebSocketMetrics metrics,
+      final NanoClock nanoClock,
+      final Tracer tracer) {
     this.queue = Objects.requireNonNull(queue, "queue");
     this.ackQueue = Objects.requireNonNull(ackQueue, "ackQueue");
     this.commandEntryPool = Objects.requireNonNull(commandEntryPool, "commandEntryPool");
@@ -83,6 +139,7 @@ public final class WebSocketDrainHandler {
     this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+    this.tracer = Objects.requireNonNull(tracer, "tracer");
   }
 
   /**
@@ -136,7 +193,56 @@ public final class WebSocketDrainHandler {
       // Record drain cycle latency using injected NanoClock (not System.nanoTime)
       final long cycleNs = nanoClock.nanoTime() - cycleStartNs;
       metrics.recordDrainCycleNanos(cycleNs);
+
+      // Cold-path OTel span — emitted ONCE per non-empty drain cycle (i.e. at most once per ~1ms
+      // when the queue is busy, never on idle ticks). Gated on `drained > 0` so a fully-loaded
+      // production deployment with an SDK installed observes one span per cycle, not one per
+      // frame. Without an SDK, `tracer` is the no-op tracer and the builder allocates nothing.
+      emitDrainCycleSpan(drained, cycleNs);
     }
+  }
+
+  /**
+   * Emit the {@code ws.drain.cycle} cold-path span. Span carries {@code drain.cycle.items} (count
+   * of frames drained on this cycle, always > 0 when this method is called) and {@code
+   * drain.cycle.duration_nanos} (wall-time nanos, measured via the injected {@link NanoClock}).
+   *
+   * <p>This is a cold path: the span is built and immediately ended in the same call, with no scope
+   * activation — no {@code Span.makeCurrent()} call, so no {@code ThreadLocal} mutation. When the
+   * global tracer is the default no-op, {@code spanBuilder(...).startSpan()} returns the shared
+   * {@code DefaultSpan.INSTANCE} singleton and all attribute / end calls are JIT-elided.
+   *
+   * @param drained number of frames drained on this cycle (must be > 0)
+   * @param cycleNs wall-time spent in the drain cycle, in nanoseconds (measured via NanoClock)
+   */
+  private void emitDrainCycleSpan(final int drained, final long cycleNs) {
+    final var span =
+        tracer
+            .spanBuilder(DRAIN_CYCLE_SPAN_NAME)
+            .setAttribute(ATTR_DRAIN_CYCLE_ITEMS, (long) drained)
+            .setAttribute(ATTR_DRAIN_CYCLE_DURATION_NANOS, cycleNs)
+            .startSpan();
+    // Cold path — end the span inline. No try/finally needed because no exception path between
+    // start and end (the only call is `Span#end`). No `makeCurrent()` so no scope to close.
+    span.end();
+  }
+
+  /**
+   * Test seam — visible to {@code WebSocketDrainHandlerOtelSpanTest} so the test can verify the
+   * span name / attribute keys via constants rather than string literals.
+   */
+  static String drainCycleSpanName() {
+    return DRAIN_CYCLE_SPAN_NAME;
+  }
+
+  /** Test seam — companion to {@link #drainCycleSpanName()} for the items attribute key. */
+  static String attrDrainCycleItems() {
+    return ATTR_DRAIN_CYCLE_ITEMS;
+  }
+
+  /** Test seam — companion to {@link #drainCycleSpanName()} for the duration attribute key. */
+  static String attrDrainCycleDurationNanos() {
+    return ATTR_DRAIN_CYCLE_DURATION_NANOS;
   }
 
   /**
