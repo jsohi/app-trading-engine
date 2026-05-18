@@ -524,16 +524,18 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
             ch.alloc()
                 .buffer(
                     FrameParser.RELIABLE_HEADER_SIZE + len, FrameParser.RELIABLE_HEADER_SIZE + len);
-        boolean written = false;
+        // Agent B R3 F-1: catch+rethrow instead of mutable `boolean written` flag
+        // (CLAUDE.md §Local Variable Style — buffer-scan/accumulator carve-out does not
+        // cover try-finally guard flags; mirrors JwtAuthHandler.sendAuthAck idiom).
+        // Netty takes ownership of `buf` on successful `ch.write`; release only on a
+        // pre-write exception.
         try {
           FrameParser.encodeReliableReplay(buf, s, scratch, 0, len);
           ch.write(new BinaryWebSocketFrame(buf));
-          written = true;
           metrics.replaySent(len);
-        } finally {
-          if (!written) {
-            buf.release();
-          }
+        } catch (final Throwable t) {
+          buf.release();
+          throw t;
         }
       }
       ch.flush();
@@ -553,15 +555,13 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     enc.wrapAndApplyHeader(responseBuf, 0, header);
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     final var nettyBuf = ch.alloc().buffer(encodedLen);
-    boolean written = false;
+    // Agent B R3 F-1: catch+rethrow instead of mutable `boolean written`.
     try {
       nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
       ch.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
-      written = true;
-    } finally {
-      if (!written) {
-        nettyBuf.release();
-      }
+    } catch (final Throwable t) {
+      nettyBuf.release();
+      throw t;
     }
   }
 
@@ -586,15 +586,13 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
 
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
-    boolean written = false;
+    // Agent B R3 F-1: catch+rethrow instead of mutable `boolean written`.
     try {
       nettyBuf.writeBytes(responseBuf.byteArray(), 0, encodedLen);
       ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
-      written = true;
-    } finally {
-      if (!written) {
-        nettyBuf.release();
-      }
+    } catch (final Throwable t) {
+      nettyBuf.release();
+      throw t;
     }
   }
 

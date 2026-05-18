@@ -555,16 +555,26 @@ public final class AeronEgressThread implements AutoCloseable {
       EgressEntry entry;
       while ((entry = commandQueue.poll()) != null) {
         work++;
-        boolean repurposedAsAck = false;
+        // Agent B R3 F-4: explicit release sites per branch instead of mutable
+        // `boolean repurposedAsAck` (CLAUDE.md §Local Variable Style — try-finally
+        // ownership-tracking flag falls outside the carve-out). Each branch is now
+        // self-contained: it either releases the entry to the pool OR transfers
+        // ownership via `postThrottledAck` (caller's drain releases on consume).
+        // The outer try/catch is the safety net for an unexpected throw from
+        // `clusterClient.offer` or `postThrottledAck` — releases the entry so the
+        // pool doesn't leak.
         try {
           if (entry.direction() != EgressEntry.Direction.BROWSER_TO_CLUSTER
               || entry.length() <= 0) {
             // Sentinel entry (e.g. degraded path returning to pool) — skip cluster offer.
+            commandEntryPool.release(entry);
             continue;
           }
           if (!clusterClient.isConnected()) {
             // Cluster down — synthesize a THROTTLED ack so the client retries later.
-            repurposedAsAck = postThrottledAck(entry);
+            if (!postThrottledAck(entry)) {
+              commandEntryPool.release(entry);
+            }
             continue;
           }
           offerBuf.wrap(entry.bytes(), 0, entry.length());
@@ -575,12 +585,15 @@ public final class AeronEgressThread implements AutoCloseable {
             result = clusterClient.offer(offerBuf, 0, entry.length());
           }
           if (result == Publication.BACK_PRESSURED || result < 0) {
-            repurposedAsAck = postThrottledAck(entry);
-          }
-        } finally {
-          if (!repurposedAsAck) {
+            if (!postThrottledAck(entry)) {
+              commandEntryPool.release(entry);
+            }
+          } else {
             commandEntryPool.release(entry);
           }
+        } catch (final Throwable t) {
+          commandEntryPool.release(entry);
+          throw t;
         }
       }
       return work;

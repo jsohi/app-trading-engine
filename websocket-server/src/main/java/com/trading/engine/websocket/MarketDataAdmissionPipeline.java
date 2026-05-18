@@ -425,15 +425,15 @@ public final class MarketDataAdmissionPipeline {
     errorEncoder.putErrorText(errorText, 0, errorText.length);
     final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + errorEncoder.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
-    boolean written = false;
+    // Agent B R3 F-2: catch+rethrow instead of mutable `boolean written` (CLAUDE.md
+    // §Local Variable Style — try-finally guard flags fall outside the carve-out;
+    // mirrors JwtAuthHandler.sendAuthAck).
     try {
       nettyBuf.writeBytes(errorEncodeBuf.byteArray(), 0, encodedLen);
       ctx.writeAndFlush(new BinaryWebSocketFrame(nettyBuf));
-      written = true;
-    } finally {
-      if (!written) {
-        nettyBuf.release();
-      }
+    } catch (final Throwable t) {
+      nettyBuf.release();
+      throw t;
     }
   }
 
