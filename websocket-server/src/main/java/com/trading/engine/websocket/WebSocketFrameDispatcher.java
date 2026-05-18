@@ -94,6 +94,14 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
   private final SessionResumeDecoder resumeDecoder = new SessionResumeDecoder();
   private final UnsafeBuffer wrapBuffer = new UnsafeBuffer(new byte[0]);
   private final ExpandableArrayBuffer responseBuf = new ExpandableArrayBuffer(128);
+
+  // /review R5 (LOW): pre-allocate the response-side encoders so cold-path sendError +
+  // sendReplayComplete don't construct fresh SBE encoder + MessageHeaderEncoder per call.
+  // These dispatcher instances are per-channel; each is wrapped via `wrapAndApplyHeader` on
+  // every emit, so reusing the field is safe (the wrap re-establishes the cursor at offset 0).
+  private final MessageHeaderEncoder responseHeaderEncoder = new MessageHeaderEncoder();
+  private final ReplayCompleteEncoder replayCompleteEncoder = new ReplayCompleteEncoder();
+  private final WebSocketErrorEncoder errorEncoder = new WebSocketErrorEncoder();
   private final byte[] symbolDecodeBuffer = new byte[8];
 
   // --- Per-channel mutable state ---
@@ -550,10 +558,9 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
     if (!ch.isActive()) {
       return;
     }
-    final var enc = new ReplayCompleteEncoder();
-    final var header = new MessageHeaderEncoder();
-    enc.wrapAndApplyHeader(responseBuf, 0, header);
-    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    replayCompleteEncoder.wrapAndApplyHeader(responseBuf, 0, responseHeaderEncoder);
+    final int encodedLen =
+        MessageHeaderEncoder.ENCODED_LENGTH + replayCompleteEncoder.encodedLength();
     final var nettyBuf = ch.alloc().buffer(encodedLen);
     // Agent B R3 F-1: catch+rethrow instead of mutable `boolean written`.
     try {
@@ -578,13 +585,11 @@ public final class WebSocketFrameDispatcher extends ChannelInboundHandlerAdapter
       return;
     }
     final var errorText = ErrorTextRegistry.textFor(errorCode);
-    final var enc = new WebSocketErrorEncoder();
-    final var header = new MessageHeaderEncoder();
-    enc.wrapAndApplyHeader(responseBuf, 0, header);
-    enc.errorCode(errorCode);
-    enc.putErrorText(errorText, 0, errorText.length);
+    errorEncoder.wrapAndApplyHeader(responseBuf, 0, responseHeaderEncoder);
+    errorEncoder.errorCode(errorCode);
+    errorEncoder.putErrorText(errorText, 0, errorText.length);
 
-    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + errorEncoder.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
     // Agent B R3 F-1: catch+rethrow instead of mutable `boolean written`.
     try {

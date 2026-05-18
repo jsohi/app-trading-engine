@@ -277,7 +277,7 @@ export function decodeClusterEvent(
         const dec = new MarketDataTickDecoder().wrap(dv, SBE_HEADER_BYTES);
         const ingressNanos = dec.ingressNanos();
         const serverNanos = dec.serverNanos();
-        // Gemini iter-2 review (MEDIUM, clusterEventDecoder.ts:283): avoid per-tick
+        // Gemini iter-2 review (MEDIUM, clusterEventDecoder.ts:286): avoid per-tick
         // String allocation from `dec.symbol()`. Pack directly from the underlying
         // DataView (zero alloc) and reuse the cached symbol string from the conflation
         // map if a prior tick within the same drain window already populated it. First
