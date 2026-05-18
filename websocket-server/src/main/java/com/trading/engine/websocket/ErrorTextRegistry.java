@@ -50,6 +50,7 @@ public final class ErrorTextRegistry {
     register(WebSocketErrorCode.ServerShutdown, "Server shutting down");
     register(WebSocketErrorCode.CommandRejected, "Command rejected");
     register(WebSocketErrorCode.SnapshotEntityTooLarge, "Snapshot entity too large");
+    register(WebSocketErrorCode.AuthExpiringSoon, "Auth expiring soon — reauth required");
   }
 
   private static void register(final WebSocketErrorCode code, final String text) {

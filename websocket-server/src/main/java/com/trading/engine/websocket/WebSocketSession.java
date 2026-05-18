@@ -143,6 +143,32 @@ public final class WebSocketSession {
   private volatile long sessionEpoch;
 
   /**
+   * JWT {@code exp} claim converted to epoch-nanos at auth time. {@code 0L} until {@link
+   * #expEpochNanos(long)} is called. Compared against the injected {@link
+   * io.aeron.archive.client.AeronArchive AeronArchive}-grade {@link
+   * org.agrona.concurrent.EpochNanoClock} on each {@link JwtExpirySweeper#scan(long)} tick (every
+   * ~1 s). Volatile because the sweeper runs on a different worker event loop than the channel that
+   * set the value at auth time.
+   *
+   * <p>Plan §Commit 8 + Gemini iter-4: nano-precision comparison — never truncating integer
+   * division to epoch-seconds (would otherwise create a worst-case 999 ms window of accepted
+   * expired tokens; CME iLink / EBS Direct fail closed at sub-millisecond precision). Stored as
+   * {@code long} (epoch-ns since 1970-01-01); the conversion from the RFC 7519 {@code exp}
+   * (epoch-seconds) happens once in {@link JwtAuthHandler#continueAuthOnEventLoop} as {@code expSec
+   * * 1_000_000_000L}.
+   */
+  private volatile long expEpochNanos;
+
+  /**
+   * Latch flipped on the first {@code AuthExpiringSoon} warning so subsequent ticks within the
+   * warning window do NOT spam the client. Reset path: never (the next reauth replaces this session
+   * entirely via {@link JwtAuthHandler#continueAuthOnEventLoop}'s re-registration; this session
+   * object is discarded). Volatile for the same cross-loop visibility reason as {@link
+   * #expEpochNanos}.
+   */
+  private volatile boolean expiringWarningSent;
+
+  /**
    * {@link VarHandle} on {@link #sessionEpoch} — bound once per class load. The compile-time check
    * is enforced by {@code MethodHandles.lookup().findVarHandle(...)} which throws on a missing
    * field. Used for {@code getAndAdd}/{@code releaseFence}/{@code acquireFence} discipline around
@@ -260,6 +286,48 @@ public final class WebSocketSession {
     if (this.originalAuthJti == null) {
       this.originalAuthJti = jti;
     }
+  }
+
+  /**
+   * @return the JWT {@code exp} claim as epoch-nanos, or {@code 0L} if not set (pre-auth).
+   */
+  public long expEpochNanos() {
+    return this.expEpochNanos;
+  }
+
+  /**
+   * Set the JWT {@code exp} claim as epoch-nanos. Called once per successful auth / re-auth from
+   * {@link JwtAuthHandler#continueAuthOnEventLoop} after the claims have been validated. Resets
+   * {@link #expiringWarningSent} so a renewed token gets a fresh warning window (matches the prior
+   * behavior where re-auth re-arms the sweeper).
+   *
+   * @param expEpochNanos JWT {@code exp} converted to epoch-nanos via {@code
+   *     claims.expiryEpochSec() * 1_000_000_000L}; MUST be {@code > 0}
+   */
+  public void expEpochNanos(final long expEpochNanos) {
+    if (expEpochNanos <= 0L) {
+      throw new IllegalArgumentException("expEpochNanos must be > 0; got " + expEpochNanos);
+    }
+    this.expEpochNanos = expEpochNanos;
+    this.expiringWarningSent = false;
+  }
+
+  /**
+   * @return {@code true} iff the {@code AuthExpiringSoon} warning has already been emitted for the
+   *     current token (set by {@link JwtExpirySweeper#scan(long)} on first crossing of the warn
+   *     boundary).
+   */
+  public boolean expiringWarningSent() {
+    return this.expiringWarningSent;
+  }
+
+  /**
+   * Flip the {@link #expiringWarningSent} latch. Called by {@link JwtExpirySweeper} on the first
+   * warn-window-crossing tick so subsequent ticks within the window do not spam the client.
+   * Idempotent — a second call is a no-op (no observable difference).
+   */
+  public void markExpiringWarningSent() {
+    this.expiringWarningSent = true;
   }
 
   /**

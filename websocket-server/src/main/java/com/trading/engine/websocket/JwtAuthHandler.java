@@ -377,6 +377,11 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     registeredSession.initSnapshotTokenBucket(nanoClock.nanoTime());
     registeredSession.publishSymbolEntitlements(symbolEntitlementMap, validatedAccounts);
     registeredSession.pendingBytesRef(byteCounter.pendingBytesRef());
+    // C.1 — JWT mid-session expiry: convert RFC 7519 `exp` (epoch-seconds) to epoch-nanos and
+    // arm the JwtExpirySweeper. Re-auth on this same session overwrites the field; the warning
+    // latch resets so the new token gets a fresh AuthExpiringSoon window. Per the plan's
+    // nano-precision discipline: never truncating integer division to epoch-seconds.
+    registeredSession.expEpochNanos(claims.expiryEpochSec() * 1_000_000_000L);
 
     // 14. Cancel auth timeout
     cancelTimeout();

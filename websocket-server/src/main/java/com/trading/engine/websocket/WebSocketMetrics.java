@@ -39,6 +39,16 @@ public final class WebSocketMetrics {
   private final Counter replayEvictions;
   private final Counter authSuccess;
   private final Counter authFailure;
+
+  /** C.1 — count of mid-session JWT expirations that triggered a 4401 close. */
+  private final Counter authSessionExpired;
+
+  /**
+   * C.1 — count of {@code AuthExpiringSoon} warning frames emitted to clients (one per session per
+   * token; the latch prevents intra-window spam).
+   */
+  private final Counter authExpiringSoonEmitted;
+
   private final Counter rateLimited;
   private final Counter filterMatched;
   private final Counter filterFiltered;
@@ -134,6 +144,20 @@ public final class WebSocketMetrics {
     this.authFailure =
         Counter.builder("websocket.auth.failure")
             .description("Failed JWT authentications (invalid, expired, rejected algorithm)")
+            .register(registry);
+
+    this.authSessionExpired =
+        Counter.builder("websocket.auth.session.expired")
+            .description(
+                "Mid-session JWT expiries that closed the channel with 4401 AuthExpired "
+                    + "(C.1 — JwtExpirySweeper)")
+            .register(registry);
+
+    this.authExpiringSoonEmitted =
+        Counter.builder("websocket.auth.expiring_soon.emitted")
+            .description(
+                "Soft-expiry AuthExpiringSoon warning frames emitted to clients ahead of "
+                    + "the hard expiry (C.1 — JwtExpirySweeper). One per session per token.")
             .register(registry);
 
     this.rateLimited =
@@ -350,6 +374,16 @@ public final class WebSocketMetrics {
   /** Record a failed JWT authentication. */
   public void authFailed() {
     authFailure.increment();
+  }
+
+  /** C.1 — Record a mid-session JWT expiry that triggered a 4401 close. */
+  public void authSessionExpired() {
+    authSessionExpired.increment();
+  }
+
+  /** C.1 — Record an emitted AuthExpiringSoon warning frame. */
+  public void authExpiringSoonEmitted() {
+    authExpiringSoonEmitted.increment();
   }
 
   /** Record a rate-limited command rejection. */
