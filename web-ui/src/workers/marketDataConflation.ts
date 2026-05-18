@@ -88,6 +88,20 @@ import type { PriceUpdate } from "../shared/transport/MessageShape";
 export const MARKET_DATA_RENDER_MS = 33;
 
 /**
+ * Stable {@link performance.mark} / {@link performance.measure} names for the drain-cycle
+ * observability surface (APP-244 Phase 3 C.5).
+ *
+ * The browser PerformanceTimeline interns mark / measure names internally — re-using the same
+ * three strings across cycles avoids the per-call string-allocation overhead that a templated
+ * name (e.g. `drain.cycle.${count}`) would incur. Cold-path only: marks are placed exclusively
+ * when a non-empty drain is about to execute (gated on `latest.size > 0`); the zero-tick idle
+ * path performs no PerformanceTimeline writes.
+ */
+export const PERF_MARK_DRAIN_START = "ws.drain.cycle.start";
+export const PERF_MARK_DRAIN_END = "ws.drain.cycle.end";
+export const PERF_MEASURE_DRAIN_CYCLE = "ws.drain.cycle";
+
+/**
  * The per-symbol frame buffered between drain cycles. Mirrors the {@link PriceUpdate} surface
  * but is internal to the conflation module — the drain converts it to a real {@link PriceUpdate}
  * for postMessage. Stored by value (not by reference into the SBE decoder) so the underlying
@@ -231,7 +245,28 @@ export class MarketDataConflation {
       // Idle tick — fast path; zero allocation. The `forEach` over an empty map is O(0) but
       // still incurs a tiny interpreter overhead; the explicit early-return is cheaper and
       // documents the intent.
+      //
+      // Observability: PerformanceTimeline writes are GATED on this early-return — no `mark` /
+      // `measure` calls on the idle path. Calling `performance.mark` on an idle tick would
+      // still allocate a `PerformanceMark` entry and inflate the worker's PerformanceTimeline
+      // buffer, which is exactly the no-op-allocation that APP-244 C.5 forbids.
       return;
+    }
+    // APP-244 Phase 3 C.5 — cold-path drain-cycle observability via the browser's
+    // PerformanceTimeline. Mark names are stable interned strings (see PERF_MARK_*
+    // constants above) so a busy worker re-uses the same three strings forever rather than
+    // allocating templated names per cycle. `performance.measure` resolves the start mark by
+    // name to a timestamp internally — no need to thread the start time through user code.
+    //
+    // performance.mark / measure are HostObject methods, present in both Window and
+    // WorkerGlobalScope (the conflation module runs in a DedicatedWorker). The `typeof`
+    // guards keep this safe under jsdom / Node test environments where `performance` exists
+    // but `mark` may not — fall back to plain drain in that case.
+    const perf: Performance | undefined =
+      typeof performance !== "undefined" ? performance : undefined;
+    const canMark = perf !== undefined && typeof perf.mark === "function";
+    if (canMark) {
+      perf.mark(PERF_MARK_DRAIN_START);
     }
     // Gemini iter-4 review (MEDIUM, marketDataConflation.ts:237): if the sink callback (which
     // eventually calls `postMessage`) throws, the map must still be cleared so the next drain
@@ -242,6 +277,17 @@ export class MarketDataConflation {
       this.latest.forEach(this.drainConsumer);
     } finally {
       this.latest.clear();
+      if (canMark) {
+        perf.mark(PERF_MARK_DRAIN_END);
+        // measure() can throw a SyntaxError if the start mark was evicted (the
+        // PerformanceTimeline has a ring-buffer cap). Swallow defensively — a missing
+        // measure is strictly better than poisoning the drain cycle.
+        try {
+          perf.measure(PERF_MEASURE_DRAIN_CYCLE, PERF_MARK_DRAIN_START, PERF_MARK_DRAIN_END);
+        } catch {
+          /* PerformanceTimeline buffer eviction or browser-quirk — ignore */
+        }
+      }
     }
   }
 

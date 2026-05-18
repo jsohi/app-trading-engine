@@ -239,6 +239,25 @@ export type EpochMillisClock = () => number;
 export const defaultEpochMillisClock: EpochMillisClock = () =>
   performance.timeOrigin + performance.now();
 
+/**
+ * Stable {@link performance.mark} / {@link performance.measure} names for the submit-order
+ * cold-path observability surface (APP-244 Phase 3 C.5).
+ *
+ * The browser PerformanceTimeline interns mark names — re-using the same three strings across
+ * submits avoids the per-call string-allocation overhead that a templated name (e.g.
+ * `submitOrder.${seq}`) would otherwise incur. The end-mark is keyed on the literal start
+ * mark name, so concurrent submits all map to the same pair; `performance.measure` resolves
+ * the most-recent start mark, giving an approximate-but-stable measurement that's good enough
+ * for the cold-path budget tracking this exposes.
+ *
+ * Marks are GATED on real submission (post early-return); they never fire on the no-op
+ * rejection paths (disposed / invalid account / backpressure / slot collision), preserving
+ * the zero-allocation invariant for those branches.
+ */
+export const PERF_MARK_SUBMIT_ORDER_START = "submit.order.start";
+export const PERF_MARK_SUBMIT_ORDER_END = "submit.order.end";
+export const PERF_MEASURE_SUBMIT_ORDER = "submit.order";
+
 export class CommandClient {
   private readonly slots: Slot[];
   /** Pool of pre-allocated outbound Uint8Arrays (size = SBE frame length). */
@@ -343,6 +362,11 @@ export class CommandClient {
       // WorkerClient.ts; this site is the same bug).
       slot.deadlineMs = performance.now() + SLOT_TIMEOUT_MS;
       this.inFlight++;
+      // APP-244 Phase 3 C.5 — cold-path PerformanceTimeline mark for the submit-order
+      // flow. Gated past the early-return rejection branches (disposed / invalid account /
+      // backpressure / slot collision) so the no-op paths remain allocation-free. The
+      // companion end mark + measure fires in handleAck / freeSlot.
+      markSubmitOrderStart();
 
       // Real SBE encode (no JSON envelope, no synthetic ack). The pool is indexed by slot —
       // each in-flight slot owns its own buffer, so concurrent submits cannot collide. The
@@ -499,11 +523,59 @@ export class CommandClient {
   }
 
   private freeSlot(slot: Slot): void {
-    if (slot.seq !== 0) this.inFlight--;
+    if (slot.seq !== 0) {
+      this.inFlight--;
+      // APP-244 Phase 3 C.5 — paired end mark + measure for the submit-order cold-path
+      // observability surface. Fires only when transitioning out of an actually-occupied
+      // slot, so the early-return rejection paths (which call freeSlot with seq==0 on
+      // the encoder-overflow / pool-missing branches via inFlight already being unchanged
+      // before slot assignment) do not trigger the mark. We DO end the mark on the
+      // post-submit pool-missing / encode-throw branches because at that point the slot
+      // WAS taken (seq != 0) and the start mark fired.
+      markSubmitOrderEnd();
+    }
     slot.seq = 0;
     slot.resolve = null;
     slot.reject = null;
     slot.deadlineMs = 0;
+  }
+}
+
+// ===========================================================================
+// Cold-path PerformanceTimeline helpers (APP-244 Phase 3 C.5).
+//
+// Module-scoped functions, not class methods, so they are called via direct
+// reference (no `this` binding allocation) from CommandClient hot paths.
+// The `typeof` guards make them safe in Node / jsdom environments where
+// `performance` is defined but `mark` / `measure` may be missing.
+// ===========================================================================
+
+/**
+ * Module-scoped helper — emits the {@link PERF_MARK_SUBMIT_ORDER_START} mark on the cold-path
+ * submit boundary. Safe under jsdom / Node where {@code performance.mark} may be undefined.
+ * Stable mark string (interned by the browser) — no per-call string allocation.
+ */
+function markSubmitOrderStart(): void {
+  if (typeof performance === "undefined" || typeof performance.mark !== "function") return;
+  performance.mark(PERF_MARK_SUBMIT_ORDER_START);
+}
+
+/**
+ * Module-scoped helper — emits the end mark + measure pair for a settled submit. Defensively
+ * swallows the {@code SyntaxError} that {@code performance.measure} throws if the start mark
+ * has been evicted from the PerformanceTimeline ring buffer.
+ */
+function markSubmitOrderEnd(): void {
+  if (typeof performance === "undefined" || typeof performance.mark !== "function") return;
+  performance.mark(PERF_MARK_SUBMIT_ORDER_END);
+  try {
+    performance.measure(
+      PERF_MEASURE_SUBMIT_ORDER,
+      PERF_MARK_SUBMIT_ORDER_START,
+      PERF_MARK_SUBMIT_ORDER_END,
+    );
+  } catch {
+    /* PerformanceTimeline buffer eviction or browser-quirk — ignore */
   }
 }
 

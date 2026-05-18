@@ -34,6 +34,11 @@ jetty11 = "11.0.24"
 # jqwik property-based testing (Phase 3 Commit 1) — round-trip property tests on
 # SBE templates 54/55/56/57. Test-only; never bundled into the runtime.
 jqwik = "1.9.2"
+# OpenTelemetry Java API — cold-path observability (APP-244 Phase 3 C.5).
+# The `opentelemetry-api` artifact is allocation-free when the global tracer
+# is the default no-op (i.e. when no SDK is installed / no OTLP endpoint set).
+# Test scope brings in `opentelemetry-sdk-testing` for InMemorySpanExporter.
+opentelemetry = "1.62.0"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -77,3 +82,6 @@ jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "
 jetty-server = { module = "org.eclipse.jetty:jetty-server", version.ref = "jetty11" }
 jetty-servlet = { module = "org.eclipse.jetty:jetty-servlet", version.ref = "jetty11" }
 jqwik = { module = "net.jqwik:jqwik", version.ref = "jqwik" }
+opentelemetry-api = { module = "io.opentelemetry:opentelemetry-api", version.ref = "opentelemetry" }
+opentelemetry-sdk = { module = "io.opentelemetry:opentelemetry-sdk", version.ref = "opentelemetry" }
+opentelemetry-sdk-testing = { module = "io.opentelemetry:opentelemetry-sdk-testing", version.ref = "opentelemetry" }

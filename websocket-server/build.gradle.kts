@@ -39,6 +39,12 @@ dependencies {
 
     implementation(libs.nimbus.jose.jwt)
     implementation(libs.snakeyaml)
+    // OpenTelemetry API only — the global tracer defaults to a no-op when no SDK is
+    // installed (i.e. when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset at process boot), so
+    // this dependency adds zero allocation on the runtime hot path. Cold-path drain-cycle
+    // spans only ever execute when `drained > 0`, so even with an installed SDK the
+    // emission rate is bounded by the 1ms drain cadence. APP-244 Phase 3 C.5.
+    implementation(libs.opentelemetry.api)
     // Jackson for OIDC discovery doc parsing (RFC 8414 — see OidcDiscoveryClient).
     // Pinned to the project-wide jackson version to keep CVE patching uniform.
     implementation(libs.jackson.databind)
@@ -49,6 +55,11 @@ dependencies {
     // dependencyCheckAnalyze covers the version pin.
     testImplementation(libs.jetty.server)
     testImplementation(libs.jetty.servlet)
+    // OpenTelemetry SDK + InMemorySpanExporter for cold-path span assertions
+    // (WebSocketDrainHandlerOtelSpanTest). Test-only; the production deployment
+    // configures a real exporter (or stays no-op) via OTEL_EXPORTER_OTLP_ENDPOINT.
+    testImplementation(libs.opentelemetry.sdk)
+    testImplementation(libs.opentelemetry.sdk.testing)
 }
 
 application {
