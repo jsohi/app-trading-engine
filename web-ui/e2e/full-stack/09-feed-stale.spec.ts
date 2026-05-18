@@ -2,49 +2,47 @@
  * Full-stack spec 9: market-data feed-stale lifecycle — LIVE → STALE → LIVE.
  *
  * Plan §Commit 9 / spec 09. Validates the complete feed-liveness state machine
- * visible in the browser when the pricing-service is killed and then restarted
+ * visible in the browser when the pricing-service is paused and then resumed
  * mid-spec:
  *
  *   1. Baseline: `feedState$` is "LIVE" (pricing-service is running).
- *   2. Kill pricing-service (no more ticks on Aeron stream 204).
+ *   2. Pause pricing-service (no more ticks on Aeron stream 204).
  *   3. Assert `feedState$` transitions to "STALE" within 5 s.
  *   4. Assert `connectionStream$` did NOT change — WS transport stays healthy.
- *   5. Restart pricing-service (ticks resume on stream 204).
+ *   5. Resume pricing-service (ticks resume on stream 204).
  *   6. Assert `feedState$` transitions back to "LIVE" within 2 s.
  *      The first market-data tick (template 54) from the restarted adapter at
  *      `MARKET_DATA_PUBLISH_CADENCE_MICROS = 5_000 µs` proves the price-feed
  *      path is healthy (EBS Direct / ICE Impact discipline — heartbeats alone do
  *      NOT clear STALE).
  *   7. Per-spec metric: `marketdata.feed.state{state=STALE}` ≥ 1 (read from
- *      the Prometheus scrape endpoint when available; see §Harness Gap below).
+ *      the Prometheus scrape endpoint when available).
  *
- * Harness gap — new infrastructure required
- * =========================================
+ * Harness wiring — option A (HTTP management endpoint)
+ * ====================================================
  * The pricing-service runs as an {@code AgentRunner} thread inside the launcher
- * JVM (same process as the WebSocket server). Stopping only the pricing thread
- * without stopping the WS server requires one of:
+ * JVM (same process as the WebSocket server). We cannot {@code kill -STOP} the
+ * launcher PID — that would also pause the WS-server egress thread and the
+ * heartbeats that carry the STALE/LIVE notifications.
  *
- *   A. Launching pricing-service as a SEPARATE JVM process (recommended):
- *      - `scripts/full-stack-e2e.sh` forks a second `./gradlew :pricing-service:run`
- *        JVM and exports its PID to `$E2E_PRICING_SERVICE_PID`.
- *      - The spec reads `process.env.E2E_PRICING_SERVICE_PID` and uses
- *        `execSync("kill -SIGTERM $pid")` to stop it.
- *      - Restart: `execSync("./gradlew :pricing-service:run &")` (or a
- *        dedicated restart script).
- *      - This is the recommended architecture: clean process boundary, no JDWP
- *        or management-API machinery.
+ * APP-244 Phase 3 picked option A: a thin JDK {@code HttpServer} management
+ * endpoint exposed by {@link com.trading.engine.launcher.E2eManagementServer}.
+ * It binds to {@code 127.0.0.1:$TRADING_E2E_MGMT_PORT} and exposes:
  *
- *   B. A thin HTTP management endpoint (alternative):
- *      - Add a `POST /e2e/pricing/pause` + `POST /e2e/pricing/resume` Netty
- *        handler to the launcher (guarded by `VITE_E2E_REAL_BACKEND` env var).
- *      - The endpoint calls `pricingRef.get().agentRunner().close()` / re-init.
- *      - Spec calls `fetch("http://localhost:9999/e2e/pricing/pause")`.
+ *   - {@code POST /e2e/pricing/pause}  — closes the pricing AgentRunner
+ *   - {@code POST /e2e/pricing/resume} — re-launches the pricing AgentRunner
+ *   - {@code GET  /e2e/health}         — readiness check
  *
- * Until one of the above is in place this spec will compile and list correctly
- * but the {@link killPricingService} and {@link restartPricingService} helpers
- * will throw at runtime if `E2E_PRICING_SERVICE_PID` is not set. The spec is
- * guarded by `test.skip` when the env var is absent so the suite does not fail
- * for teams that haven't yet wired the separate-process harness.
+ * The endpoint is gated behind {@code TRADING_E2E_MGMT_ENABLED=1} — production
+ * deployments never set this env var, so the launcher's {@code fromEnvironment}
+ * factory returns {@code null} and the endpoint is never even constructed.
+ * Option B (separate JVM via {@code PricingServiceMain} + {@code
+ * E2E_PRICING_SERVICE_PID}) is also viable but requires more harness wiring —
+ * see APP-244 Phase 3 plan for rationale.
+ *
+ * The spec is guarded by {@code test.skip} when {@code TRADING_E2E_MGMT_PORT}
+ * is unset so the suite does not fail for teams that haven't yet enabled the
+ * harness env vars.
  *
  * STALE threshold: `MARKET_DATA_STALE_THRESHOLD_NANOS = 3_000_000_000L` (3 s).
  * Budget for assertion: 5 s (leaves 2 s of headroom for observer round-trip +
@@ -52,8 +50,6 @@
  * adapter thread start; cold JVM adds ~500 ms; total << 2 s).
  */
 import { expect, test } from "@playwright/test";
-import { execSync, spawnSync } from "node:child_process";
-import path from "node:path";
 import { drainQuiescenceAndBaseline, readinessGate } from "./helpers";
 
 // ---------------------------------------------------------------------------
@@ -67,109 +63,78 @@ const STALE_BUDGET_MS = 5_000;
 const LIVE_RECOVERY_BUDGET_MS = 2_000;
 
 // ---------------------------------------------------------------------------
-// Pricing-service kill / restart helpers
+// Pricing-service pause / resume helpers (E2E management HTTP endpoint)
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the pricing-service process PID from the harness-exported env var.
- * Throws a clear error when the env var is absent so the failure is actionable.
+ * Returns the base URL of the launcher's E2E management endpoint, e.g.
+ * `http://127.0.0.1:9876`. Reads `TRADING_E2E_MGMT_PORT` from the env so the
+ * port is configurable per CI lane.
  *
- * @throws Error when E2E_PRICING_SERVICE_PID is not set (harness infrastructure
- *   gap — see §Harness Gap in the spec file-level comment above).
+ * @throws Error when TRADING_E2E_MGMT_PORT is not set.
  */
-function pricingServicePid(): number {
-  const raw = process.env.E2E_PRICING_SERVICE_PID;
+function managementBaseUrl(): string {
+  const raw = process.env.TRADING_E2E_MGMT_PORT;
   if (!raw || raw.trim() === "") {
     throw new Error(
-      "E2E_PRICING_SERVICE_PID is not set. " +
-        "The full-stack harness must launch pricing-service as a separate JVM process and export its PID. " +
-        "See the §Harness Gap section in web-ui/e2e/full-stack/09-feed-stale.spec.ts.",
+      "TRADING_E2E_MGMT_PORT is not set. " +
+        "The full-stack harness must export it (and launch the launcher with TRADING_E2E_MGMT_ENABLED=1). " +
+        "See the §Harness wiring section in web-ui/e2e/full-stack/09-feed-stale.spec.ts.",
     );
   }
-  const pid = parseInt(raw, 10);
-  if (isNaN(pid) || pid <= 0) {
-    throw new Error(`E2E_PRICING_SERVICE_PID is not a valid PID: "${raw}"`);
+  const port = parseInt(raw, 10);
+  if (isNaN(port) || port < 1 || port > 65_535) {
+    throw new Error(`TRADING_E2E_MGMT_PORT is not a valid TCP port: "${raw}"`);
   }
-  return pid;
+  return `http://127.0.0.1:${String(port)}`;
 }
 
 /**
- * Returns the absolute path to the pricing-service restart script.
- * Expects `scripts/restart-pricing-service.sh` relative to E2E_REPO_ROOT.
- *
- * The script must:
- *   1. Wait until the old PID is no longer alive.
- *   2. Re-fork pricing-service with the same Aeron dir as the original run.
- *   3. Write the new PID to a known location (or update E2E_PRICING_SERVICE_PID).
- *   4. Exit 0 when the new process is ready (e.g. "PRICING_READY" log line).
+ * POSTs to a management endpoint and returns the response body. Throws on
+ * non-2xx status so the spec fails fast with an actionable error.
  */
-function restartScriptPath(): string {
-  const root = process.env.E2E_REPO_ROOT;
-  if (!root) {
-    throw new Error("E2E_REPO_ROOT not set — must run via scripts/full-stack-e2e.sh");
-  }
-  return path.resolve(root, "scripts/restart-pricing-service.sh");
-}
-
-/**
- * Kill the pricing-service process with SIGTERM and wait for it to exit.
- * Uses SIGKILL after a 3 s grace period to guard against hung shutdown hooks.
- *
- * Precondition: E2E_PRICING_SERVICE_PID must be set by the harness.
- */
-function killPricingService(): void {
-  const pid = pricingServicePid();
-  console.log(`[spec 09] killing pricing-service (PID ${String(pid)}) with SIGTERM`);
-  try {
-    execSync(`kill -TERM ${String(pid)}`, { stdio: "pipe" });
-  } catch {
-    // Already dead — that's fine; the assertion will still exercise the STALE path
-    // because the WS server's liveness tracker already detected the missing ticks.
-    console.warn(`[spec 09] kill -TERM ${String(pid)} failed (process may already be down)`);
-    return;
-  }
-  // Wait up to 3 s for graceful exit; fall back to SIGKILL.
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    try {
-      execSync(`kill -0 ${String(pid)}`, { stdio: "pipe" });
-      // Still alive — spin-wait.
-    } catch {
-      // kill -0 failed → process is gone.
-      console.log(`[spec 09] pricing-service (PID ${String(pid)}) exited gracefully`);
-      return;
-    }
-  }
-  // Grace period elapsed; force-kill.
-  try {
-    execSync(`kill -KILL ${String(pid)}`, { stdio: "pipe" });
-    console.log(`[spec 09] pricing-service (PID ${String(pid)}) force-killed`);
-  } catch {
-    /* already gone */
-  }
-}
-
-/**
- * Restart the pricing-service via the harness restart script. Blocks until the
- * script exits (the script is responsible for ensuring the new process is ready).
- *
- * The restart script MUST update `E2E_PRICING_SERVICE_PID` (or write a pid file
- * that this spec can read) so subsequent specs / retry runs have the correct PID.
- */
-function restartPricingService(): void {
-  const script = restartScriptPath();
-  console.log(`[spec 09] restarting pricing-service via ${script}`);
-  const result = spawnSync("bash", [script], {
-    stdio: "inherit",
-    timeout: 15_000, // 15 s ceiling: JVM cold-start + Aeron connect + first publish
-  });
-  if (result.status !== 0) {
+async function mgmtPost(path: string): Promise<string> {
+  const url = `${managementBaseUrl()}${path}`;
+  const resp = await fetch(url, { method: "POST" });
+  const body = await resp.text();
+  if (!resp.ok) {
     throw new Error(
-      `pricing-service restart script exited with code ${String(result.status)}. ` +
-        `Check ${script} and e2e/logs/ for details.`,
+      `management endpoint POST ${path} failed: status=${String(resp.status)} body='${body}'`,
     );
   }
-  console.log("[spec 09] pricing-service restarted successfully");
+  return body;
+}
+
+/**
+ * Pauses the pricing-service AgentRunner via the launcher's management HTTP
+ * endpoint. The launcher's pricing-service stops publishing ticks on Aeron
+ * stream 204 within ~1 idle-cycle (~µs); the rest of the launcher (WS server,
+ * cluster client, egress thread) keeps running.
+ *
+ * Precondition: TRADING_E2E_MGMT_PORT must be set by the harness.
+ */
+async function killPricingService(): Promise<void> {
+  console.log("[spec 09] pausing pricing-service via management endpoint");
+  const body = await mgmtPost("/e2e/pricing/pause");
+  if (body !== "paused") {
+    throw new Error(`unexpected pause response body: '${body}' (expected 'paused')`);
+  }
+  console.log("[spec 09] pricing-service paused");
+}
+
+/**
+ * Resumes the pricing-service AgentRunner via the launcher's management HTTP
+ * endpoint. The launcher re-launches the pricing AgentRunner with the original
+ * config; the first market-data tick (template 54) lands on Aeron stream 204
+ * within a few hundred ms.
+ */
+async function restartPricingService(): Promise<void> {
+  console.log("[spec 09] resuming pricing-service via management endpoint");
+  const body = await mgmtPost("/e2e/pricing/resume");
+  if (body !== "resumed") {
+    throw new Error(`unexpected resume response body: '${body}' (expected 'resumed')`);
+  }
+  console.log("[spec 09] pricing-service resumed");
 }
 
 // ---------------------------------------------------------------------------
@@ -177,15 +142,15 @@ function restartPricingService(): void {
 // ---------------------------------------------------------------------------
 
 test.describe("feed-stale lifecycle", () => {
-  // Guard: skip the test when the harness hasn't wired the separate-process
-  // pricing-service yet. This prevents the suite from failing on teams that
-  // haven't yet landed the harness infrastructure, while still compiling and
-  // listing correctly so CI can report the pending gap.
+  // Guard: skip the test when the harness hasn't enabled the launcher's E2E
+  // management endpoint. This prevents the suite from failing on teams that
+  // haven't yet set TRADING_E2E_MGMT_ENABLED=1 + TRADING_E2E_MGMT_PORT, while
+  // still compiling and listing correctly so CI can report the pending gap.
   test.beforeAll(() => {
-    if (!process.env.E2E_PRICING_SERVICE_PID) {
+    if (!process.env.TRADING_E2E_MGMT_PORT) {
       console.warn(
-        "[spec 09] E2E_PRICING_SERVICE_PID not set — test will be skipped. " +
-          "See §Harness Gap in 09-feed-stale.spec.ts.",
+        "[spec 09] TRADING_E2E_MGMT_PORT not set — test will be skipped. " +
+          "See §Harness wiring in 09-feed-stale.spec.ts.",
       );
     }
   });
@@ -201,9 +166,9 @@ test.describe("feed-stale lifecycle", () => {
     async ({ page }) => {
       // Guard: skip when harness infrastructure is absent.
       test.skip(
-        !process.env.E2E_PRICING_SERVICE_PID,
-        "E2E_PRICING_SERVICE_PID not set — pricing-service separate-process harness not wired. " +
-          "See §Harness Gap in 09-feed-stale.spec.ts.",
+        !process.env.TRADING_E2E_MGMT_PORT,
+        "TRADING_E2E_MGMT_PORT not set — launcher E2E management endpoint not wired. " +
+          "See §Harness wiring in 09-feed-stale.spec.ts.",
       );
 
       // -----------------------------------------------------------------------
@@ -312,8 +277,8 @@ test.describe("feed-stale lifecycle", () => {
       // pushFeedState("STALE") on the main thread's feedState$ BehaviorSubject.
       // -----------------------------------------------------------------------
       const tKill = Date.now();
-      killPricingService();
-      console.log(`[spec 09] pricing-service killed at t=${String(tKill)}ms`);
+      await killPricingService();
+      console.log(`[spec 09] pricing-service paused at t=${String(tKill)}ms`);
 
       // -----------------------------------------------------------------------
       // Step 5: Assert feedState$ reaches "STALE" within 5 s.
@@ -380,8 +345,8 @@ test.describe("feed-stale lifecycle", () => {
       // FeedStateMsg to pushFeedState("LIVE").
       // -----------------------------------------------------------------------
       const tRestart = Date.now();
-      restartPricingService();
-      console.log(`[spec 09] pricing-service restarted at t=${String(tRestart)}ms`);
+      await restartPricingService();
+      console.log(`[spec 09] pricing-service resumed at t=${String(tRestart)}ms`);
 
       // -----------------------------------------------------------------------
       // Step 8: Assert feedState$ returns to "LIVE" within 2 s.

@@ -134,6 +134,10 @@ public final class TradingEngineLauncher {
     final var orchestratorRef = new AtomicReference<OrchestratorComponents>();
     final var pricingRef = new AtomicReference<PricingComponents>();
     final var websocketRef = new AtomicReference<WebSocketComponents>();
+    // E2E-only management HTTP endpoint reference — gated by TRADING_E2E_MGMT_ENABLED=1; null
+    // outside of e2e harness. Held in an AtomicReference so the shutdown hook (different thread)
+    // sees a safely published reference.
+    final var e2eMgmtRef = new AtomicReference<E2eManagementServer>();
 
     final var barrier = new ShutdownSignalBarrier();
 
@@ -142,6 +146,9 @@ public final class TradingEngineLauncher {
             new Thread(
                 () -> {
                   LOG.info("Shutdown hook triggered — cleaning up in reverse order");
+                  // E2E management endpoint first: stops accepting new pause/resume requests
+                  // before any of the components it controls are torn down.
+                  CloseHelper.quietClose(e2eMgmtRef.get());
                   // Shutdown order: websocket → gateway → orchestrator → pricing → cluster →
                   // media drivers. WebSocket first: needs to drain before cluster session closes.
                   CloseHelper.quietClose(websocketRef.get());
@@ -229,12 +236,39 @@ public final class TradingEngineLauncher {
       // ===== Step 9a: Launch pricing service =====
       // Must use the gateway media driver aeronDir so IPC streams are shared.
       stepStart = NANO_CLOCK.nanoTime();
+      final var pricingAeronDir = aeronDirs[gwIndex];
+      final var pricingConfig = new PricingServiceConfig("deterministic", "convex");
       pricingRef.set(
-          PricingServiceLauncher.launch(
-              aeronDirs[gwIndex],
-              new PricingServiceConfig("deterministic", "convex"),
-              new BackoffIdleStrategy()));
+          PricingServiceLauncher.launch(pricingAeronDir, pricingConfig, new BackoffIdleStrategy()));
       LOG.info("Step 9a complete: pricing service launched in {}ms", elapsedMs(stepStart));
+
+      // ===== Step 9a.1: Optional E2E management endpoint (dev/e2e ONLY) =====
+      // Lets the Playwright full-stack harness pause/resume the pricing AgentRunner so spec 09
+      // (feed-stale lifecycle) can drive STALE → LIVE transitions without killing the launcher
+      // JVM (which would also stop the websocket-server egress thread). Gated behind the env
+      // var TRADING_E2E_MGMT_ENABLED=1 — fromEnvironment(...) returns null in production so the
+      // endpoint is never even constructed.
+      final var mgmt =
+          E2eManagementServer.fromEnvironment(
+              () -> {
+                final var current = pricingRef.getAndSet(null);
+                if (current != null) {
+                  CloseHelper.quietClose(current);
+                }
+              },
+              () -> {
+                if (pricingRef.get() != null) {
+                  // Idempotent — pricing is already running; nothing to do.
+                  return;
+                }
+                pricingRef.set(
+                    PricingServiceLauncher.launch(
+                        pricingAeronDir, pricingConfig, new BackoffIdleStrategy()));
+              });
+      if (mgmt != null) {
+        mgmt.start();
+        e2eMgmtRef.set(mgmt);
+      }
 
       // ===== Step 9b: Launch orchestrator =====
       // Must use the same gateway media driver aeronDir for IPC with both pricing and gateway.
