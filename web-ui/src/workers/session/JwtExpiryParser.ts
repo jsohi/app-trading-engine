@@ -61,7 +61,18 @@ export function validateJwtTiming(
     // chars (`-` → `+`, `_` → `/`) and re-pad to a multiple of 4.
     const normalised = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalised + "===".slice((normalised.length + 3) % 4);
-    const json = atob(padded);
+    // Gemini iter-4 review (MEDIUM, JwtExpiryParser.ts:63): bare `atob` returns a Latin-1
+    // binary string, so `JSON.parse(atob(...))` mis-decodes any non-ASCII character in a
+    // custom claim (e.g. a UTF-8 `name`, a unicode `sub`). The standard remedy is to
+    // re-decode the base64 bytes via TextDecoder("utf-8"). Construction allocates one
+    // Uint8Array of length ≤ payload bytes + one TextDecoder — cold path (per-reauth, not
+    // per-tick); acceptable.
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const json = new TextDecoder("utf-8").decode(bytes);
     claims = JSON.parse(json) as JwtTimingClaims;
   } catch {
     return { ok: false, reason: "MALFORMED" };

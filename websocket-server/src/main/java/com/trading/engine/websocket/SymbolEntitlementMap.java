@@ -103,7 +103,12 @@ public final class SymbolEntitlementMap {
           "symbolEntitlements must not be empty — at least one symbol must be configured");
     }
     this.symbolToAccounts = new Long2ObjectHashMap<>(symbolEntitlements.size() * 2, 0.55f);
-    this.accountToSymbols = new LinkedHashMap<>();
+    // Allocation: startup only — constructor path; never mutated after construction. The
+    // working `LinkedHashMap` is the build buffer; the field is wrapped via `Map.copyOf` at
+    // the end of the constructor so the read-only-after-construction contract is enforced by
+    // the compiler (any mutator throws `UnsupportedOperationException`) — addresses
+    // /review R6 Agent A LOW annotation request + Agent B LOW immutability request.
+    final var building = new LinkedHashMap<String, LongHashSet>();
 
     for (final Map.Entry<String, List<String>> entry : symbolEntitlements.entrySet()) {
       final String symbol = Objects.requireNonNull(entry.getKey(), "symbol");
@@ -116,10 +121,11 @@ public final class SymbolEntitlementMap {
       final ObjectHashSet<String> accountSet = new ObjectHashSet<>(accounts.size() * 2);
       for (final String account : accounts) {
         accountSet.add(Objects.requireNonNull(account, "account"));
-        accountToSymbols.computeIfAbsent(account, k -> new LongHashSet(4)).add(packed);
+        building.computeIfAbsent(account, k -> new LongHashSet(4)).add(packed);
       }
       this.symbolToAccounts.put(packed, accountSet);
     }
+    this.accountToSymbols = Map.copyOf(building);
   }
 
   /**

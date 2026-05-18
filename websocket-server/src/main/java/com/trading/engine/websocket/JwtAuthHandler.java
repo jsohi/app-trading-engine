@@ -14,7 +14,9 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
@@ -116,6 +118,13 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
   private final ExpandableArrayBuffer responseBuf = new ExpandableArrayBuffer(128);
   private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
   private final WebSocketAuthDecoder authDecoder = new WebSocketAuthDecoder();
+  // /review R6 Agent B LOW (consistency with WebSocketFrameDispatcher R5 fix): pre-allocate
+  // the response-side encoders rather than `new`-ing them per cold-path sendErrorAndClose /
+  // sendAuthAck call. Per-channel instance, not shared — wrap re-establishes the cursor at
+  // offset 0 on every emit.
+  private final MessageHeaderEncoder responseHeaderEncoder = new MessageHeaderEncoder();
+  private final WebSocketErrorEncoder errorEncoder = new WebSocketErrorEncoder();
+  private final WebSocketAuthAckEncoder authAckEncoder = new WebSocketAuthAckEncoder();
 
   /**
    * Canonical Phase 3 per-channel auth handler. All collaborators required — there is no legacy
@@ -380,18 +389,24 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     // The "primary" account whose UI preferences ship in AuthAck is the first JWT-claim account
     // that is also entitled — preserves the issuer's intended ordering so a UI cohort change
     // (e.g. trader switches desks) is reflected by re-ordering claim accounts at the IdP, no
-    // server-side state needed. validatedAccounts is guaranteed non-empty (early-return above)
-    // and UserEntitlementService.validateAccounts only returns codes with a non-null
-    // AccountReadModel
-    // lookup, so the lookup below is fail-fast non-null.
-    String primaryAccountCode = null;
-    for (final var code : claims.accounts()) {
-      if (validatedAccounts.contains(code)) {
-        primaryAccountCode = code;
-        break;
-      }
+    // server-side state needed.
+    //
+    // Invariants: validatedAccounts is non-empty (early-return above), and
+    // UserEntitlementService.validateAccounts only retains codes drawn from claims.accounts()
+    // (with a non-null AccountReadModel lookup), so findPrimaryAccountCode always finds a code.
+    // The defensive null guards below are belt-and-braces for a future refactor that breaks
+    // either invariant (Gemini iter-4 HIGH, JwtAuthHandler:394) — they cost one branch on a
+    // cold path (per-connection auth) and turn a potential NPE into a clean rejectAuth.
+    final var primaryAccountCode = findPrimaryAccountCode(claims.accounts(), validatedAccounts);
+    if (primaryAccountCode == null) {
+      rejectAuth(ctx, remoteIp, "no primary account: claims/validated invariant broken");
+      return;
     }
     final var primaryAccount = accountLookup.apply(primaryAccountCode);
+    if (primaryAccount == null) {
+      rejectAuth(ctx, remoteIp, "no AccountReadModel for primary account " + primaryAccountCode);
+      return;
+    }
     final var sessionId = registeredSession.sessionId();
     sendAuthAck(
         ctx,
@@ -478,13 +493,11 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     }
 
     final var errorText = ErrorTextRegistry.textFor(errorCode);
-    final var enc = new WebSocketErrorEncoder();
-    final var header = new MessageHeaderEncoder();
-    enc.wrapAndApplyHeader(responseBuf, 0, header);
-    enc.errorCode(errorCode);
-    enc.putErrorText(errorText, 0, errorText.length);
+    errorEncoder.wrapAndApplyHeader(responseBuf, 0, responseHeaderEncoder);
+    errorEncoder.errorCode(errorCode);
+    errorEncoder.putErrorText(errorText, 0, errorText.length);
 
-    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + errorEncoder.encodedLength();
     final var nettyBuf = ctx.alloc().buffer(encodedLen);
     // Release on any exception path BEFORE the write happens; the
     // successful path transfers ownership to writeAndFlush(). Avoids
@@ -505,12 +518,10 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       final long sessionIdMsb,
       final long sessionIdLsb,
       final AccountReadModel primaryAccount) {
-    final var enc = new WebSocketAuthAckEncoder();
-    final var header = new MessageHeaderEncoder();
-    enc.wrapAndApplyHeader(responseBuf, 0, header);
-    enc.sessionId().mostSignificantBits(sessionIdMsb).leastSignificantBits(sessionIdLsb);
-    enc.protocolVersion(EXPECTED_PROTOCOL_VERSION);
-    enc.maxSubscriptions(config.maxSubscriptionsPerClient());
+    authAckEncoder.wrapAndApplyHeader(responseBuf, 0, responseHeaderEncoder);
+    authAckEncoder.sessionId().mostSignificantBits(sessionIdMsb).leastSignificantBits(sessionIdLsb);
+    authAckEncoder.protocolVersion(EXPECTED_PROTOCOL_VERSION);
+    authAckEncoder.maxSubscriptions(config.maxSubscriptionsPerClient());
     // APP-36 §A1: server-asserted heartbeat cadence published in AuthAck.
     // serverHeartbeatIntervalMs (id=4) — outbound WebSocketHeartbeat cadence.
     // clientHeartbeatIntervalMs (id=5) — negotiated cadence == clientTimeoutMs/2,
@@ -518,25 +529,26 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
     // per APP-36 §2.8. WebSocketServerConfig.validate() rejects values that would
     // narrow into a negative int (uint32 wire range); Math.toIntExact provides
     // a defensive fail-fast even if validation is bypassed.
-    enc.serverHeartbeatIntervalMs(Math.toIntExact(config.heartbeatIntervalMs()));
-    enc.clientHeartbeatIntervalMs(Math.toIntExact(config.negotiatedClientHeartbeatIntervalMs()));
+    authAckEncoder.serverHeartbeatIntervalMs(Math.toIntExact(config.heartbeatIntervalMs()));
+    authAckEncoder.clientHeartbeatIntervalMs(
+        Math.toIntExact(config.negotiatedClientHeartbeatIntervalMs()));
 
     // Phase 3 Commit B: per-account UI preferences. Empty groups when no slots configured —
     // the worker falls back to DEFAULT_SUBSCRIBE_SYMBOLS / the default OrderEntryForm slot.
     // YAML AccountRecord guarantees both lists are non-null (immutable List.copyOf at load),
     // so unconditional iteration is safe; SBE group encoder accepts count=0.
     final var prefs = primaryAccount.symbolPreferences();
-    final var prefsEnc = enc.symbolPreferencesCount(prefs.size());
+    final var prefsEnc = authAckEncoder.symbolPreferencesCount(prefs.size());
     for (final var symbol : prefs) {
       prefsEnc.next().symbol(symbol);
     }
     final var panels = primaryAccount.panelLayout();
-    final var panelEnc = enc.panelLayoutCount(panels.size());
+    final var panelEnc = authAckEncoder.panelLayoutCount(panels.size());
     for (final var slot : panels) {
       panelEnc.next().panelId(slot.panelId()).slot(slot.slot());
     }
 
-    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+    final int encodedLen = MessageHeaderEncoder.ENCODED_LENGTH + authAckEncoder.encodedLength();
     // The client's worker pipeline is FrameParser-first: every inbound binary
     // frame after upgrade goes through the 13-byte best-effort envelope. AuthAck
     // is no exception — the next handler installed downstream (WebSocketFrameDispatcher)
@@ -581,5 +593,26 @@ public final class JwtAuthHandler extends ChannelInboundHandlerAdapter {
       return inet.getAddress().getHostAddress();
     }
     return addr != null ? addr.toString() : "unknown";
+  }
+
+  /**
+   * Find the first account code from {@code claimsAccounts} that is also present in {@code
+   * validatedAccounts}. Extracted from {@code continueAuthOnEventLoop} so the loop body can be a
+   * clean {@code final var} expression (Gemini iter-4 HIGH + /review R6 Agent A finding #1). Cold
+   * path — called once per successful auth.
+   *
+   * @param claimsAccounts the ordered JWT {@code accounts} claim list
+   * @param validatedAccounts the entitlement-service-validated subset
+   * @return the first claims-order code in {@code validatedAccounts}, or {@code null} if no match
+   *     (invariant violation; caller is expected to {@code rejectAuth})
+   */
+  private static String findPrimaryAccountCode(
+      final List<String> claimsAccounts, final Set<String> validatedAccounts) {
+    for (final var code : claimsAccounts) {
+      if (validatedAccounts.contains(code)) {
+        return code;
+      }
+    }
+    return null;
   }
 }

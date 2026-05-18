@@ -233,8 +233,16 @@ export class MarketDataConflation {
       // documents the intent.
       return;
     }
-    this.latest.forEach(this.drainConsumer);
-    this.latest.clear();
+    // Gemini iter-4 review (MEDIUM, marketDataConflation.ts:237): if the sink callback (which
+    // eventually calls `postMessage`) throws, the map must still be cleared so the next drain
+    // does not re-emit the same frames. Wrap in try-finally — the throw still propagates to
+    // the setInterval callback (which logs + continues per the setTimeout error model), but
+    // the cleared map ensures correctness on the next tick.
+    try {
+      this.latest.forEach(this.drainConsumer);
+    } finally {
+      this.latest.clear();
+    }
   }
 
   /**
