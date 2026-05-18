@@ -216,27 +216,26 @@ public final class WebSocketDrainHandler {
             .buffer(
                 FrameParser.RELIABLE_HEADER_SIZE + length,
                 FrameParser.RELIABLE_HEADER_SIZE + length);
-    boolean captured = false;
-    boolean written = false;
+    // Agent B R3 F-3: catch+rethrow instead of mutable `boolean captured` + `boolean
+    // written` flags (CLAUDE.md §Local Variable Style — try-finally guard flags fall
+    // outside the carve-out). The single catch arm always evicts when `tracker != null`:
+    // the original two-branch logic (`captured && tracker != null` vs `tracker != null`)
+    // collapsed to the same body because `evict()` is idempotent on miss, so a single
+    // unconditional evict on the failure path preserves the same semantics. Netty
+    // takes ownership of `buf` on a successful `ch.write`; release only on exception.
     try {
       FrameParser.encodeReliable(buf, seqNo, bytes, 0, length);
       if (tracker != null) {
         tracker.capture(seqNo, templateId, bytes, 0, length);
-        captured = true;
       }
       ch.write(new BinaryWebSocketFrame(buf));
-      written = true;
-    } finally {
-      if (!written) {
-        // Evict the captured slot so replay doesn't deliver a frame the client never received.
-        if (captured && tracker != null) {
-          tracker.evict(seqNo);
-        } else if (tracker != null) {
-          // capture() may have thrown — defensively evict anyway. evict() is idempotent on miss.
-          tracker.evict(seqNo);
-        }
-        buf.release();
+    } catch (final Throwable t) {
+      if (tracker != null) {
+        // evict() is idempotent on miss — safe whether capture() ran or threw.
+        tracker.evict(seqNo);
       }
+      buf.release();
+      throw t;
     }
   }
 
