@@ -51,10 +51,10 @@ chronyc tracking
 
 ## Alert Thresholds
 
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| System clock offset | > 100 us | > 1 ms |
-| RMS offset | > 50 us | > 500 us |
+| Metric              | Warning  | Critical |
+| ------------------- | -------- | -------- |
+| System clock offset | > 100 us | > 1 ms   |
+| RMS offset          | > 50 us  | > 500 us |
 
 ## Why Application Code Cannot Solve This
 
@@ -62,3 +62,38 @@ chronyc tracking
 startup and re-samples hourly. If two boxes have OS clocks that diverge by 50 ms, their
 epoch-nano timestamps diverge by 50 ms — no amount of application logic can fix this
 without a synchronised time source at the OS/network level.
+
+## JWT expiry comparison
+
+`JwtExpirySweeper` (`websocket-server/.../JwtExpirySweeper.java`) compares the
+RFC 7519 `exp` claim against `EpochNanoClock`, **not** the monotonic
+`NanoClock`. This is deliberate: RFC 7519 §4.1.4 defines `exp` as a
+wall-clock NumericDate ("seconds since 1970-01-01T00:00:00Z UTC"), so the
+only correct comparator is a wall-clock source. A monotonic clock would
+drift relative to wall time across the lifetime of a session — most
+importantly across a JVM pause or a leap-second smear — and would either
+close sessions early (false-positive) or honour stale tokens past their
+real expiry (security regression). The hard-close at `exp` and the
+soft-warn at `exp − 60s` therefore both read from `EpochNanoClock` and
+inherit the PTP/chrony accuracy budget documented above. Monotonic
+`NanoClock` remains correct for elapsed-time concerns (rate limiters,
+heartbeat tracking, drain-cycle latency) — not for absolute wall-clock
+deadlines.
+
+## Cross-clock latency in browser
+
+Browser code measuring "publisher-to-render" latency must be careful: the
+DOM `performance.now()` API returns milliseconds since
+`performance.timeOrigin` (page load), **not** since the Unix epoch. Mixing
+a server-side epoch-nanosecond `serverNanos` with raw `performance.now()`
+yields a meaningless delta. The cross-clock fix lives in
+`web-ui/src/workers/marketDataConflation.ts` — `nowEpochMillis` defaults to
+`performance.timeOrigin + performance.now()`, which IS both monotonic
+**and** epoch-based (`performance.timeOrigin` is a constant epoch-ms value
+established at page load). See the field-level Javadoc on
+`nowEpochMillis` for the full rationale (added in Gemini review iter-2 of
+APP-244 Phase 3 Commit B). The same cross-clock concern applies to any
+browser-resident latency probe added later — always anchor wall-time
+comparisons to `performance.timeOrigin + performance.now()`, never to bare
+`performance.now()` or `Date.now()` (the latter is subject to system clock
+jumps).
