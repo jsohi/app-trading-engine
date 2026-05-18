@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading.engine/schema/prometheus-alerts.schema.json",
+  "title": "Prometheus alerting rules file",
+  "description": "Validates a Prometheus rules file (alerting + recording). Mirrors the schema described at https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/ and https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/. Only the documented top-level keys are accepted; additional keys would silently break promtool validation and are rejected here for parity.",
+  "type": "object",
+  "required": ["groups"],
+  "additionalProperties": false,
+  "properties": {
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/group" }
+    }
+  },
+  "$defs": {
+    "group": {
+      "type": "object",
+      "required": ["name", "rules"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_./-]*$"
+        },
+        "interval": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h|d)$" },
+        "limit": { "type": "integer", "minimum": 0 },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/rule" }
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alert": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "record": { "type": "string", "minLength": 1 },
+        "expr": { "type": "string", "minLength": 1 },
+        "for": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h|d)$" },
+        "keep_firing_for": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)$"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "oneOf": [
+        { "required": ["alert", "expr"] },
+        { "required": ["record", "expr"] }
+      ]
+    }
+  }
+}

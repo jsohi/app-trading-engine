@@ -1,0 +1,63 @@
+groups:
+  - name: trading-engine-websocket
+    interval: 30s
+    rules:
+      - alert: HighSlowConsumerDisconnects
+        expr: sum(rate(websocket_slow_consumer_disconnects_total[1m])) * 60 > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket-server
+        annotations:
+          summary: "WebSocket slow-consumer disconnect rate is high"
+          description: "More than 10 slow-consumer disconnects per minute sustained for 5m. Investigate downstream consumer health or network egress saturation."
+          runbook_url: "https://runbooks.trading.engine/websocket-slow-consumer"
+
+      - alert: JwksRefreshFailures5xx
+        expr: sum(increase(jwks_refresh_failure_total{reason="5xx"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+          component: websocket-server
+        annotations:
+          summary: "JWKS endpoint returning 5xx — auth failures imminent"
+          description: "JWKS refresh failed with 5xx for the past 10m. New sessions will be rejected once the cached keys expire. Check the IdP."
+          runbook_url: "https://runbooks.trading.engine/jwks-rotation"
+
+      - alert: LogAppenderFailures
+        expr: sum(increase(log_appender_failure_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: logging
+        annotations:
+          summary: "Log4j2 appender failures detected"
+          description: "Log4j2DiskFullErrorHandler reported >0 appender failures over the past 5m. Disk likely full or unwritable on host."
+          runbook_url: "https://runbooks.trading.engine/log4j2-disk-full"
+
+  - name: trading-engine-pricing
+    interval: 30s
+    rules:
+      - alert: FeedStateStaleProlonged
+        expr: max by (symbol) (websocket_marketdata_feed_state == 2) == 2
+        for: 2m
+        labels:
+          severity: critical
+          component: pricing-service
+        annotations:
+          summary: "Market-data feed state STALE > 2m for {{ $labels.symbol }}"
+          description: "Liveness tracker reports state=STALE (value 2) sustained for 2 minutes for symbol {{ $labels.symbol }}. Pricing publisher likely stalled."
+          runbook_url: "https://runbooks.trading.engine/feed-stale"
+
+      - alert: MarketDataRejectRateHigh
+        expr: |
+          sum(rate(pricing_marketdata_rejects_total[5m])) /
+          clamp_min(sum(rate(pricing_marketdata_ticks_published_total[5m])), 1) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          component: pricing-service
+        annotations:
+          summary: "Market-data reject rate > 1% over 5m"
+          description: "Ratio of pricing_marketdata_rejects_total to pricing_marketdata_ticks_published_total exceeded 1% for 5m. Check publisher entitlement and SBE encode validity."
+          runbook_url: "https://runbooks.trading.engine/marketdata-rejects"
