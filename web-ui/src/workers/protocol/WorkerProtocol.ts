@@ -152,10 +152,29 @@ export interface CloseMsg {
   readonly protocolVersion: typeof WORKER_PROTOCOL_VERSION;
 }
 
+/**
+ * Test-mode escape hatch: ask the worker to close its current {@code WebSocket}
+ * <em>without</em> detaching the {@code ws.onclose} / {@code ws.onerror}
+ * handlers, so the worker's normal auto-reconnect flow fires
+ * ({@code transitionConnection("RECONNECTING")} + scheduled re-INIT via
+ * {@code reconnect_due_after_ms} ERROR). Unlike {@link CloseMsg}, this does
+ * NOT call {@code shutdown()} — the worker stays alive and the WebSocket
+ * close triggers the reconnect breaker exactly as a real network drop would.
+ *
+ * <p>Gated to test mode in {@code WorkerClient.forceWsClose} +
+ * {@code main-thread/e2eHooks.ts}. The wire envelope is never sent in
+ * production because the registration is dead-code-eliminated when
+ * {@code VITE_E2E_REAL_BACKEND !== "true"}.
+ */
+export interface ForceWsCloseMsg {
+  readonly type: "FORCE_WS_CLOSE";
+  readonly protocolVersion: typeof WORKER_PROTOCOL_VERSION;
+}
+
 // Per Gemini review (MEDIUM): no RECONNECT_NOW envelope. Manual
 // "reconnect now" from main is implemented as a worker terminate +
 // fresh spawn (see workerClient.reconnectNow), not via a message.
-export type MainToWorker = InitMsg | PingMsg | CloseMsg;
+export type MainToWorker = InitMsg | PingMsg | CloseMsg | ForceWsCloseMsg;
 
 // ─── Worker → main ─────────────────────────────────────────────────
 
