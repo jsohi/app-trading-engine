@@ -261,6 +261,15 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
     case "CLOSE":
       shutdown();
       break;
+    case "FORCE_WS_CLOSE":
+      // Test-mode escape hatch: trigger a real WebSocket close so the
+      // worker's normal ws.onclose handler runs (push RECONNECTING,
+      // compute backoff, post `reconnect_due_after_ms`). Production
+      // build never sends this envelope because the WorkerClient
+      // method behind it is dead-code-eliminated when
+      // VITE_E2E_REAL_BACKEND !== "true".
+      ws?.close(1000, "force-ws-close");
+      break;
     default:
       // Reviewer A finding F-A5: surface unknown envelope types instead of
       // silently dropping. MainToWorker is sealed; an unknown type indicates
@@ -414,13 +423,9 @@ async function handleInit(
         ws = null;
         return;
       }
-      transitionConnection("DOWN");
+      // Compute the backoff first so we know whether an auto-reconnect is
+      // pending (non-FREEZE) before choosing the transient state.
       ws = null;
-      // Per Gemini review R6 (HIGH): compute backoff and surface a
-      // `RECONNECT_DUE` ERROR so the main-thread WorkerClient can
-      // re-mint a tokenPort and re-issue INIT. The worker cannot
-      // self-reconnect because the prior tokenPort closed after one
-      // read — only main can mint a fresh one.
       const dec = reconnect.nextDelayMs(state);
       if (dec.kind === "FREEZE") {
         // Per /review HIGH (Agent B): cold-start on FREEZE — the
@@ -432,13 +437,27 @@ async function handleInit(
         postError("AUTH", `circuit breaker tripped: ${dec.reason}`);
         return;
       }
+      // Surface the auto-recovery transient as RECONNECTING (NOT the legacy
+      // "DOWN" we used to push). DOWN is reserved for the
+      // circuit-breaker-tripped path above; the spec-architectural meaning
+      // documented in MessageShape.ts and the amber-state grouping in
+      // ConnectionIndicator.tsx both treat RECONNECTING as the canonical
+      // state during a backoff-then-reconnect cycle. Pushing it here lets
+      // the e2eHooks recorder (and ops dashboards) distinguish "we are
+      // healing" from terminal "user must act" states.
+      transitionConnection("RECONNECTING");
       // Notify main with an ERROR carrying the delay — main schedules
       // the actual respawn-with-fresh-token. We do not drive the timer
       // ourselves because the credential lifecycle lives main-side.
       postError("INIT", `reconnect_due_after_ms:${String(dec.delayMs)}`);
     };
     ws.onerror = (): void => {
-      transitionConnection("DOWN");
+      // Same semantic as onclose's non-FREEZE path: an onerror without a
+      // subsequent onclose is auto-recoverable; expose it as RECONNECTING
+      // (not DOWN) so the UI / recorders see the canonical transient.
+      // Some browsers fire `error` before `close`; transitionConnection's
+      // self-dedupe at line ~1317 will collapse the second push.
+      transitionConnection("RECONNECTING");
     };
   } catch (err) {
     postError("INIT", err instanceof Error ? err.message : String(err));
@@ -1336,9 +1355,9 @@ function postError(
 
 function shutdown(): void {
   // Detach WebSocket handlers BEFORE close() so the implicit `close` event
-  // does not reach `transitionConnection("DOWN")` and emit a spurious DOWN
-  // state after the user requested shutdown. Same for `error` — a forced
-  // close on some browsers (Firefox) emits an `error` event first.
+  // does not reach `transitionConnection("RECONNECTING")` and emit a spurious
+  // RECONNECTING state after the user requested shutdown. Same for `error` —
+  // a forced close on some browsers (Firefox) emits an `error` event first.
   if (ws !== null) {
     ws.onopen = null;
     ws.onmessage = null;

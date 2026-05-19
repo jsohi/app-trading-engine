@@ -163,8 +163,15 @@ export function startMessageSource(
           }
         });
         registerForceWsClose(() => {
-          // Tear down the singleton; next consumer call recreates it.
-          disposeWorkerClient();
+          // Close the active WebSocket via the worker so the normal
+          // onclose → RECONNECTING → backoff → respawn flow runs. The
+          // prior implementation (disposeWorkerClient) terminated the
+          // worker outright, which bypassed ws.onclose entirely — the
+          // 07-replay-reconnect spec's connectionState$ recorder would
+          // then observe only CONNECTED (the dispose path emitted no
+          // state transitions), violating the architectural invariant
+          // that any auto-recoverable close surface as RECONNECTING.
+          client.forceWsClose();
         });
         if (import.meta.hot) {
           import.meta.hot.dispose(() => {

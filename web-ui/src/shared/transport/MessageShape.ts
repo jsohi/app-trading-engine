@@ -127,12 +127,21 @@ export interface EventUpdate {
 /**
  * Connection-stream state surfaced by the worker via `ConnectionStateMsg`.
  *
- * - `CONNECTING` — pre-AuthAck handshake.
+ * - `CONNECTING` — pre-AuthAck handshake (initial or post-RECONNECTING attempt).
  * - `CONNECTED` — steady state (post-AuthAck, pre-disturbance).
- * - `RECONNECTING` — backoff between failed attempts.
+ * - `RECONNECTING` — closed; auto-reconnect in progress (worker is in the backoff
+ *   window before reissuing INIT to the main thread). This is the canonical
+ *   transient state during any auto-recoverable close — the worker pushes it
+ *   from {@code ws.onclose} / {@code ws.onerror} when {@code reconnect.nextDelayMs}
+ *   does NOT return FREEZE. Visual: amber (same group as {@code CONNECTING}).
  * - `BACKPRESSURE` — server signaled SlowConsumer or local bufferedAmount over threshold.
  * - `STALE` — visibility-hidden + missed heartbeat; informational, not closed.
- * - `DOWN` — closed; auto-reconnect in progress.
+ * - `DOWN` — RESERVED for future use (e.g., explicit user-initiated disconnect
+ *   that is not the circuit breaker). The worker currently never pushes
+ *   {@code DOWN}; any auto-recoverable close routes through {@code RECONNECTING}
+ *   and any non-recoverable close routes through the dedicated terminal states
+ *   ({@code DOWN_REQUIRES_USER_ACTION}, {@code SCHEMA_MISMATCH},
+ *   {@code PROTOCOL_VIOLATION}, {@code WORKER_DEAD}).
  * - `DOWN_REQUIRES_USER_ACTION` — circuit-breaker tripped; manual reset needed.
  * - `SCHEMA_MISMATCH` — schema-id / version mismatch; no auto-reconnect (loop guard).
  * - `WORKER_DEAD` — worker crashed too many times in window; replace tab.

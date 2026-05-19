@@ -168,6 +168,27 @@ export class WorkerClient implements WorkerClientStreams {
     });
   }
 
+  /**
+   * Test-mode escape hatch: ask the worker to close its current WebSocket so
+   * the normal auto-reconnect flow fires (RECONNECTING → backoff → respawn →
+   * CONNECTING → CONNECTED). Unlike {@link reconnectNow}, this does NOT
+   * terminate-and-respawn the worker thread — the close path goes through
+   * {@code ws.onclose} so the connection-state recorder used by the
+   * full-stack {@code 07-replay-reconnect} spec captures the canonical
+   * transient state transitions.
+   *
+   * <p>Wired only when {@code VITE_E2E_REAL_BACKEND === "true"}; the
+   * production build dead-code-eliminates the registration site in
+   * {@code main-thread/e2eHooks.ts}.
+   */
+  forceWsClose(): void {
+    if (this.dead || this.worker === null) return;
+    this.worker.postMessage({
+      type: "FORCE_WS_CLOSE",
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+    });
+  }
+
   /** HMR / app-shutdown disposal. */
   dispose(): void {
     if (this.reconnectTimer !== null) {
