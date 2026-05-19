@@ -207,6 +207,7 @@ REFDATA_DIR="$REPO_ROOT/integration-tests/e2e/data"
   -Daccounts.file="$REFDATA_DIR/accounts.yaml" \
   -Dcurrencies.file="$REFDATA_DIR/currencies.yaml" \
   -Drisk-limits.file="$REFDATA_DIR/risk-limits.yaml" \
+  -Dsymbols.file="$REFDATA_DIR/symbols.yaml" \
   -Dwebsocket.config.file="$CONFIG_DIR/websocket-server-e2e.yaml" \
   >"$LOG_DIR/launcher.log" 2>&1 &
 LAUNCHER_PID=$!
@@ -284,6 +285,7 @@ LAUNCHER_PID=""
   -Daccounts.file="$REFDATA_DIR/accounts.yaml" \
   -Dcurrencies.file="$REFDATA_DIR/currencies.yaml" \
   -Drisk-limits.file="$REFDATA_DIR/risk-limits.yaml" \
+  -Dsymbols.file="$REFDATA_DIR/symbols.yaml" \
   -Dwebsocket.config.file="$CONFIG_DIR/websocket-server-multi-issuer.yaml" \
   >>"$LOG_DIR/launcher.log" 2>&1 &
 LAUNCHER_PID=$!
