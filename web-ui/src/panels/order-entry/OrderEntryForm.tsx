@@ -216,7 +216,7 @@ export function OrderEntryForm({ accountCode }: OrderEntryFormProps): ReactEleme
  * export so an audit can grep this symbol to find every non-authenticated
  * account substitution.
  */
-export const DEFAULT_DEV_ACCOUNT_CODE = "ACME-001";
+export const DEFAULT_DEV_ACCOUNT_CODE = "ACME";
 
 /**
  * Panel-registry mount point for {@link OrderEntryForm}. The panel registry's
