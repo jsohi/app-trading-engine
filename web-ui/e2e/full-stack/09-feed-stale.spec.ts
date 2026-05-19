@@ -200,11 +200,28 @@ test.describe("feed-stale lifecycle", () => {
               resolve("HOOKS_UNAVAILABLE");
               return;
             }
-            // BehaviorSubject: first emission is the current value (synchronous).
-            const sub = hooks.feedState$.subscribe({
+            // BehaviorSubject seeds synchronously on subscribe. The naive
+            // `const sub = subscribe({ next: s => { sub.unsubscribe(); resolve(s); } })`
+            // pattern hits a closure-timing race: at the moment `next` fires inside
+            // `subscribe(...)`, the outer `sub` binding has not yet been assigned, so
+            // `sub.unsubscribe()` throws TypeError on `undefined`, the error is swallowed
+            // by RxJS, and the Promise never resolves (60s page.evaluate timeout). Pattern
+            // below resolves first, then defers the unsubscribe to a microtask so the
+            // synchronous-emit case is safe; the late-emit case still unsubscribes the
+            // moment the value arrives.
+            let resolved = false;
+             
+            let sub: { unsubscribe: () => void } | null = null;
+            sub = hooks.feedState$.subscribe({
               next: (s) => {
-                sub.unsubscribe();
+                if (resolved) return;
+                resolved = true;
                 resolve(s);
+                // Defer to microtask so `sub` is guaranteed assigned for both the
+                // synchronous-seed (BehaviorSubject) and late-emit (Subject) cases.
+                queueMicrotask(() => {
+                  sub?.unsubscribe();
+                });
               },
             });
           }),
@@ -408,7 +425,10 @@ test.describe("feed-stale lifecycle", () => {
       // counter without state-labelled cardinality; only the cumulative total is
       // exposed. The value is a float (Prometheus convention) so we match a
       // permissive numeric pattern.
-      const counterMatch = /^websocket_marketdata_feed_state_transitions_total(?:\{[^}]*\})?\s+([0-9.eE+-]+)/m.exec(metricsBody);
+      const counterMatch =
+        /^websocket_marketdata_feed_state_transitions_total(?:\{[^}]*\})?\s+([0-9.eE+-]+)/m.exec(
+          metricsBody,
+        );
       expect(
         counterMatch,
         `per-spec metric: scrape body must contain ` +
