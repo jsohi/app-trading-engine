@@ -19,7 +19,11 @@
  */
 
 import { tracer } from "@/shared/telemetry/otel";
-import { type ConnectionState, type WorkerMessage } from "@/shared/transport/MessageShape";
+import {
+  TERMINAL_CONNECTION_STATES,
+  type ConnectionState,
+  type WorkerMessage,
+} from "@/shared/transport/MessageShape";
 
 // `encodeBestEffort` was used by the prior in-session reauth experiment; the
 // final design sends raw SBE for every client→server frame (the dispatcher
@@ -459,22 +463,36 @@ async function handleInit(
         ws = null;
         return;
       }
-      // Compute the backoff first so we know whether an auto-reconnect is
-      // pending (non-FREEZE) before choosing the transient state. Defer
-      // `ws = null` until AFTER each branch's transitionConnection / postError
-      // so the teardown point is colocated with the user-visible state
-      // change — if `nextDelayMs` were ever made fallible, we would not
-      // leave the worker with a null `ws` and no matching transition.
+      // Per CodeRabbit (MAJOR): if an earlier path in this same close
+      // already entered a terminal state (e.g. ws.onerror raced ahead with
+      // PROTOCOL_VIOLATION/SCHEMA_MISMATCH, or a Firefox-style
+      // error-after-close fired into the terminal stickiness guard), do
+      // NOT compute a reconnect hint — main thread's scheduleReconnect()
+      // would otherwise respawn a worker that the breaker has already
+      // declared dead. Honour the terminal verdict by short-circuiting
+      // before nextDelayMs is consulted.
+      if (TERMINAL_CONNECTION_STATES.has(connectionState)) {
+        ws = null;
+        return;
+      }
+      // Compute the backoff. Defer `ws = null` until AFTER each branch's
+      // transitionConnection / postError so the teardown point is
+      // colocated with the user-visible state change.
       const dec = reconnect.nextDelayMs(state);
       if (dec.kind === "FREEZE") {
         // Per /review HIGH (Agent B): cold-start on FREEZE — the
         // circuit breaker fires only on terminal auth/rate-limit
         // failure (codes 1/2/3-2nd/8 or 30-in-10min). Resume on a
         // frozen session would just trigger another breaker cycle.
+        // Per Gemini review (MEDIUM): call shutdown() rather than just
+        // nulling ws — FREEZE is terminal until manual intervention, so
+        // we must halt timers (watchdog ping, stats reporter, slot
+        // scanner) and detach handlers so the worker doesn't keep
+        // background activity alive while the user is meant to reload.
         state.coldStart();
         transitionConnection("DOWN_REQUIRES_USER_ACTION");
         postError("AUTH", `circuit breaker tripped: ${dec.reason}`);
-        ws = null;
+        shutdown();
         return;
       }
       // Surface the auto-recovery transient as RECONNECTING (NOT the legacy
@@ -486,6 +504,13 @@ async function handleInit(
       // the e2eHooks recorder (and ops dashboards) distinguish "we are
       // healing" from terminal "user must act" states.
       transitionConnection("RECONNECTING");
+      // Per CodeRabbit (MAJOR): flushBatch() forces the RECONNECTING
+      // emission onto the main-thread message channel BEFORE we post the
+      // reconnect_due_after_ms ERROR. Without this, on a `delayMs === 0`
+      // path main may terminate the worker before the batched
+      // connection-state envelope drains, and the recorder / UI never
+      // observe the canonical RECONNECTING transient.
+      flushBatch();
       // Notify main with an ERROR carrying the delay — main schedules
       // the actual respawn-with-fresh-token. We do not drive the timer
       // ourselves because the credential lifecycle lives main-side.

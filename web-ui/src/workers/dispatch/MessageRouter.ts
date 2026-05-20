@@ -2,14 +2,22 @@
  * MessageRouter — dispatch table for inbound SBE templates.
  *
  * Reads `MessageHeaderDecoder.templateId()` from the frame's payload
- * and dispatches to the correct handler. The ws-control templates
- * (60–72) are handled inline; event templates (100–116) and snapshot
- * entity templates (200–209) are dispatched to caller-supplied
- * handlers.
+ * and dispatches to the correct handler. Most ws-control templates
+ * (60–69, 71–72) are handled inline; event templates (100–116),
+ * snapshot entity templates (200–209), AND CommandAck (template 70)
+ * are dispatched to the caller-supplied {@code onEvent} handler — the
+ * worker's onEvent dispatcher then decodes CommandAck on its
+ * {@code templateId === COMMAND_ACK_TEMPLATE_ID} branch and posts a
+ * {@code CommandAckPortMessage} on the command port.
  *
- * Templates 62 (Subscribe), 63 (Unsubscribe), 70 (CommandAck) are
- * server-bug guards: typed unimplemented handlers that surface a
- * warning if the server emits one.
+ * Server-bug-guard surface: templates 62 (Subscribe) and 63
+ * (Unsubscribe) are STRICTLY client-to-server only per APP-36 §2.4;
+ * a server-pushed frame carrying these IDs flows to
+ * {@code onUnexpectedServerTemplate} so the violation surfaces loudly
+ * via counter + structured log. CommandAck (70) was previously also
+ * in this guard set but was demoted to the default `onEvent` branch
+ * to keep a single onEvent dispatch site for the worker — see the
+ * rationale in the default arm of {@link MessageRouter.route}.
  *
  * Threading: worker scope only.
  *
