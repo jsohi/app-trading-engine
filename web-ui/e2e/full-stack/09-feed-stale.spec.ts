@@ -210,7 +210,6 @@ test.describe("feed-stale lifecycle", () => {
             // synchronous-emit case is safe; the late-emit case still unsubscribes the
             // moment the value arrives.
             let resolved = false;
-             
             let sub: { unsubscribe: () => void } | null = null;
             sub = hooks.feedState$.subscribe({
               next: (s) => {

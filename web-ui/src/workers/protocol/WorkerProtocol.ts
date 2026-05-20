@@ -161,10 +161,15 @@ export interface CloseMsg {
  * NOT call {@code shutdown()} — the worker stays alive and the WebSocket
  * close triggers the reconnect breaker exactly as a real network drop would.
  *
- * <p>Gated to test mode in {@code WorkerClient.forceWsClose} +
- * {@code main-thread/e2eHooks.ts}. The wire envelope is never sent in
- * production because the registration is dead-code-eliminated when
- * {@code VITE_E2E_REAL_BACKEND !== "true"}.
+ * <p><b>Production reachability.</b> The envelope and the
+ * {@code WorkerClient.forceWsClose} method that posts it BOTH ship in the
+ * production bundle (class methods are not reliably tree-shaken). What is
+ * actually DCE'd in prod is the <em>registration</em> in
+ * {@code main-thread/messageSource.ts}, which sits behind the build-time
+ * {@code VITE_E2E_REAL_BACKEND === "true"} branch — so no production caller
+ * exists to invoke {@code forceWsClose}, and the worker's
+ * {@code FORCE_WS_CLOSE} case is unreachable in prod even though its bytes
+ * are present.
  */
 export interface ForceWsCloseMsg {
   readonly type: "FORCE_WS_CLOSE";
@@ -223,5 +228,7 @@ export function isMainToWorker(x: unknown): x is MainToWorker {
   const o = x as { type?: unknown; protocolVersion?: unknown };
   if (o.protocolVersion !== WORKER_PROTOCOL_VERSION) return false;
   if (typeof o.type !== "string") return false;
-  return o.type === "INIT" || o.type === "PING" || o.type === "CLOSE";
+  return (
+    o.type === "INIT" || o.type === "PING" || o.type === "CLOSE" || o.type === "FORCE_WS_CLOSE"
+  );
 }

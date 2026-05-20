@@ -128,8 +128,8 @@ export interface NewOrderSinglePayload {
    * authenticated session context (the JWT {@code accounts} claim resolved at
    * AuthAck time); the OrderEntryForm threads it through from its
    * {@code accountCode} prop. Hardcoding it here would silently route every
-   * order through the dev fixture's "ACME-001" regardless of who is signed
-   * in — the original Gemini HIGH finding on this path.
+   * order through the dev fixture's `ACME` account regardless of who is
+   * signed in — the original Gemini HIGH finding on this path.
    */
   readonly accountCode: string;
 }
@@ -299,7 +299,23 @@ export class CommandClient {
       this.handleAck(ack);
     });
     this.stateSub = this.worker.connectionState$.subscribe((s) => {
-      if (s === "DOWN" || s === "WORKER_DEAD") this.failAllInFlight(new ConnectionLostError());
+      // Eagerly fail every in-flight slot on transitions the breaker treats as
+      // terminal (worker won't reconnect). RECONNECTING is intentionally NOT in
+      // this set — the auto-recovery flow uses a separate slot timeout, and a
+      // fast reconnect can still resolve in-flight Promises with the matching
+      // CommandAck. DOWN is retained for symmetry with `messageSource.ts`'s
+      // local fallback push paths (lines 151/187/217), which can still emit
+      // DOWN when the WorkerClient stream errors out before any worker-side
+      // transition is observed.
+      if (
+        s === "DOWN" ||
+        s === "WORKER_DEAD" ||
+        s === "DOWN_REQUIRES_USER_ACTION" ||
+        s === "PROTOCOL_VIOLATION" ||
+        s === "SCHEMA_MISMATCH"
+      ) {
+        this.failAllInFlight(new ConnectionLostError());
+      }
     });
 
     // Single pre-allocated scanner — never per-request setTimeout. Walks all slots in

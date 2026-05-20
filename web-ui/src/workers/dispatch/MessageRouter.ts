@@ -83,8 +83,7 @@ const TEMPLATE_CLIENT_HEARTBEAT = ClientHeartbeatDecoder.TEMPLATE_ID;
 const TEMPLATE_SNAPSHOT = WebSocketSnapshotDecoder.TEMPLATE_ID;
 const TEMPLATE_ERROR = WebSocketErrorDecoder.TEMPLATE_ID;
 const TEMPLATE_REPLAY_COMPLETE = ReplayCompleteDecoder.TEMPLATE_ID;
-/** Hard-coded per APP-36 §2.4; server-bug-guard surface. */
-const TEMPLATE_COMMAND_ACK = 70;
+/** Hard-coded per APP-36 §2.4; server-bug-guard surface for C->S-only templates. */
 const TEMPLATE_SUBSCRIBE = 62;
 const TEMPLATE_UNSUBSCRIBE = 63;
 
@@ -152,19 +151,6 @@ export class MessageRouter {
       case TEMPLATE_REPLAY_COMPLETE:
         this.handlers.onReplayComplete();
         break;
-      case TEMPLATE_COMMAND_ACK:
-        // CommandAck (template 70) IS a server→client message — it's the
-        // dispatcher's synchronous response to every browser command. The
-        // prior version of this router classified it as "unexpected" alongside
-        // the C→S-only Subscribe / Unsubscribe templates, which dropped every
-        // CommandAck on the floor and broke the entire correlation pipeline
-        // in commandClient.ts (its Promise slots timed out unconditionally at
-        // the 5 s SLOT_TIMEOUT_MS, surfacing as
-        // "commandClient: timeout waiting for CommandAck for seq=N" in the
-        // OrderEntryForm). Route to onEvent so the worker's CommandAck
-        // decoder at worker.ts:912 can decode + post on the commandPort.
-        this.handlers.onEvent(templateId, payload);
-        break;
       case TEMPLATE_SUBSCRIBE:
       case TEMPLATE_UNSUBSCRIBE:
         // Subscribe (62) / Unsubscribe (63) ARE client-to-server only — a
@@ -172,10 +158,16 @@ export class MessageRouter {
         this.handlers.onUnexpectedServerTemplate(templateId);
         break;
       default:
-        // Event templates (100–116), snapshot-entity templates (200–209),
-        // and unknown templateIds all flow to the same caller-supplied
-        // `onEvent` handler — caller decides per-template routing. Per
-        // Gemini review (MEDIUM): keep a single branch.
+        // CommandAck (TEMPLATE_COMMAND_ACK = 70), event templates (100–116),
+        // snapshot-entity templates (200–209), and any unknown templateIds
+        // all flow to the same caller-supplied `onEvent` handler — caller
+        // decides per-template routing. CommandAck is the dispatcher's
+        // synchronous response to every browser command; the worker's
+        // {@link worker.ts}:912 CommandAck branch decodes it and posts to
+        // the commandPort. Per Gemini review (MEDIUM): keep a single
+        // branch — folding TEMPLATE_COMMAND_ACK in here (rather than
+        // a redundant named case that also called onEvent) preserves
+        // the invariant that there is exactly one onEvent dispatch site.
         this.handlers.onEvent(templateId, payload);
         break;
     }

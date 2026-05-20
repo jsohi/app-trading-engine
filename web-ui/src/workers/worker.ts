@@ -456,7 +456,8 @@ async function handleInit(
       // subsequent onclose is auto-recoverable; expose it as RECONNECTING
       // (not DOWN) so the UI / recorders see the canonical transient.
       // Some browsers fire `error` before `close`; transitionConnection's
-      // self-dedupe at line ~1317 will collapse the second push.
+      // own self-dedupe (same-state push is a no-op) collapses the second
+      // event into a single RECONNECTING transition.
       transitionConnection("RECONNECTING");
     };
   } catch (err) {

@@ -177,9 +177,12 @@ export class WorkerClient implements WorkerClientStreams {
    * full-stack {@code 07-replay-reconnect} spec captures the canonical
    * transient state transitions.
    *
-   * <p>Wired only when {@code VITE_E2E_REAL_BACKEND === "true"}; the
-   * production build dead-code-eliminates the registration site in
-   * {@code main-thread/e2eHooks.ts}.
+   * <p><b>Production reachability.</b> This method ships in the production
+   * bundle (class methods are not reliably tree-shaken). What is DCE'd is
+   * the <em>registration</em> in {@code main-thread/messageSource.ts} —
+   * which sits behind the build-time {@code VITE_E2E_REAL_BACKEND === "true"}
+   * branch. So no production caller exists; the method body is unreachable
+   * in prod even though its bytes are present in the JS bundle.
    */
   forceWsClose(): void {
     if (this.dead || this.worker === null) return;

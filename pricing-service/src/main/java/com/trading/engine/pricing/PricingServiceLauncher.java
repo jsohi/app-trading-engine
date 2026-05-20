@@ -535,20 +535,20 @@ public final class PricingServiceLauncher {
 
   /**
    * Pads a symbol string to the 8-byte SBE Symbol type with NUL-padding (0x00). Symbols shorter
-   * than 8 characters are right-padded with NUL bytes — the canonical convention across every
-   * other Symbol-bearing site in the engine ({@link
+   * than 8 characters are right-padded with NUL bytes — the canonical convention across every other
+   * Symbol-bearing site in the engine ({@link
    * com.trading.engine.projections.SymbolPacker#pack(String)}, the cluster's {@code OrderState},
    * the WebSocket client's subscribe encoder, the YAML-driven {@code SymbolEntitlementMap}).
    *
    * <p><b>Why this matters.</b> The 8 bytes are packed little-endian into a {@code long} that is
    * used as a hash-map key in {@link com.trading.engine.pricing.market.MarketDataPublisher}'s
-   * conflation slots AND in {@link
-   * com.trading.engine.websocket.SubscriptionFilter#matches(int, byte[], int, int)}'s
-   * binary-search lookup. A SPACE-padded {@code "EURUSD  "} packs to a different {@code long}
-   * than a NUL-padded {@code "EURUSD\0\0"}, which silently breaks subscription matching at the
-   * wire: every market-data tick is rejected because the client subscribed under a NUL-padded
-   * key but the publisher emitted under a SPACE-padded key. Prior to this fix, the full-stack
-   * Playwright suite specs 02 / 04 / 05 / 07 / 09 failed for exactly this reason.
+   * conflation slots AND in {@link com.trading.engine.websocket.SubscriptionFilter#matches(int,
+   * byte[], int, int)}'s binary-search lookup. A SPACE-padded {@code "EURUSD "} packs to a
+   * different {@code long} than a NUL-padded {@code "EURUSD\0\0"}, which silently breaks
+   * subscription matching at the wire: every market-data tick is rejected because the client
+   * subscribed under a NUL-padded key but the publisher emitted under a SPACE-padded key. Prior to
+   * this fix, the full-stack Playwright suite specs 02 / 04 / 05 / 07 / 09 failed for exactly this
+   * reason.
    *
    * @param symbol the symbol name (e.g., "EURUSD"); must be {@code <= 8} characters
    * @return 8-byte NUL-padded array suitable for SBE Symbol fields
@@ -557,8 +557,8 @@ public final class PricingServiceLauncher {
     // Allocation defaults to NUL (0x00); no explicit Arrays.fill needed. Allocation-light by
     // design — every other Symbol-field site in the engine relies on the same default-zero
     // semantic.
-    final byte[] padded = new byte[8];
-    final byte[] src = symbol.getBytes(StandardCharsets.US_ASCII);
+    final var padded = new byte[8];
+    final var src = symbol.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, padded, 0, Math.min(src.length, 8));
     return padded;
   }
