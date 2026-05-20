@@ -226,11 +226,33 @@ export type WorkerToMain = PongMsg | MessageBatchMsg | WorkerErrorMsg;
  * — and the matching {@code case "FORCE_WS_CLOSE":} arm in the worker's
  * switch — are dead-code-eliminated from production bundles. Mirrors the
  * existing pattern in {@code main-thread/messageSource.ts} +
- * {@code main-thread/e2eHooks.ts} so the bundle-guard regression test
- * can grep for a single `FORCE_WS_CLOSE` symbol and assert it is absent
- * from prod and present in E2E.
+ * {@code main-thread/e2eHooks.ts}.
  */
 const E2E_BUILD: boolean = import.meta.env.VITE_E2E_REAL_BACKEND === "true";
+
+/**
+ * Always-allowed {@link MainToWorker} envelope type tags. The
+ * {@code satisfies ReadonlyArray<MainToWorker["type"]>} clause pins
+ * membership at compile time: adding a new envelope to
+ * {@link MainToWorker} without updating this constant (or the
+ * conditional E2E allowlist below) trips a TypeScript error. The
+ * {@code as const} narrowing keeps the literals available for
+ * {@code Array.includes} narrowing at the call site.
+ */
+const PROD_MAIN_TO_WORKER_TYPES = ["INIT", "PING", "CLOSE"] as const satisfies ReadonlyArray<
+  MainToWorker["type"]
+>;
+
+/**
+ * Test-mode-only envelope types — accepted by {@link isMainToWorker}
+ * only when {@link E2E_BUILD} is true. Vite inlines the build flag, so
+ * in prod the entire `.includes(o.type)` walk is removed by DCE
+ * (verified empirically: 0 occurrences of `"FORCE_WS_CLOSE"` in the
+ * prod main bundle).
+ */
+const E2E_MAIN_TO_WORKER_TYPES = ["FORCE_WS_CLOSE"] as const satisfies ReadonlyArray<
+  MainToWorker["type"]
+>;
 
 /**
  * Type guard for a valid main → worker envelope. Validates the
@@ -246,7 +268,9 @@ export function isMainToWorker(x: unknown): x is MainToWorker {
   const o = x as { type?: unknown; protocolVersion?: unknown };
   if (o.protocolVersion !== WORKER_PROTOCOL_VERSION) return false;
   if (typeof o.type !== "string") return false;
-  if (o.type === "INIT" || o.type === "PING" || o.type === "CLOSE") return true;
-  if (E2E_BUILD && o.type === "FORCE_WS_CLOSE") return true;
+  if ((PROD_MAIN_TO_WORKER_TYPES as ReadonlyArray<string>).includes(o.type)) return true;
+  if (E2E_BUILD && (E2E_MAIN_TO_WORKER_TYPES as ReadonlyArray<string>).includes(o.type)) {
+    return true;
+  }
   return false;
 }

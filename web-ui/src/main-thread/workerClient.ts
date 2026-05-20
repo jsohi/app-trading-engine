@@ -177,14 +177,24 @@ export class WorkerClient implements WorkerClientStreams {
    * full-stack {@code 07-replay-reconnect} spec captures the canonical
    * transient state transitions.
    *
-   * <p><b>Production reachability.</b> This method ships in the production
-   * bundle (class methods are not reliably tree-shaken). What is DCE'd is
-   * the <em>registration</em> in {@code main-thread/messageSource.ts} —
-   * which sits behind the build-time {@code VITE_E2E_REAL_BACKEND === "true"}
-   * branch. So no production caller exists; the method body is unreachable
-   * in prod even though its bytes are present in the JS bundle.
+   * <p><b>Production reachability — three layers of defense-in-depth.</b>
+   * <ol>
+   *   <li>The <em>registration</em> in {@code main-thread/messageSource.ts}
+   *       sits behind {@code VITE_E2E_REAL_BACKEND === "true"} — no
+   *       production caller can reach this method.</li>
+   *   <li>The method body itself is gated on the same build flag, so
+   *       Vite DCE strips the {@code postMessage} call from the prod
+   *       bundle even if a future call site were added. Class methods
+   *       are not reliably tree-shaken, but the body of a method that
+   *       only contains {@code if (false) {...}} is.</li>
+   *   <li>The worker-side {@link isMainToWorker} type guard rejects
+   *       {@code "FORCE_WS_CLOSE"} envelopes when the flag is false —
+   *       so even a forged {@code postMessage} from a misbehaving
+   *       extension cannot trigger a WebSocket close in prod.</li>
+   * </ol>
    */
   forceWsClose(): void {
+    if (import.meta.env.VITE_E2E_REAL_BACKEND !== "true") return;
     if (this.dead || this.worker === null) return;
     this.worker.postMessage({
       type: "FORCE_WS_CLOSE",

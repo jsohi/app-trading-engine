@@ -183,7 +183,7 @@ export type ConnectionState =
  * coupling is documented here and pinned by
  * {@code commandClient.terminal-states.test.ts}.
  */
-export const TERMINAL_CONNECTION_STATES = new Set<ConnectionState>([
+export const TERMINAL_CONNECTION_STATES: ReadonlySet<ConnectionState> = new Set<ConnectionState>([
   "DOWN",
   "DOWN_REQUIRES_USER_ACTION",
   "SCHEMA_MISMATCH",
