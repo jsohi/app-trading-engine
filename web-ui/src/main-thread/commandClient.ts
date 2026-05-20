@@ -35,6 +35,7 @@
 
 import type { CommandAckEnvelope, WorkerClient } from "@/main-thread/workerClient";
 import { NewOrderSingleEncoder } from "@/sbe/encoders/NewOrderSingleEncoder";
+import { TERMINAL_CONNECTION_STATES } from "@/shared/transport/MessageShape";
 import {
   OrdTypeEnum,
   ProductTypeEnum,
@@ -303,17 +304,12 @@ export class CommandClient {
       // terminal (worker won't reconnect). RECONNECTING is intentionally NOT in
       // this set — the auto-recovery flow uses a separate slot timeout, and a
       // fast reconnect can still resolve in-flight Promises with the matching
-      // CommandAck. DOWN is retained for symmetry with `messageSource.ts`'s
-      // local fallback push paths (lines 151/187/217), which can still emit
-      // DOWN when the WorkerClient stream errors out before any worker-side
-      // transition is observed.
-      if (
-        s === "DOWN" ||
-        s === "WORKER_DEAD" ||
-        s === "DOWN_REQUIRES_USER_ACTION" ||
-        s === "PROTOCOL_VIOLATION" ||
-        s === "SCHEMA_MISMATCH"
-      ) {
+      // CommandAck. The terminal set is sourced from
+      // {@link TERMINAL_CONNECTION_STATES} in `MessageShape.ts` so adding a new
+      // terminal state to {@link ConnectionState} automatically propagates here —
+      // open-coding the literal union previously meant a new terminal silently
+      // hung in-flight submits for the full 5 s slot timeout.
+      if (TERMINAL_CONNECTION_STATES.has(s)) {
         this.failAllInFlight(new ConnectionLostError());
       }
     });

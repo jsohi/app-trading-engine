@@ -136,12 +136,16 @@ export interface EventUpdate {
  *   does NOT return FREEZE. Visual: amber (same group as {@code CONNECTING}).
  * - `BACKPRESSURE` — server signaled SlowConsumer or local bufferedAmount over threshold.
  * - `STALE` — visibility-hidden + missed heartbeat; informational, not closed.
- * - `DOWN` — RESERVED for future use (e.g., explicit user-initiated disconnect
- *   that is not the circuit breaker). The worker currently never pushes
- *   {@code DOWN}; any auto-recoverable close routes through {@code RECONNECTING}
- *   and any non-recoverable close routes through the dedicated terminal states
- *   ({@code DOWN_REQUIRES_USER_ACTION}, {@code SCHEMA_MISMATCH},
- *   {@code PROTOCOL_VIOLATION}, {@code WORKER_DEAD}).
+ * - `DOWN` — fallback terminal pushed ONLY from the main-thread
+ *   {@code messageSource.ts} error-handler when the worker stream errors out
+ *   before any worker-side transition can reach the main thread (e.g.,
+ *   structured-clone failure on the inbound message channel). The worker
+ *   itself never pushes {@code DOWN}: auto-recoverable closes route through
+ *   {@code RECONNECTING}, and non-recoverable closes route through the
+ *   dedicated terminal states ({@code DOWN_REQUIRES_USER_ACTION},
+ *   {@code SCHEMA_MISMATCH}, {@code PROTOCOL_VIOLATION},
+ *   {@code WORKER_DEAD}). Reserved as a slot for a future explicit
+ *   user-initiated disconnect that is not the circuit breaker.
  * - `DOWN_REQUIRES_USER_ACTION` — circuit-breaker tripped; manual reset needed.
  * - `SCHEMA_MISMATCH` — schema-id / version mismatch; no auto-reconnect (loop guard).
  * - `WORKER_DEAD` — worker crashed too many times in window; replace tab.
@@ -158,6 +162,34 @@ export type ConnectionState =
   | "SCHEMA_MISMATCH"
   | "WORKER_DEAD"
   | "PROTOCOL_VIOLATION";
+
+/**
+ * Connection states whose semantics are "no further work will arrive
+ * on this stream until the user / page reloads". When the worker (or
+ * the main-thread fallback in {@code messageSource.ts}) enters one of
+ * these states, in-flight command Promises in {@code commandClient}
+ * must be failed immediately rather than waiting for the 5 s slot
+ * timeout (which would surface as a misleading "timeout waiting for
+ * CommandAck" error to the user).
+ *
+ * <p>This set is the SINGLE SOURCE OF TRUTH; consumers (notably
+ * {@code commandClient.ts}) must derive the "is terminal?" predicate
+ * from this constant rather than open-coding a literal-string union.
+ * Adding a new terminal state to {@link ConnectionState} requires
+ * adding it here too — the {@code satisfies} clause enforces a
+ * compile-time check that every member of this set is a valid
+ * {@link ConnectionState}, but TypeScript cannot statically enforce
+ * the inverse (membership-completeness of the terminal subset); that
+ * coupling is documented here and pinned by
+ * {@code commandClient.terminal-states.test.ts}.
+ */
+export const TERMINAL_CONNECTION_STATES = new Set<ConnectionState>([
+  "DOWN",
+  "DOWN_REQUIRES_USER_ACTION",
+  "SCHEMA_MISMATCH",
+  "WORKER_DEAD",
+  "PROTOCOL_VIOLATION",
+] satisfies ReadonlyArray<ConnectionState>);
 
 export interface ConnectionStateMsg {
   readonly type: "connection-state";

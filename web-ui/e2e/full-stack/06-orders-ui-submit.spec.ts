@@ -49,6 +49,10 @@ test("UI submit — OrderEntryForm round-trips through cluster, row appears with
 test("UI submit — Throttle: server-side rate-limit fires when client buffer doesn't engage", async ({
   page,
 }) => {
+  // `test.skip(true, ...)` aborts before the awaited noop returns, but
+  // the linter still requires at least one await in an `async` arrow.
+  // The real body will be reinstated on top of the APP-225 escape hatch.
+  await Promise.resolve();
   // Structurally not driveable through OrderEntryForm:
   //
   // The form's useOrderSubmission state machine serializes — after click,
@@ -71,34 +75,18 @@ test("UI submit — Throttle: server-side rate-limit fires when client buffer do
   // Until the escape hatch lands, this subtest is skipped to keep the
   // full-stack suite honest: a passing run reflects only what is actually
   // being verified.
+  // Body intentionally empty — `test.skip(true, ...)` aborts before any
+  // assertion would run. The full test body will be reinstated on top of
+  // the APP-225 `__submitCommandRaw` escape hatch once it lands.
   test.skip(
     true,
     "throttle subtest requires a __submitCommandRaw escape hatch — form " +
-      "serializes single-in-flight; tracked under APP-225 (E2E test gaps).",
+      "serializes single-in-flight; tracked under APP-225 (E2E test gaps). " +
+      "See the comment block above for the full rationale.",
   );
-  await page.goto("/");
-  await readinessGate(page);
-  await drainQuiescenceAndBaseline(page);
-  await page.locator('[data-testid="order-entry-symbol"]').fill("EUR/USD");
-  await page.locator('[data-testid="order-entry-qty"]').fill("1.0");
-  await page.locator('[data-testid="order-entry-price"]').fill("1.05");
-
-  let throttledSeen = false;
-  for (let i = 0; i < 200; i++) {
-    await page
-      .locator('[data-testid="order-entry-clord-id"]')
-      .fill(`E2E-S06-throttle-${String(i)}-${String(Date.now())}`);
-    await page.locator('[data-testid="order-entry-submit"]').click({ force: true });
-    const errLocator = page.locator('[data-testid="order-entry-error"]');
-    if ((await errLocator.count()) > 0) {
-      const text = await errLocator.textContent({ timeout: 50 }).catch(() => "");
-      if (text && /Throttled/i.test(text)) {
-        throttledSeen = true;
-        break;
-      }
-    }
-  }
-  expect(throttledSeen, "expected server-side Throttled status during burst submit").toBe(true);
+  // Reference `page` so the unused-binding lint doesn't flip; the value
+  // is never observed because `test.skip(true, ...)` aborts above.
+  void page;
 });
 
 // Backpressure (client-side slot-table cap) is verified by the proper unit test at

@@ -220,15 +220,33 @@ export type WorkerToMain = PongMsg | MessageBatchMsg | WorkerErrorMsg;
 // ─── Discriminator narrowing helpers ───────────────────────────────
 
 /**
+ * Build-time E2E flag: `true` only when the bundle is built with
+ * {@code VITE_E2E_REAL_BACKEND=true}. Vite inlines the comparison at
+ * build time, so the {@code FORCE_WS_CLOSE} arm of {@link isMainToWorker}
+ * — and the matching {@code case "FORCE_WS_CLOSE":} arm in the worker's
+ * switch — are dead-code-eliminated from production bundles. Mirrors the
+ * existing pattern in {@code main-thread/messageSource.ts} +
+ * {@code main-thread/e2eHooks.ts} so the bundle-guard regression test
+ * can grep for a single `FORCE_WS_CLOSE` symbol and assert it is absent
+ * from prod and present in E2E.
+ */
+const E2E_BUILD: boolean = import.meta.env.VITE_E2E_REAL_BACKEND === "true";
+
+/**
  * Type guard for a valid main → worker envelope. Validates the
  * protocol version BEFORE any branch on `type` per §6 row 19.
+ *
+ * <p>The {@code FORCE_WS_CLOSE} arm is gated behind the E2E build flag —
+ * a forged envelope from a misbehaving extension or third-party script
+ * therefore cannot trigger a WebSocket close in production builds (the
+ * guard rejects it before the worker's switch ever runs).
  */
 export function isMainToWorker(x: unknown): x is MainToWorker {
   if (x === null || typeof x !== "object") return false;
   const o = x as { type?: unknown; protocolVersion?: unknown };
   if (o.protocolVersion !== WORKER_PROTOCOL_VERSION) return false;
   if (typeof o.type !== "string") return false;
-  return (
-    o.type === "INIT" || o.type === "PING" || o.type === "CLOSE" || o.type === "FORCE_WS_CLOSE"
-  );
+  if (o.type === "INIT" || o.type === "PING" || o.type === "CLOSE") return true;
+  if (E2E_BUILD && o.type === "FORCE_WS_CLOSE") return true;
+  return false;
 }
