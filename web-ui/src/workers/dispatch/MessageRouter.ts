@@ -153,8 +153,22 @@ export class MessageRouter {
         this.handlers.onReplayComplete();
         break;
       case TEMPLATE_COMMAND_ACK:
+        // CommandAck (template 70) IS a server→client message — it's the
+        // dispatcher's synchronous response to every browser command. The
+        // prior version of this router classified it as "unexpected" alongside
+        // the C→S-only Subscribe / Unsubscribe templates, which dropped every
+        // CommandAck on the floor and broke the entire correlation pipeline
+        // in commandClient.ts (its Promise slots timed out unconditionally at
+        // the 5 s SLOT_TIMEOUT_MS, surfacing as
+        // "commandClient: timeout waiting for CommandAck for seq=N" in the
+        // OrderEntryForm). Route to onEvent so the worker's CommandAck
+        // decoder at worker.ts:912 can decode + post on the commandPort.
+        this.handlers.onEvent(templateId, payload);
+        break;
       case TEMPLATE_SUBSCRIBE:
       case TEMPLATE_UNSUBSCRIBE:
+        // Subscribe (62) / Unsubscribe (63) ARE client-to-server only — a
+        // server-pushed frame with these template ids is a server bug.
         this.handlers.onUnexpectedServerTemplate(templateId);
         break;
       default:
