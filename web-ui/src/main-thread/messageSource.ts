@@ -47,7 +47,7 @@
 import { type Observable, ReplaySubject, type Subscription, defer } from "rxjs";
 
 import { fakeStream } from "@/mocks/fakeStream";
-import { type WorkerMessage } from "@/shared/transport/MessageShape";
+import { TERMINAL_CONNECTION_STATES, type WorkerMessage } from "@/shared/transport/MessageShape";
 import { pushConnectionState } from "@/streams/connection-stream";
 import { pushFeedState } from "@/streams/feed-state-stream";
 
@@ -148,18 +148,27 @@ export function startMessageSource(
           },
           error: (e: unknown) => {
             console.error("messageSource: WorkerClient stream error", e);
-            // Push DOWN to BOTH streams so the documented invariant in
-            // {@link TERMINAL_CONNECTION_STATES} actually holds:
-            //   1. `connectionStream$` (global) → UI ConnectionIndicator.
-            //   2. `client.connectionState$` → CommandClient's subscription,
-            //      which calls `failAllInFlight(ConnectionLostError)` so
-            //      in-flight Promises fail immediately rather than hanging
-            //      for the 5 s slot timeout.
-            // Without (2), pending submits would silently stall on the
-            // messageSource fallback path even though the docs claim
-            // otherwise.
-            pushConnectionState("DOWN");
-            client.connectionState$.next("DOWN");
+            // Push DOWN onto the WorkerClient's connectionState$ ONLY.
+            // The `stateSub` below (subscribed to `client.connectionState$`)
+            // already forwards every transition into the global
+            // `connectionStream$`, so a single `.next("DOWN")` here reaches
+            // BOTH the UI indicator AND CommandClient's
+            // `failAllInFlight(ConnectionLostError)` exactly once.
+            // (Pushing to both streams directly would double-emit on
+            // `connectionStream$`.)
+            //
+            // Stickiness guard: if the worker has already entered a more-
+            // specific terminal state (e.g., `WORKER_DEAD`,
+            // `SCHEMA_MISMATCH`, `PROTOCOL_VIOLATION`,
+            // `DOWN_REQUIRES_USER_ACTION`) the messageSource fallback must
+            // NOT overwrite it with the generic `DOWN`. The worker-side
+            // `nextConnectionState` predicate enforces this on its OWN
+            // emissions but `client.connectionState$.next` is a plain
+            // BehaviorSubject set bypassing that predicate, so the guard
+            // lives here at the call site.
+            if (!TERMINAL_CONNECTION_STATES.has(client.connectionState$.value)) {
+              client.connectionState$.next("DOWN");
+            }
           },
         });
         const stateSub = client.connectionState$.subscribe((s) => {

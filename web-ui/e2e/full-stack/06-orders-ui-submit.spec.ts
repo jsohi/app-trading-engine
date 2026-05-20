@@ -46,35 +46,35 @@ test("UI submit — OrderEntryForm round-trips through cluster, row appears with
     .toBe(true);
 });
 
+// Structurally not driveable through OrderEntryForm:
+//
+// The form's useOrderSubmission state machine serializes — after click,
+// state.kind === "loading" until either the CommandAck arrives or the
+// 5 s slot timeout fires. The submit button is `disabled` while loading;
+// even with `click({ force: true })` the React submit handler short-
+// circuits on the loading state, so any in-burst loop produces at most
+// ONE in-flight submit. The server-side rate limiter (burst=256,
+// sustained=100/sec) cannot be reached through a single-in-flight pipe.
+//
+// The server-side limiter ITSELF is correct and is covered by
+// websocket-server :test unit tests
+// (CommandDispatcherRateLimiterTest, RateLimiterStateJCStress). This
+// full-stack subtest needs to bypass the form and drive
+// commandClient.submit() directly through a new test-mode escape hatch
+// (mirroring the __forceWsClose precedent in e2eHooks.ts). That work is
+// tracked under APP-225 (E2E test gaps — additional escape hatches for
+// load / rate-limit scenarios).
+//
+// Until the escape hatch lands, this subtest is skipped to keep the
+// full-stack suite honest: a passing run reflects only what is actually
+// being verified. The arrow stays `async` because Playwright's TestType
+// signature mandates it; the eslint-disable block below silences
+// require-await across the whole skipped body without introducing a
+// dead `await Promise.resolve()` line.
+/* eslint-disable @typescript-eslint/require-await */
 test("UI submit — Throttle: server-side rate-limit fires when client buffer doesn't engage", async ({
   page: _page,
 }) => {
-  // Structurally not driveable through OrderEntryForm:
-  //
-  // The form's useOrderSubmission state machine serializes — after click,
-  // state.kind === "loading" until either the CommandAck arrives or the
-  // 5 s slot timeout fires. The submit button is `disabled` while loading;
-  // even with `click({ force: true })` the React submit handler short-
-  // circuits on the loading state, so any in-burst loop produces at most
-  // ONE in-flight submit. The server-side rate limiter (burst=256,
-  // sustained=100/sec) cannot be reached through a single-in-flight pipe.
-  //
-  // The server-side limiter ITSELF is correct and is covered by
-  // websocket-server :test unit tests
-  // (CommandDispatcherRateLimiterTest, RateLimiterStateJCStress). This
-  // full-stack subtest needs to bypass the form and drive
-  // commandClient.submit() directly through a new test-mode escape hatch
-  // (mirroring the __forceWsClose precedent in e2eHooks.ts). That work is
-  // tracked under APP-225 (E2E test gaps — additional escape hatches for
-  // load / rate-limit scenarios).
-  //
-  // Until the escape hatch lands, this subtest is skipped to keep the
-  // full-stack suite honest: a passing run reflects only what is actually
-  // being verified. The arrow stays `async` because Playwright's
-  // TestType signature requires it; `await Promise.resolve()` keeps the
-  // linter happy without delaying the synchronous `test.skip(...)` abort
-  // (the await yields one microtask, then the skip throws).
-  await Promise.resolve();
   test.skip(
     true,
     "throttle subtest requires a __submitCommandRaw escape hatch — form " +
@@ -82,6 +82,7 @@ test("UI submit — Throttle: server-side rate-limit fires when client buffer do
       "See the comment block above for the full rationale.",
   );
 });
+/* eslint-enable @typescript-eslint/require-await */
 
 // Backpressure (client-side slot-table cap) is verified by the proper unit test at
 // `web-ui/test/unit/main-thread/commandClient.test.ts` — exercising the bounded slot table

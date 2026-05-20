@@ -227,6 +227,16 @@ export type WorkerToMain = PongMsg | MessageBatchMsg | WorkerErrorMsg;
  * switch — are dead-code-eliminated from production bundles. Mirrors the
  * existing pattern in {@code main-thread/messageSource.ts} +
  * {@code main-thread/e2eHooks.ts}.
+ *
+ * <p><b>Test caveat:</b> the comparison is captured at module-load time
+ * into the {@code E2E_BUILD} constant. Unit tests that flip the env var
+ * after this module has already been imported will not observe the new
+ * value — they must call {@code vi.stubEnv("VITE_E2E_REAL_BACKEND", …)}
+ * BEFORE the first {@code import("@/workers/protocol/WorkerProtocol")}
+ * (or before the worker bundle entry-point loads), or use
+ * {@code vi.resetModules()} to re-trigger this module's top level.
+ * Production bundles are unaffected since Vite inlines the comparison
+ * statically.
  */
 const E2E_BUILD: boolean = import.meta.env.VITE_E2E_REAL_BACKEND === "true";
 
