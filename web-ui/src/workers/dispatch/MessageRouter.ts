@@ -158,16 +158,17 @@ export class MessageRouter {
         this.handlers.onUnexpectedServerTemplate(templateId);
         break;
       default:
-        // CommandAck (TEMPLATE_COMMAND_ACK = 70), event templates (100–116),
+        // CommandAck (templateId 70), event templates (100–116),
         // snapshot-entity templates (200–209), and any unknown templateIds
         // all flow to the same caller-supplied `onEvent` handler — caller
         // decides per-template routing. CommandAck is the dispatcher's
         // synchronous response to every browser command; the worker's
-        // {@link worker.ts}:912 CommandAck branch decodes it and posts to
-        // the commandPort. Per Gemini review (MEDIUM): keep a single
-        // branch — folding TEMPLATE_COMMAND_ACK in here (rather than
-        // a redundant named case that also called onEvent) preserves
-        // the invariant that there is exactly one onEvent dispatch site.
+        // onEvent dispatcher decodes it on the
+        // `templateId === COMMAND_ACK_TEMPLATE_ID` branch and posts to the
+        // commandPort. Per Gemini review (MEDIUM): keep a single branch —
+        // folding the CommandAck templateId in here (rather than a
+        // redundant named case that also called onEvent) preserves the
+        // invariant that there is exactly one onEvent dispatch site.
         this.handlers.onEvent(templateId, payload);
         break;
     }

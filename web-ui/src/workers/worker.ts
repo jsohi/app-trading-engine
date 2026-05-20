@@ -36,6 +36,7 @@ import { validateWsUrl } from "@/workers/frame/WsUrlValidator";
 
 import { Stats } from "@/workers/protocol/Stats";
 import { nowEpochMs, nowEpochNs } from "@/workers/time";
+import { nextConnectionState } from "@/workers/protocol/connectionTransition";
 import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
@@ -264,11 +265,39 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
     case "FORCE_WS_CLOSE":
       // Test-mode escape hatch: trigger a real WebSocket close so the
       // worker's normal ws.onclose handler runs (push RECONNECTING,
-      // compute backoff, post `reconnect_due_after_ms`). Production
-      // build never sends this envelope because the WorkerClient
-      // method behind it is dead-code-eliminated when
-      // VITE_E2E_REAL_BACKEND !== "true".
-      ws?.close(1000, "force-ws-close");
+      // compute backoff, post `reconnect_due_after_ms`).
+      //
+      // Two layers of defense-in-depth keep this unreachable in prod:
+      //   (1) The upstream {@code isMainToWorker} type guard rejects
+      //       `"FORCE_WS_CLOSE"` envelopes when {@code
+      //       VITE_E2E_REAL_BACKEND !== "true"} — Vite inlines the
+      //       compile-time boolean and removes the literal from
+      //       {@code isMainToWorker}'s prod bundle. A forged envelope
+      //       therefore never reaches this switch in prod.
+      //   (2) The case body itself is gated on the same build flag, so
+      //       the close-call is DCE'd from the worker prod bundle even
+      //       if Vite cannot eliminate the surrounding case-label. The
+      //       case-label string {@code "FORCE_WS_CLOSE"} may still ship
+      //       in the worker bundle as a string literal in the switch
+      //       table — that is harmless (no secret, no behaviour); the
+      //       only call-site that could supply such an envelope is the
+      //       DCE'd {@code WorkerClient.forceWsClose} method, which is
+      //       only invoked via the {@code __forceWsClose} hook
+      //       registered in e2eHooks.ts (registration site itself is
+      //       DCE'd in prod and asserted absent by the bundle-guard).
+      //
+      // Only call close(1000, ...) when the socket is OPEN — calling
+      // close() during CONNECTING transitions the browser through
+      // CLOSING and fires `close` with code 1006 (abnormal), which
+      // exercises a DIFFERENT `applyCloseCode` branch than the user-
+      // initiated 1000 path the test asserts against. A null `ws` or
+      // a CLOSING/CLOSED state is a no-op (the close handler has
+      // already fired or is about to).
+      if (import.meta.env.VITE_E2E_REAL_BACKEND === "true") {
+        if (ws !== null && ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, "force-ws-close");
+        }
+      }
       break;
     default:
       // Reviewer A finding F-A5: surface unknown envelope types instead of
@@ -1334,10 +1363,11 @@ function flushBatch(): void {
 }
 
 function transitionConnection(next: ConnectionState): void {
-  if (connectionState === next) return;
-  connectionState = next;
+  const computed = nextConnectionState(connectionState, next);
+  if (computed === null) return;
+  connectionState = computed;
   const nowNs = nowEpochNs();
-  emit({ type: "connection-state", state: next, serverNanos: nowNs });
+  emit({ type: "connection-state", state: computed, serverNanos: nowNs });
 }
 
 // ─── ERROR + shutdown ───────────────────────────────────────────────

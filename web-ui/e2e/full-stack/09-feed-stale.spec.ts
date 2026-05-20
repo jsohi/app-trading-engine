@@ -50,6 +50,9 @@
  * adapter thread start; cold JVM adds ~500 ms; total << 2 s).
  */
 import { expect, test } from "@playwright/test";
+
+import type { FeedState } from "../../src/shared/transport/MessageShape";
+
 import { drainQuiescenceAndBaseline, readinessGate } from "./helpers";
 
 // ---------------------------------------------------------------------------
@@ -186,12 +189,14 @@ test.describe("feed-stale lifecycle", () => {
       // in a valid starting state and we abort early with a clear message.
       // -----------------------------------------------------------------------
       const baselineFeedState = await page.evaluate(
-        (): Promise<string> =>
-          new Promise<string>((resolve) => {
+        (): Promise<FeedState | "HOOKS_UNAVAILABLE"> =>
+          new Promise<FeedState | "HOOKS_UNAVAILABLE">((resolve) => {
             const g = globalThis as unknown as {
               __e2eHooks?: {
                 feedState$: {
-                  subscribe: (o: { next: (s: string) => void }) => { unsubscribe: () => void };
+                  subscribe: (o: { next: (s: FeedState) => void }) => {
+                    unsubscribe: () => void;
+                  };
                 };
               };
             };
@@ -205,10 +210,20 @@ test.describe("feed-stale lifecycle", () => {
             // pattern hits a closure-timing race: at the moment `next` fires inside
             // `subscribe(...)`, the outer `sub` binding has not yet been assigned, so
             // `sub.unsubscribe()` throws TypeError on `undefined`, the error is swallowed
-            // by RxJS, and the Promise never resolves (60s page.evaluate timeout). Pattern
-            // below resolves first, then defers the unsubscribe to a microtask so the
-            // synchronous-emit case is safe; the late-emit case still unsubscribes the
-            // moment the value arrives.
+            // by RxJS, and the Promise never resolves (60s page.evaluate timeout).
+            //
+            // Resolution: resolve immediately so callers see the value, then defer
+            // the unsubscribe to a microtask. The microtask is structurally
+            // necessary — checking `sub !== null` synchronously inside `next`
+            // would be `false` on the BehaviorSubject sync-emit path (the outer
+            // assignment has not happened yet), leaking the subscription. By the
+            // time the microtask runs, `subscribe(...)` has returned and `sub`
+            // is guaranteed assigned for BOTH the sync-emit (BehaviorSubject)
+            // and async-emit (Subject) cases.
+            //
+            // `resolved` guards against the Subject-replay edge case of two
+            // synchronous emits — only the first one actually resolves and
+            // schedules the cleanup; subsequent in-burst emits are no-ops.
             let resolved = false;
             let sub: { unsubscribe: () => void } | null = null;
             sub = hooks.feedState$.subscribe({
@@ -216,8 +231,6 @@ test.describe("feed-stale lifecycle", () => {
                 if (resolved) return;
                 resolved = true;
                 resolve(s);
-                // Defer to microtask so `sub` is guaranteed assigned for both the
-                // synchronous-seed (BehaviorSubject) and late-emit (Subject) cases.
                 queueMicrotask(() => {
                   sub?.unsubscribe();
                 });
