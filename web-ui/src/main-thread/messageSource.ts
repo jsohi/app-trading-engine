@@ -148,7 +148,18 @@ export function startMessageSource(
           },
           error: (e: unknown) => {
             console.error("messageSource: WorkerClient stream error", e);
+            // Push DOWN to BOTH streams so the documented invariant in
+            // {@link TERMINAL_CONNECTION_STATES} actually holds:
+            //   1. `connectionStream$` (global) → UI ConnectionIndicator.
+            //   2. `client.connectionState$` → CommandClient's subscription,
+            //      which calls `failAllInFlight(ConnectionLostError)` so
+            //      in-flight Promises fail immediately rather than hanging
+            //      for the 5 s slot timeout.
+            // Without (2), pending submits would silently stall on the
+            // messageSource fallback path even though the docs claim
+            // otherwise.
             pushConnectionState("DOWN");
+            client.connectionState$.next("DOWN");
           },
         });
         const stateSub = client.connectionState$.subscribe((s) => {

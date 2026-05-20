@@ -37,7 +37,7 @@ import { validateWsUrl } from "@/workers/frame/WsUrlValidator";
 import { Stats } from "@/workers/protocol/Stats";
 import { nowEpochMs, nowEpochNs } from "@/workers/time";
 import { nextConnectionState } from "@/workers/protocol/connectionTransition";
-import { type MainToWorker } from "@/workers/protocol/WorkerProtocol";
+import { type MainToWorker, isMainToWorker } from "@/workers/protocol/WorkerProtocol";
 import { WORKER_PROTOCOL_VERSION } from "@/workers/WorkerTuning";
 
 import { decodeClusterEvent } from "@/workers/dispatch/clusterEventDecoder";
@@ -226,16 +226,20 @@ let initInFlight = false;
 
 self.onmessage = (event: MessageEvent<unknown>): void => {
   const data = event.data;
-  if (
-    data === null ||
-    typeof data !== "object" ||
-    (data as { protocolVersion?: unknown }).protocolVersion !== WORKER_PROTOCOL_VERSION
-  ) {
-    // Ignore — host must send a valid envelope. Surface as ERROR.
-    postError("PROTOCOL", "INIT msg without valid protocolVersion");
+  // Single dispatch gate: `isMainToWorker` validates protocol version FIRST
+  // (per §6 row 19), then narrows `type` to the build-flag-gated allowlist
+  // (`PROD_MAIN_TO_WORKER_TYPES` always + `E2E_MAIN_TO_WORKER_TYPES` only when
+  // `VITE_E2E_REAL_BACKEND === "true"`). This makes the documented
+  // "layer 1 type-guard" defense real — a forged or stale-protocol envelope
+  // never reaches the switch below, and in production a forged
+  // `FORCE_WS_CLOSE` envelope is rejected here BEFORE the worker's switch
+  // case can fire (the body of that case is also DCE-gated for
+  // defense-in-depth).
+  if (!isMainToWorker(data)) {
+    postError("PROTOCOL", "rejected by isMainToWorker (bad protocolVersion or disallowed type)");
     return;
   }
-  const msg = data as MainToWorker;
+  const msg: MainToWorker = data;
   switch (msg.type) {
     case "INIT":
       // Per Gemini review (MEDIUM): refuse overlapping INIT calls so we
