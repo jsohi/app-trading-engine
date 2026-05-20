@@ -49,11 +49,36 @@ test("UI submit — OrderEntryForm round-trips through cluster, row appears with
 test("UI submit — Throttle: server-side rate-limit fires when client buffer doesn't engage", async ({
   page,
 }) => {
+  // Structurally not driveable through OrderEntryForm:
+  //
+  // The form's useOrderSubmission state machine serializes — after click,
+  // state.kind === "loading" until either the CommandAck arrives or the
+  // 5 s slot timeout fires. The submit button is `disabled` while loading;
+  // even with `click({ force: true })` the React submit handler short-
+  // circuits on the loading state, so all 200 iterations below produce at
+  // most ONE in-flight submit. The server-side rate limiter (burst=256,
+  // sustained=100/sec) cannot be reached through a single-in-flight pipe.
+  //
+  // The server-side limiter ITSELF is correct and is covered by
+  // websocket-server :test unit tests
+  // (CommandDispatcherRateLimiterTest, RateLimiterStateJCStress). This
+  // full-stack subtest needs to bypass the form and drive
+  // commandClient.submit() directly through a new test-mode escape hatch
+  // (mirroring the __forceWsClose precedent in e2eHooks.ts). That work is
+  // tracked under APP-225 (E2E test gaps — additional escape hatches for
+  // load / rate-limit scenarios).
+  //
+  // Until the escape hatch lands, this subtest is skipped to keep the
+  // full-stack suite honest: a passing run reflects only what is actually
+  // being verified.
+  test.skip(
+    true,
+    "throttle subtest requires a __submitCommandRaw escape hatch — form " +
+      "serializes single-in-flight; tracked under APP-225 (E2E test gaps).",
+  );
   await page.goto("/");
   await readinessGate(page);
-  // Submit ≤256 unique-ClOrdID orders rapidly — client buffer cap (256) does NOT engage,
-  // server-side rate-limit DOES. Each submit must use a unique ClOrdID so the server-side
-  // dedup path cannot trigger first.
+  await drainQuiescenceAndBaseline(page);
   await page.locator('[data-testid="order-entry-symbol"]').fill("EUR/USD");
   await page.locator('[data-testid="order-entry-qty"]').fill("1.0");
   await page.locator('[data-testid="order-entry-price"]').fill("1.05");
@@ -85,6 +110,14 @@ test("UI submit — Throttle: server-side rate-limit fires when client buffer do
 test("UI submit — Duplicate: same ClOrdID twice → second resolves Duplicate", async ({ page }) => {
   await page.goto("/");
   await readinessGate(page);
+  // Drain quiescence — wait for the worker's command-channel handshake and the
+  // first WebSocketSubscribe ACK round-trip to complete. Without this, the
+  // first submit can fire BEFORE the worker has fully wired the command port,
+  // and the CommandAck never arrives within the 5 s commandClient slot
+  // timeout — the form transitions to error state ("timeout waiting for
+  // CommandAck for seq=1") instead of success. Mirrors the round-trip
+  // subtest which already calls drainQuiescenceAndBaseline.
+  await drainQuiescenceAndBaseline(page);
   const dupId = clOrdId("06-dup");
   await page.locator('[data-testid="order-entry-symbol"]').fill("EUR/USD");
   await page.locator('[data-testid="order-entry-qty"]').fill("1.0");
