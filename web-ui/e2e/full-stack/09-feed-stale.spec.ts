@@ -269,30 +269,42 @@ test.describe("feed-stale lifecycle", () => {
         g.__feedStates = [];
         g.__connStatesDuringFeedTest = [];
         const hooks = g.__e2eHooks;
-        if (hooks?.feedState$) {
-          const sub = hooks.feedState$.subscribe({
-            next: (s) => {
-              if (Array.isArray(g.__feedStates)) {
-                g.__feedStates.push({ s, t: performance.now() });
-              }
-            },
-          });
-          g.__feedStatesUnsub = () => {
-            sub.unsubscribe();
-          };
+        // Fail loudly if the e2e hooks bridge is not installed by the time
+        // this step runs — silently skipping the recorder install would
+        // surface downstream as a STALE-poll timeout, hiding the real cause.
+        // The `readinessGate` / `drainQuiescenceAndBaseline` calls above
+        // already gate on `__e2eHooks` being present; this assertion pins
+        // the invariant in case those helpers change.
+        // `connectionState$` is statically required by the structural type
+        // above, so the optional check on `feedState$` (which is also part
+        // of the same object) is sufficient to discriminate the presence
+        // of the entire hooks bridge.
+        if (!hooks?.feedState$) {
+          throw new Error(
+            "spec 09 step 3: __e2eHooks unavailable during recorder install — " +
+              "readiness contract broken; check installEarlyHooks ordering.",
+          );
         }
-        if (hooks?.connectionState$) {
-          const sub = hooks.connectionState$.subscribe({
-            next: (s) => {
-              if (Array.isArray(g.__connStatesDuringFeedTest)) {
-                g.__connStatesDuringFeedTest.push({ s, t: performance.now() });
-              }
-            },
-          });
-          g.__connStatesDuringFeedTestUnsub = () => {
-            sub.unsubscribe();
-          };
-        }
+        const feedSub = hooks.feedState$.subscribe({
+          next: (s) => {
+            if (Array.isArray(g.__feedStates)) {
+              g.__feedStates.push({ s, t: performance.now() });
+            }
+          },
+        });
+        g.__feedStatesUnsub = () => {
+          feedSub.unsubscribe();
+        };
+        const connSub = hooks.connectionState$.subscribe({
+          next: (s) => {
+            if (Array.isArray(g.__connStatesDuringFeedTest)) {
+              g.__connStatesDuringFeedTest.push({ s, t: performance.now() });
+            }
+          },
+        });
+        g.__connStatesDuringFeedTestUnsub = () => {
+          connSub.unsubscribe();
+        };
       });
 
       // -----------------------------------------------------------------------

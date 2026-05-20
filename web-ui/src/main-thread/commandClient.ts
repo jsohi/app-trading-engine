@@ -309,6 +309,14 @@ export class CommandClient {
       // terminal state to {@link ConnectionState} automatically propagates here —
       // open-coding the literal union previously meant a new terminal silently
       // hung in-flight submits for the full 5 s slot timeout.
+      //
+      // {@code connectionState$} is a BehaviorSubject seeded with "CONNECTING"
+      // at WorkerClient construction; if a CommandClient is created AFTER the
+      // worker has already reached a terminal state (rare — only during teardown
+      // re-entry), this callback fires synchronously on the seeded value and
+      // calls {@link failAllInFlight} on an empty slot table. That is a no-op
+      // by construction (the slot table is empty at this point in the
+      // constructor) and therefore harmless.
       if (TERMINAL_CONNECTION_STATES.has(s)) {
         this.failAllInFlight(new ConnectionLostError());
       }

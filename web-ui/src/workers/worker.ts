@@ -453,8 +453,11 @@ async function handleInit(
         return;
       }
       // Compute the backoff first so we know whether an auto-reconnect is
-      // pending (non-FREEZE) before choosing the transient state.
-      ws = null;
+      // pending (non-FREEZE) before choosing the transient state. Defer
+      // `ws = null` until AFTER each branch's transitionConnection / postError
+      // so the teardown point is colocated with the user-visible state
+      // change — if `nextDelayMs` were ever made fallible, we would not
+      // leave the worker with a null `ws` and no matching transition.
       const dec = reconnect.nextDelayMs(state);
       if (dec.kind === "FREEZE") {
         // Per /review HIGH (Agent B): cold-start on FREEZE — the
@@ -464,6 +467,7 @@ async function handleInit(
         state.coldStart();
         transitionConnection("DOWN_REQUIRES_USER_ACTION");
         postError("AUTH", `circuit breaker tripped: ${dec.reason}`);
+        ws = null;
         return;
       }
       // Surface the auto-recovery transient as RECONNECTING (NOT the legacy
@@ -479,6 +483,7 @@ async function handleInit(
       // the actual respawn-with-fresh-token. We do not drive the timer
       // ourselves because the credential lifecycle lives main-side.
       postError("INIT", `reconnect_due_after_ms:${String(dec.delayMs)}`);
+      ws = null;
     };
     ws.onerror = (): void => {
       // Same semantic as onclose's non-FREEZE path: an onerror without a

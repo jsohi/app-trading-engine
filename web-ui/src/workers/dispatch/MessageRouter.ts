@@ -83,7 +83,19 @@ const TEMPLATE_CLIENT_HEARTBEAT = ClientHeartbeatDecoder.TEMPLATE_ID;
 const TEMPLATE_SNAPSHOT = WebSocketSnapshotDecoder.TEMPLATE_ID;
 const TEMPLATE_ERROR = WebSocketErrorDecoder.TEMPLATE_ID;
 const TEMPLATE_REPLAY_COMPLETE = ReplayCompleteDecoder.TEMPLATE_ID;
-/** Hard-coded per APP-36 §2.4; server-bug-guard surface for C->S-only templates. */
+/**
+ * Server-bug-guard surface: SBE template IDs that are STRICTLY
+ * client-to-server only per APP-36 §2.4 (browser command channel
+ * contract). A server-pushed frame carrying these IDs indicates either a
+ * server-side dispatch bug or a forged payload; routing them through
+ * {@code onUnexpectedServerTemplate} surfaces the violation loudly via
+ * counter + structured log instead of silently flowing into the event
+ * decoder.
+ *
+ * <p>{@code CommandAck} (template 70) was previously also enumerated
+ * here but was demoted to the default branch — see the rationale in the
+ * default arm of {@link MessageRouter.route} below.
+ */
 const TEMPLATE_SUBSCRIBE = 62;
 const TEMPLATE_UNSUBSCRIBE = 63;
 

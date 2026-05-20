@@ -47,20 +47,16 @@ test("UI submit — OrderEntryForm round-trips through cluster, row appears with
 });
 
 test("UI submit — Throttle: server-side rate-limit fires when client buffer doesn't engage", async ({
-  page,
+  page: _page,
 }) => {
-  // `test.skip(true, ...)` aborts before the awaited noop returns, but
-  // the linter still requires at least one await in an `async` arrow.
-  // The real body will be reinstated on top of the APP-225 escape hatch.
-  await Promise.resolve();
   // Structurally not driveable through OrderEntryForm:
   //
   // The form's useOrderSubmission state machine serializes — after click,
   // state.kind === "loading" until either the CommandAck arrives or the
   // 5 s slot timeout fires. The submit button is `disabled` while loading;
   // even with `click({ force: true })` the React submit handler short-
-  // circuits on the loading state, so all 200 iterations below produce at
-  // most ONE in-flight submit. The server-side rate limiter (burst=256,
+  // circuits on the loading state, so any in-burst loop produces at most
+  // ONE in-flight submit. The server-side rate limiter (burst=256,
   // sustained=100/sec) cannot be reached through a single-in-flight pipe.
   //
   // The server-side limiter ITSELF is correct and is covered by
@@ -74,19 +70,17 @@ test("UI submit — Throttle: server-side rate-limit fires when client buffer do
   //
   // Until the escape hatch lands, this subtest is skipped to keep the
   // full-stack suite honest: a passing run reflects only what is actually
-  // being verified.
-  // Body intentionally empty — `test.skip(true, ...)` aborts before any
-  // assertion would run. The full test body will be reinstated on top of
-  // the APP-225 `__submitCommandRaw` escape hatch once it lands.
+  // being verified. The arrow stays `async` because Playwright's
+  // TestType signature requires it; `await Promise.resolve()` keeps the
+  // linter happy without delaying the synchronous `test.skip(...)` abort
+  // (the await yields one microtask, then the skip throws).
+  await Promise.resolve();
   test.skip(
     true,
     "throttle subtest requires a __submitCommandRaw escape hatch — form " +
       "serializes single-in-flight; tracked under APP-225 (E2E test gaps). " +
       "See the comment block above for the full rationale.",
   );
-  // Reference `page` so the unused-binding lint doesn't flip; the value
-  // is never observed because `test.skip(true, ...)` aborts above.
-  void page;
 });
 
 // Backpressure (client-side slot-table cap) is verified by the proper unit test at

@@ -52,12 +52,34 @@ describe("nextConnectionState", () => {
     expect(nextConnectionState("PROTOCOL_VIOLATION", "PROTOCOL_VIOLATION")).toBeNull();
   });
 
-  it("allows transitioning into and out of every terminal state", () => {
+  it("allows transitioning INTO every terminal state from a non-terminal one", () => {
     expect(nextConnectionState("RECONNECTING", "DOWN_REQUIRES_USER_ACTION")).toBe(
       "DOWN_REQUIRES_USER_ACTION",
     );
     expect(nextConnectionState("CONNECTED", "SCHEMA_MISMATCH")).toBe("SCHEMA_MISMATCH");
     expect(nextConnectionState("CONNECTED", "WORKER_DEAD")).toBe("WORKER_DEAD");
     expect(nextConnectionState("CONNECTED", "PROTOCOL_VIOLATION")).toBe("PROTOCOL_VIOLATION");
+  });
+
+  it("refuses to leave a terminal state for a non-terminal one (stickiness)", () => {
+    // A late `ws.onerror` firing AFTER the worker has already entered a
+    // terminal state must NOT silently re-arm the state machine into
+    // RECONNECTING. Per the WHATWG WebSocket spec, browsers MAY fire
+    // `error` after `close`; the predicate is the single guard.
+    expect(nextConnectionState("DOWN_REQUIRES_USER_ACTION", "RECONNECTING")).toBeNull();
+    expect(nextConnectionState("SCHEMA_MISMATCH", "RECONNECTING")).toBeNull();
+    expect(nextConnectionState("WORKER_DEAD", "CONNECTING")).toBeNull();
+    expect(nextConnectionState("PROTOCOL_VIOLATION", "CONNECTED")).toBeNull();
+    expect(nextConnectionState("DOWN", "STALE")).toBeNull();
+  });
+
+  it("allows escalation between terminal states (real change worth surfacing)", () => {
+    // E.g., SCHEMA_MISMATCH followed by a worker crash that hits the
+    // respawn budget — WORKER_DEAD is a different terminal worth a
+    // visible transition for telemetry and recorder fidelity.
+    expect(nextConnectionState("SCHEMA_MISMATCH", "WORKER_DEAD")).toBe("WORKER_DEAD");
+    expect(nextConnectionState("PROTOCOL_VIOLATION", "DOWN_REQUIRES_USER_ACTION")).toBe(
+      "DOWN_REQUIRES_USER_ACTION",
+    );
   });
 });
