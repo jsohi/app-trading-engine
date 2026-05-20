@@ -271,24 +271,27 @@ self.onmessage = (event: MessageEvent<unknown>): void => {
       // worker's normal ws.onclose handler runs (push RECONNECTING,
       // compute backoff, post `reconnect_due_after_ms`).
       //
-      // Two layers of defense-in-depth keep this unreachable in prod:
-      //   (1) The upstream {@code isMainToWorker} type guard rejects
-      //       `"FORCE_WS_CLOSE"` envelopes when {@code
-      //       VITE_E2E_REAL_BACKEND !== "true"} — Vite inlines the
+      // Defense-in-depth — the PRIMARY guard is now (1); (2) is purely
+      // belt-and-braces:
+      //   (1) [PRIMARY] The upstream {@code isMainToWorker} type guard at
+      //       `self.onmessage` rejects `"FORCE_WS_CLOSE"` envelopes when
+      //       {@code VITE_E2E_REAL_BACKEND !== "true"}. Vite inlines the
       //       compile-time boolean and removes the literal from
-      //       {@code isMainToWorker}'s prod bundle. A forged envelope
-      //       therefore never reaches this switch in prod.
-      //   (2) The case body itself is gated on the same build flag, so
-      //       the close-call is DCE'd from the worker prod bundle even
-      //       if Vite cannot eliminate the surrounding case-label. The
-      //       case-label string {@code "FORCE_WS_CLOSE"} may still ship
-      //       in the worker bundle as a string literal in the switch
-      //       table — that is harmless (no secret, no behaviour); the
-      //       only call-site that could supply such an envelope is the
-      //       DCE'd {@code WorkerClient.forceWsClose} method, which is
-      //       only invoked via the {@code __forceWsClose} hook
-      //       registered in e2eHooks.ts (registration site itself is
-      //       DCE'd in prod and asserted absent by the bundle-guard).
+      //       {@code isMainToWorker}'s prod bundle — a forged envelope
+      //       never reaches this switch in prod. This is the documented
+      //       layer-1 defense and IS wired (R5 fix).
+      //   (2) [BELT-AND-BRACES] The case body itself is gated on the same
+      //       build flag, so the close-call is DCE'd from the worker prod
+      //       bundle even if (1) ever regresses or a future refactor
+      //       moves the gate elsewhere. The case-label string
+      //       {@code "FORCE_WS_CLOSE"} may still ship in the worker
+      //       bundle as a literal in the switch table — that is harmless
+      //       (no secret, no behaviour); the only call-site that could
+      //       supply such an envelope is the DCE'd
+      //       {@code WorkerClient.forceWsClose} method, only invoked via
+      //       the {@code __forceWsClose} hook in e2eHooks.ts whose
+      //       registration site is DCE'd in prod and asserted absent by
+      //       the bundle-guard regression test.
       //
       // Only call close(1000, ...) when the socket is OPEN — calling
       // close() during CONNECTING transitions the browser through
