@@ -4,6 +4,7 @@ import static com.trading.engine.testsupport.sbe.SbeMessageAssertions.assertTemp
 import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderRejected;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.cluster.IdGenerator;
 import com.trading.engine.cluster.OrderBook;
@@ -225,8 +226,11 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
     assertEquals(RejectReasonEnum.DuplicateClOrdId, rej.rejectReason());
     // Text must contain the expected phrase.
     final var text = rej.text();
-    assert text.contains("duplicate ClOrdID")
-        : "expected 'duplicate ClOrdID' in text, got: " + text;
+    // CodeRabbit PR #81 R2: switch from Java `assert` to JUnit assertTrue — the repo's Gradle
+    // JVM args don't enable assertions (no -ea), so `assert` would be a silent no-op.
+    assertTrue(
+        text.contains("duplicate ClOrdID"),
+        () -> "expected 'duplicate ClOrdID' in text, got: " + text);
     // No new entry: registry size stays at 1.
     assertEquals(1, handler.clOrdIdRegistry.size(), "duplicate must not create a second entry");
   }

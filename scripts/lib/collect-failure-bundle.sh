@@ -103,11 +103,24 @@ collect_failure_bundle() {
     if (( cluster_size_bytes > 1073741824 )); then # 1 GB
       # Take only the 20 most-recent archive segments + all *.snp snapshots.
       find "$cluster_data" -type f -name '*.snp' -exec cp -p {} "$bundle_dir/cluster-data/" \; 2>/dev/null || true
-      # Gemini R8 fix: replace `find ... -print0 | xargs -0 ls -1t` with `find ... -exec ls -t {} +`
-      # so the entire file set goes through a SINGLE `ls -t` (xargs may split into multiple `ls`
-      # invocations, sorting only within each batch and producing a globally-non-time-ordered list).
-      find "$cluster_data" -type f -name '*.rec' -exec ls -t {} + 2>/dev/null \
-        | head -20 \
+      # Gemini PR #81 R2 fix: even `find ... -exec ls -t {} +` can split into multiple `ls`
+      # invocations if the path-list exceeds ARG_MAX, and each batch sorts only WITHIN itself
+      # — the final `head -20` then picks the 20-most-recent-per-batch, not globally. Use a
+      # Node one-liner instead: read all paths from stdin, stat each for mtime, sort globally,
+      # take the top 20. Single process, no batch splitting, portable across GNU + BSD. Node
+      # is already a hard prereq of the harness (Vite, dev-jwks, etc.) so no new dependency.
+      find "$cluster_data" -type f -name '*.rec' 2>/dev/null \
+        | node -e '
+            const fs = require("fs");
+            const paths = fs.readFileSync(0, "utf8").trim().split("\n").filter(Boolean);
+            const sorted = paths
+              .map((p) => { try { return { p, m: fs.statSync(p).mtimeMs }; } catch { return null; } })
+              .filter(Boolean)
+              .sort((a, b) => b.m - a.m)
+              .slice(0, 20)
+              .map((x) => x.p);
+            process.stdout.write(sorted.join("\n") + (sorted.length ? "\n" : ""));
+          ' 2>/dev/null \
         | while read -r f; do cp -p "$f" "$bundle_dir/cluster-data/" 2>/dev/null || true; done
       echo "cluster-data truncated to most-recent 20 *.rec segments + all *.snp; original size=${cluster_size_bytes} bytes" \
         > "$bundle_dir/cluster-data.truncated"
