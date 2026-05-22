@@ -10,6 +10,8 @@ import com.trading.engine.cluster.state.RfqSlot;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
+import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
@@ -25,6 +27,7 @@ import com.trading.engine.messages.sbe.TimeInForceEnum;
 import io.aeron.cluster.service.ClientSession;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -94,6 +97,19 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private final OrderCreatedEventEncoder orderCreatedEncoder = new OrderCreatedEventEncoder();
   private final OrderRejectedEventEncoder orderRejectedEncoder = new OrderRejectedEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+
+  /**
+   * Pre-allocated codec for {@link ClOrdIdDedupSnapshotEncoder} writes during {@link
+   * #snapshotDedupTo}. Snapshot encode is OFF the steady-state hot path (cluster snapshots fire
+   * minutes apart), but the codec is still pre-allocated to keep the handler honest on the
+   * "zero-allocation after construction" contract that the rest of the class observes.
+   */
+  private final ClOrdIdDedupSnapshotEncoder clOrdIdDedupSnapEncoder =
+      new ClOrdIdDedupSnapshotEncoder();
+
+  /** Pre-allocated codec for the restore path ({@link #restoreDedupFrom}). */
+  private final ClOrdIdDedupSnapshotDecoder clOrdIdDedupSnapDecoder =
+      new ClOrdIdDedupSnapshotDecoder();
 
   /** Egress buffer for encoding domain events. Sized to accommodate the largest event. */
   private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[8 * 1024]);
@@ -1055,6 +1071,79 @@ public final class NewOrderSingleHandler implements CommandHandler {
         keyIter.remove();
       }
     }
+  }
+
+  /**
+   * Encodes the current ClOrdID dedup registry (the {@link #clOrdIdRegistry} map plus the {@link
+   * #lastEvictionTimestampNanos} throttle anchor) into a {@code ClOrdIdDedupSnapshot} (template
+   * 210) at the given buffer offset. Used by {@link
+   * com.trading.engine.cluster.TradingClusteredService#encodeSnapshotFragments} during the cluster
+   * snapshot path so the 24h ClOrdID-uniqueness contract survives snapshot+restore.
+   *
+   * <p>Without this fragment, after a cluster restart the dedup registry rebuilds empty and any
+   * ClOrdID first seen before the snapshot but still inside the 24h dedup window would be admitted
+   * again, breaking the idempotency guarantee the cluster claims to enforce.
+   *
+   * <p><b>Threading:</b> single-threaded cluster duty cycle (same constraint as {@code onCommand}).
+   * No synchronization required.
+   *
+   * <p><b>Allocation:</b> none on the path; the SBE encoder and inner group flyweight are
+   * pre-allocated at construction time. Iteration uses the primitive {@link
+   * Long2LongHashMap.KeyIterator} (same pattern as {@link #evictExpiredClOrdIds}) so no {@code
+   * Iterator<Long>} boxing occurs.
+   *
+   * @param buf destination buffer (must have room for the encoded snapshot)
+   * @param offset start offset in {@code buf}
+   * @return the total bytes written including the SBE message header
+   */
+  public int snapshotDedupTo(final MutableDirectBuffer buf, final int offset) {
+    clOrdIdDedupSnapEncoder.wrapAndApplyHeader(buf, offset, headerEncoder);
+    clOrdIdDedupSnapEncoder.lastEvictionTimestampNanos(lastEvictionTimestampNanos);
+    final ClOrdIdDedupSnapshotEncoder.NoEntriesEncoder group =
+        clOrdIdDedupSnapEncoder.noEntriesCount(clOrdIdRegistry.size());
+    final Long2LongHashMap.KeyIterator keyIter = clOrdIdRegistry.keySet().iterator();
+    while (keyIter.hasNext()) {
+      final long key = keyIter.nextValue();
+      final long firstSeen = clOrdIdRegistry.get(key);
+      group.next();
+      group.dedupKey(key);
+      group.firstSeenTimestamp(firstSeen);
+    }
+    return MessageHeaderEncoder.ENCODED_LENGTH + clOrdIdDedupSnapEncoder.encodedLength();
+  }
+
+  /**
+   * Restores the ClOrdID dedup registry from a previously-encoded {@code ClOrdIdDedupSnapshot}
+   * (template 210). The current registry is cleared and replaced with the snapshot contents; {@link
+   * #lastEvictionTimestampNanos} is restored verbatim so the post-snapshot eviction cadence matches
+   * pre-snapshot behaviour.
+   *
+   * <p>Called by {@link com.trading.engine.cluster.TradingClusteredService#applySnapshotFragment}
+   * on the snapshot restore path. {@code blockLength} and {@code version} come from the SBE message
+   * header decoded by the caller.
+   *
+   * <p><b>Threading:</b> single-threaded cluster duty cycle. Snapshot restore runs at {@code
+   * onStart} time before any commands are dispatched.
+   *
+   * <p><b>Allocation:</b> none on the path; decoder and group flyweight are pre-allocated.
+   *
+   * @param src source buffer
+   * @param offset start offset of the SBE message BODY (header already consumed by caller)
+   * @param blockLength SBE block length from the inbound message header
+   * @param version SBE schema version from the inbound message header
+   * @return the number of body bytes consumed (excludes the header consumed by the caller)
+   */
+  public int restoreDedupFrom(
+      final DirectBuffer src, final int offset, final int blockLength, final int version) {
+    clOrdIdRegistry.clear();
+    clOrdIdDedupSnapDecoder.wrap(src, offset, blockLength, version);
+    lastEvictionTimestampNanos = clOrdIdDedupSnapDecoder.lastEvictionTimestampNanos();
+    final ClOrdIdDedupSnapshotDecoder.NoEntriesDecoder group = clOrdIdDedupSnapDecoder.noEntries();
+    while (group.hasNext()) {
+      group.next();
+      clOrdIdRegistry.put(group.dedupKey(), group.firstSeenTimestamp());
+    }
+    return clOrdIdDedupSnapDecoder.encodedLength();
   }
 
   /**

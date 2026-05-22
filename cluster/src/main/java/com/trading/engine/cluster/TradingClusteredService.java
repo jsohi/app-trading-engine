@@ -19,6 +19,7 @@ import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
+import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
 import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
@@ -66,12 +67,13 @@ import org.agrona.concurrent.UnsafeBuffer;
  *       TradingState}.
  * </ul>
  *
- * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits a seven-fragment envelope: {@code
+ * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits an eight-body-fragment envelope: {@code
  * SnapshotTaken} (header, templateId 200) + {@code EventSequencerSnapshot} (206) + {@code
  * IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201) + {@code CurrencySnapshot} (208) +
- * {@code RiskLimitSnapshot} (209) + {@code OrderBookSnapshot} (202). The header carries a CRC32C
- * checksum covering the concatenated body bytes in publish order; {@link #onStart} verifies the
- * checksum before handing control back to the cluster framework.
+ * {@code RiskLimitSnapshot} (209) + {@code OrderBookSnapshot} (202) + {@code RfqStateSnapshot}
+ * (203) + {@code ClOrdIdDedupSnapshot} (210). The header carries a CRC32C checksum covering the
+ * concatenated body bytes in publish order; {@link #onStart} verifies the checksum before handing
+ * control back to the cluster framework.
  *
  * <p><b>Determinism.</b> Every mutation is driven by either (a) a cluster-supplied message and
  * timestamp or (b) a cluster-supplied snapshot fragment. No wall-clock, no randomness, no heap
@@ -105,9 +107,11 @@ public final class TradingClusteredService implements ClusteredService {
 
   /**
    * Number of body fragments in a well-formed snapshot envelope. Bumped from 6 to 7 by APP-232 to
-   * include {@code RfqStateSnapshot} (template 203).
+   * include {@code RfqStateSnapshot} (template 203). Bumped from 7 to 8 by APP-206 R7 to include
+   * {@code ClOrdIdDedupSnapshot} (template 210) — required so the 24h ClOrdID-uniqueness contract
+   * survives snapshot+restore.
    */
-  private static final int SNAPSHOT_STORE_COUNT = 7;
+  private static final int SNAPSHOT_STORE_COUNT = 8;
 
   /**
    * Maximum consecutive empty polls tolerated during snapshot reassembly in {@link #onStart} before
@@ -136,6 +140,15 @@ public final class TradingClusteredService implements ClusteredService {
   private final ReferenceDataRegistry referenceDataRegistry;
   private final RfqStateMachine rfqStateMachine;
   private final RfqMetrics rfqMetrics;
+
+  /**
+   * Direct reference to the registered {@link NewOrderSingleHandler} so the snapshot path can
+   * delegate ClOrdID-dedup encode/restore (APP-206 R7) to it. The handler is also in {@link
+   * #commandHandlers} for command dispatch; the explicit field avoids a lookup-and-cast on the
+   * snapshot path and makes the dependency obvious to the static analysis.
+   */
+  private final NewOrderSingleHandler newOrderSingleHandler;
+
   private final QuoteRequestHandler quoteRequestHandler;
   private final PriceResponseHandler priceResponseHandler;
   private final Int2ObjectHashMap<CommandHandler> commandHandlers;
@@ -174,6 +187,14 @@ public final class TradingClusteredService implements ClusteredService {
   /** Snapshot 203 (RfqStateSnapshot) staging buffer. Sized for capacity 8192 × ~320 bytes/slot. */
   private final MutableDirectBuffer rfqStateSnapBuf = new ExpandableArrayBuffer(4 * 1024 * 1024);
 
+  /**
+   * Snapshot 210 (ClOrdIdDedupSnapshot) staging buffer (APP-206 R7). Sized for up to
+   * CLORDID_DEDUP_MAX_SIZE (100K) entries × 16 bytes per entry + group / header overhead ≈ 1.6 MB;
+   * 2 MB is a safe round-up that also covers any future header-field additions.
+   */
+  private final MutableDirectBuffer clOrdIdDedupSnapBuf =
+      new ExpandableArrayBuffer(2 * 1024 * 1024);
+
   // Lengths populated by encodeSnapshotFragments().
   private int snapshotHeaderLen;
   private int eventSeqSnapLen;
@@ -183,6 +204,7 @@ public final class TradingClusteredService implements ClusteredService {
   private int riskLimitSnapLen;
   private int orderBookSnapLen;
   private int rfqStateSnapLen;
+  private int clOrdIdDedupSnapLen;
 
   // Used by onStart() for snapshot image reassembly and by onTakeSnapshot() for atomic assembly
   // before publication. Dual use is safe: Aeron Cluster guarantees onStart() completes before
@@ -207,6 +229,7 @@ public final class TradingClusteredService implements ClusteredService {
   private boolean currencyFragmentSeen;
   private boolean riskLimitFragmentSeen;
   private boolean rfqStateFragmentSeen;
+  private boolean clOrdIdDedupFragmentSeen;
   private boolean orderIdGenRestored;
   private boolean execIdGenRestored;
   private boolean quoteIdGenRestored;
@@ -262,10 +285,10 @@ public final class TradingClusteredService implements ClusteredService {
     // Register trading command handlers. Each handler is keyed by its SBE template ID for
     // O(1) dispatch in onSessionMessage.
     this.commandHandlers = new Int2ObjectHashMap<>();
-    final var nosHandler =
+    this.newOrderSingleHandler =
         new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
-    nosHandler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
-    commandHandlers.put(nosHandler.commandTemplateId(), nosHandler);
+    this.newOrderSingleHandler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
+    commandHandlers.put(newOrderSingleHandler.commandTemplateId(), newOrderSingleHandler);
     this.quoteRequestHandler =
         new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);
     commandHandlers.put(quoteRequestHandler.commandTemplateId(), quoteRequestHandler);
@@ -466,7 +489,7 @@ public final class TradingClusteredService implements ClusteredService {
   int assembleSnapshot(final int maxMessageLength) {
     encodeSnapshotFragments(cluster == null ? 0L : cluster.time());
 
-    // Pre-compute total assembled length across all eight fragments (header + 7 body). Use long
+    // Pre-compute total assembled length across all fragments (header + 8 body). Use long
     // arithmetic so a pathological state-growth bug cannot wrap the sum negative and silently
     // bypass the hard cap.
     final long totalLenLong =
@@ -477,7 +500,8 @@ public final class TradingClusteredService implements ClusteredService {
             + currencySnapLen
             + riskLimitSnapLen
             + orderBookSnapLen
-            + rfqStateSnapLen;
+            + rfqStateSnapLen
+            + clOrdIdDedupSnapLen;
 
     // Hard cap: fail fast before attempting allocation to protect against OOM from unbounded
     // state growth (e.g., order pool leak that never releases slots). Scales with maxMessageLength
@@ -508,7 +532,7 @@ public final class TradingClusteredService implements ClusteredService {
     // doublings on the duty-cycle thread).
     snapshotReassemblyBuf.checkLimit(totalLen);
 
-    // Assemble all 7 fragments into snapshotReassemblyBuf as one contiguous block.
+    // Assemble all 8 fragments into snapshotReassemblyBuf as one contiguous block.
     int pos = 0;
     snapshotReassemblyBuf.putBytes(pos, snapshotHeaderBuf, 0, snapshotHeaderLen);
     pos += snapshotHeaderLen;
@@ -526,6 +550,8 @@ public final class TradingClusteredService implements ClusteredService {
     pos += orderBookSnapLen;
     snapshotReassemblyBuf.putBytes(pos, rfqStateSnapBuf, 0, rfqStateSnapLen);
     pos += rfqStateSnapLen;
+    snapshotReassemblyBuf.putBytes(pos, clOrdIdDedupSnapBuf, 0, clOrdIdDedupSnapLen);
+    pos += clOrdIdDedupSnapLen;
 
     // Post-assembly integrity: verify cursor matches pre-computed total.
     if (pos != totalLen) {
@@ -677,7 +703,13 @@ public final class TradingClusteredService implements ClusteredService {
     // 7. RfqStateSnapshot (template 203) — APP-232.
     rfqStateSnapLen = rfqStateMachine.encodeInto(rfqStateSnapBuf, 0, headerEncoder);
 
-    // CRC32C over the seven body fragments in publish order.
+    // 8. ClOrdIdDedupSnapshot (template 210) — APP-206 R7. Persists the NewOrderSingleHandler
+    //    dedup registry + lastEvictionTimestampNanos throttle. Without this, after a cluster
+    //    restart the registry rebuilds empty and any ClOrdID first seen before the snapshot
+    //    but still inside the 24h dedup window would be admitted again.
+    clOrdIdDedupSnapLen = newOrderSingleHandler.snapshotDedupTo(clOrdIdDedupSnapBuf, 0);
+
+    // CRC32C over the eight body fragments in publish order.
     crc.reset();
     crc.update(eventSeqSnapBuf.byteArray(), 0, eventSeqSnapLen);
     crc.update(idGenSnapBuf.byteArray(), 0, idGenSnapLen);
@@ -686,6 +718,7 @@ public final class TradingClusteredService implements ClusteredService {
     crc.update(riskLimitSnapBuf.byteArray(), 0, riskLimitSnapLen);
     crc.update(orderBookSnapBuf.byteArray(), 0, orderBookSnapLen);
     crc.update(rfqStateSnapBuf.byteArray(), 0, rfqStateSnapLen);
+    crc.update(clOrdIdDedupSnapBuf.byteArray(), 0, clOrdIdDedupSnapLen);
     final int checksum = (int) crc.getValue();
 
     final long totalBody =
@@ -695,7 +728,8 @@ public final class TradingClusteredService implements ClusteredService {
             + currencySnapLen
             + riskLimitSnapLen
             + orderBookSnapLen
-            + rfqStateSnapLen;
+            + rfqStateSnapLen
+            + clOrdIdDedupSnapLen;
 
     // Finally, encode the SnapshotTaken header.
     snapshotTakenEncoder.wrapAndApplyHeader(snapshotHeaderBuf, 0, headerEncoder);
@@ -772,6 +806,14 @@ public final class TradingClusteredService implements ClusteredService {
 
   MutableDirectBuffer orderBookSnapBuffer() {
     return orderBookSnapBuf;
+  }
+
+  int clOrdIdDedupSnapLength() {
+    return clOrdIdDedupSnapLen;
+  }
+
+  MutableDirectBuffer clOrdIdDedupSnapBuffer() {
+    return clOrdIdDedupSnapBuf;
   }
 
   MutableDirectBuffer snapshotReassemblyBuffer() {
@@ -854,6 +896,7 @@ public final class TradingClusteredService implements ClusteredService {
     currencyFragmentSeen = false;
     riskLimitFragmentSeen = false;
     rfqStateFragmentSeen = false;
+    clOrdIdDedupFragmentSeen = false;
     orderIdGenRestored = false;
     execIdGenRestored = false;
     quoteIdGenRestored = false;
@@ -998,6 +1041,21 @@ public final class TradingClusteredService implements ClusteredService {
       }
       orderBookFragmentSeen = true;
       return tradingState.restoreOrderBookFrom(src, offset);
+    }
+    if (templateId == ClOrdIdDedupSnapshotDecoder.TEMPLATE_ID) {
+      if (clOrdIdDedupFragmentSeen) {
+        throw new IllegalStateException("duplicate ClOrdIdDedupSnapshot fragment in snapshot");
+      }
+      clOrdIdDedupFragmentSeen = true;
+      // APP-206 R7: restore the NewOrderSingleHandler dedup registry so the 24h ClOrdID-uniqueness
+      // contract survives snapshot+restore.
+      final int consumed =
+          newOrderSingleHandler.restoreDedupFrom(
+              src,
+              offset + MessageHeaderDecoder.ENCODED_LENGTH,
+              headerDecoder.blockLength(),
+              headerDecoder.version());
+      return MessageHeaderDecoder.ENCODED_LENGTH + consumed;
     }
     if (templateId == RfqStateSnapshotDecoder.TEMPLATE_ID) {
       if (rfqStateFragmentSeen) {
