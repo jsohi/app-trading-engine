@@ -1017,6 +1017,8 @@ public final class SbeToFixTranslator {
       case AccountNoTradePermission -> 99; // FIX: Other
       case AccountNoQuotePermission -> 99; // FIX: Other
       case OrderExceedsMaxSize -> 3; // FIX: Order exceeds limit
+      case TradingHalted -> 99; // FIX: Other (FIX 4.4 has no direct OrdRejReason for trading halt;
+      // the operator's free-text reason is preserved in tag 58 Text)
       case DuplicateAccountCode -> 99; // FIX: Other
       case UnknownCurrency -> 99; // FIX: Other
       case InvalidCurrencyCode -> 99; // FIX: Other
