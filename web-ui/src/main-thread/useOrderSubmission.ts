@@ -86,6 +86,14 @@ export function useOrderSubmission(): UseOrderSubmissionApi {
         const cc = new CC(getWorkerClient());
         ccLocal = cc;
         setClient(cc);
+        // APP-225 §D spec 06b throttle escape hatch — bind `window.__submitCommandRaw` to this
+        // CommandClient so the Playwright spec can bypass the form's single-in-flight state
+        // machine and drive raw submits at the server-side rate limiter. No-op outside e2e mode.
+        // Dynamically imported to keep e2eHooks out of the production bundle for forms that
+        // mount before installEarlyHooks() runs (it doesn't, but the dynamic import is the
+        // existing project idiom for e2e-only glue and DCE works the same way).
+        const { registerSubmitCommandRaw } = await import("@/main-thread/e2eHooks");
+        registerSubmitCommandRaw((payload) => cc.submitOrder(payload));
       } catch (e: unknown) {
         if (disposed.v) return;
         setState({
@@ -100,6 +108,16 @@ export function useOrderSubmission(): UseOrderSubmissionApi {
       // lifetime spans the process; tearing it down here would break
       // messageSource's inbound stream subscription.
       ccLocal?.dispose();
+      // APP-225 §D — restore the throwing stub so any post-unmount page.evaluate fails loudly
+      // instead of driving a disposed CommandClient. Best-effort: ignore errors (the e2eHooks
+      // module is e2e-only, dynamically imported; in prod the import resolves to a no-op).
+      void import("@/main-thread/e2eHooks")
+        .then(({ unregisterSubmitCommandRaw }) => {
+          unregisterSubmitCommandRaw();
+        })
+        .catch(() => {
+          /* e2eHooks unavailable (prod) — no-op. */
+        });
     };
   }, []);
 

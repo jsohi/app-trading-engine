@@ -10,6 +10,11 @@
  *
  * <ul>
  *   <li>{@code __forceWsClose}            (plan §14, test 7 reconnect)
+ *   <li>{@code __submitCommandRaw}        (APP-225 §D spec 06b throttle — bypasses the form's
+ *                                          single-in-flight serialization to drive
+ *                                          {@code CommandClient.submitOrder} directly so the
+ *                                          server-side token-bucket limiter (burst=256,
+ *                                          sustained=100/sec) is actually exercised)
  *   <li>{@code __cellFlashes}             (plan §8 test 5 flash recorder)
  *   <li>{@code __ordersGridApi}           (plan §8 test 5; OrderBlotter exposes its AG Grid api)
  *   <li>{@code __E2E_JWT_OVERRIDE__}      (plan §8 test 8 multi-issuer per-context token)
@@ -33,12 +38,23 @@
 
 import { connectionStream$ } from "@/streams/connection-stream";
 import { feedState$ } from "@/streams/feed-state-stream";
+import type { CommandAckResult, NewOrderSinglePayload } from "@/main-thread/commandClient";
 
 /** Ambient type for the global hooks namespace (typed access from inside the project). */
 declare global {
   var __e2eHooks: E2EHooks | undefined;
 
   var __forceWsClose: (() => void) | undefined;
+
+  // APP-225 §D spec 06b throttle escape hatch. Drives `CommandClient.submitOrder` directly,
+  // bypassing the OrderEntryForm's `useOrderSubmission` single-in-flight state machine so a
+  // tight loop of submits reaches the server-side rate limiter (burst=256, sustained=100/sec).
+  // Stub at module load; replaced by the real impl in `useOrderSubmission` once the
+  // CommandClient instance is constructed for a mounted form. Throws when called before the
+  // form is ready (the spec must `await readinessGate(page)` first).
+  var __submitCommandRaw:
+    | ((payload: NewOrderSinglePayload) => Promise<CommandAckResult>)
+    | undefined;
 
   var __cellFlashes: Array<{ field: string; rowId: string }> | undefined;
 
@@ -90,6 +106,16 @@ export function installEarlyHooks(): void {
   globalThis.__forceWsClose = () => {
     /* WorkerClient not yet initialised — best-effort no-op. */
   };
+  // __submitCommandRaw is registered by `useOrderSubmission` once the per-form CommandClient
+  // is constructed (and unregistered on unmount). Pre-register a throwing stub so a spec that
+  // forgets to mount the OrderEntryForm fails loudly with a clear message instead of silently
+  // calling `undefined()`. Throws synchronously (the test's `await` rejects).
+  globalThis.__submitCommandRaw = () => {
+    throw new Error(
+      "__submitCommandRaw called before any OrderEntryForm mounted — the spec must render the " +
+        "form (which constructs the CommandClient) before driving raw submits.",
+    );
+  };
 }
 
 /**
@@ -100,6 +126,35 @@ export function installEarlyHooks(): void {
 export function registerForceWsClose(impl: () => void): void {
   if (!e2eEnabled()) return;
   globalThis.__forceWsClose = impl;
+}
+
+/**
+ * Replace the {@code __submitCommandRaw} stub with a real implementation that drives the given
+ * {@code CommandClient.submitOrder} directly. Called by {@code useOrderSubmission} on form mount.
+ * No-op outside test mode.
+ *
+ * @param impl bound submitter (typically {@code (p) => commandClient.submitOrder(p)}).
+ */
+export function registerSubmitCommandRaw(
+  impl: (payload: NewOrderSinglePayload) => Promise<CommandAckResult>,
+): void {
+  if (!e2eEnabled()) return;
+  globalThis.__submitCommandRaw = impl;
+}
+
+/**
+ * Restore the throwing stub. Called by {@code useOrderSubmission} on form unmount so a stale
+ * page.evaluate after the form is gone fails with a clear "form unmounted" message rather
+ * than driving a disposed CommandClient. No-op outside test mode.
+ */
+export function unregisterSubmitCommandRaw(): void {
+  if (!e2eEnabled()) return;
+  globalThis.__submitCommandRaw = () => {
+    throw new Error(
+      "__submitCommandRaw called after the OrderEntryForm was unmounted — the CommandClient is " +
+        "disposed; re-mount the form before driving raw submits.",
+    );
+  };
 }
 
 /**
