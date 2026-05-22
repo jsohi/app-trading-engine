@@ -66,8 +66,29 @@ tasks.register<Test>("perfTest") {
 }
 
 // Default :test excludes the perf tag so regular CI never picks them up.
+//
+// JVM-flag pinning (APP-225 §D10) — pin the GC + Aeron tuning that the cluster needs
+// for deterministic integration runs:
+//   -XX:+UseG1GC + MaxGCPauseMillis=50  →  eliminates G1-pause flake on cold CI hosts
+//   -Daeron.term.buffer.length=1m       →  bounds Aeron log segment size so /dev/shm
+//                                          doesn't OOM on tight-loop tests
+//   -Daeron.dir.warn.if.exists=false    →  silences the verbose first-time warning
+//                                          that pollutes test output (Aeron-project
+//                                          convention; the dir IS expected to exist
+//                                          across test classes that share an MD)
+// The `--add-opens` flags are inherited from `applicationDefaultJvmArgs` only on
+// `application`-task JVM forks; `tasks.test` runs in its own forked JVM, so the
+// reflective-access opens must be repeated here.
 tasks.named<Test>("test") {
     useJUnitPlatform {
         excludeTags("perf")
     }
+    jvmArgs(
+        "-XX:+UseG1GC",
+        "-XX:MaxGCPauseMillis=50",
+        "-Daeron.term.buffer.length=1m",
+        "-Daeron.dir.warn.if.exists=false",
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    )
 }
