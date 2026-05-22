@@ -161,7 +161,8 @@ val fullStackE2eRun by tasks.registering(NpmTask::class) {
 // blocks, producing a single PASS/FAIL semantic for the release gate.
 val releaseRehearsal by tasks.registering(NpmTask::class) {
     group = "verification"
-    description = "Playwright release-rehearsal narrative (single trader-day spec; expects launcher pre-booted by scripts/full-stack-e2e.sh)."
+    description =
+        "Playwright release-rehearsal narrative (single trader-day spec; expects launcher pre-booted by scripts/full-stack-e2e.sh)."
     dependsOn(webUiE2eDeps)
     workingDir.set(rootProject.layout.projectDirectory.asFile)
     args.set(
