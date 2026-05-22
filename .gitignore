@@ -24,6 +24,7 @@ node_modules/
 dist/
 playwright-report/
 playwright-report-full-stack/
+playwright-report-release-rehearsal/
 test-results/
 storybook-static/
 coverage/

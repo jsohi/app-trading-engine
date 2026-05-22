@@ -154,6 +154,29 @@ val fullStackE2eRun by tasks.registering(NpmTask::class) {
     )
 }
 
+// Release-rehearsal: single curated trader-day narrative (APP-225). Invoked by
+// `scripts/full-stack-e2e.sh` as the DEFAULT post-boot Playwright task. Distinct
+// from `fullStackE2eRun` (the broader specs 01-07 regression) — the rehearsal
+// runs one ordered spec with shared Page/auth/state across six `test.step`
+// blocks, producing a single PASS/FAIL semantic for the release gate.
+val releaseRehearsal by tasks.registering(NpmTask::class) {
+    group = "verification"
+    description = "Playwright release-rehearsal narrative (single trader-day spec; expects launcher pre-booted by scripts/full-stack-e2e.sh)."
+    dependsOn(webUiE2eDeps)
+    workingDir.set(rootProject.layout.projectDirectory.asFile)
+    args.set(
+        listOf(
+            "exec",
+            "-w",
+            "web-ui",
+            "--",
+            "playwright",
+            "test",
+            "--config=playwright.release-rehearsal.config.ts",
+        ),
+    )
+}
+
 val fullStackE2eRunMultiIssuer by tasks.registering(NpmTask::class) {
     group = "verification"
     description = "Playwright full-stack run for spec 08 (multi-issuer); expects launcher rebooted with multi-issuer overlay."
