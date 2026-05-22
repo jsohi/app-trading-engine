@@ -61,7 +61,9 @@ collect_failure_bundle() {
   local ts
   ts=$(date -u +'%Y%m%dT%H%M%SZ')
   local stage
-  stage=$(mktemp -d -t release-rehearsal-bundle.XXXXXX) || {
+  # Gemini R8 fix: use full path template instead of `mktemp -t` (the `-t` flag has divergent
+  # semantics between GNU and BSD mktemp; the full-path form is portable and explicit).
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/release-rehearsal-bundle.XXXXXX") || {
     echo "[bundle] FATAL: mktemp failed" >&2
     return 1
   }
@@ -101,8 +103,10 @@ collect_failure_bundle() {
     if (( cluster_size_bytes > 1073741824 )); then # 1 GB
       # Take only the 20 most-recent archive segments + all *.snp snapshots.
       find "$cluster_data" -type f -name '*.snp' -exec cp -p {} "$bundle_dir/cluster-data/" \; 2>/dev/null || true
-      find "$cluster_data" -type f -name '*.rec' -print0 2>/dev/null \
-        | xargs -0 ls -1t 2>/dev/null \
+      # Gemini R8 fix: replace `find ... -print0 | xargs -0 ls -1t` with `find ... -exec ls -t {} +`
+      # so the entire file set goes through a SINGLE `ls -t` (xargs may split into multiple `ls`
+      # invocations, sorting only within each batch and producing a globally-non-time-ordered list).
+      find "$cluster_data" -type f -name '*.rec' -exec ls -t {} + 2>/dev/null \
         | head -20 \
         | while read -r f; do cp -p "$f" "$bundle_dir/cluster-data/" 2>/dev/null || true; done
       echo "cluster-data truncated to most-recent 20 *.rec segments + all *.snp; original size=${cluster_size_bytes} bytes" \
