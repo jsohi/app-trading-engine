@@ -667,6 +667,32 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return null;
     }
 
+    // 11b. (APP-62 first slice) OrderNotional (price × qty / PRICE_SCALE) must not exceed account
+    //      maxOrderNotional risk limit. Skipped for Market orders (price=0) — notional cannot be
+    //      computed at order entry and is bounded by maxOrderSize × prevailing price. Skipped
+    //      when the account has no notional limit configured (maxOrderNotional == 0 == unlimited).
+    //
+    //      Overflow guard: orderQty × price can overflow long for large values
+    //      (qty=1e8 * price=1e8 / 1e8 = 1e8 result — fine — but qty=1e10 * price=1e10 = 1e20
+    //      overflows). Use Math.multiplyHigh + low-bits to detect overflow without floating-
+    //      point; on overflow, treat the order as exceeding the limit and reject.
+    if (riskLimit != null
+        && riskLimit.maxOrderNotional() > 0L
+        && ordType == OrdTypeEnum.Limit
+        && price > 0L) {
+      final long notional = computeNotionalSaturating(orderQty, price);
+      if (notional > riskLimit.maxOrderNotional()) {
+        emitOrderRejected(
+            eventSink,
+            session,
+            timestamp,
+            side,
+            RejectReasonEnum.OrderExceedsMaxSize,
+            "orderNotional exceeds account maxOrderNotional");
+        return null;
+      }
+    }
+
     // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
     //     deterministic counter space on an order that cannot be admitted.
     if (tradingState.isOrderBookFull()) {
@@ -879,6 +905,49 @@ public final class NewOrderSingleHandler implements CommandHandler {
       end--;
     }
     return end;
+  }
+
+  /**
+   * Fixed-point scale factor used by all prices, quantities, and notional values in the trading
+   * engine: 10^8 (matches the SBE schema's {@code priceScale="100000000"} attribute). Kept as a
+   * local constant here so the notional calculation stays self-contained — the cluster module has
+   * no shared "prices.PRICE_SCALE" symbol today, and importing one cross-module would couple this
+   * handler to a constants type it otherwise doesn't need.
+   */
+  static final long PRICE_SCALE = 100_000_000L;
+
+  /**
+   * Computes {@code (orderQty * price) / PRICE_SCALE} for the maxOrderNotional check, saturating to
+   * {@link Long#MAX_VALUE} on intermediate overflow. Both inputs are fixed-point 10^-8 longs; the
+   * naive multiply can exceed long for qty × price > ~9.2e18, which happens at qty=1e10 *
+   * price=1e10 (10 billion units at $100 — well within hostile-input range for a fuzz test,
+   * plausible for an accidental decimal-place mistake in production).
+   *
+   * <p>Algorithm: use {@link Math#multiplyHigh(long, long)} to detect the high 64 bits of the
+   * 128-bit product. If high != 0 (or the product would be negative when both inputs are positive),
+   * the multiplication overflowed signed-long range — saturate to {@code Long.MAX_VALUE} so the
+   * downstream {@code > maxOrderNotional} check rejects the order. Otherwise return the divided
+   * value. Pure primitive arithmetic, zero allocation.
+   *
+   * @param orderQty fixed-point 10^-8 quantity (positive)
+   * @param price fixed-point 10^-8 price (positive)
+   * @return the notional in fixed-point 10^-8, or {@link Long#MAX_VALUE} on overflow
+   */
+  static long computeNotionalSaturating(final long orderQty, final long price) {
+    // multiplyHigh returns the high 64 bits of the 128-bit signed product. If those bits are
+    // anything but 0 for two positive inputs, the low 64 bits don't represent the true value.
+    final long high = Math.multiplyHigh(orderQty, price);
+    if (high != 0L) {
+      return Long.MAX_VALUE;
+    }
+    final long product = orderQty * price;
+    // Defensive: if signed-long arithmetic wrapped past Long.MAX_VALUE (product < 0 when both
+    // inputs are positive), saturate. multiplyHigh = 0 with product < 0 is impossible for
+    // positive inputs but guard anyway in case a caller passes a negative price/qty.
+    if (product < 0L) {
+      return Long.MAX_VALUE;
+    }
+    return product / PRICE_SCALE;
   }
 
   /**
