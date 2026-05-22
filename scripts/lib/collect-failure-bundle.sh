@@ -37,6 +37,13 @@ COLLECT_BUNDLE_HELPER_LOADED=1
 collect_failure_bundle() {
   local repo_root="$1"
   local log_dir="$repo_root/e2e/logs"
+  # Belt-and-suspenders: sweep stale staging dirs from previous invocations that
+  # may have leaked if a prior call was interrupted by a signal before the
+  # function-local RETURN trap could fire (RETURN traps run on function exit,
+  # not on parent-shell signal-kill). 1-hour ceiling is conservative —
+  # collect_failure_bundle finishes in seconds, so anything older is an orphan.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'release-rehearsal-bundle.*' \
+    -mmin +60 -exec rm -rf {} + 2>/dev/null || true
   # Defense-in-depth: the launcher's -Dcluster.baseDir is now an absolute path
   # ($REPO_ROOT/e2e/cluster-data) so the canonical location is the first entry,
   # but older script generations resolved that flag relative to the launcher's
