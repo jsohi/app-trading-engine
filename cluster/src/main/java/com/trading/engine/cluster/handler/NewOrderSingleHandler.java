@@ -25,6 +25,7 @@ import com.trading.engine.messages.sbe.TimeInForceEnum;
 import io.aeron.cluster.service.ClientSession;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
+import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -44,6 +45,12 @@ import org.agrona.concurrent.UnsafeBuffer;
  *       acquisition fails at this stage (should not happen due to the pre-validation guard), an
  *       {@link IllegalStateException} is thrown to trigger Aeron Cluster failover.
  * </ol>
+ *
+ * <p><b>Dedup (APP-206):</b> Before any validation, the handler hashes {@code (sessionId, clOrdId)}
+ * into a {@link Long2LongHashMap} keyed by FNV-1a 64-bit hash → first-seen cluster timestamp. A
+ * second submission within the {@code CLORDID_DEDUP_WINDOW_NS} (24 h) window is rejected with
+ * {@link RejectReasonEnum#DuplicateClOrdId} — even if the first attempt was itself rejected by
+ * downstream validation, matching the LMAX / CME "ClOrdID consumed on first sight" semantics.
  *
  * <p><b>Validation (12 pre-trade checks plus §9.2a quote-acceptance peek):</b>
  *
@@ -121,6 +128,58 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private final AccountStore accountStore;
   private final CurrencyStore currencyStore;
   private final RiskLimitStore riskLimitStore;
+
+  // ===========================================================================
+  // ClOrdID dedup (APP-206)
+  //
+  // Per FIX 4.4: ClOrdID (tag 11) must be unique per session for the trading
+  // day. A duplicate ClOrdID — even after the original order was rejected —
+  // is treated as a protocol error and rejected with
+  // {@link RejectReasonEnum#DuplicateClOrdId} (5).
+  //
+  // Storage: {@link Long2LongHashMap} keyed by a 64-bit hash of
+  // {@code (session.id, effective-clOrdId-bytes)} → first-seen cluster
+  // timestamp (epoch nanos). The 24-hour window matches the FIX trading-day
+  // boundary; entries outside the window are evicted lazily on the next
+  // dedup-key insert that crosses the size watermark.
+  //
+  // Hash-collision risk: 64-bit hash space + 100K active entries gives
+  // P(collision) ≈ 2.7e-10 — well below the noise floor of every other
+  // failure mode in the pipeline. The trade-off buys hot-path zero-alloc:
+  // a per-session {@code ObjectHashSet<byte[]>} would require byte-array
+  // boxing on every put + AsciiSequenceView allocation per query.
+  //
+  // Snapshot-restore caveat: this registry is NOT yet in the cluster
+  // snapshot. After a snapshot restore, the dedup state rebuilds only from
+  // log entries replayed since the snapshot point — a window of up to one
+  // snapshot interval may admit a duplicate that the pre-snapshot path
+  // would have rejected. Tracked under APP-171 (atomic snapshot publish);
+  // accepted for this slice because the snapshot subsystem is not yet
+  // production-deployed.
+  // ===========================================================================
+
+  /** Dedup window matching the FIX trading-day boundary. */
+  static final long CLORDID_DEDUP_WINDOW_NS = 24L * 3600L * 1_000_000_000L;
+
+  /**
+   * Size watermark above which the registry attempts lazy eviction on each new insert. At 100K
+   * entries the registry retains ~10MB of off-heap memory and eviction walks remain bounded by the
+   * watermark, not by total throughput.
+   */
+  static final int CLORDID_DEDUP_MAX_SIZE = 100_000;
+
+  /** Sentinel returned by the Long2LongHashMap when a key is absent. */
+  static final long CLORDID_DEDUP_MISSING = Long.MIN_VALUE;
+
+  /**
+   * {@code (sessionId, clOrdIdHash)} → first-seen cluster timestamp (epoch nanos). Pre-sized to the
+   * watermark to avoid rehash thrash during steady- state operation; growth past the watermark
+   * triggers lazy eviction.
+   *
+   * <p>Package-private for direct-size assertions in {@link NewOrderSingleHandlerClOrdIdDedupTest}.
+   */
+  final Long2LongHashMap clOrdIdRegistry =
+      new Long2LongHashMap(CLORDID_DEDUP_MAX_SIZE * 2, 0.65f, CLORDID_DEDUP_MISSING);
 
   /**
    * Optional injection from {@link com.trading.engine.cluster.TradingClusteredService} for plan
@@ -217,6 +276,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
     final var timeInForce = nosDecoder.timeInForce();
 
     nosDecoder.getClOrdId(clOrdIdScratch, 0);
+    // Trim trailing zeros BEFORE the dedup hash so equivalent ASCII strings ("ABC\0\0..." vs the
+    // same "ABC\0..." from a different SBE encoder padding) produce the same dedup key.
+    final int clOrdIdLen = trimTrailingZeros(clOrdIdScratch, NewOrderSingleDecoder.clOrdIdLength());
     nosDecoder.getSymbol(symbolScratch, 0);
     final int symbolLen = trimTrailingZeros(symbolScratch, OrderState.SYMBOL_LENGTH);
     nosDecoder.getAccountCode(accountCodeScratch, 0);
@@ -231,6 +293,37 @@ public final class NewOrderSingleHandler implements CommandHandler {
     currencyByte0 = ccy0;
     currencyByte1 = ccy1;
     currencyByte2 = ccy2;
+
+    // 2a. (APP-206) ClOrdID dedup — per FIX 4.4, ClOrdID must be unique per
+    // session within the 24h trading-day window. Reject duplicates before any
+    // other validation work runs (cheapest reject path + matches LMAX / CME
+    // semantics where a ClOrdID is consumed on first sight regardless of
+    // first-attempt outcome).
+    final long sessionId = session != null ? session.id() : 0L;
+    final long dedupKey = computeClOrdIdDedupKey(sessionId, clOrdIdScratch, 0, clOrdIdLen);
+    final long previousSeenNanos = clOrdIdRegistry.get(dedupKey);
+    // Short-circuit on CLORDID_DEDUP_MISSING (= Long.MIN_VALUE) BEFORE the subtraction —
+    // (clusterTimestamp - Long.MIN_VALUE) overflows, so the missing-key check must precede the
+    // window comparison to avoid a false-positive reject on the first submission.
+    if (previousSeenNanos != CLORDID_DEDUP_MISSING
+        && (clusterTimestamp - previousSeenNanos) < CLORDID_DEDUP_WINDOW_NS) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          clusterTimestamp,
+          side,
+          RejectReasonEnum.DuplicateClOrdId,
+          "duplicate ClOrdID within 24h window");
+      return;
+    }
+    // Register (or refresh) the ClOrdID under the cluster timestamp. Lazy eviction runs only when
+    // the registry crosses CLORDID_DEDUP_MAX_SIZE on a NEW (not refreshed) insert — refreshes
+    // don't grow the registry, so the steady-state hot path stays O(1) even at the watermark.
+    if (previousSeenNanos == CLORDID_DEDUP_MISSING
+        && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE) {
+      evictExpiredClOrdIds(clusterTimestamp);
+    }
+    clOrdIdRegistry.put(dedupKey, clusterTimestamp);
 
     // 3. Validate — returns AccountState on success, null on rejection (already emitted).
     final var account =
@@ -757,6 +850,77 @@ public final class NewOrderSingleHandler implements CommandHandler {
       end--;
     }
     return end;
+  }
+
+  /**
+   * FNV-1a 64-bit hash over {@code (sessionId-as-8-bytes, clOrdId-bytes)} producing the dedup-map
+   * key. Deterministic — replays produce identical keys, which is required for Aeron Cluster log
+   * replay. Pure primitive arithmetic — zero allocation.
+   *
+   * <p>Collision probability — birthday approximation against the 64-bit hash space:
+   *
+   * <ul>
+   *   <li>Globally across all sessions at the {@link #CLORDID_DEDUP_MAX_SIZE} watermark (100K
+   *       entries): ≈ 2.7e-10.
+   *   <li>Per-session (even spread across N sessions): ≈ 2.7e-10 / N². A single session would need
+   *       ~5 billion unique ClOrdIDs in 24h to expect one collision.
+   * </ul>
+   *
+   * <p>The trade-off vs a per-session {@code ObjectHashSet<byte[]>}-keyed structure: a true set
+   * would box the byte[] on every put and allocate an {@code AsciiSequenceView} on every query,
+   * both of which violate the cluster hot-path zero-allocation rule. The collision rate is well
+   * below the noise floor of every other failure mode in the pipeline.
+   *
+   * @param sessionId the {@link ClientSession#id} of the originating session (or 0 in tests)
+   * @param clOrdIdBytes the ClOrdID byte buffer ({@link #clOrdIdScratch})
+   * @param offset starting offset into {@code clOrdIdBytes}
+   * @param length the effective length (post-trim) of the ClOrdID
+   * @return a 64-bit hash usable as a {@link Long2LongHashMap} key
+   */
+  static long computeClOrdIdDedupKey(
+      final long sessionId, final byte[] clOrdIdBytes, final int offset, final int length) {
+    // FNV-1a constants: offset basis 0xcbf29ce484222325L; prime 0x100000001b3L.
+    long hash = 0xcbf29ce484222325L;
+    // Mix in session ID bytes (big-endian) first so identical ClOrdIDs across sessions get
+    // distinct keys.
+    for (int i = 7; i >= 0; i--) {
+      hash = (hash ^ ((sessionId >>> (i * 8)) & 0xFFL)) * 0x100000001b3L;
+    }
+    for (int i = 0; i < length; i++) {
+      hash = (hash ^ (clOrdIdBytes[offset + i] & 0xFFL)) * 0x100000001b3L;
+    }
+    return hash;
+  }
+
+  /**
+   * Walks {@link #clOrdIdRegistry} and removes entries whose first-seen timestamp falls outside the
+   * {@link #CLORDID_DEDUP_WINDOW_NS} dedup window relative to {@code nowNs}. Invoked only when the
+   * registry crosses {@link #CLORDID_DEDUP_MAX_SIZE} on a NEW insert (never on a refresh), so
+   * steady-state hot-path cost stays O(1); eviction cost is amortized across the inserts that push
+   * the registry past the watermark.
+   *
+   * <p>Iteration uses {@link Long2LongHashMap.KeySet}'s primitive iterator and reads each value via
+   * {@code get(key)} — both primitive, both zero-boxing. Avoids {@code entrySet()} which wraps each
+   * key/value pair in a {@code Map.Entry<Long, Long>} (boxes both sides).
+   *
+   * <p>This eviction path is off the steady-state hot path by design; the watermark guard ensures
+   * it runs only when the registry has accumulated 100K+ entries, which is a rare event even on a
+   * busy trading day (24h × 100K/24h = ~1.16 puts/sec sustained throughput).
+   *
+   * @param nowNs the current cluster timestamp in epoch nanos
+   */
+  private void evictExpiredClOrdIds(final long nowNs) {
+    // Explicit Long2LongHashMap.KeyIterator type (rather than `final var`) so a future
+    // maintainer cannot mistake this for a `java.util.Iterator<Long>` that would box on
+    // .next(). `nextValue()` returns primitive long.
+    final Long2LongHashMap.KeyIterator keyIter = clOrdIdRegistry.keySet().iterator();
+    while (keyIter.hasNext()) {
+      final long key = keyIter.nextValue();
+      final long firstSeenNanos = clOrdIdRegistry.get(key);
+      if ((nowNs - firstSeenNanos) >= CLORDID_DEDUP_WINDOW_NS) {
+        keyIter.remove();
+      }
+    }
   }
 
   /**
