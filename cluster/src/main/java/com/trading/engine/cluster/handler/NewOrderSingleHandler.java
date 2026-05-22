@@ -210,6 +210,34 @@ public final class NewOrderSingleHandler implements CommandHandler {
       new Long2LongHashMap(CLORDID_DEDUP_MAX_SIZE * 2, 0.65f, CLORDID_DEDUP_MISSING);
 
   /**
+   * Per-account rate-limit state for APP-62 slice 2. Key = accountId. Value = packed long: upper 32
+   * bits hold the current 1-second bucket index ({@code clusterTimestamp / 1_000_000_000}), lower
+   * 32 bits hold the per-bucket admission count. Storing both in one {@link Long2LongHashMap} entry
+   * avoids any companion-object allocation; the bucket index uses uint32 semantics under masking so
+   * roll-over only matters in year 2106.
+   *
+   * <p>NOT persisted in snapshots: a 1-second window is short enough that the worst-case restart
+   * over-allowance is ≤ 1 × maxOrdersPerSecond admissions, which is acceptable for a circuit
+   * breaker (not an audit-grade quota). Persisting it would couple rate state to the snapshot
+   * cadence with no operational upside.
+   *
+   * <p>Initial capacity sized for ~4096 active accounts (matches the order-book pool magnitude —
+   * most deployments will be far smaller). Sentinel uses {@link #ACCOUNT_RATE_STATE_MISSING}
+   * (Long.MIN_VALUE) to be unambiguously distinct from any valid packed value.
+   */
+  static final long ACCOUNT_RATE_STATE_MISSING = Long.MIN_VALUE;
+
+  private static final int ACCOUNT_RATE_STATE_INITIAL_CAPACITY = 4096;
+
+  private static final long NANOS_PER_SECOND = 1_000_000_000L;
+
+  /** Mask to extract the 32-bit count from the packed rate-state value. */
+  private static final long RATE_COUNT_MASK = 0xFFFF_FFFFL;
+
+  final Long2LongHashMap accountRateState =
+      new Long2LongHashMap(ACCOUNT_RATE_STATE_INITIAL_CAPACITY, 0.65f, ACCOUNT_RATE_STATE_MISSING);
+
+  /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
    * (NOT {@link Long#MIN_VALUE}) so the first eviction is not blocked by the interval guard:
    * cluster timestamps are positive epoch nanos (≈ 1.7e18 in 2026), so {@code (clusterTimestamp -
@@ -745,6 +773,31 @@ public final class NewOrderSingleHandler implements CommandHandler {
       }
     }
 
+    // 11c. (APP-62 slice 2) Per-account rate limit — at most maxOrdersPerSecond NewOrderSingle
+    //      admissions per 1-second wall-clock-aligned window. Skipped when the account has no
+    //      rate limit configured (maxOrdersPerSecond == 0 == unlimited).
+    //
+    //      The window aligns to absolute epoch seconds (cluster timestamp / 1e9), not a
+    //      rolling window from first admission. This is deterministic (purely a function of
+    //      the cluster-supplied timestamp), simple to reason about, and avoids the unbounded
+    //      memory growth a true sliding window would require.
+    //
+    //      A rejected order does NOT consume rate-limit capacity (the check fires only on the
+    //      pass path here; once admitted, the count increments). This matches the "rate of
+    //      successful submissions" semantics most ops teams expect.
+    if (riskLimit != null
+        && riskLimit.maxOrdersPerSecond() > 0L
+        && !tryConsumeRateToken(account.accountId(), riskLimit.maxOrdersPerSecond(), timestamp)) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RateLimitExceeded,
+          "account rate limit exceeded for current 1s window");
+      return null;
+    }
+
     // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
     //     deterministic counter space on an order that cannot be admitted.
     if (tradingState.isOrderBookFull()) {
@@ -759,6 +812,52 @@ public final class NewOrderSingleHandler implements CommandHandler {
     }
 
     return account;
+  }
+
+  /**
+   * Checks and atomically updates the per-account rate-limit state for the current 1-second window.
+   * Returns {@code true} if the admission is within the limit (and increments the counter); {@code
+   * false} if the limit was already reached for this window.
+   *
+   * <p>Window alignment: the current bucket is {@code clusterTimestamp / NANOS_PER_SECOND} (epoch
+   * seconds). All admissions sharing the same bucket value contend against the same limit.
+   *
+   * <p><b>Determinism:</b> output is a pure function of the cluster timestamp + prior state.
+   *
+   * <p><b>Allocation:</b> none — the packed-long encoding avoids any companion object.
+   *
+   * @param accountId the validated account id (must already exist in {@link AccountStore})
+   * @param limit the per-second admission cap (caller must ensure {@code > 0})
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   * @return {@code true} if the admission fits within {@code limit} for the current window
+   */
+  private boolean tryConsumeRateToken(
+      final long accountId, final long limit, final long clusterTimestamp) {
+    final long bucketSec = clusterTimestamp / NANOS_PER_SECOND;
+    final long prev = accountRateState.get(accountId);
+    final long prevBucket;
+    final long prevCount;
+    if (prev == ACCOUNT_RATE_STATE_MISSING) {
+      prevBucket = -1L; // sentinel forces window reset below
+      prevCount = 0L;
+    } else {
+      prevBucket = prev >>> 32;
+      prevCount = prev & RATE_COUNT_MASK;
+    }
+
+    final long nextCount;
+    if (bucketSec != prevBucket) {
+      // New 1-second window: reset to 1 admission.
+      nextCount = 1L;
+    } else if (prevCount >= limit) {
+      // Limit already reached in this window — reject without mutating state, so a flurry of
+      // rejected attempts cannot push the count further into "uint32 overflow" territory.
+      return false;
+    } else {
+      nextCount = prevCount + 1L;
+    }
+    accountRateState.put(accountId, (bucketSec << 32) | (nextCount & RATE_COUNT_MASK));
+    return true;
   }
 
   // ===========================================================================

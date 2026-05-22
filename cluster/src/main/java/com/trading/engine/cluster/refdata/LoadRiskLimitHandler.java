@@ -93,7 +93,12 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     final long maxOrderNotional = decoder.maxOrderNotional();
     final long maxDailyVolume = decoder.maxDailyVolume();
     final long maxDailyLossBps = decoder.maxDailyLossBps();
-    if (maxOrderSize < 0L || maxOrderNotional < 0L || maxDailyVolume < 0L || maxDailyLossBps < 0L) {
+    final long maxOrdersPerSecond = decoder.maxOrdersPerSecond();
+    if (maxOrderSize < 0L
+        || maxOrderNotional < 0L
+        || maxDailyVolume < 0L
+        || maxDailyLossBps < 0L
+        || maxOrdersPerSecond < 0L) {
       return emitRejected(
           eventDst,
           eventDstOffset,
@@ -114,6 +119,7 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     state.setMaxOrderNotional(maxOrderNotional);
     state.setMaxDailyVolume(maxDailyVolume);
     state.setMaxDailyLossBps(maxDailyLossBps);
+    state.setMaxOrdersPerSecond(maxOrdersPerSecond);
     state.setStatus(decoder.status());
     state.setTransactTime(decoder.transactTime());
     riskLimitStore.put(state);
@@ -127,6 +133,7 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     loadedEncoder.maxOrderNotional(maxOrderNotional);
     loadedEncoder.maxDailyVolume(maxDailyVolume);
     loadedEncoder.maxDailyLossBps(maxDailyLossBps);
+    loadedEncoder.maxOrdersPerSecond(maxOrdersPerSecond);
     loadedEncoder.status(state.status());
     loadedEncoder.transactTime(state.transactTime());
 

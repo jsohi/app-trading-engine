@@ -62,7 +62,8 @@ final class RefDataEgressBridge implements ControlledEgressListener {
     verifyBlockLength("CurrencyLoadedEvent", CurrencyLoadedEventDecoder.BLOCK_LENGTH, 96);
     verifyBlockLength(
         "CurrencyLoadRejectedEvent", CurrencyLoadRejectedEventDecoder.BLOCK_LENGTH, 84);
-    verifyBlockLength("RiskLimitLoadedEvent", RiskLimitLoadedEventDecoder.BLOCK_LENGTH, 61);
+    // APP-62 slice 2 bumped this from 61 to 65 — added maxOrdersPerSecond (uint32 = 4 bytes).
+    verifyBlockLength("RiskLimitLoadedEvent", RiskLimitLoadedEventDecoder.BLOCK_LENGTH, 65);
     verifyBlockLength(
         "RiskLimitLoadRejectedEvent", RiskLimitLoadRejectedEventDecoder.BLOCK_LENGTH, 89);
   }

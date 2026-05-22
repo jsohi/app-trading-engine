@@ -96,10 +96,12 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       final long maxOrderNotional = group.maxOrderNotional();
       final long maxDailyVolume = group.maxDailyVolume();
       final long maxDailyLossBps = group.maxDailyLossBps();
+      final long maxOrdersPerSecond = group.maxOrdersPerSecond();
       if (maxOrderSize < 0L
           || maxOrderNotional < 0L
           || maxDailyVolume < 0L
-          || maxDailyLossBps < 0L) {
+          || maxDailyLossBps < 0L
+          || maxOrdersPerSecond < 0L) {
         written +=
             emitRejected(
                 eventDst,
@@ -122,6 +124,7 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       state.setMaxOrderNotional(maxOrderNotional);
       state.setMaxDailyVolume(maxDailyVolume);
       state.setMaxDailyLossBps(maxDailyLossBps);
+      state.setMaxOrdersPerSecond(maxOrdersPerSecond);
       state.setStatus(group.status());
       state.setTransactTime(batchTransactTime);
       riskLimitStore.put(state);
@@ -135,6 +138,7 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       loadedEncoder.maxOrderNotional(maxOrderNotional);
       loadedEncoder.maxDailyVolume(maxDailyVolume);
       loadedEncoder.maxDailyLossBps(maxDailyLossBps);
+      loadedEncoder.maxOrdersPerSecond(maxOrdersPerSecond);
       loadedEncoder.status(state.status());
       loadedEncoder.transactTime(batchTransactTime);
       written += MessageHeaderEncoder.ENCODED_LENGTH + loadedEncoder.encodedLength();

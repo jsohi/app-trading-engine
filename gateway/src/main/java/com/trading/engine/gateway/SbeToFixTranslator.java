@@ -1019,6 +1019,9 @@ public final class SbeToFixTranslator {
       case OrderExceedsMaxSize -> 3; // FIX: Order exceeds limit
       case TradingHalted -> 99; // FIX: Other (FIX 4.4 has no direct OrdRejReason for trading halt;
       // the operator's free-text reason is preserved in tag 58 Text)
+      case RateLimitExceeded -> 8; // FIX: Broker / Exchange option — closest FIX 4.4 value for a
+      // throttle-side rejection (no dedicated rate-limit code). Free-text in tag 58 carries the
+      // human-readable detail.
       case DuplicateAccountCode -> 99; // FIX: Other
       case UnknownCurrency -> 99; // FIX: Other
       case InvalidCurrencyCode -> 99; // FIX: Other

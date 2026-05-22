@@ -276,6 +276,7 @@
             <validValue name="InvalidAccountId"          description="Account id is non-positive">18</validValue>
             <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
             <validValue name="TradingHalted"             description="Trading globally halted by operator (APP-152 first slice — cluster-side halt primitive; the admin command path lands later)">20</validValue>
+            <validValue name="RateLimitExceeded"          description="Account exceeded its maxOrdersPerSecond rate limit for the current 1-second window (APP-62 slice 2)">21</validValue>
         </enum>
         <!-- Variable-length data encoding for WebSocket messages (templates 60, 66, 67) -->
         <composite name="varDataEncoding" description="Variable-length binary data encoding. No characterEncoding — token and snapshot payload are raw binary, not strings.">
@@ -684,12 +685,13 @@
     <sbe:message name="LoadRiskLimit" id="15"
                  description="Load (or reload) one risk-limit record into the cluster's RiskLimitStore. accountId must already exist in AccountStore. Flat per-account limits in this PR; hierarchical (firm/desk/trader) is a follow-up.">
         <field name="accountId"        id="10024" type="int64"             description="Foreign key to AccountStore"/>
-        <field name="maxOrderSize"     id="10030" type="int64"             description="Max single-order quantity, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxOrderNotional" id="10047" type="int64"             description="Max single-order notional value (price × qty), fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyVolume"   id="10031" type="int64"             description="Max daily aggregate quantity, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyLossBps"  id="10048" type="uint32"            description="Max intraday loss in basis points (0 = unlimited)"/>
-        <field name="status"           id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for risk-limit lifecycle"/>
-        <field name="transactTime"     id="60"    type="uint64"            description="Epoch nanos"/>
+        <field name="maxOrderSize"        id="10030" type="int64"             description="Max single-order quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxOrderNotional"    id="10047" type="int64"             description="Max single-order notional value (price × qty), fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"      id="10031" type="int64"             description="Max daily aggregate quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyLossBps"     id="10048" type="uint32"            description="Max intraday loss in basis points (0 = unlimited)"/>
+        <field name="maxOrdersPerSecond"  id="10055" type="uint32"            description="Max NewOrderSingle admissions per 1-second window per account (0 = unlimited) — APP-62 slice 2"/>
+        <field name="status"              id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for risk-limit lifecycle"/>
+        <field name="transactTime"        id="60"    type="uint64"            description="Epoch nanos"/>
     </sbe:message>
 
     <!-- LoadRiskLimitBatch (16) — batch risk-limit upsert. -->
@@ -698,12 +700,13 @@
         <field name="transactTime" id="60" type="uint64"/>
         <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding"
                description="One entry per risk-limit record in the batch">
-            <field name="accountId"        id="10024" type="int64"/>
-            <field name="maxOrderSize"     id="10030" type="int64"/>
-            <field name="maxOrderNotional" id="10047" type="int64"/>
-            <field name="maxDailyVolume"   id="10031" type="int64"/>
-            <field name="maxDailyLossBps"  id="10048" type="uint32"/>
-            <field name="status"           id="10027" type="AccountStatusEnum"/>
+            <field name="accountId"           id="10024" type="int64"/>
+            <field name="maxOrderSize"        id="10030" type="int64"/>
+            <field name="maxOrderNotional"    id="10047" type="int64"/>
+            <field name="maxDailyVolume"      id="10031" type="int64"/>
+            <field name="maxDailyLossBps"     id="10048" type="uint32"/>
+            <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2 — see LoadRiskLimit"/>
+            <field name="status"              id="10027" type="AccountStatusEnum"/>
         </group>
     </sbe:message>
 
@@ -1316,15 +1319,16 @@
     <!-- RiskLimitLoadedEvent (115) — mirrors LoadRiskLimit. -->
     <sbe:message name="RiskLimitLoadedEvent" id="115"
                  description="Emitted when a risk-limit record is loaded into RiskLimitStore.">
-        <field name="sequenceNumber"   id="10020" type="int64"             description="Monotonic event sequence number"/>
-        <field name="timestamp"        id="10021" type="uint64"            description="Cluster timestamp nanos"/>
-        <field name="accountId"        id="10024" type="int64"/>
-        <field name="maxOrderSize"     id="10030" type="int64"/>
-        <field name="maxOrderNotional" id="10047" type="int64"/>
-        <field name="maxDailyVolume"   id="10031" type="int64"/>
-        <field name="maxDailyLossBps"  id="10048" type="uint32"/>
-        <field name="status"           id="10027" type="AccountStatusEnum"/>
-        <field name="transactTime"     id="60"    type="uint64"            description="Original LoadRiskLimit transactTime"/>
+        <field name="sequenceNumber"      id="10020" type="int64"             description="Monotonic event sequence number"/>
+        <field name="timestamp"           id="10021" type="uint64"            description="Cluster timestamp nanos"/>
+        <field name="accountId"           id="10024" type="int64"/>
+        <field name="maxOrderSize"        id="10030" type="int64"/>
+        <field name="maxOrderNotional"    id="10047" type="int64"/>
+        <field name="maxDailyVolume"      id="10031" type="int64"/>
+        <field name="maxDailyLossBps"     id="10048" type="uint32"/>
+        <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2 — see LoadRiskLimit"/>
+        <field name="status"              id="10027" type="AccountStatusEnum"/>
+        <field name="transactTime"        id="60"    type="uint64"            description="Original LoadRiskLimit transactTime"/>
     </sbe:message>
 
     <!-- RiskLimitLoadRejectedEvent (116) -->
@@ -1550,13 +1554,14 @@
     <sbe:message name="RiskLimitSnapshot" id="209"
                  description="Repeating group of full risk-limit records, used to restore RiskLimitStore on cluster recovery. Records are ordered by accountId for deterministic snapshot output.">
         <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding">
-            <field name="accountId"        id="10024" type="int64"/>
-            <field name="maxOrderSize"     id="10030" type="int64"/>
-            <field name="maxOrderNotional" id="10047" type="int64"/>
-            <field name="maxDailyVolume"   id="10031" type="int64"/>
-            <field name="maxDailyLossBps"  id="10048" type="uint32"/>
-            <field name="status"           id="10027" type="AccountStatusEnum"/>
-            <field name="transactTime"     id="60"    type="uint64"          description="Original LoadRiskLimit transactTime (epoch nanos)"/>
+            <field name="accountId"           id="10024" type="int64"/>
+            <field name="maxOrderSize"        id="10030" type="int64"/>
+            <field name="maxOrderNotional"    id="10047" type="int64"/>
+            <field name="maxDailyVolume"      id="10031" type="int64"/>
+            <field name="maxDailyLossBps"     id="10048" type="uint32"/>
+            <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2"/>
+            <field name="status"              id="10027" type="AccountStatusEnum"/>
+            <field name="transactTime"        id="60"    type="uint64"          description="Original LoadRiskLimit transactTime (epoch nanos)"/>
         </group>
     </sbe:message>
 
