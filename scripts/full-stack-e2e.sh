@@ -289,10 +289,13 @@ if [[ "$KEEP_RUNNING" -eq 1 ]]; then
   # down with a clear log line instead of spinning forever. Production / human-
   # interactive sessions are bounded by terminal idle anyway; the cap is the
   # safety net for unattended CI / nohup invocations.
-  KEEP_RUNNING_START_S=$(date +%s)
+  # LC_ALL=C pins `date +%s` to POSIX behaviour (epoch seconds, locale-independent
+  # numeric output) so the arithmetic guard below cannot be perturbed by an
+  # unusual LC_TIME / TZ env on a CI runner.
+  KEEP_RUNNING_START_S=$(LC_ALL=C date +%s) || { echo "FATAL: date +%s failed" >&2; exit 9; }
   KEEP_RUNNING_MAX_SECONDS="${KEEP_RUNNING_MAX_SECONDS:-43200}"  # 12h default
   while kill -0 "$LAUNCHER_PID" 2>/dev/null && kill -0 "$VITE_PID" 2>/dev/null; do
-    if (( $(date +%s) - KEEP_RUNNING_START_S > KEEP_RUNNING_MAX_SECONDS )); then
+    if (( $(LC_ALL=C date +%s) - KEEP_RUNNING_START_S > KEEP_RUNNING_MAX_SECONDS )); then
       echo "[full-stack-e2e] --keep-running: ${KEEP_RUNNING_MAX_SECONDS}s safety cap reached — initiating teardown" >&2
       break
     fi
