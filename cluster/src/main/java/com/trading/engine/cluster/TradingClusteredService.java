@@ -5,9 +5,11 @@ import static io.aeron.Publication.BACK_PRESSURED;
 
 import com.trading.engine.cluster.handler.CommandHandler;
 import com.trading.engine.cluster.handler.EventSink;
+import com.trading.engine.cluster.handler.HaltTradingCommandHandler;
 import com.trading.engine.cluster.handler.NewOrderSingleHandler;
 import com.trading.engine.cluster.handler.PriceResponseHandler;
 import com.trading.engine.cluster.handler.QuoteRequestHandler;
+import com.trading.engine.cluster.handler.ResumeTradingCommandHandler;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
@@ -270,6 +272,14 @@ public final class TradingClusteredService implements ClusteredService {
     this.priceResponseHandler =
         new PriceResponseHandler(rfqStateMachine, tradingState.quoteIdGen(), rfqMetrics);
     commandHandlers.put(priceResponseHandler.commandTemplateId(), priceResponseHandler);
+
+    // APP-152 slice 2: admin halt/resume commands toggle the trading-halt circuit breaker that
+    // gates NewOrderSingle in NewOrderSingleHandler Check 0. Two separate handlers because each
+    // CommandHandler registers under a single SBE template ID.
+    final var haltHandler = new HaltTradingCommandHandler(tradingState);
+    commandHandlers.put(haltHandler.commandTemplateId(), haltHandler);
+    final var resumeHandler = new ResumeTradingCommandHandler(tradingState);
+    commandHandlers.put(resumeHandler.commandTemplateId(), resumeHandler);
   }
 
   private static void requireSameStore(
