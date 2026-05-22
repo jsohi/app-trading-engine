@@ -70,7 +70,7 @@ public final class TradingState {
    * the safe default for the cluster-side primitive (a halt set before a restore would lift on
    * restore — operator would need to re-issue the halt command).
    */
-  private boolean tradingHalted;
+  private boolean tradingHalted = false;
 
   // Pre-allocated scratch buffers for ID generation (handler reads from these after generate*)
   private final byte[] orderIdScratch;
