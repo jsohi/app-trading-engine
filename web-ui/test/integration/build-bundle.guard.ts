@@ -116,6 +116,15 @@ export const FORBIDDEN_SYMBOLS: readonly ForbiddenSymbol[] = [
     rationale: "Spec 07 reconnect hook — registered on globalThis in installEarlyHooks.",
   },
   {
+    symbol: "__submitCommandRaw",
+    prodForbidden: true,
+    e2eRequired: true,
+    wordBoundary: false,
+    rationale:
+      "APP-225 §D spec 06b throttle escape hatch — drives CommandClient.submitOrder directly, " +
+      "registered by useOrderSubmission on form mount.",
+  },
+  {
     symbol: "__ordersGridApi",
     prodForbidden: true,
     e2eRequired: true,
