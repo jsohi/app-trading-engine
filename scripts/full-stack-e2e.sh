@@ -94,7 +94,11 @@ cleanup() {
     dump_logs_on_failure "$LOG_DIR"
     # APP-225: triage-friendly bundle on red — single tar.gz with everything
     # an engineer needs to reproduce / debug offline.
-    collect_failure_bundle "$REPO_ROOT" >/dev/null 2>&1 || true
+    # Stdout silenced (the bundle path also goes to stderr inside the helper, so the operator
+    # still sees the "[bundle] failure bundle: ..." line). Stderr deliberately UNREDIRECTED so
+    # `tar` errors like "No space left on device" reach the operator — silencing them would
+    # defeat the explicit error-surface in collect-failure-bundle.sh.
+    collect_failure_bundle "$REPO_ROOT" >/dev/null || true
   fi
 
   # Best-effort scrub of on-disk JWTs. Files are gitignored under e2e/logs/

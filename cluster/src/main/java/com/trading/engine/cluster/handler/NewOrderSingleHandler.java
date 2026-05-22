@@ -172,6 +172,18 @@ public final class NewOrderSingleHandler implements CommandHandler {
   static final long CLORDID_DEDUP_MISSING = Long.MIN_VALUE;
 
   /**
+   * Minimum interval between lazy eviction scans (60 s). Without this throttle, a registry that is
+   * at the watermark AND receiving sustained traffic of NEW (not refreshed) keys would trigger a
+   * full O(N) eviction walk on every NOS — a "death spiral" where tail latency degrades as
+   * throughput climbs. The 60 s gate guarantees the O(N) scan runs at most once per minute, so the
+   * amortised hot-path cost stays bounded regardless of insert rate.
+   *
+   * <p>Gemini-flagged HIGH on PR #81 (R2 round); the prior version gated eviction only on size,
+   * which produced the death-spiral risk above.
+   */
+  static final long CLORDID_EVICTION_INTERVAL_NS = 60L * 1_000_000_000L;
+
+  /**
    * {@code (sessionId, clOrdIdHash)} → first-seen cluster timestamp (epoch nanos). Pre-sized to the
    * watermark to avoid rehash thrash during steady- state operation; growth past the watermark
    * triggers lazy eviction.
@@ -180,6 +192,16 @@ public final class NewOrderSingleHandler implements CommandHandler {
    */
   final Long2LongHashMap clOrdIdRegistry =
       new Long2LongHashMap(CLORDID_DEDUP_MAX_SIZE * 2, 0.65f, CLORDID_DEDUP_MISSING);
+
+  /**
+   * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
+   * (NOT {@link Long#MIN_VALUE}) so the first eviction is not blocked by the interval guard:
+   * cluster timestamps are positive epoch nanos (≈ 1.7e18 in 2026), so {@code (clusterTimestamp -
+   * 0L)} cleanly exceeds the 60 s interval. {@link Long#MIN_VALUE} would underflow the {@code
+   * clusterTimestamp - lastEvictionTimestampNanos} subtraction because {@code 1.7e18 - (-9.2e18)}
+   * overflows {@code long}.
+   */
+  private long lastEvictionTimestampNanos = 0L;
 
   /**
    * Optional injection from {@link com.trading.engine.cluster.TradingClusteredService} for plan
@@ -317,11 +339,18 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return;
     }
     // Register (or refresh) the ClOrdID under the cluster timestamp. Lazy eviction runs only when
-    // the registry crosses CLORDID_DEDUP_MAX_SIZE on a NEW (not refreshed) insert — refreshes
-    // don't grow the registry, so the steady-state hot path stays O(1) even at the watermark.
+    // ALL of:
+    //   1. the new insert is a NEW key (not a refresh) — refreshes don't grow the registry, so
+    //      the steady-state hot path stays O(1) even at the watermark.
+    //   2. the registry has crossed CLORDID_DEDUP_MAX_SIZE — under the watermark, we have memory
+    //      budget; don't pay the walk cost.
+    //   3. it's been at least CLORDID_EVICTION_INTERVAL_NS since the last walk — guards against
+    //      the "death spiral" of full-O(N) scans on every NOS under sustained at-watermark load.
     if (previousSeenNanos == CLORDID_DEDUP_MISSING
-        && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE) {
+        && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE
+        && (clusterTimestamp - lastEvictionTimestampNanos) >= CLORDID_EVICTION_INTERVAL_NS) {
       evictExpiredClOrdIds(clusterTimestamp);
+      lastEvictionTimestampNanos = clusterTimestamp;
     }
     clOrdIdRegistry.put(dedupKey, clusterTimestamp);
 

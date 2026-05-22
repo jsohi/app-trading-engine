@@ -57,9 +57,16 @@ tasks.register<Test>("perfTest") {
     }
     onlyIf { project.hasProperty("perfTest") }
     shouldRunAfter("test")
-    // Pinned to the same JVM args as :test for determinism across runs.
+    // Pinned to the same JVM args as :test for determinism across runs. CodeRabbit PR #81 R2
+    // flagged the drift after :test gained the G1GC + Aeron tuning flags (APP-225 §D10) — keep
+    // these in sync, since a different GC profile on the perf path would invalidate the
+    // baseline comparisons.
     jvmArgs =
         listOf(
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=50",
+            "-Daeron.term.buffer.length=1m",
+            "-Daeron.dir.warn.if.exists=false",
             "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
         )
