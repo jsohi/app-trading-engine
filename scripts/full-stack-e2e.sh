@@ -282,7 +282,20 @@ if [[ "$KEEP_RUNNING" -eq 1 ]]; then
   # let the cleanup trap tear the other down. `wait -n` is bash 4.3+; the
   # `kill -0` polling pattern works on any POSIX shell and avoids version drift
   # on CI runners. Sleep cadence chosen to bound teardown latency at 1 s.
+  #
+  # Safety upper bound — KEEP_RUNNING_MAX_SECONDS (default 12h, overridable via env).
+  # Two zombie children that survive their parent could keep `kill -0` returning
+  # truthy indefinitely; this cap ensures an unattended session eventually winds
+  # down with a clear log line instead of spinning forever. Production / human-
+  # interactive sessions are bounded by terminal idle anyway; the cap is the
+  # safety net for unattended CI / nohup invocations.
+  KEEP_RUNNING_START_S=$(date +%s)
+  KEEP_RUNNING_MAX_SECONDS="${KEEP_RUNNING_MAX_SECONDS:-43200}"  # 12h default
   while kill -0 "$LAUNCHER_PID" 2>/dev/null && kill -0 "$VITE_PID" 2>/dev/null; do
+    if (( $(date +%s) - KEEP_RUNNING_START_S > KEEP_RUNNING_MAX_SECONDS )); then
+      echo "[full-stack-e2e] --keep-running: ${KEEP_RUNNING_MAX_SECONDS}s safety cap reached — initiating teardown" >&2
+      break
+    fi
     sleep 1
   done
   exit 0
