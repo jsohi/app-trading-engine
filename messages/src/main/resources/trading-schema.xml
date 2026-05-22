@@ -707,6 +707,37 @@
         </group>
     </sbe:message>
 
+    <!-- ======================== Admin commands (templateId 17-19) ======================== -->
+
+    <!--
+        Operator / admin commands. Issued by trusted ops surfaces (CLI, admin UI, gateway admin
+        route) over the cluster ingress. Gateway-side authentication / role-check enforces the
+        "admin" privilege before forwarding; the cluster trusts whatever lands in its ingress
+        (consistent with how ref-data load commands are trusted today).
+
+        APP-152 slice 2: HaltTradingCommand (17), ResumeTradingCommand (18) toggle the
+        cluster-wide trading-halt circuit breaker primitive that gates NewOrderSingle in
+        NewOrderSingleHandler validation Check 0. Template 19 is reserved for a future
+        KillSwitchCommand (APP-153) that flushes in-flight RFQ slots in addition to halting.
+
+        Events: 117 TradingHaltActivatedEvent / 118 TradingHaltClearedEvent (template IDs 117-118
+        are within the events 100-116 + reserved 117-119 range per CLAUDE.md).
+    -->
+
+    <!-- HaltTradingCommand (17) — admin: halt all new-order admission cluster-wide -->
+    <sbe:message name="HaltTradingCommand" id="17"
+                 description="Admin command: set the cluster-wide trading-halt flag to true. While set, NewOrderSingleHandler rejects every NOS with RejectReasonEnum.TradingHalted before any other validation. Idempotent — issuing while already halted is a no-op for state but still emits an audit event.">
+        <field name="reason"       id="58" type="Text"   description="Free-text reason (audit-only — e.g., 'Market-data feed degraded, halting trading')"/>
+        <field name="transactTime" id="60" type="uint64" description="Caller's epoch nanos (advisory only — cluster restamps with its own timestamp on emit)"/>
+    </sbe:message>
+
+    <!-- ResumeTradingCommand (18) — admin: clear the trading-halt flag -->
+    <sbe:message name="ResumeTradingCommand" id="18"
+                 description="Admin command: clear the cluster-wide trading-halt flag (resume admitting new orders). Idempotent — issuing while already resumed is a no-op for state but still emits an audit event.">
+        <field name="reason"       id="58" type="Text"   description="Free-text reason (audit-only — e.g., 'Feed restored, resuming trading')"/>
+        <field name="transactTime" id="60" type="uint64" description="Caller's epoch nanos (advisory only — cluster restamps with its own timestamp on emit)"/>
+    </sbe:message>
+
     <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
 
     <!--
@@ -1304,6 +1335,26 @@
         <field name="accountId"      id="10024" type="int64"            description="Target account (may be 0 if invalid)"/>
         <field name="rejectReason"   id="10022" type="RejectReasonEnum"/>
         <field name="text"           id="58"    type="Text"             description="Free-text reason"/>
+    </sbe:message>
+
+    <!-- TradingHaltActivatedEvent (117) — emitted when an admin halts trading -->
+    <sbe:message name="TradingHaltActivatedEvent" id="117"
+                 description="Emitted when the trading-halt circuit breaker transitions from cleared to halted via HaltTradingCommand (template 17). Audit trail event — every halt attempt produces one event even if the flag was already set, so the operator log captures intent and timing precisely.">
+        <field name="sequenceNumber"  id="10020" type="int64"  description="Monotonic event sequence number"/>
+        <field name="timestamp"       id="10021" type="uint64" description="Cluster timestamp nanos"/>
+        <field name="adminSessionId"  id="10049" type="int64"  description="Aeron Cluster ClientSession id of the admin that issued the command"/>
+        <field name="previouslyHalted" id="10050" type="uint8" description="1 if the flag was already set when the command arrived (no-op for state, still emitted for audit), 0 otherwise"/>
+        <field name="reason"          id="58"    type="Text"   description="Free-text reason supplied by the admin"/>
+    </sbe:message>
+
+    <!-- TradingHaltClearedEvent (118) — emitted when an admin resumes trading -->
+    <sbe:message name="TradingHaltClearedEvent" id="118"
+                 description="Emitted when the trading-halt circuit breaker transitions from halted to cleared via ResumeTradingCommand (template 18). Mirror of TradingHaltActivatedEvent (117). Audit trail event — every resume attempt produces one event even if the flag was already cleared.">
+        <field name="sequenceNumber"  id="10020" type="int64"  description="Monotonic event sequence number"/>
+        <field name="timestamp"       id="10021" type="uint64" description="Cluster timestamp nanos"/>
+        <field name="adminSessionId"  id="10049" type="int64"  description="Aeron Cluster ClientSession id of the admin that issued the command"/>
+        <field name="previouslyHalted" id="10050" type="uint8" description="1 if the flag was set when the command arrived (state cleared), 0 if it was already cleared (no-op for state)"/>
+        <field name="reason"          id="58"    type="Text"   description="Free-text reason supplied by the admin"/>
     </sbe:message>
 
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
