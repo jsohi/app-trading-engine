@@ -113,6 +113,8 @@ public final class RiskLimitStore implements ReferenceDataStore {
         group.maxOrderNotional(state.maxOrderNotional());
         group.maxDailyVolume(state.maxDailyVolume());
         group.maxDailyLossBps(state.maxDailyLossBps());
+        // SBE encoder for uint32 takes long-widened value; State stores it as long for uniformity.
+        group.maxOrdersPerSecond(state.maxOrdersPerSecond());
         group.status(state.status());
         group.transactTime(state.transactTime());
       }
@@ -142,6 +144,7 @@ public final class RiskLimitStore implements ReferenceDataStore {
       state.setMaxOrderNotional(group.maxOrderNotional());
       state.setMaxDailyVolume(group.maxDailyVolume());
       state.setMaxDailyLossBps(group.maxDailyLossBps());
+      state.setMaxOrdersPerSecond(group.maxOrdersPerSecond());
       state.setStatus(group.status());
       state.setTransactTime(group.transactTime());
       byAccountId.put(state.accountId(), state);

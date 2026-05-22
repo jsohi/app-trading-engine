@@ -708,6 +708,57 @@ class SbeToFixTranslatorTest {
     assertEquals('8', fixDec.ordStatus()); // Rejected
   }
 
+  @Test
+  void translateOrderRejectedEvent_rateLimitExceeded_mapsToFix8() {
+    // APP-62 slice 2 regression: RateLimitExceeded is a new RejectReasonEnum value emitted by the
+    // cluster when an account exhausts its per-second order admission budget. SbeToFixTranslator
+    // must map it to FIX 4.4 tag 103 (OrdRejReason) = 8 ("Broker / Exchange option") — the
+    // closest FIX 4.4 value for a throttle-side rejection; FIX 4.4 has no dedicated rate-limit
+    // code. The human-readable detail is preserved in tag 58 (Text). Without this mapping the
+    // translator's exhaustive switch would throw IllegalStateException at egress, turning a valid
+    // cluster reject into a transport failure for FIX clients.
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(1_712_491_200_000_000_000L);
+    enc.clOrdId("ORD-RATE-1");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.rejectReason(RejectReasonEnum.RateLimitExceeded);
+    enc.accountCode("ACCT-1");
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.currency("EUR");
+    enc.text("account rate limit exceeded for current 1s window");
+
+    final var hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    final var sbeDec = new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    final var fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    new SbeToFixTranslator().translateOrderRejectedEvent(sbeDec, fix);
+
+    final var wire = new MutableAsciiBuffer(new byte[2048]);
+    final long encoded = fix.encode(wire, 0);
+    final int wireOffset = (int) (encoded >>> 32);
+    final int wireLen = (int) encoded;
+
+    final var fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+
+    assertEquals(8, fixDec.ordRejReason()); // FIX: Broker / Exchange option (tag 103 = 8)
+    assertEquals(
+        "account rate limit exceeded for current 1s window",
+        fixDec.textAsString(),
+        "free-text rejection detail must round-trip through tag 58");
+    assertEquals('8', fixDec.execType()); // Rejected
+    assertEquals('8', fixDec.ordStatus()); // Rejected
+  }
+
   // ===========================================================================
   // QuoteRequestReject (35=AG) translation — Phase 3 (APP-216)
   // ===========================================================================

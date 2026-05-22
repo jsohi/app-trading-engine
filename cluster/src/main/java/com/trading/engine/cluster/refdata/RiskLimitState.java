@@ -20,6 +20,16 @@ public final class RiskLimitState {
   private long maxOrderNotional;
   private long maxDailyVolume;
   private long maxDailyLossBps;
+
+  /**
+   * Maximum NewOrderSingle admissions per 1-second wall-clock-aligned window per account (APP-62
+   * slice 2). {@code 0} = unlimited (matches the rest of the limit fields' "0 means disabled"
+   * convention). Stored as {@code long} (not {@code int}) for uniformity with the other limit
+   * fields even though the practical range fits in {@code uint32} — SBE wire type is uint32 on the
+   * schema side, widened on read.
+   */
+  private long maxOrdersPerSecond;
+
   private AccountStatusEnum status = AccountStatusEnum.Active;
   private long transactTime;
 
@@ -41,6 +51,10 @@ public final class RiskLimitState {
 
   public void setMaxDailyLossBps(final long value) {
     this.maxDailyLossBps = value;
+  }
+
+  public void setMaxOrdersPerSecond(final long value) {
+    this.maxOrdersPerSecond = value;
   }
 
   public void setStatus(final AccountStatusEnum value) {
@@ -69,6 +83,10 @@ public final class RiskLimitState {
 
   public long maxDailyLossBps() {
     return maxDailyLossBps;
+  }
+
+  public long maxOrdersPerSecond() {
+    return maxOrdersPerSecond;
   }
 
   public AccountStatusEnum status() {
