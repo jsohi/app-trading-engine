@@ -25,6 +25,12 @@ import org.agrona.concurrent.UnsafeBuffer;
  * auth + role-check gates the command before it reaches this handler. See APP-153 for the gateway
  * admin route work.
  *
+ * <p><b>Input validation:</b> the handler trusts that the inbound SBE message conforms to the
+ * schema (reason fits in the 64-byte {@code Text} field, block length matches). SBE encoders /
+ * Aeron framing on the gateway side enforce this before the message ever reaches cluster ingress; a
+ * malformed wire payload would surface at decoder-wrap time with a clear bounds exception rather
+ * than silent corruption. Consistent with every other {@link CommandHandler} in this module.
+ *
  * <p><b>Threading:</b> single-threaded cluster duty cycle. No synchronization required.
  *
  * <p><b>Allocation:</b> zero allocation after construction. Pre-allocates the encoder, header,
