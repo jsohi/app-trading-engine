@@ -1514,6 +1514,24 @@
         in APP-8 wraps EventJournal's raw bytes in an SBE template).
     -->
 
+    <!-- ClOrdIdDedupSnapshot (210) — APP-206: persists the dedup registry from NewOrderSingleHandler
+         so the 24h ClOrdID-uniqueness contract survives snapshot+restore. Without this, after a
+         cluster restart the registry rebuilds empty and any ClOrdID first seen before the snapshot
+         but still inside the 24h dedup window would be admitted again — breaking the idempotency
+         contract the cluster claims to enforce. -->
+    <sbe:message name="ClOrdIdDedupSnapshot" id="210"
+                 description="Cluster-side ClOrdID dedup registry snapshot — header lastEvictionTimestampNanos plus a repeating group of (dedupKey, firstSeenTimestampNanos). dedupKey is the 64-bit FNV-1a hash of (sessionId bytes || clOrdId bytes), the same key used at admission time in NewOrderSingleHandler. Restoring this fragment is essential for 24h ClOrdID-uniqueness enforcement across cluster restarts.">
+        <field name="lastEvictionTimestampNanos" id="10051" type="int64"
+               description="Throttle anchor for the next O(N) eviction sweep — restored verbatim so the post-snapshot eviction cadence matches pre-snapshot behaviour."/>
+        <group name="noEntries" id="10052" dimensionType="groupSizeEncoding"
+               description="Live registry entries. Iteration order is not stable across runs (Agrona Long2LongHashMap rehashing) but order does not affect correctness since restore writes into a fresh map by key.">
+            <field name="dedupKey"          id="10053" type="int64"
+                   description="FNV-1a 64-bit hash of (Aeron sessionId 8 bytes little-endian || clOrdId trimmed bytes). Matches the key computed in NewOrderSingleHandler at admission time."/>
+            <field name="firstSeenTimestamp" id="10054" type="int64"
+                   description="Cluster timestamp (epoch nanos) at which the dedupKey was first observed. Compared against CLORDID_DEDUP_WINDOW_NS at restore time."/>
+        </group>
+    </sbe:message>
+
     <!-- CurrencySnapshot (208) — repeating group of currencies, ordered by ccyCode for determinism -->
     <sbe:message name="CurrencySnapshot" id="208"
                  description="Repeating group of full ISO 4217 currency records, used to restore CurrencyStore on cluster recovery. Records are ordered by ccyCode (lex ASCII) for deterministic snapshot output.">

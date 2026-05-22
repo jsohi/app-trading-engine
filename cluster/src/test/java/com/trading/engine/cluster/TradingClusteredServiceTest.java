@@ -785,6 +785,8 @@ class TradingClusteredServiceTest {
     cursor = appendFragment(dst, cursor, svc.riskLimitSnapBuffer(), svc.riskLimitSnapLength());
     cursor = appendFragment(dst, cursor, svc.orderBookSnapBuffer(), svc.orderBookSnapLength());
     cursor = appendFragment(dst, cursor, svc.rfqStateSnapBuffer(), svc.rfqStateSnapLength());
+    cursor =
+        appendFragment(dst, cursor, svc.clOrdIdDedupSnapBuffer(), svc.clOrdIdDedupSnapLength());
     return cursor;
   }
 
@@ -938,7 +940,8 @@ class TradingClusteredServiceTest {
             + service.currencySnapLength()
             + service.riskLimitSnapLength()
             + service.orderBookSnapLength()
-            + service.rfqStateSnapLength();
+            + service.rfqStateSnapLength()
+            + service.clOrdIdDedupSnapLength();
 
     // Load onto a fresh service and verify full state restoration.
     final var fresh = createServiceBundle(false);
@@ -971,7 +974,8 @@ class TradingClusteredServiceTest {
             + service.currencySnapLength()
             + service.riskLimitSnapLength()
             + service.orderBookSnapLength()
-            + service.rfqStateSnapLength();
+            + service.rfqStateSnapLength()
+            + service.clOrdIdDedupSnapLength();
     assertEquals(expectedLen, assembledLen);
 
     // Verify the assembled buffer is a valid snapshot.
@@ -1109,7 +1113,8 @@ class TradingClusteredServiceTest {
             + svc.currencySnapLength()
             + svc.riskLimitSnapLength()
             + svc.orderBookSnapLength()
-            + svc.rfqStateSnapLength();
+            + svc.rfqStateSnapLength()
+            + svc.clOrdIdDedupSnapLength();
 
     // Build a fresh service with matching capacity and restore.
     final var freshOrdGen = new IdGenerator("ORD");
