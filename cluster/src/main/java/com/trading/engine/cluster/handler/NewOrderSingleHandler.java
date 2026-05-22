@@ -338,19 +338,39 @@ public final class NewOrderSingleHandler implements CommandHandler {
           "duplicate ClOrdID within 24h window");
       return;
     }
-    // Register (or refresh) the ClOrdID under the cluster timestamp. Lazy eviction runs only when
-    // ALL of:
-    //   1. the new insert is a NEW key (not a refresh) — refreshes don't grow the registry, so
-    //      the steady-state hot path stays O(1) even at the watermark.
-    //   2. the registry has crossed CLORDID_DEDUP_MAX_SIZE — under the watermark, we have memory
-    //      budget; don't pay the walk cost.
-    //   3. it's been at least CLORDID_EVICTION_INTERVAL_NS since the last walk — guards against
-    //      the "death spiral" of full-O(N) scans on every NOS under sustained at-watermark load.
+    // Register (or refresh) the ClOrdID under the cluster timestamp. Hard cap (CodeRabbit PR #81
+    // R3): the registry must never grow beyond CLORDID_DEDUP_MAX_SIZE. The previous "watermark
+    // only" design allowed unbounded growth when all entries were inside the 24h window — every
+    // subsequent eviction walk would then become O(total-live-keys), not O(watermark), and the
+    // heap footprint would grow without bound.
+    //
+    // Two-tier policy on NEW (not refresh) inserts at cap:
+    //   1. Try a throttled eviction (at most once per CLORDID_EVICTION_INTERVAL_NS). This is
+    //      the death-spiral guard from the prior fix — under sustained at-cap NEW-key churn,
+    //      we don't pay the O(N) walk on every single NOS, only on every interval boundary.
+    //   2. If after the (possibly skipped) eviction the registry is STILL at cap, fail closed:
+    //      reject the new order with BookFull. The 100K cap is a memory bound, not a per-order
+    //      limit; if 100K legitimate orders are in flight within 24h, ops should size up
+    //      CLORDID_DEDUP_MAX_SIZE rather than silently overflow the registry.
     if (previousSeenNanos == CLORDID_DEDUP_MISSING
-        && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE
-        && (clusterTimestamp - lastEvictionTimestampNanos) >= CLORDID_EVICTION_INTERVAL_NS) {
-      evictExpiredClOrdIds(clusterTimestamp);
-      lastEvictionTimestampNanos = clusterTimestamp;
+        && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE) {
+      if ((clusterTimestamp - lastEvictionTimestampNanos) >= CLORDID_EVICTION_INTERVAL_NS) {
+        evictExpiredClOrdIds(clusterTimestamp);
+        lastEvictionTimestampNanos = clusterTimestamp;
+      }
+      if (clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE) {
+        // Fail closed: eviction freed nothing (or was throttled away) and we cannot grow.
+        // Reuse BookFull (FIX semantics: "we're out of slots for this order") with text
+        // distinguishing this from the order-book-pool case.
+        emitOrderRejected(
+            eventSink,
+            session,
+            clusterTimestamp,
+            side,
+            RejectReasonEnum.BookFull,
+            "ClOrdID dedup registry at capacity (100K within 24h window)");
+        return;
+      }
     }
     clOrdIdRegistry.put(dedupKey, clusterTimestamp);
 

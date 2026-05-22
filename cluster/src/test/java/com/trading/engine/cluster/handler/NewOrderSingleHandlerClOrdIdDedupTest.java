@@ -67,6 +67,7 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
   private FakeClientSession session;
   private FakeCluster fakeCluster;
   private MutableDirectBuffer msgBuf;
+  private TradingState tradingState;
 
   @BeforeEach
   void setUp() {
@@ -79,7 +80,7 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
     final var orderIdGen = new IdGenerator("ORD");
     final var execIdGen = new IdGenerator("EXE");
     final var quoteIdGen = new IdGenerator("QTE");
-    final var tradingState = new TradingState(orderBook, orderIdGen, execIdGen, quoteIdGen);
+    tradingState = new TradingState(orderBook, orderIdGen, execIdGen, quoteIdGen);
 
     final var sequencer = new EventSequencer();
     final var journal = new EventJournal(64);
@@ -480,5 +481,82 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
         rej.rejectReason(),
         "second empty-ClOrdID submission must reject with DuplicateClOrdId");
     assertEquals(1, handler.clOrdIdRegistry.size(), "duplicate must not grow the registry");
+  }
+
+  // =========================================================================
+  // Test 10 — hard cap: registry full with no expired entries → BookFull reject
+  // =========================================================================
+
+  /**
+   * When {@code clOrdIdRegistry} holds exactly {@link NewOrderSingleHandler#CLORDID_DEDUP_MAX_SIZE}
+   * live entries (all within the 24-hour window) and a NEW ClOrdID arrives only 1 ns later, the
+   * throttled eviction scan finds nothing to remove and the handler must reject the incoming order
+   * with {@link RejectReasonEnum#BookFull} and the canonical capacity message.
+   *
+   * <p>This test covers the "Hard cap (CodeRabbit PR #81 R3)" branch added to {@code onCommand()}.
+   * Pre-filling uses {@link NewOrderSingleHandler#computeClOrdIdDedupKey} with synthetic keys (same
+   * idiom as Test 6) to avoid encoding 100K SBE messages.
+   *
+   * <p><b>Order-ID counter invariant:</b> The cap check fires before Phase A ID generation ({@link
+   * TradingState#generateOrderId()}), so the order-creation counter must not advance.
+   *
+   * <p><b>Registry size invariant:</b> No new entry is inserted; size stays at {@link
+   * NewOrderSingleHandler#CLORDID_DEDUP_MAX_SIZE}.
+   *
+   * <p><b>Threading:</b> single-threaded — cluster duty-cycle invariant.
+   */
+  @Test
+  void onCommand_registryAtCapWithNoExpiredEntries_rejectsWithBookFull() {
+    // Pre-fill with CLORDID_DEDUP_MAX_SIZE synthetic entries, all first-seen at t0.
+    // Every entry is inside the 24h window relative to tEvict (only 1ns later), so
+    // the throttled eviction scan will find nothing to remove.
+    final long t0 = TS;
+    final byte[] syntheticId = new byte[4];
+    for (int i = 0; i < NewOrderSingleHandler.CLORDID_DEDUP_MAX_SIZE; i++) {
+      syntheticId[0] = (byte) (i & 0xFF);
+      syntheticId[1] = (byte) ((i >> 8) & 0xFF);
+      syntheticId[2] = (byte) ((i >> 16) & 0xFF);
+      syntheticId[3] = (byte) ((i >> 24) & 0xFF);
+      final long key = NewOrderSingleHandler.computeClOrdIdDedupKey((long) i, syntheticId, 0, 4);
+      handler.clOrdIdRegistry.put(key, t0);
+    }
+    assertEquals(
+        NewOrderSingleHandler.CLORDID_DEDUP_MAX_SIZE,
+        handler.clOrdIdRegistry.size(),
+        "pre-fill must reach the hard cap exactly");
+
+    // Snapshot the order-ID counter before dispatch; the cap check must not advance it.
+    final long counterBefore = tradingState.orderIdGen().currentCounter();
+
+    // Dispatch one more NOS at t0 + 1ns — all pre-filled entries are well inside the 24h window,
+    // so evictExpiredClOrdIds removes nothing and the registry stays full.
+    final long tEvict = t0 + 1L;
+    dispatchNos("CL-DEDUP-CAP", tEvict);
+
+    // Exactly one response message: the BookFull rejection.
+    assertEquals(1, session.messages.size(), "exactly one event emitted: the BookFull reject");
+    final var rej = decodeOrderRejected(session.messages.get(0));
+    assertEquals(
+        RejectReasonEnum.BookFull,
+        rej.rejectReason(),
+        "hard-cap overflow must reject with BookFull");
+
+    // Reject text must contain the canonical capacity phrase.
+    final var text = rej.text();
+    assertTrue(
+        text.contains("ClOrdID dedup registry at capacity"),
+        () -> "expected 'ClOrdID dedup registry at capacity' in reject text, got: " + text);
+
+    // Registry must NOT grow beyond the cap (no new entry inserted).
+    assertEquals(
+        NewOrderSingleHandler.CLORDID_DEDUP_MAX_SIZE,
+        handler.clOrdIdRegistry.size(),
+        "registry must stay at hard cap — no new entry inserted on rejection");
+
+    // Order-ID counter must NOT advance — the cap is checked before Phase A ID generation.
+    assertEquals(
+        counterBefore,
+        tradingState.orderIdGen().currentCounter(),
+        "order-ID counter must not advance when the hard-cap BookFull branch fires");
   }
 }
