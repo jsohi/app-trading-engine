@@ -58,6 +58,20 @@ public final class TradingState {
   private final IdGenerator execIdGen;
   private final IdGenerator quoteIdGen;
 
+  /**
+   * Trading-halt circuit breaker (APP-152 first slice). When {@code true}, all new orders are
+   * rejected by {@link com.trading.engine.cluster.handler.NewOrderSingleHandler} with {@code
+   * RejectReasonEnum.TradingHalted}. Flipped by the (yet-to-be-built) operator-admin command path;
+   * this field is the cluster-side primitive that command will set. Mutable non-volatile is safe
+   * because every write happens on the single-threaded cluster duty cycle.
+   *
+   * <p>Initial state: {@code false} (trading admitted). Snapshot round-trip is a follow-up under
+   * APP-171; until then, a snapshot restore returns to the {@code false} initial state, which is
+   * the safe default for the cluster-side primitive (a halt set before a restore would lift on
+   * restore — operator would need to re-issue the halt command).
+   */
+  private boolean tradingHalted;
+
   // Pre-allocated scratch buffers for ID generation (handler reads from these after generate*)
   private final byte[] orderIdScratch;
   private final UnsafeBuffer orderIdScratchBuffer;
@@ -228,6 +242,30 @@ public final class TradingState {
    */
   public boolean isOrderBookFull() {
     return orderBook.isFull();
+  }
+
+  /**
+   * Returns {@code true} if trading has been halted by the operator (APP-152). Read by {@link
+   * com.trading.engine.cluster.handler.NewOrderSingleHandler} at the top of {@code
+   * validateNewOrder} — when halted, all new orders are rejected with {@code
+   * RejectReasonEnum.TradingHalted} before any other validation runs.
+   *
+   * @return the current halt state
+   */
+  public boolean isTradingHalted() {
+    return tradingHalted;
+  }
+
+  /**
+   * Sets the trading-halt circuit breaker. To be called by the (yet-to-be-built) operator-admin
+   * command handler on the cluster duty cycle. Direct test access is via this setter; production
+   * access goes through the admin command path (deferred — APP-152 second slice). Calling with the
+   * same value as the current state is a no-op.
+   *
+   * @param halted {@code true} to halt trading; {@code false} to resume
+   */
+  public void setTradingHalted(final boolean halted) {
+    this.tradingHalted = halted;
   }
 
   // ---------------------------------------------------------------------------

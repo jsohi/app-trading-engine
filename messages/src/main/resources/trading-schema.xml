@@ -275,6 +275,7 @@
             <validValue name="InvalidCurrencyCode"       description="Currency code is not 3 ASCII uppercase letters">17</validValue>
             <validValue name="InvalidAccountId"          description="Account id is non-positive">18</validValue>
             <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
+            <validValue name="TradingHalted"             description="Trading globally halted by operator (APP-152 first slice — cluster-side halt primitive; the admin command path lands later)">20</validValue>
         </enum>
         <!-- Variable-length data encoding for WebSocket messages (templates 60, 66, 67) -->
         <composite name="varDataEncoding" description="Variable-length binary data encoding. No characterEncoding — token and snapshot payload are raw binary, not strings.">

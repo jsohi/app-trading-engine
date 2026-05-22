@@ -431,6 +431,22 @@ public final class NewOrderSingleHandler implements CommandHandler {
       final byte ccy1,
       final byte ccy2) {
 
+    // 0. (APP-152) Trading-halt circuit breaker. Checked FIRST so a halted cluster wastes
+    //    zero CPU on downstream validation. Operator sets via TradingState.setTradingHalted(true)
+    //    — the gateway-side admin command path that calls into this is a later slice; today the
+    //    state is only flipped via direct setter (tests). On halted: reject with TradingHalted
+    //    and skip every other validation step.
+    if (tradingState.isTradingHalted()) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.TradingHalted,
+          "trading halted by operator");
+      return null;
+    }
+
     // 1. Symbol must not be empty.
     if (symbolLen == 0) {
       emitOrderRejected(
