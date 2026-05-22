@@ -251,9 +251,12 @@ if [[ "$KEEP_RUNNING" -eq 1 ]]; then
   # the suite ends. `--keep-running` is the "let a human click around" path —
   # the browser needs Vite alive, JWT-bound, until the operator Ctrl+C's.
   if [[ ! -x "$REPO_ROOT/node_modules/.bin/vite" && ! -x "$REPO_ROOT/web-ui/node_modules/.bin/vite" ]]; then
-    echo "[full-stack-e2e] installing web-ui npm deps for --keep-running Vite..."
-    ( cd "$REPO_ROOT" && npm install ) >"$LOG_DIR/npm-install.log" 2>&1 \
-      || { echo "FATAL: npm install failed — see $LOG_DIR/npm-install.log" >&2; exit 7; }
+    echo "[full-stack-e2e] installing web-ui npm deps via hermetic Gradle webUiInstall..."
+    # Gemini R8 fix: go through the Gradle :web-ui:webUiInstall task instead of bare `npm install`
+    # so the pinned Node + npm versions (com.github.node-gradle.node plugin) are used, not whatever
+    # the host happens to have on PATH.
+    ( cd "$REPO_ROOT" && ./gradlew :web-ui:webUiInstall ) >"$LOG_DIR/npm-install.log" 2>&1 \
+      || { echo "FATAL: webUiInstall failed — see $LOG_DIR/npm-install.log" >&2; exit 7; }
   fi
   export VITE_E2E_REAL_BACKEND=true
   export VITE_DEV_JWT="$E2E_JWT_A"
@@ -366,7 +369,7 @@ if kill -0 "$LAUNCHER_PID" 2>/dev/null; then
   pkill -KILL -P "$LAUNCHER_PID" 2>/dev/null || true
   kill -KILL "$LAUNCHER_PID" 2>/dev/null || true
 fi
-pkill -KILL -f -- "-Daeron.dir.prefix=e2e " 2>/dev/null || true
+pkill -KILL -f -- "-Daeron.dir.prefix=e2e" 2>/dev/null || true
 sleep 1
 ROTATE_ARGS=(-Daeron.dir.prefix=e2e-mi -Dcluster.baseDir="$REPO_ROOT/e2e/cluster-data-mi")
 LAUNCHER_PID=""
