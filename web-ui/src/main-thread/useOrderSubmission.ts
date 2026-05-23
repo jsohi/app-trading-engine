@@ -77,11 +77,10 @@ export function useOrderSubmission(): UseOrderSubmissionApi {
         ]);
         // React StrictMode mounts every component twice on first render in dev.
         // The cleanup callback flips `disposed.v=true` between the two mounts.
-        // The check below sits AFTER both dynamic imports have resolved (the
-        // last suspension point); from here through `setClient(cc)` is purely
-        // synchronous, so a single check is sufficient. If `getWorkerClient()`
-        // is ever made async, ADD a second check after `new CC(...)` and
-        // dispose the constructed CC if `disposed.v` is now true.
+        // Each check below sits AFTER a dynamic-import suspension point; a re-check
+        // is required after every `await` because the cleanup callback can run during
+        // the suspension and we must not commit side effects (setClient, late hook
+        // re-bind) against a disposed handle.
         if (disposed.v) return;
         const cc = new CC(getWorkerClient());
         ccLocal = cc;
@@ -93,6 +92,16 @@ export function useOrderSubmission(): UseOrderSubmissionApi {
         // mount before installEarlyHooks() runs (it doesn't, but the dynamic import is the
         // existing project idiom for e2e-only glue and DCE works the same way).
         const { registerSubmitCommandRaw } = await import("@/main-thread/e2eHooks");
+        // Re-check disposal after the dynamic import await — without this guard, an unmount
+        // that fires while the import is in flight would leave `window.__submitCommandRaw`
+        // pointing at a disposed CommandClient. Cleanup's unregister call may have already
+        // run by this point, so the late re-bind would silently re-install the stale hook.
+        // `disposed.v` is mutated cross-closure by the cleanup callback (returned below); the
+        // linter cannot see that and narrows it to `false` after the first check at line 85.
+        // Same rationale as the mutable single-element holder pattern documented at the
+        // `const disposed` decl above.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (disposed.v) return;
         registerSubmitCommandRaw((payload) => cc.submitOrder(payload));
       } catch (e: unknown) {
         if (disposed.v) return;
