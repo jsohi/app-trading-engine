@@ -80,6 +80,16 @@ jobs:
         # Required before `npm audit` — audit reads the installed tree, not just
         # package-lock.json. `npm ci` is the strict-CI variant: errors on any
         # lockfile drift.
+        #
+        # HUSKY=0 disables the root-package `prepare` script (which would run
+        # `husky` to install git hooks). With `--workspace web-ui` the root
+        # devDependencies (including husky itself) are NOT installed, so the
+        # `prepare` invocation would fail with exit 127 — pre-existing CI bug
+        # that was masking real e2e signal across the previous three pushes
+        # (b582c62, 8487b07, 257b62f). Git hooks are not needed inside the CI
+        # runner anyway; they're a local-developer ergonomics tool.
+        env:
+          HUSKY: "0"
         run: npm ci --workspace web-ui
 
       - name: npm audit (high+)
