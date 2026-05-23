@@ -61,8 +61,8 @@ collect_failure_bundle() {
   local ts
   ts=$(date -u +'%Y%m%dT%H%M%SZ')
   local stage
-  # Gemini R8 fix: use full path template instead of `mktemp -t` (the `-t` flag has divergent
-  # semantics between GNU and BSD mktemp; the full-path form is portable and explicit).
+  # Use full path template instead of `mktemp -t` — the `-t` flag has divergent semantics
+  # between GNU and BSD mktemp; the full-path form is portable and explicit.
   stage=$(mktemp -d "${TMPDIR:-/tmp}/release-rehearsal-bundle.XXXXXX") || {
     echo "[bundle] FATAL: mktemp failed" >&2
     return 1
@@ -103,10 +103,10 @@ collect_failure_bundle() {
     if (( cluster_size_bytes > 1073741824 )); then # 1 GB
       # Take only the 20 most-recent archive segments + all *.snp snapshots.
       find "$cluster_data" -type f -name '*.snp' -exec cp -p {} "$bundle_dir/cluster-data/" \; 2>/dev/null || true
-      # Gemini PR #81 R2 fix: even `find ... -exec ls -t {} +` can split into multiple `ls`
-      # invocations if the path-list exceeds ARG_MAX, and each batch sorts only WITHIN itself
-      # — the final `head -20` then picks the 20-most-recent-per-batch, not globally. Use a
-      # Node one-liner instead: read all paths from stdin, stat each for mtime, sort globally,
+      # Note: even `find ... -exec ls -t {} +` can split into multiple `ls` invocations if the
+      # path-list exceeds ARG_MAX, and each batch sorts only WITHIN itself — the final `head -20`
+      # then picks the 20-most-recent-per-batch, not globally. Use a Node one-liner instead:
+      # read all paths from stdin, stat each for mtime, sort globally,
       # take the top 20. Single process, no batch splitting, portable across GNU + BSD. Node
       # is already a hard prereq of the harness (Vite, dev-jwks, etc.) so no new dependency.
       find "$cluster_data" -type f -name '*.rec' 2>/dev/null \

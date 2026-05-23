@@ -178,24 +178,24 @@ public final class NewOrderSingleHandler implements CommandHandler {
   static final long CLORDID_DEDUP_WINDOW_NS = 24L * 3600L * 1_000_000_000L;
 
   /**
-   * Size watermark above which the registry attempts lazy eviction on each new insert. At 100K
-   * entries the registry retains ~10MB of off-heap memory and eviction walks remain bounded by the
-   * watermark, not by total throughput.
+   * Hard cap above which the registry refuses new inserts (fail-closed with {@code BookFull}) to
+   * bound memory and protect the cluster from runaway-session insert storms. Sized for ~12 active
+   * sessions × 100K orders/24h ≈ 1.2M working set; at 1M the registry retains ~32MB off-heap and
+   * eviction walks remain bounded by the cap, not by total throughput. Operators should tune via a
+   * future ref-data-driven configuration if a deployment expects sustained throughput beyond this
+   * envelope (tracked under APP-62 risk-engine umbrella).
    */
-  static final int CLORDID_DEDUP_MAX_SIZE = 100_000;
+  static final int CLORDID_DEDUP_MAX_SIZE = 1_000_000;
 
   /** Sentinel returned by the Long2LongHashMap when a key is absent. */
   static final long CLORDID_DEDUP_MISSING = Long.MIN_VALUE;
 
   /**
    * Minimum interval between lazy eviction scans (60 s). Without this throttle, a registry that is
-   * at the watermark AND receiving sustained traffic of NEW (not refreshed) keys would trigger a
-   * full O(N) eviction walk on every NOS — a "death spiral" where tail latency degrades as
-   * throughput climbs. The 60 s gate guarantees the O(N) scan runs at most once per minute, so the
-   * amortised hot-path cost stays bounded regardless of insert rate.
-   *
-   * <p>Gemini-flagged HIGH on PR #81 (R2 round); the prior version gated eviction only on size,
-   * which produced the death-spiral risk above.
+   * at the cap AND receiving sustained traffic of NEW (not refreshed) keys would trigger a full
+   * O(N) eviction walk on every NOS — a "death spiral" where tail latency degrades as throughput
+   * climbs. The 60 s gate guarantees the O(N) scan runs at most once per minute, so the amortised
+   * hot-path cost stays bounded regardless of insert rate.
    */
   static final long CLORDID_EVICTION_INTERVAL_NS = 60L * 1_000_000_000L;
 
@@ -239,10 +239,11 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
   /**
    * Per-account daily admitted-volume state for APP-62 slice 3 ({@code maxDailyVolume} check). Key
-   * = accountId. Value = packed long: upper 24 bits hold the UTC day bucket ({@code
-   * clusterTimestamp / NANOS_PER_DAY}, fits comfortably until year 47000), lower 40 bits hold the
-   * cumulative admitted qty in fixed-point 10⁻⁸ (max ~1.1×10¹² fixed-point units — sufficient for
-   * any realistic single-account daily cap).
+   * = accountId. Value = packed long: upper 16 bits hold the UTC day bucket ({@code
+   * clusterTimestamp / NANOS_PER_DAY}, 65 536 days ≈ year 2149 — sufficient lifetime), lower 48
+   * bits hold the cumulative admitted qty in fixed-point 10⁻⁸ (max ~2.8×10¹⁴ fixed-point units ≈
+   * 2.8 million base units — sufficient for any realistic single-account daily cap including
+   * institutional FX where 100M-notional days are common).
    *
    * <p>Phase-1 semantics: tracks ADMITTED quantity (orders that passed all pre-trade checks), not
    * FILLED. This is the conservative direction — an admitted-but-unfilled order still represents
@@ -261,17 +262,20 @@ public final class NewOrderSingleHandler implements CommandHandler {
   /** Nanoseconds in a UTC day. */
   static final long NANOS_PER_DAY = 86_400L * NANOS_PER_SECOND;
 
-  /** Mask to extract the 40-bit cumulative-qty from the packed daily-volume entry. */
-  static final long DAILY_VOLUME_QTY_MASK = 0x0000_00FF_FFFF_FFFFL;
+  /** Mask to extract the 48-bit cumulative-qty from the packed daily-volume entry. */
+  static final long DAILY_VOLUME_QTY_MASK = 0x0000_FFFF_FFFF_FFFFL;
 
-  /** Bit-shift for the 24-bit day-bucket field in the packed daily-volume entry. */
-  static final int DAILY_VOLUME_DAY_SHIFT = 40;
+  /** Bit-shift for the 16-bit day-bucket field in the packed daily-volume entry. */
+  static final int DAILY_VOLUME_DAY_SHIFT = 48;
 
   /**
-   * Max cumulative-qty value representable in the lower 40 bits. Any admission that would push the
+   * Max cumulative-qty value representable in the lower 48 bits ({@code 2⁴⁸ − 1} ≈ 2.8×10¹⁴
+   * fixed-point units, or ~2.8 million base units at scale 10⁻⁸). Any admission that would push the
    * cumulative beyond this saturates and rejects, defending against pathological inputs that bypass
    * {@link RiskLimitState#maxDailyVolume} via cumulative overflow (e.g., {@code maxDailyVolume == 0
-   * == unlimited} configurations with adversarial sequencing).
+   * == unlimited} configurations with adversarial sequencing). The 48-bit allocation was chosen
+   * (over the original 40-bit) to comfortably cover institutional FX day-cap sizes (100M-notional+
+   * desks) without overflow.
    */
   static final long DAILY_VOLUME_QTY_SATURATION = DAILY_VOLUME_QTY_MASK;
 
@@ -815,6 +819,22 @@ public final class NewOrderSingleHandler implements CommandHandler {
       }
     }
 
+    // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
+    //     deterministic counter space on an order that cannot be admitted. Also hoisted ahead of
+    //     the rate-limit and daily-volume checks (11c, 11d) so a book-full reject does not
+    //     consume rate-token or daily-volume capacity for an order that could never have been
+    //     admitted anyway.
+    if (tradingState.isOrderBookFull()) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.BookFull,
+          "order book pool exhausted");
+      return null;
+    }
+
     // 11c. (APP-62 slice 2) Per-account rate limit — at most maxOrdersPerSecond NewOrderSingle
     //      admissions per 1-second wall-clock-aligned window. Skipped when the account has no
     //      rate limit configured (maxOrdersPerSecond == 0 == unlimited).
@@ -865,19 +885,6 @@ public final class NewOrderSingleHandler implements CommandHandler {
           side,
           RejectReasonEnum.DailyVolumeExceeded,
           "order would exceed account maxDailyVolume for current UTC day");
-      return null;
-    }
-
-    // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
-    //     deterministic counter space on an order that cannot be admitted.
-    if (tradingState.isOrderBookFull()) {
-      emitOrderRejected(
-          eventSink,
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.BookFull,
-          "order book pool exhausted");
       return null;
     }
 
@@ -943,7 +950,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    *
    * <p><b>Allocation:</b> none — the packed-long encoding avoids any companion object.
    *
-   * <p><b>Saturation guard:</b> {@code DAILY_VOLUME_QTY_SATURATION} caps the cumulative at 2⁴⁰−1
+   * <p><b>Saturation guard:</b> {@code DAILY_VOLUME_QTY_SATURATION} caps the cumulative at 2⁴⁸−1
    * fixed-point units. Any order that would push the cumulative past saturation rejects; this is
    * defensive against pathological inputs (e.g., {@code maxDailyVolume == 0 == unlimited} paired
    * with adversarial sequencing) and prevents silent bit-truncation when re-packing.
