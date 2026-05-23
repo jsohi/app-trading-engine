@@ -238,6 +238,48 @@ public final class NewOrderSingleHandler implements CommandHandler {
       new Long2LongHashMap(ACCOUNT_RATE_STATE_INITIAL_CAPACITY, 0.65f, ACCOUNT_RATE_STATE_MISSING);
 
   /**
+   * Per-account daily admitted-volume state for APP-62 slice 3 ({@code maxDailyVolume} check). Key
+   * = accountId. Value = packed long: upper 24 bits hold the UTC day bucket ({@code
+   * clusterTimestamp / NANOS_PER_DAY}, fits comfortably until year 47000), lower 40 bits hold the
+   * cumulative admitted qty in fixed-point 10⁻⁸ (max ~1.1×10¹² fixed-point units — sufficient for
+   * any realistic single-account daily cap).
+   *
+   * <p>Phase-1 semantics: tracks ADMITTED quantity (orders that passed all pre-trade checks), not
+   * FILLED. This is the conservative direction — an admitted-but-unfilled order still represents
+   * risk capacity consumed against the limit, so a runaway algorithm is bounded even if its orders
+   * never trade. A future slice 4 may refine to track fills (deduct on cancel / expire) if
+   * operations wants a true position-based check.
+   *
+   * <p>NOT persisted in snapshots in this slice — restart resets the day's accumulator. Worst- case
+   * over-allowance per cluster restart is {@code maxDailyVolume}, which is acceptable for a circuit
+   * breaker (not a regulatory quota).
+   */
+  static final long ACCOUNT_DAILY_VOLUME_MISSING = Long.MIN_VALUE;
+
+  private static final int ACCOUNT_DAILY_VOLUME_INITIAL_CAPACITY = 4096;
+
+  /** Nanoseconds in a UTC day. */
+  static final long NANOS_PER_DAY = 86_400L * NANOS_PER_SECOND;
+
+  /** Mask to extract the 40-bit cumulative-qty from the packed daily-volume entry. */
+  static final long DAILY_VOLUME_QTY_MASK = 0x0000_00FF_FFFF_FFFFL;
+
+  /** Bit-shift for the 24-bit day-bucket field in the packed daily-volume entry. */
+  static final int DAILY_VOLUME_DAY_SHIFT = 40;
+
+  /**
+   * Max cumulative-qty value representable in the lower 40 bits. Any admission that would push the
+   * cumulative beyond this saturates and rejects, defending against pathological inputs that bypass
+   * {@link RiskLimitState#maxDailyVolume} via cumulative overflow (e.g., {@code maxDailyVolume == 0
+   * == unlimited} configurations with adversarial sequencing).
+   */
+  static final long DAILY_VOLUME_QTY_SATURATION = DAILY_VOLUME_QTY_MASK;
+
+  final Long2LongHashMap accountDailyVolumeState =
+      new Long2LongHashMap(
+          ACCOUNT_DAILY_VOLUME_INITIAL_CAPACITY, 0.65f, ACCOUNT_DAILY_VOLUME_MISSING);
+
+  /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
    * (NOT {@link Long#MIN_VALUE}) so the first eviction is not blocked by the interval guard:
    * cluster timestamps are positive epoch nanos (≈ 1.7e18 in 2026), so {@code (clusterTimestamp -
@@ -798,6 +840,34 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return null;
     }
 
+    // 11d. (APP-62 slice 3) Per-account daily-volume limit — cumulative admitted qty across
+    //      the current UTC day must not exceed maxDailyVolume. Skipped when the account has
+    //      no daily-volume limit configured (maxDailyVolume == 0 == unlimited).
+    //
+    //      Day alignment: bucket = clusterTimestamp / NANOS_PER_DAY (epoch days, UTC). Aligned
+    //      to absolute epoch days for determinism. A day rollover resets the counter to the
+    //      incoming order's qty.
+    //
+    //      Phase-1 semantics: tracks ADMITTED qty (orders that reached this check), not FILLED.
+    //      Conservative — admitted-but-unfilled orders still represent risk capacity consumed
+    //      against the limit. A future slice 4 may refine to deduct on cancel / expire.
+    //
+    //      A rejected order does NOT consume daily-volume capacity (check fires here; the
+    //      accumulator increments only on the pass path).
+    if (riskLimit != null
+        && riskLimit.maxDailyVolume() > 0L
+        && !tryConsumeDailyVolume(
+            account.accountId(), riskLimit.maxDailyVolume(), orderQty, timestamp)) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.DailyVolumeExceeded,
+          "order would exceed account maxDailyVolume for current UTC day");
+      return null;
+    }
+
     // 12. Order book must not be full — checked BEFORE generating IDs to avoid wasting
     //     deterministic counter space on an order that cannot be admitted.
     if (tradingState.isOrderBookFull()) {
@@ -857,6 +927,73 @@ public final class NewOrderSingleHandler implements CommandHandler {
       nextCount = prevCount + 1L;
     }
     accountRateState.put(accountId, (bucketSec << 32) | (nextCount & RATE_COUNT_MASK));
+    return true;
+  }
+
+  /**
+   * Checks and atomically updates the per-account daily admitted-volume state for the current UTC
+   * day. Returns {@code true} if {@code prevCumulative + orderQty <= limit} (and increments the
+   * accumulator); {@code false} if the addition would exceed the limit or overflow the 40-bit
+   * storage field.
+   *
+   * <p>Day alignment: bucket = {@code clusterTimestamp / NANOS_PER_DAY}. A day rollover resets the
+   * accumulator to {@code orderQty}.
+   *
+   * <p><b>Determinism:</b> output is a pure function of the cluster timestamp + prior state.
+   *
+   * <p><b>Allocation:</b> none — the packed-long encoding avoids any companion object.
+   *
+   * <p><b>Saturation guard:</b> {@code DAILY_VOLUME_QTY_SATURATION} caps the cumulative at 2⁴⁰−1
+   * fixed-point units. Any order that would push the cumulative past saturation rejects; this is
+   * defensive against pathological inputs (e.g., {@code maxDailyVolume == 0 == unlimited} paired
+   * with adversarial sequencing) and prevents silent bit-truncation when re-packing.
+   *
+   * @param accountId the validated account id
+   * @param limit the daily-volume cap in fixed-point 10⁻⁸ (caller must ensure {@code > 0})
+   * @param orderQty the order quantity in fixed-point 10⁻⁸ (caller must ensure {@code > 0})
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   * @return {@code true} if the admission fits within {@code limit} for the current UTC day
+   */
+  private boolean tryConsumeDailyVolume(
+      final long accountId, final long limit, final long orderQty, final long clusterTimestamp) {
+    final long dayBucket = clusterTimestamp / NANOS_PER_DAY;
+    final long prev = accountDailyVolumeState.get(accountId);
+    final long prevDay;
+    final long prevCumulative;
+    if (prev == ACCOUNT_DAILY_VOLUME_MISSING) {
+      // Sentinel forces a new-day path below; no prior cumulative to merge.
+      prevDay = -1L;
+      prevCumulative = 0L;
+    } else {
+      prevDay = prev >>> DAILY_VOLUME_DAY_SHIFT;
+      prevCumulative = prev & DAILY_VOLUME_QTY_MASK;
+    }
+
+    final long nextCumulative;
+    if (dayBucket != prevDay) {
+      // New UTC day — reset accumulator to this single admission.
+      nextCumulative = orderQty;
+    } else {
+      // Same day — guard against overflow of long addition AND saturation of the 40-bit
+      // storage field. Long overflow is checked first because the limit field itself is a
+      // long; relying on the >limit comparison alone could let a wrap-negative sum slip
+      // through.
+      if (orderQty > Long.MAX_VALUE - prevCumulative) {
+        return false;
+      }
+      nextCumulative = prevCumulative + orderQty;
+      if (nextCumulative > DAILY_VOLUME_QTY_SATURATION) {
+        return false;
+      }
+    }
+    if (nextCumulative > limit) {
+      // Limit exceeded — reject without mutating state so subsequent attempts in the same day
+      // are still measured against the original cumulative.
+      return false;
+    }
+    accountDailyVolumeState.put(
+        accountId,
+        (dayBucket << DAILY_VOLUME_DAY_SHIFT) | (nextCumulative & DAILY_VOLUME_QTY_MASK));
     return true;
   }
 

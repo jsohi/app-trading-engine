@@ -277,6 +277,7 @@
             <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
             <validValue name="TradingHalted"             description="Trading globally halted by operator (APP-152 first slice — cluster-side halt primitive; the admin command path lands later)">20</validValue>
             <validValue name="RateLimitExceeded"          description="Account exceeded its maxOrdersPerSecond rate limit for the current 1-second window (APP-62 slice 2)">21</validValue>
+            <validValue name="DailyVolumeExceeded"        description="Order would push the account's daily admitted-quantity total over its maxDailyVolume limit (APP-62 slice 3 — current implementation tracks ADMITTED qty, not filled; slice 4 follow-up will refine to filled-qty if needed)">22</validValue>
         </enum>
         <!-- Variable-length data encoding for WebSocket messages (templates 60, 66, 67) -->
         <composite name="varDataEncoding" description="Variable-length binary data encoding. No characterEncoding — token and snapshot payload are raw binary, not strings.">
