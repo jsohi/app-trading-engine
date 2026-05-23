@@ -1525,9 +1525,11 @@
          but still inside the 24h dedup window would be admitted again — breaking the idempotency
          contract the cluster claims to enforce. -->
     <sbe:message name="ClOrdIdDedupSnapshot" id="210"
-                 description="Cluster-side ClOrdID dedup registry snapshot — header lastEvictionTimestampNanos plus a repeating group of (dedupKey, firstSeenTimestampNanos). dedupKey is the 64-bit FNV-1a hash of (sessionId bytes || clOrdId bytes), the same key used at admission time in NewOrderSingleHandler. Restoring this fragment is essential for 24h ClOrdID-uniqueness enforcement across cluster restarts.">
+                 description="Cluster-side ClOrdID dedup registry snapshot — header (lastEvictionTimestampNanos + tradingHalted flag) plus a repeating group of (dedupKey, firstSeenTimestampNanos). dedupKey is the 64-bit FNV-1a hash of (sessionId bytes || clOrdId bytes), the same key used at admission time in NewOrderSingleHandler. Restoring this fragment is essential for 24h ClOrdID-uniqueness enforcement across cluster restarts. The tradingHalted flag rides this template (rather than a dedicated snapshot template) because both fields share a single cluster-state owner (NewOrderSingleHandler's enclosing TradingState) and a new template would require a SNAPSHOT_STORE_COUNT bump plus full encode/restore wiring for a single byte.">
         <field name="lastEvictionTimestampNanos" id="10051" type="int64"
                description="Throttle anchor for the next O(N) eviction sweep — restored verbatim so the post-snapshot eviction cadence matches pre-snapshot behaviour."/>
+        <field name="tradingHalted"              id="10058" type="uint8"
+               description="Persisted cluster-wide trading-halt flag from TradingState. 1 = halted (NewOrderSingleHandler rejects every NOS with RejectReasonEnum.TradingHalted at Check 0); 0 = admitting. Snapshot persistence ensures an operator-set halt survives cluster restart (Aeron failover, planned restart) — a halt that lifted on restore would be a safety-critical audit gap."/>
         <group name="noEntries" id="10052" dimensionType="groupSizeEncoding"
                description="Live registry entries. Iteration order is not stable across runs (Agrona Long2LongHashMap rehashing) but order does not affect correctness since restore writes into a fresh map by key.">
             <field name="dedupKey"          id="10053" type="int64"

@@ -159,19 +159,19 @@ public final class NewOrderSingleHandler implements CommandHandler {
   // boundary; entries outside the window are evicted lazily on the next
   // dedup-key insert that crosses the size watermark.
   //
-  // Hash-collision risk: 64-bit hash space + 100K active entries gives
-  // P(collision) ≈ 2.7e-10 — well below the noise floor of every other
+  // Hash-collision risk: 64-bit hash space + 60K active entries gives
+  // P(collision) ≈ 9.7e-11 — well below the noise floor of every other
   // failure mode in the pipeline. The trade-off buys hot-path zero-alloc:
   // a per-session {@code ObjectHashSet<byte[]>} would require byte-array
   // boxing on every put + AsciiSequenceView allocation per query.
   //
-  // Snapshot-restore caveat: this registry is NOT yet in the cluster
-  // snapshot. After a snapshot restore, the dedup state rebuilds only from
-  // log entries replayed since the snapshot point — a window of up to one
-  // snapshot interval may admit a duplicate that the pre-snapshot path
-  // would have rejected. Tracked under APP-171 (atomic snapshot publish);
-  // accepted for this slice because the snapshot subsystem is not yet
-  // production-deployed.
+  // Snapshot persistence: the registry IS persisted across cluster
+  // snapshot/restore via {@link #snapshotDedupTo} / {@link #restoreDedupFrom}
+  // (SBE template 210 ClOrdIdDedupSnapshot, wired into
+  // TradingClusteredService.encodeSnapshotFragments / applySnapshotFragment).
+  // After restore, the registry contains every (sessionId, clOrdId) pair
+  // observed before the snapshot point that is still inside the 24h window —
+  // closing the previously-noted duplicate-admission window.
   // ===========================================================================
 
   /** Dedup window matching the FIX trading-day boundary. */
@@ -445,9 +445,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
     //      the death-spiral guard from the prior fix — under sustained at-cap NEW-key churn,
     //      we don't pay the O(N) walk on every single NOS, only on every interval boundary.
     //   2. If after the (possibly skipped) eviction the registry is STILL at cap, fail closed:
-    //      reject the new order with BookFull. The 100K cap is a memory bound, not a per-order
-    //      limit; if 100K legitimate orders are in flight within 24h, ops should size up
-    //      CLORDID_DEDUP_MAX_SIZE rather than silently overflow the registry.
+    //      reject the new order with BookFull. The 60K cap is a memory bound, not a per-order
+    //      limit; if 60K legitimate orders are in flight within 24h, ops should size up
+    //      CLORDID_DEDUP_MAX_SIZE rather than silently overflow the registry (but see the
+    //      uint16 group-size constraint in the constant Javadoc above).
     if (previousSeenNanos == CLORDID_DEDUP_MISSING
         && clOrdIdRegistry.size() >= CLORDID_DEDUP_MAX_SIZE) {
       if ((clusterTimestamp - lastEvictionTimestampNanos) >= CLORDID_EVICTION_INTERVAL_NS) {
@@ -464,7 +465,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
             clusterTimestamp,
             side,
             RejectReasonEnum.BookFull,
-            "ClOrdID dedup registry at capacity (100K within 24h window)");
+            "ClOrdID dedup registry at capacity (60K within 24h window)");
         return;
       }
     }
@@ -1259,8 +1260,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * <p>Collision probability — birthday approximation against the 64-bit hash space:
    *
    * <ul>
-   *   <li>Globally across all sessions at the {@link #CLORDID_DEDUP_MAX_SIZE} watermark (100K
-   *       entries): ≈ 2.7e-10.
+   *   <li>Globally across all sessions at the {@link #CLORDID_DEDUP_MAX_SIZE} watermark (60K
+   *       entries): ≈ 9.7e-11.
    *   <li>Per-session (even spread across N sessions): ≈ 2.7e-10 / N². A single session would need
    *       ~5 billion unique ClOrdIDs in 24h to expect one collision.
    * </ul>
@@ -1303,8 +1304,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * key/value pair in a {@code Map.Entry<Long, Long>} (boxes both sides).
    *
    * <p>This eviction path is off the steady-state hot path by design; the watermark guard ensures
-   * it runs only when the registry has accumulated 100K+ entries, which is a rare event even on a
-   * busy trading day (24h × 100K/24h = ~1.16 puts/sec sustained throughput).
+   * it runs only when the registry has accumulated 60K+ entries, which is a rare event even on a
+   * busy trading day (24h × 60K/24h = ~0.69 puts/sec sustained throughput).
    *
    * @param nowNs the current cluster timestamp in epoch nanos
    */
@@ -1348,6 +1349,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
   public int snapshotDedupTo(final MutableDirectBuffer buf, final int offset) {
     clOrdIdDedupSnapEncoder.wrapAndApplyHeader(buf, offset, headerEncoder);
     clOrdIdDedupSnapEncoder.lastEvictionTimestampNanos(lastEvictionTimestampNanos);
+    // tradingHalted flag rides this template (rather than its own snapshot template) — see the
+    // template description in trading-schema.xml for the rationale.
+    clOrdIdDedupSnapEncoder.tradingHalted((short) (tradingState.isTradingHalted() ? 1 : 0));
     final var group = clOrdIdDedupSnapEncoder.noEntriesCount(clOrdIdRegistry.size());
     final Long2LongHashMap.KeyIterator keyIter = clOrdIdRegistry.keySet().iterator();
     while (keyIter.hasNext()) {
@@ -1386,6 +1390,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
     clOrdIdRegistry.clear();
     clOrdIdDedupSnapDecoder.wrap(src, offset, blockLength, version);
     lastEvictionTimestampNanos = clOrdIdDedupSnapDecoder.lastEvictionTimestampNanos();
+    // Restore the cluster-wide trading-halt flag — an operator-set halt persists across cluster
+    // restart so the engine cannot silently resume admitting orders after a failover.
+    tradingState.setTradingHalted(clOrdIdDedupSnapDecoder.tradingHalted() != 0);
     final var group = clOrdIdDedupSnapDecoder.noEntries();
     while (group.hasNext()) {
       group.next();
