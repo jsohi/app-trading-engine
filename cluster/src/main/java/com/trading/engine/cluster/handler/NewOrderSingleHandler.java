@@ -1335,8 +1335,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
   public int snapshotDedupTo(final MutableDirectBuffer buf, final int offset) {
     clOrdIdDedupSnapEncoder.wrapAndApplyHeader(buf, offset, headerEncoder);
     clOrdIdDedupSnapEncoder.lastEvictionTimestampNanos(lastEvictionTimestampNanos);
-    final ClOrdIdDedupSnapshotEncoder.NoEntriesEncoder group =
-        clOrdIdDedupSnapEncoder.noEntriesCount(clOrdIdRegistry.size());
+    final var group = clOrdIdDedupSnapEncoder.noEntriesCount(clOrdIdRegistry.size());
     final Long2LongHashMap.KeyIterator keyIter = clOrdIdRegistry.keySet().iterator();
     while (keyIter.hasNext()) {
       final long key = keyIter.nextValue();
@@ -1374,7 +1373,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
     clOrdIdRegistry.clear();
     clOrdIdDedupSnapDecoder.wrap(src, offset, blockLength, version);
     lastEvictionTimestampNanos = clOrdIdDedupSnapDecoder.lastEvictionTimestampNanos();
-    final ClOrdIdDedupSnapshotDecoder.NoEntriesDecoder group = clOrdIdDedupSnapDecoder.noEntries();
+    final var group = clOrdIdDedupSnapDecoder.noEntries();
     while (group.hasNext()) {
       group.next();
       clOrdIdRegistry.put(group.dedupKey(), group.firstSeenTimestamp());
