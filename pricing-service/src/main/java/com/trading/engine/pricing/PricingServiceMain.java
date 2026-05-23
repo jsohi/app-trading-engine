@@ -5,7 +5,9 @@ import com.epam.deltix.gflog.api.LogFactory;
 import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.agrona.concurrent.SystemNanoClock;
 
 /**
  * Standalone entry point for the pricing service process. Parses command-line arguments, constructs
@@ -69,7 +71,12 @@ public final class PricingServiceMain {
    * @param args command-line arguments; see class-level Javadoc for supported flags
    */
   public static void main(final String[] args) {
-    final long launchStartNs = System.nanoTime();
+    // Monotonic-elapsed measurement for startup duration logging (cold path, fires once at boot).
+    // Per CLAUDE.md "Monotonic timeouts/elapsed time": use NanoClock / SystemNanoClock.INSTANCE
+    // rather than calling System.nanoTime() directly — keeps the clock-discipline scan clean and
+    // matches the testability seam used elsewhere in the codebase.
+    final NanoClock nanoClock = SystemNanoClock.INSTANCE;
+    final long launchStartNs = nanoClock.nanoTime();
 
     // --- Parse command-line arguments ---
     String aeronDir = DEFAULT_AERON_DIR;
@@ -129,7 +136,7 @@ public final class PricingServiceMain {
           PricingServiceLauncher.launch(aeronDir, config, idleStrategy);
       componentsRef.set(components);
 
-      final long startupMs = (System.nanoTime() - launchStartNs) / 1_000_000L;
+      final long startupMs = (nanoClock.nanoTime() - launchStartNs) / 1_000_000L;
       LOG.info().append("Pricing service ready: startupMs=").append(startupMs).commit();
 
     } catch (final Exception e) {

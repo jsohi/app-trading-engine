@@ -66,9 +66,11 @@ public final class TradingState {
    * because every write happens on the single-threaded cluster duty cycle.
    *
    * <p>Initial state: {@code false} (trading admitted). Snapshot round-trip is a follow-up under
-   * APP-171; until then, a snapshot restore returns to the {@code false} initial state, which is
-   * the safe default for the cluster-side primitive (a halt set before a restore would lift on
-   * restore — operator would need to re-issue the halt command).
+   * APP-62 (pre-trade risk engine umbrella — see its "Slice-4 / snapshot persistence" section for
+   * the umbrella that also tracks rate-limit-state and daily-volume-state snapshot persistence);
+   * until then, a snapshot restore returns to the {@code false} initial state, which is the safe
+   * default for the cluster-side primitive (a halt set before a restore would lift on restore —
+   * operator would need to re-issue the halt command).
    */
   private boolean tradingHalted = false;
 

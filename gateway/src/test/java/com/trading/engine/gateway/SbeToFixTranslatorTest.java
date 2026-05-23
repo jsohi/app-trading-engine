@@ -18,6 +18,8 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
+import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
+import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
@@ -670,7 +672,7 @@ class SbeToFixTranslatorTest {
     // translator's exhaustive switch would throw IllegalStateException at egress, turning a valid
     // cluster reject into a transport failure for FIX clients.
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    final var enc = new OrderRejectedEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(1L);
     enc.timestamp(1_712_491_200_000_000_000L);
@@ -685,7 +687,7 @@ class SbeToFixTranslatorTest {
 
     final var hdrDec = new MessageHeaderDecoder();
     hdrDec.wrap(sbeBuf, 0);
-    final var sbeDec = new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    final var sbeDec = new OrderRejectedEventDecoder();
     sbeDec.wrap(
         sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
 
@@ -718,7 +720,7 @@ class SbeToFixTranslatorTest {
     // translator's exhaustive switch would throw IllegalStateException at egress, turning a valid
     // cluster reject into a transport failure for FIX clients.
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    final var enc = new OrderRejectedEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(1L);
     enc.timestamp(1_712_491_200_000_000_000L);
@@ -733,7 +735,7 @@ class SbeToFixTranslatorTest {
 
     final var hdrDec = new MessageHeaderDecoder();
     hdrDec.wrap(sbeBuf, 0);
-    final var sbeDec = new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    final var sbeDec = new OrderRejectedEventDecoder();
     sbeDec.wrap(
         sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
 
@@ -770,7 +772,7 @@ class SbeToFixTranslatorTest {
     // throw IllegalStateException at egress, turning a valid cluster reject into a transport
     // failure for FIX clients.
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    final var enc = new OrderRejectedEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(1L);
     enc.timestamp(1_712_491_200_000_000_000L);
@@ -785,7 +787,7 @@ class SbeToFixTranslatorTest {
 
     final var hdrDec = new MessageHeaderDecoder();
     hdrDec.wrap(sbeBuf, 0);
-    final var sbeDec = new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    final var sbeDec = new OrderRejectedEventDecoder();
     sbeDec.wrap(
         sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
 

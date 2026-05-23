@@ -21,6 +21,8 @@ import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
+import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
@@ -108,7 +110,7 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
         AccountFixtures.account(
             ACCOUNT_ID,
             ACCOUNT_CODE,
-            com.trading.engine.messages.sbe.AccountStatusEnum.Active,
+            AccountStatusEnum.Active,
             AccountState.Capabilities.CAN_TRADE));
     currencyStore.put(
         CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D'), CurrencyFixtures.usd());
@@ -181,8 +183,8 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
         msgBuf,
         0,
         len,
-        com.trading.engine.messages.sbe.NewOrderSingleDecoder.BLOCK_LENGTH,
-        com.trading.engine.messages.sbe.NewOrderSingleDecoder.SCHEMA_VERSION,
+        NewOrderSingleDecoder.BLOCK_LENGTH,
+        NewOrderSingleDecoder.SCHEMA_VERSION,
         eventSink);
     return clientSession == null ? 0 : clientSession.messages.size();
   }
@@ -328,8 +330,8 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
         msgBuf,
         0,
         len1,
-        com.trading.engine.messages.sbe.NewOrderSingleDecoder.BLOCK_LENGTH,
-        com.trading.engine.messages.sbe.NewOrderSingleDecoder.SCHEMA_VERSION,
+        NewOrderSingleDecoder.BLOCK_LENGTH,
+        NewOrderSingleDecoder.SCHEMA_VERSION,
         eventSink);
 
     // First message: OrderRejected with InvalidQuantity.
