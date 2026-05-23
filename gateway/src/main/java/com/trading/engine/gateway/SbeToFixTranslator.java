@@ -1022,6 +1022,10 @@ public final class SbeToFixTranslator {
       case RateLimitExceeded -> 8; // FIX: Broker / Exchange option — closest FIX 4.4 value for a
       // throttle-side rejection (no dedicated rate-limit code). Free-text in tag 58 carries the
       // human-readable detail.
+      case DailyVolumeExceeded -> 3; // FIX: Order exceeds limit — same FIX code as
+      // OrderExceedsMaxSize since both are "you tried to push more than the desk's risk-limit
+      // allows" rejections at the cluster level. Free-text in tag 58 distinguishes the two for
+      // ops triage.
       case DuplicateAccountCode -> 99; // FIX: Other
       case UnknownCurrency -> 99; // FIX: Other
       case InvalidCurrencyCode -> 99; // FIX: Other

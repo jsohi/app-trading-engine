@@ -759,6 +759,58 @@ class SbeToFixTranslatorTest {
     assertEquals('8', fixDec.ordStatus()); // Rejected
   }
 
+  @Test
+  void translateOrderRejectedEvent_dailyVolumeExceeded_mapsToFix3() {
+    // APP-62 slice 3 regression: DailyVolumeExceeded is a new RejectReasonEnum value emitted by
+    // the cluster when an account exhausts its aggregate daily admitted-volume budget.
+    // SbeToFixTranslator must map it to FIX 4.4 tag 103 (OrdRejReason) = 3 ("Order exceeds
+    // limit") — the same FIX code used for OrderExceedsMaxSize, since both represent a desk
+    // risk-limit breach. The human-readable detail (distinguishing size vs. volume limit) is
+    // preserved in tag 58 (Text). Without this mapping the translator's exhaustive switch would
+    // throw IllegalStateException at egress, turning a valid cluster reject into a transport
+    // failure for FIX clients.
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderRejectedEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(1_712_491_200_000_000_000L);
+    enc.clOrdId("ORD-DVOL-1");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.rejectReason(RejectReasonEnum.DailyVolumeExceeded);
+    enc.accountCode("ACCT-1");
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.currency("EUR");
+    enc.text("order would exceed account maxDailyVolume for current UTC day");
+
+    final var hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    final var sbeDec = new com.trading.engine.messages.sbe.OrderRejectedEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    final var fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    new SbeToFixTranslator().translateOrderRejectedEvent(sbeDec, fix);
+
+    final var wire = new MutableAsciiBuffer(new byte[2048]);
+    final long encoded = fix.encode(wire, 0);
+    final int wireOffset = (int) (encoded >>> 32);
+    final int wireLen = (int) encoded;
+
+    final var fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+
+    assertEquals(3, fixDec.ordRejReason()); // FIX: Order exceeds limit (tag 103 = 3)
+    assertEquals(
+        "order would exceed account maxDailyVolume for current UTC day",
+        fixDec.textAsString(),
+        "free-text rejection detail must round-trip through tag 58");
+    assertEquals('8', fixDec.execType()); // Rejected
+    assertEquals('8', fixDec.ordStatus()); // Rejected
+  }
+
   // ===========================================================================
   // QuoteRequestReject (35=AG) translation — Phase 3 (APP-216)
   // ===========================================================================
