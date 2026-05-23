@@ -65,12 +65,13 @@ public final class TradingState {
    * this field is the cluster-side primitive that command will set. Mutable non-volatile is safe
    * because every write happens on the single-threaded cluster duty cycle.
    *
-   * <p>Initial state: {@code false} (trading admitted). Snapshot round-trip is a follow-up under
-   * APP-62 (pre-trade risk engine umbrella — see its "Slice-4 / snapshot persistence" section for
-   * the umbrella that also tracks rate-limit-state and daily-volume-state snapshot persistence);
-   * until then, a snapshot restore returns to the {@code false} initial state, which is the safe
-   * default for the cluster-side primitive (a halt set before a restore would lift on restore —
-   * operator would need to re-issue the halt command).
+   * <p>Initial state: {@code false} (trading admitted). The flag IS persisted across cluster
+   * snapshot/restore via the {@code tradingHalted} header field on SBE template 210
+   * (ClOrdIdDedupSnapshot) — see {@code NewOrderSingleHandler.snapshotDedupTo} / {@code
+   * restoreDedupFrom}. An operator-set halt therefore survives a cluster restart (Aeron failover,
+   * planned restart) — the engine cannot silently resume admitting orders. Rate-limit and
+   * daily-volume accumulators remain unsnapshotted; see APP-62 description appendage ("snapshot
+   * persistence") for the umbrella.
    */
   private boolean tradingHalted = false;
 

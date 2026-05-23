@@ -1,6 +1,7 @@
 package com.trading.engine.cluster.handler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.cluster.IdGenerator;
@@ -180,6 +181,69 @@ class NewOrderSingleHandlerDedupSnapshotTest {
     } catch (final ReflectiveOperationException e) {
       throw new AssertionError("reflection failed writing lastEvictionTimestampNanos", e);
     }
+  }
+
+  /**
+   * Reads the package-private {@code tradingState} field from {@code h} via reflection. Used to
+   * verify the {@code tradingHalted} flag round-trips through the snapshot wire.
+   *
+   * @param h the handler to inspect
+   * @return the handler's {@link TradingState} instance
+   */
+  private static TradingState getTradingState(final NewOrderSingleHandler h) {
+    try {
+      final var f = NewOrderSingleHandler.class.getDeclaredField("tradingState");
+      f.setAccessible(true);
+      return (TradingState) f.get(h);
+    } catch (final ReflectiveOperationException e) {
+      throw new AssertionError("reflection failed on tradingState", e);
+    }
+  }
+
+  /**
+   * Verifies the {@code tradingHalted} flag rides the ClOrdIdDedupSnapshot template (header field,
+   * id=10058). With the flag set to {@code true} on the source handler's {@link TradingState}, a
+   * snapshot encode + restore into a fresh handler (whose initial tradingHalted is {@code false})
+   * must leave the destination handler's tradingState reporting halted. This is the safety-critical
+   * invariant from Gemini iter-3 review (HIGH): an operator-set halt must survive cluster restart.
+   */
+  @Test
+  void tradingHalted_true_restored_viaSnapshotHeader() {
+    final var sourceState = getTradingState(handler);
+    sourceState.setTradingHalted(true);
+
+    final var buf = snapshotBuf(0);
+    final var restored = buildFreshHandler();
+    final var restoredState = getTradingState(restored);
+    assertFalse(restoredState.isTradingHalted(), "fresh handler must default to admitting");
+    roundTrip(handler, restored, buf);
+
+    assertTrue(
+        restoredState.isTradingHalted(),
+        "tradingHalted=true must round-trip through ClOrdIdDedupSnapshot.tradingHalted");
+  }
+
+  /**
+   * Mirror of {@link #tradingHalted_true_restored_viaSnapshotHeader} for the {@code false} → {@code
+   * false} path. Defends against a regression where the restore code forces halted=true
+   * unconditionally.
+   */
+  @Test
+  void tradingHalted_false_restored_viaSnapshotHeader() {
+    final var sourceState = getTradingState(handler);
+    sourceState.setTradingHalted(false);
+
+    final var buf = snapshotBuf(0);
+    final var restored = buildFreshHandler();
+    final var restoredState = getTradingState(restored);
+    // Pre-set restored to halted; restore must explicitly CLEAR it.
+    restoredState.setTradingHalted(true);
+    roundTrip(handler, restored, buf);
+
+    assertFalse(
+        restoredState.isTradingHalted(),
+        "tradingHalted=false must round-trip through ClOrdIdDedupSnapshot.tradingHalted "
+            + "(restore must clear, not skip)");
   }
 
   /**
