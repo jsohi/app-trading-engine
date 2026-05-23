@@ -374,7 +374,7 @@ class NewOrderSingleHandlerRateLimitTest {
    * new window.
    */
   @Test
-  void newWindow_resetsCount() {
+  void tryConsumeRateToken_newWindow_resetsCount() {
     seedAccountA();
     seedRiskLimitA(2L);
 
@@ -406,7 +406,7 @@ class NewOrderSingleHandlerRateLimitTest {
    * interfere with account A's counter.
    */
   @Test
-  void differentAccounts_haveIndependentBuckets() {
+  void tryConsumeRateToken_differentAccounts_haveIndependentBuckets() {
     seedAccountA();
     seedAccountB();
     seedRiskLimitA(1L);
@@ -432,7 +432,7 @@ class NewOrderSingleHandlerRateLimitTest {
    * bucket to start fresh.
    */
   @Test
-  void rejected_doesNotConsumeToken() {
+  void tryConsumeRateToken_atLimitBoundary_rejectionDoesNotConsumeToken() {
     seedAccountA();
     seedRiskLimitA(2L);
 
@@ -468,7 +468,7 @@ class NewOrderSingleHandlerRateLimitTest {
    * the limit is 2).
    */
   @Test
-  void nonRateLimitRejection_doesNotConsumeRateToken() {
+  void check11c_nonRateLimitRejection_doesNotConsumeRateToken() {
     seedAccountA();
     seedRiskLimitA(2L);
 

@@ -75,11 +75,35 @@ public final class HaltTradingCommandHandler implements CommandHandler {
     this.tradingState = Objects.requireNonNull(tradingState, "tradingState");
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * @return {@link HaltTradingCommandDecoder#TEMPLATE_ID} (SBE template 17)
+   */
   @Override
   public int commandTemplateId() {
     return HaltTradingCommandDecoder.TEMPLATE_ID;
   }
 
+  /**
+   * Decodes one {@code HaltTradingCommand}, sets {@link TradingState#setTradingHalted}{@code
+   * (true)}, and emits one {@code TradingHaltActivatedEvent} (template 117) via {@link EventSink}.
+   *
+   * <p>Idempotent — issuing the command while the flag is already set emits the audit event with
+   * {@code previouslyHalted=1} but does not change state.
+   *
+   * @param session the originating Aeron Cluster session (may be {@code null} on the test path; the
+   *     event then carries {@code adminSessionId=0})
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos (stamped onto the emitted
+   *     event by {@link EventSink#emit})
+   * @param buffer the inbound SBE message buffer (header + body)
+   * @param offset the start offset of the SBE message header in {@code buffer}
+   * @param length the total message length (header + body)
+   * @param blockLength the SBE block length from the decoded message header
+   * @param version the SBE schema version from the decoded message header
+   * @param eventSink the sink that stamps sequence number + timestamp and broadcasts the emitted
+   *     event; must not be {@code null}
+   */
   @Override
   public void onCommand(
       final ClientSession session,
