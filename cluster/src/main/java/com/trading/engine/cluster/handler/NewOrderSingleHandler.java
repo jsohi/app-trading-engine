@@ -179,13 +179,19 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
   /**
    * Hard cap above which the registry refuses new inserts (fail-closed with {@code BookFull}) to
-   * bound memory and protect the cluster from runaway-session insert storms. Sized for ~12 active
-   * sessions × 100K orders/24h ≈ 1.2M working set; at 1M the registry retains ~32MB off-heap and
-   * eviction walks remain bounded by the cap, not by total throughput. Operators should tune via a
-   * future ref-data-driven configuration if a deployment expects sustained throughput beyond this
-   * envelope (tracked under APP-62 risk-engine umbrella).
+   * bound memory and protect the cluster from runaway-session insert storms. Capped at 60 000 — the
+   * SBE snapshot schema ({@code ClOrdIdDedupSnapshot}, template 210) uses the standard {@code
+   * groupSizeEncoding} composite whose {@code numInGroup} is uint16, hard-limiting the snapshot
+   * encode to 65 535 entries; 60 000 leaves comfortable headroom against late inserts arriving
+   * between cap-check and snapshot encode. At 60 000 the registry retains ~2 MB off-heap and
+   * eviction walks remain bounded by the cap, not by total throughput.
+   *
+   * <p>If a deployment ever needs a higher cap, the snapshot path must first be refactored to chunk
+   * the registry across multiple group-sized fragments (or switch to a vardata-bytes encoding) —
+   * SBE does not allow {@code numInGroup} larger than uint16. Tracked under APP-62 risk-engine
+   * umbrella ("snapshot persistence" section).
    */
-  static final int CLORDID_DEDUP_MAX_SIZE = 1_000_000;
+  static final int CLORDID_DEDUP_MAX_SIZE = 60_000;
 
   /** Sentinel returned by the Long2LongHashMap when a key is absent. */
   static final long CLORDID_DEDUP_MISSING = Long.MIN_VALUE;
