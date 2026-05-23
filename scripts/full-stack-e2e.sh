@@ -256,7 +256,7 @@ if [[ "$KEEP_RUNNING" -eq 1 ]]; then
   # the browser needs Vite alive, JWT-bound, until the operator Ctrl+C's.
   if [[ ! -x "$REPO_ROOT/node_modules/.bin/vite" && ! -x "$REPO_ROOT/web-ui/node_modules/.bin/vite" ]]; then
     echo "[full-stack-e2e] installing web-ui npm deps via hermetic Gradle webUiInstall..."
-    # Gemini R8 fix: go through the Gradle :web-ui:webUiInstall task instead of bare `npm install`
+    # Go through the Gradle :web-ui:webUiInstall task instead of bare `npm install`
     # so the pinned Node + npm versions (com.github.node-gradle.node plugin) are used, not whatever
     # the host happens to have on PATH.
     ( cd "$REPO_ROOT" && ./gradlew :web-ui:webUiInstall ) >"$LOG_DIR/npm-install.log" 2>&1 \
