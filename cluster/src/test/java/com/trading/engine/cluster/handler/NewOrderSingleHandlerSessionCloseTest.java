@@ -280,11 +280,6 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   /**
-   * Zero-pads an int to 3 ASCII digits without {@code String.format} allocation. Used by the
-   * N-order test loop to keep the test idiom consistent with the project's prevailing zero-alloc
-   * test style.
-   */
-  /**
    * Re-wraps the shared {@link #decodeBuf} onto the captured cancel-event payload at index {@code
    * i} of {@code session.messages} and returns the shared buffer. Eliminates the {@code new
    * UnsafeBuffer(byte[])} alloc that would otherwise occur on every decode assertion.
@@ -297,6 +292,15 @@ class NewOrderSingleHandlerSessionCloseTest {
     return decodeBuf;
   }
 
+  /**
+   * Zero-pads an int to 3 ASCII digits without invoking the heavyweight {@code String.format}
+   * formatter / reflection machinery. The {@code "00" + i} expression still allocates a single
+   * {@link String} via {@code StringBuilder.toString()} — acceptable on the test path; the intent
+   * here is to avoid {@code Formatter} overhead, not to be allocation-free.
+   *
+   * @param i non-negative integer ≤ 999
+   * @return 3-character zero-padded ASCII string
+   */
   private static String padThree(final int i) {
     if (i < 10) {
       return "00" + i;
