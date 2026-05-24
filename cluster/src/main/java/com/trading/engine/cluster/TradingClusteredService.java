@@ -411,9 +411,12 @@ public final class TradingClusteredService implements ClusteredService {
     Objects.requireNonNull(session, "session");
     rfqStateMachine.onSessionClose(session.id(), timestamp);
     // APP-151 phase 1 — cancel every outstanding order placed by this session and emit one
-    // OrderCanceledEvent per cancellation. RFQ teardown (timer re-arming for in-flight slots) and
-    // order cancellation share no state, so the two phases are independent; ordering is kept as
-    // RFQ-first to match the pre-APP-151 sequence and keep this hook a pure append.
+    // OrderCanceledEvent per cancellation. RFQ teardown emits its events first; OrderCanceledEvents
+    // follow on the same EventSink sequencer in the same duty-cycle invocation, giving consumers
+    // a deterministic stream order (RFQ events strictly precede the per-session OrderCanceled
+    // events). The two handlers share no mutable state, so the relative ordering is a stylistic
+    // choice — kept RFQ-first to match the pre-APP-151 sequence and avoid churning downstream
+    // projections that may rely on the observed order.
     newOrderSingleHandler.onSessionClose(session.id(), timestamp, eventSink);
   }
 

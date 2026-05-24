@@ -100,6 +100,13 @@ class NewOrderSingleHandlerSessionCloseTest {
   private FakeCluster fakeCluster;
   private MutableDirectBuffer msgBuf;
 
+  /**
+   * Shared zero-capacity {@link UnsafeBuffer} re-wrapped onto each captured cancel-event payload
+   * for decode assertions. Hoisted to a field to keep the assertion sites allocation-free, matching
+   * the class-level "zero-alloc test idiom" claim documented in this file's Javadoc.
+   */
+  private final UnsafeBuffer decodeBuf = new UnsafeBuffer(0, 0);
+
   @BeforeEach
   void setUp() {
     accountStore = new AccountStore();
@@ -277,6 +284,19 @@ class NewOrderSingleHandlerSessionCloseTest {
    * N-order test loop to keep the test idiom consistent with the project's prevailing zero-alloc
    * test style.
    */
+  /**
+   * Re-wraps the shared {@link #decodeBuf} onto the captured cancel-event payload at index {@code
+   * i} of {@code session.messages} and returns the shared buffer. Eliminates the {@code new
+   * UnsafeBuffer(byte[])} alloc that would otherwise occur on every decode assertion.
+   *
+   * @param i index into {@code session.messages}
+   * @return the shared {@link UnsafeBuffer} wrapped over the captured bytes
+   */
+  private UnsafeBuffer wrapDecodeBuf(final int i) {
+    decodeBuf.wrap(session.messages.get(i));
+    return decodeBuf;
+  }
+
   private static String padThree(final int i) {
     if (i < 10) {
       return "00" + i;
@@ -444,7 +464,7 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     assertEquals(1, session.messages.size(), "exactly one OrderCanceledEvent must be emitted");
     // decodeOrderCanceled asserts templateId 103 internally.
-    decodeOrderCanceled(new UnsafeBuffer(session.messages.get(0)), 0);
+    decodeOrderCanceled(wrapDecodeBuf(0), 0);
 
     assertNull(orderBook.get(orderKey), "order book slot must be released after onSessionClose");
   }
@@ -474,7 +494,7 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     // All N events must be template 103.
     for (int i = 0; i < n; i++) {
-      decodeOrderCanceled(new UnsafeBuffer(session.messages.get(i)), 0);
+      decodeOrderCanceled(wrapDecodeBuf(i), 0);
     }
 
     // All N pool slots must be released.
@@ -543,7 +563,7 @@ class NewOrderSingleHandlerSessionCloseTest {
         session.messages.size(),
         "exactly one event must be emitted (stale key skipped silently)");
     // The emitted event must be template 103.
-    decodeOrderCanceled(new UnsafeBuffer(session.messages.get(0)), 0);
+    decodeOrderCanceled(wrapDecodeBuf(0), 0);
     // Pool slot for liveKey must be released.
     assertNull(orderBook.get(liveKey), "live order pool slot must be released by onSessionClose");
   }
@@ -611,7 +631,7 @@ class NewOrderSingleHandlerSessionCloseTest {
         baselineCount + 1,
         session.messages.size(),
         "exactly one additional OrderCanceledEvent must be emitted after onSessionClose");
-    final var buf = new UnsafeBuffer(session.messages.get(baselineCount));
+    final var buf = wrapDecodeBuf(baselineCount);
     final var decoded = decodeOrderCanceled(buf, 0);
 
     // orderId must match.
