@@ -232,6 +232,21 @@ public final class TradingState {
     // Intentional no-op
   }
 
+  /**
+   * Applies an OrderCanceled event (APP-151 phase 1). Releases the {@link OrderState} pool slot
+   * keyed by {@code orderKey} back to the {@link OrderBook}. Called by {@link
+   * com.trading.engine.cluster.handler.NewOrderSingleHandler#onSessionClose} after the
+   * corresponding {@code OrderCanceledEvent} has been journaled via {@link
+   * com.trading.engine.cluster.handler.EventSink#emit}.
+   *
+   * <p>Idempotent — releasing an unknown orderKey is a no-op per {@link OrderBook#release}.
+   *
+   * @param orderKey the order key whose pool slot is to be released
+   */
+  public void applyOrderCanceled(final long orderKey) {
+    orderBook.release(orderKey);
+  }
+
   // ---------------------------------------------------------------------------
   // Public query accessors (for handlers in other packages)
   // ---------------------------------------------------------------------------
