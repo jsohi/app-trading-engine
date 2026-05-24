@@ -303,11 +303,14 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //
   // Phase-1 scope: in-memory only. NOT snapshot-persisted. Rationale:
   //
-  //   - Aeron Cluster opens a fresh session table on restart; sessions that
-  //     existed before a snapshot do not exist after restore by definition.
-  //   - Orders that crossed a snapshot remain in the OrderBook (which IS
-  //     snapshotted) but are no longer associated with any live session.
-  //     Phase 2 (gateway egress) and phase 4 (idle-session timeout) revisit
+  //   - On cluster restart, Aeron Cluster re-invokes onSessionOpen for each
+  //     surviving session as part of snapshot load; the handler's
+  //     onSessionOpen rebuilds an empty per-session set. The OrderBook IS
+  //     snapshotted, so orders that crossed the restart retain their book
+  //     slot — but the (session → orderKey) association is not in the
+  //     snapshot, so those orders effectively lose the
+  //     auto-cancel-on-disconnect property after restart.
+  //   - Phase 2 (gateway egress) and phase 4 (idle-session timeout) revisit
   //     this — until then, post-restore orphan orders remain in the book
   //     until explicitly cancelled by some future admin path (APP-153).
   //   - Worst-case impact of NOT snapshotting: orders that crossed a restart
@@ -1284,11 +1287,11 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * skips that key. Pre-prod traffic profile means this branch is exercised only by tests.
    *
    * <p><b>Allocation.</b> Zero allocation on the order-admit hot path (this method is itself the
-   * cold session-close path). The per-session {@link LongHashSet} is detached from the outer map
-   * and goes out of scope after this method returns — its backing array becomes GC-eligible. The
-   * iterator returned by {@link LongHashSet#iterator()} is cached on the set instance (Agrona
-   * lazy-allocates once per set, then reuses), so iteration adds no per-call allocation. The
-   * detached set instance itself was allocated at {@link #onSessionOpen} — a cold-path event.
+   * cold session-close path). One {@link LongHashSet.LongIterator} (~16 B) is lazy-allocated by the
+   * detached {@link LongHashSet} on the first {@code iterator()} call inside this method; the set
+   * is then GC-eligible. Cost is one tiny allocation per session-close that has tracked orders —
+   * strictly off the order-admit hot path. The detached set instance itself was allocated at {@link
+   * #onSessionOpen} — also a cold-path event.
    *
    * @param sessionId Aeron cluster session id whose orders should be cancelled
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
