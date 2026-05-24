@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -60,16 +61,6 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>Threading:</b> test-only — runs on the JUnit worker thread. All operations are
  * single-threaded, consistent with the cluster duty-cycle invariant.
- *
- * <p><b>Production code bug note:</b> {@code NewOrderSingleHandler.onSessionOpen} calls {@code new
- * LongHashSet(SESSION_ORDERS_PER_SESSION_CAPACITY, SESSION_ORDERS_MISSING)} where {@code
- * SESSION_ORDERS_MISSING = Long.MIN_VALUE}. Agrona 2.4.0 has no {@code LongHashSet(int, long)}
- * constructor; the {@code long} is widened to {@code float}, producing an invalid load factor and
- * an {@link IllegalArgumentException}. Tests 1 and 2 document this expected behavior and will pass
- * once the production code is corrected to use {@code new LongHashSet(capacity)} or {@code new
- * LongHashSet(capacity, 0.65f)}. Tests 3-12 use direct map injection ({@code
- * handler.sessionOrders.put}) to work around the broken constructor and exercise the remaining
- * behaviors independently.
  *
  * @see NewOrderSingleHandler#onSessionOpen(long)
  * @see NewOrderSingleHandler#onSessionClose(long, long, EventSink)
@@ -174,21 +165,22 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   /**
-   * Creates a correctly-constructed {@link LongHashSet} for use as a per-session order-key set.
-   * Bypasses the broken {@code new LongHashSet(capacity, Long.MIN_VALUE)} in {@link
-   * NewOrderSingleHandler#onSessionOpen} (see class Javadoc for the bug detail).
+   * Creates an empty {@link LongHashSet} sized to {@link
+   * NewOrderSingleHandler#SESSION_ORDERS_PER_SESSION_CAPACITY} — matches what production {@link
+   * NewOrderSingleHandler#onSessionOpen} allocates for a new session.
    *
-   * @return an empty {@link LongHashSet} with capacity {@link
-   *     NewOrderSingleHandler#SESSION_ORDERS_PER_SESSION_CAPACITY}
+   * @return an empty {@link LongHashSet} with default load factor
    */
   private LongHashSet newSessionSet() {
     return new LongHashSet(NewOrderSingleHandler.SESSION_ORDERS_PER_SESSION_CAPACITY);
   }
 
   /**
-   * Pre-seeds the per-session set into {@code handler.sessionOrders} so subsequent {@link
-   * NewOrderSingleHandler#trackSessionOrder} calls hit the non-null branch and skip the broken
-   * lazy-alloc path.
+   * Pre-seeds the per-session set into {@code handler.sessionOrders} so the test fixture mirrors a
+   * production sequence in which {@code TradingClusteredService.onSessionOpen} has already fired
+   * for this session id. Subsequent {@link NewOrderSingleHandler#trackSessionOrder} calls hit the
+   * non-null branch (zero-allocation production hot path), exactly as they would in production
+   * after the session-open lifecycle event.
    *
    * @param sessionId the session id to register
    * @return the seeded (empty) set for the caller to populate
@@ -205,8 +197,8 @@ class NewOrderSingleHandlerSessionCloseTest {
 
   /**
    * Encodes and dispatches a valid Limit Buy NOS for the given {@code clOrdId}. The session must
-   * already have its set pre-seeded in {@code sessionOrders} before this call, or {@code
-   * trackSessionOrder}'s lazy-alloc branch will crash.
+   * already have its set pre-seeded in {@code sessionOrders} before this call (via {@link
+   * #openSession(long)}) so the admit path stays on the zero-allocation production fast track.
    *
    * @param clOrdId the ClOrdID (tag 11) for the NOS; must be unique within the 24h dedup window
    * @return the orderKey (monotonic counter value from {@link TradingState#generateOrderId()})
@@ -280,21 +272,28 @@ class NewOrderSingleHandlerSessionCloseTest {
     return orderKey;
   }
 
+  /**
+   * Zero-pads an int to 3 ASCII digits without {@code String.format} allocation. Used by the
+   * N-order test loop to keep the test idiom consistent with the project's prevailing zero-alloc
+   * test style.
+   */
+  private static String padThree(final int i) {
+    if (i < 10) {
+      return "00" + i;
+    }
+    if (i < 100) {
+      return "0" + i;
+    }
+    return Integer.toString(i);
+  }
+
   // =========================================================================
   // Test 1 — onSessionOpen allocates an empty per-session set
-  //
-  // NOTE: This test documents a PRODUCTION CODE BUG. The call
-  //   new LongHashSet(SESSION_ORDERS_PER_SESSION_CAPACITY, SESSION_ORDERS_MISSING)
-  // passes Long.MIN_VALUE as a float load factor (no LongHashSet(int,long) constructor exists in
-  // Agrona 2.4.0), throwing IllegalArgumentException. This test will PASS once the production code
-  // is fixed to use new LongHashSet(capacity) or new LongHashSet(capacity, 0.65f).
   // =========================================================================
 
   /**
    * Verifies that {@link NewOrderSingleHandler#onSessionOpen} pre-allocates an empty {@link
-   * LongHashSet} in {@code sessionOrders} for the given session id. Currently fails with {@link
-   * IllegalArgumentException} due to the broken {@code LongHashSet} constructor call in the
-   * production code — see class Javadoc.
+   * LongHashSet} in {@code sessionOrders} for the given session id.
    */
   @Test
   void onSessionOpen_freshSessionId_allocatesEmptySet() {
@@ -309,14 +308,11 @@ class NewOrderSingleHandlerSessionCloseTest {
 
   // =========================================================================
   // Test 2 — onSessionOpen is idempotent: second call preserves the set reference
-  //
-  // NOTE: Same production code bug as Test 1 — will pass once fixed.
   // =========================================================================
 
   /**
    * Verifies that calling {@link NewOrderSingleHandler#onSessionOpen} twice for the same session id
-   * is idempotent — the existing {@link LongHashSet} reference is NOT replaced. Currently fails due
-   * to the broken {@code LongHashSet} constructor call on first invocation — see class Javadoc.
+   * is idempotent — the existing {@link LongHashSet} reference is NOT replaced.
    */
   @Test
   void onSessionOpen_alreadyOpen_isIdempotent() {
@@ -336,7 +332,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   /**
    * Verifies that after pre-seeding the session entry and calling {@link
    * NewOrderSingleHandler#trackSessionOrder}, the order key appears in the session's set. Uses
-   * direct map injection to bypass the broken {@code onSessionOpen} constructor.
+   * pre-seeds the session via {@link #openSession} so the production zero-alloc fast path is hit.
    */
   @Test
   void trackSessionOrder_afterOpen_addsKey() {
@@ -450,8 +446,7 @@ class NewOrderSingleHandlerSessionCloseTest {
     // decodeOrderCanceled asserts templateId 103 internally.
     decodeOrderCanceled(new UnsafeBuffer(session.messages.get(0)), 0);
 
-    assertFalse(
-        orderBook.get(orderKey) != null, "order book slot must be released after onSessionClose");
+    assertNull(orderBook.get(orderKey), "order book slot must be released after onSessionClose");
   }
 
   // =========================================================================
@@ -469,8 +464,7 @@ class NewOrderSingleHandlerSessionCloseTest {
     openSession(SESSION_ID);
     final long[] orderKeys = new long[n];
     for (int i = 0; i < n; i++) {
-      orderKeys[i] =
-          seedOrderState("ORD-MULTI-" + String.format("%03d", i), "EURUSD", SideEnum.Buy);
+      orderKeys[i] = seedOrderState("ORD-MULTI-" + padThree(i), "EURUSD", SideEnum.Buy);
       handler.trackSessionOrder(SESSION_ID, orderKeys[i]);
     }
 
@@ -485,8 +479,8 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     // All N pool slots must be released.
     for (int i = 0; i < n; i++) {
-      assertFalse(
-          orderBook.get(orderKeys[i]) != null,
+      assertNull(
+          orderBook.get(orderKeys[i]),
           "pool slot for orderKey " + orderKeys[i] + " must be released");
     }
 
@@ -538,9 +532,8 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     // Manually release the stale key from the book before session close.
     tradingState.applyOrderCanceled(staleKey);
-    assertFalse(
-        orderBook.get(staleKey) != null,
-        "stale key must be absent from the book before onSessionClose");
+    assertNull(
+        orderBook.get(staleKey), "stale key must be absent from the book before onSessionClose");
 
     // Session close — must not throw; must emit exactly one event (for liveKey only).
     handler.onSessionClose(SESSION_ID, TS, eventSink);
@@ -552,8 +545,7 @@ class NewOrderSingleHandlerSessionCloseTest {
     // The emitted event must be template 103.
     decodeOrderCanceled(new UnsafeBuffer(session.messages.get(0)), 0);
     // Pool slot for liveKey must be released.
-    assertFalse(
-        orderBook.get(liveKey) != null, "live order pool slot must be released by onSessionClose");
+    assertNull(orderBook.get(liveKey), "live order pool slot must be released by onSessionClose");
   }
 
   // =========================================================================
@@ -568,7 +560,7 @@ class NewOrderSingleHandlerSessionCloseTest {
    */
   @Test
   void onSessionClose_eventFields_matchOrderState() {
-    // Pre-seed session so dispatchNos → trackSessionOrder doesn't hit the broken lazy-alloc branch.
+    // Pre-seed session so the dispatch → trackSessionOrder path stays on the zero-alloc fast path.
     openSession(SESSION_ID);
 
     // Dispatch a full NOS so the orderId is minted by IdGenerator (matching what emitOrderCanceled
@@ -595,8 +587,10 @@ class NewOrderSingleHandlerSessionCloseTest {
         NewOrderSingleDecoder.SCHEMA_VERSION,
         eventSink);
 
-    // Clear the OrderCreatedEvent so only the cancel appears below.
-    session.messages.clear();
+    // Capture the message count after admit so the cancel-emit assertion below is robust to any
+    // future side effects (audit events, etc.) that the admit path might add — we only assert
+    // that exactly ONE additional message landed at the close call, regardless of admit emissions.
+    final int baselineCount = session.messages.size();
 
     // orderKey is the counter after the first order (= 1).
     final long orderKey = tradingState.orderIdGen().currentCounter();
@@ -613,8 +607,11 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     handler.onSessionClose(SESSION_ID, TS, eventSink);
 
-    assertEquals(1, session.messages.size(), "exactly one OrderCanceledEvent must be emitted");
-    final var buf = new UnsafeBuffer(session.messages.get(0));
+    assertEquals(
+        baselineCount + 1,
+        session.messages.size(),
+        "exactly one additional OrderCanceledEvent must be emitted after onSessionClose");
+    final var buf = new UnsafeBuffer(session.messages.get(baselineCount));
     final var decoded = decodeOrderCanceled(buf, 0);
 
     // orderId must match.
