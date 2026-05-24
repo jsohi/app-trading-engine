@@ -310,6 +310,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //     slot — but the (session → orderKey) association is not in the
   //     snapshot, so those orders effectively lose the
   //     auto-cancel-on-disconnect property after restart.
+  //   - DETERMINISM: Aeron Cluster takes snapshots at the same log position
+  //     on every Raft replica (atomic across the cluster); every replica
+  //     therefore rebuilds the same empty tracker on restore. The cancel
+  //     emission count for a subsequent onSessionClose is identical across
+  //     replicas, so the in-memory-only design does NOT break replay
+  //     determinism. If snapshots were taken asynchronously per node, this
+  //     design would be unsafe — but Aeron's Raft contract rules that out.
   //   - Phase 2 (gateway egress) and phase 4 (idle-session timeout) revisit
   //     this — until then, post-restore orphan orders remain in the book
   //     until explicitly cancelled by some future admin path (APP-153).
@@ -318,13 +325,17 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //     This is strictly better than the pre-APP-151 behaviour (no
   //     auto-cancel at all) and acceptable for phase 1.
   //
-  // Sizing: outer {@link Long2ObjectHashMap} sized for 4096 active sessions
-  // (Artio's default upper bound) — that is open-addressing backing arrays
-  // only (~64 KB), NOT a pre-allocated set per slot. Inner {@link LongHashSet}
-  // instances are created lazily in {@link #onSessionOpen} (cold path) and
-  // released on {@link #onSessionClose}, so steady-state memory is roughly
-  // (live sessions) × (~1 KB per set with 64-entry capacity). The set
-  // auto-grows if a session genuinely sustains more than 64 live orders.
+  // Sizing: outer {@link Long2ObjectHashMap} initial capacity 4096. At load
+  // factor 0.65 the map rehashes before reaching 4096 entries (around 2660
+  // live sessions); 4096 is the initial-capacity HINT chosen to avoid rehash
+  // thrash on typical deployments, NOT a hard cap. The map grows
+  // automatically if a deployment legitimately sustains more concurrent
+  // sessions. Backing arrays at this capacity are ~64 KB; per-session sets
+  // are NOT pre-allocated per slot. Inner {@link LongHashSet} instances are
+  // created lazily in {@link #onSessionOpen} (cold path) and released on
+  // {@link #onSessionClose}, so steady-state memory is roughly (live
+  // sessions) × (~1 KB per set with 64-entry capacity). The set auto-grows
+  // if a session genuinely sustains more than 64 live orders.
   //
   // Untrack-on-terminal-event is NOT implemented in phase 1: explicit cancels,
   // fills, and rejects in later phases will remove keys from the per-session
@@ -1239,8 +1250,11 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * Records {@code orderKey} as outstanding on {@code sessionId}. The per-session {@link
    * LongHashSet} is expected to have been pre-allocated by {@link #onSessionOpen}; if it is missing
    * (test path bypassing onSessionOpen, or framework regression) the set is allocated lazily and a
-   * comment in the source documents the production invariant. Insert is idempotent — inserting an
-   * already-present orderKey is a no-op per {@code LongHashSet}.
+   * comment in the source documents the production invariant.
+   *
+   * <p>Insert is idempotent ({@code LongHashSet.add} is set-semantics). In production the
+   * idempotency is defensive only — {@link TradingState#generateOrderId} is monotonic so duplicate
+   * orderKeys are unreachable; tests exercise the idempotent path.
    *
    * <p>Package-private to allow direct assertion in unit tests.
    *
@@ -1331,10 +1345,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * convention is to echo the original clOrdId.
    *
    * <p><b>ProductType.</b> Phase 1 emits {@link ProductTypeEnum#NULL_VAL} because product type is
-   * not retained on {@link OrderState} today. The read-side {@code OrderProjection} does not
-   * consume the cancel event's productType (it uses the productType already stored on the OrderView
-   * from the OrderCreated event), so this is consumer-safe. TODO(APP-151): phase 3 batches a {@code
-   * productType} field onto OrderState alongside the {@code cancelReason} enum schema change.
+   * not retained on {@link OrderState} today. The read-side {@code OrderProjection.onOrderCanceled}
+   * (see {@code projections/src/main/java/.../OrderProjection.java}) does NOT read the cancel
+   * event's productType — it reuses the productType already on the OrderView from the prior
+   * OrderCreated event — so this is consumer-safe today. A future consumer that DOES read the
+   * cancel event's productType (e.g., the gateway phase-2 FIX egress path) must wait for the
+   * phase-3 schema change. TODO(APP-151): phase 3 batches a {@code productType} field onto
+   * OrderState alongside the {@code cancelReason} enum schema change.
    *
    * @param eventSink the event emission pipeline
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
@@ -1343,6 +1360,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private void emitOrderCanceledEvent(
       final EventSink eventSink, final long clusterTimestamp, final OrderState state) {
     orderCanceledEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
+    // sequenceNumber + timestamp written as zero by design: EventSink.emit overwrites both fields
+    // with the authoritative cluster sequence + nanosecond timestamp during egress publication
+    // (same pattern as OrderCreatedEvent / OrderRejectedEvent — see admitNewOrder).
     orderCanceledEncoder.sequenceNumber(0L);
     orderCanceledEncoder.timestamp(0L);
 
