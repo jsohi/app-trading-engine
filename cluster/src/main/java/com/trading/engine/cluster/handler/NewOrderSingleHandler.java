@@ -315,13 +315,21 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //     This is strictly better than the pre-APP-151 behaviour (no
   //     auto-cancel at all) and acceptable for phase 1.
   //
-  // Sizing: outer map sized for 4096 active sessions (Artio's default upper
-  // bound). Inner {@link LongHashSet} per session sized for 64 outstanding
-  // orders — small to keep memory tight; the set auto-grows if a session
-  // genuinely sustains more than 64 live orders. Initial allocation:
-  // 4096 × (LongHashSet 64-entry overhead ≈ 1 KB) = ~4 MB worst-case.
-  // Steady state is dramatically lower because empty sets are released back
-  // to {@code null} on each session close.
+  // Sizing: outer {@link Long2ObjectHashMap} sized for 4096 active sessions
+  // (Artio's default upper bound) — that is open-addressing backing arrays
+  // only (~64 KB), NOT a pre-allocated set per slot. Inner {@link LongHashSet}
+  // instances are created lazily in {@link #onSessionOpen} (cold path) and
+  // released on {@link #onSessionClose}, so steady-state memory is roughly
+  // (live sessions) × (~1 KB per set with 64-entry capacity). The set
+  // auto-grows if a session genuinely sustains more than 64 live orders.
+  //
+  // Untrack-on-terminal-event is NOT implemented in phase 1: explicit cancels,
+  // fills, and rejects in later phases will remove keys from the per-session
+  // set. Until that lands, the set grows monotonically across a session's
+  // lifetime (bounded by total orders ever placed by that session) and the
+  // {@code onSessionClose} scan walks all keys (the lookup-miss branch
+  // silently skips already-released slots). TODO(APP-151): untrack on
+  // terminal events (fill/cancel/reject) when phase 2 lands.
   // ===========================================================================
 
   private static final int SESSION_ORDERS_INITIAL_CAPACITY = 4096;
@@ -343,7 +351,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * assertions in {@code NewOrderSingleHandlerSessionCloseTest}.
    */
   final Long2ObjectHashMap<LongHashSet> sessionOrders =
-      new Long2ObjectHashMap<>(SESSION_ORDERS_INITIAL_CAPACITY, 0.65f);
+      new Long2ObjectHashMap<>(SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
 
   /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
@@ -1275,10 +1283,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * untrack path on terminal events (phases 2+ add this); for now the lookup-miss branch silently
    * skips that key. Pre-prod traffic profile means this branch is exercised only by tests.
    *
-   * <p><b>Allocation.</b> Zero allocation on the hot path. The per-session set is removed from the
-   * map but its backing array can be GC'd as the set goes out of scope — acceptable because
-   * session-close is a cold path (rare per session) and the alloc happens off the trading thread's
-   * critical path.
+   * <p><b>Allocation.</b> Zero allocation on the order-admit hot path (this method is itself the
+   * cold session-close path). The per-session {@link LongHashSet} is detached from the outer map
+   * and goes out of scope after this method returns — its backing array becomes GC-eligible. The
+   * iterator returned by {@link LongHashSet#iterator()} is cached on the set instance (Agrona
+   * lazy-allocates once per set, then reuses), so iteration adds no per-call allocation. The
+   * detached set instance itself was allocated at {@link #onSessionOpen} — a cold-path event.
    *
    * @param sessionId Aeron cluster session id whose orders should be cancelled
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
@@ -1294,15 +1304,23 @@ public final class NewOrderSingleHandler implements CommandHandler {
     final var it = orderKeys.iterator();
     while (it.hasNext()) {
       final long orderKey = it.nextValue();
-      emitOrderCanceledEvent(eventSink, clusterTimestamp, orderKey);
+      final var state = tradingState.orderBook().get(orderKey);
+      if (state == null) {
+        // Order already terminated by another path (race with future phase-2+ untrack work, or
+        // book-level eviction during pre-close teardown). Tracker had a stale key — skip silently
+        // so emit and apply stay coupled: we never emit a cancel without an actual book release,
+        // and we never release a slot for an order whose cancel event was not emitted.
+        continue;
+      }
+      emitOrderCanceledEvent(eventSink, clusterTimestamp, state);
       tradingState.applyOrderCanceled(orderKey);
     }
   }
 
   /**
-   * Encodes and emits one {@code OrderCanceledEvent} (template 103) for the given orderKey. Reads
-   * orderId / clOrdId / symbol / side from the live {@link OrderState} via {@link
-   * com.trading.engine.cluster.OrderBook#get(long)} and stamps them onto the event buffer.
+   * Encodes and emits one {@code OrderCanceledEvent} (template 103) using the provided live {@link
+   * OrderState}. Caller verifies non-null and runs the matching {@link
+   * TradingState#applyOrderCanceled} after this method returns so emit and apply stay coupled.
    *
    * <p><b>OrigClOrdID.</b> Set equal to clOrdId. FIX 4.4 OrigClOrdID (tag 41) carries the prior
    * client-assigned id when a cancel originates from a counterparty cancel request; for
@@ -1312,22 +1330,15 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * <p><b>ProductType.</b> Phase 1 emits {@link ProductTypeEnum#NULL_VAL} because product type is
    * not retained on {@link OrderState} today. The read-side {@code OrderProjection} does not
    * consume the cancel event's productType (it uses the productType already stored on the OrderView
-   * from the OrderCreated event), so this is consumer-safe. Phase 3 of APP-151 lifts this — it
-   * batches a productType field onto OrderState alongside the {@code cancelReason} enum schema
-   * change.
+   * from the OrderCreated event), so this is consumer-safe. TODO(APP-151): phase 3 batches a {@code
+   * productType} field onto OrderState alongside the {@code cancelReason} enum schema change.
    *
    * @param eventSink the event emission pipeline
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
-   * @param orderKey the order key to cancel
+   * @param state the live OrderState (must be non-null; caller's responsibility)
    */
   private void emitOrderCanceledEvent(
-      final EventSink eventSink, final long clusterTimestamp, final long orderKey) {
-    final var state = tradingState.orderBook().get(orderKey);
-    if (state == null) {
-      // Order already terminated by another path. Tracker had a stale entry — skip silently.
-      return;
-    }
-
+      final EventSink eventSink, final long clusterTimestamp, final OrderState state) {
     orderCanceledEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     orderCanceledEncoder.sequenceNumber(0L);
     orderCanceledEncoder.timestamp(0L);
