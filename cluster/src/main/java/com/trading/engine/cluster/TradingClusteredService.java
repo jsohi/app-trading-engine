@@ -394,7 +394,12 @@ public final class TradingClusteredService implements ClusteredService {
 
   @Override
   public void onSessionOpen(final ClientSession session, final long timestamp) {
-    // Phase 1: no session state. Future: authenticate, wire session → trader / desk mapping.
+    Objects.requireNonNull(session, "session");
+    // APP-151 phase 1 — pre-allocate the per-session order tracker so the order-admit hot path
+    // is guaranteed zero-allocation. See NewOrderSingleHandler.onSessionOpen Javadoc for the
+    // alloc-at-session-open rationale.
+    newOrderSingleHandler.onSessionOpen(session.id());
+    // Future: authenticate, wire session → trader / desk mapping.
   }
 
   @Override
@@ -405,6 +410,11 @@ public final class TradingClusteredService implements ClusteredService {
     // surface any framework regression as a clear NPE rather than a silent swallow.
     Objects.requireNonNull(session, "session");
     rfqStateMachine.onSessionClose(session.id(), timestamp);
+    // APP-151 phase 1 — cancel every outstanding order placed by this session and emit one
+    // OrderCanceledEvent per cancellation. Runs AFTER the RFQ teardown so a session that holds
+    // both an open RFQ and open orders sees the RFQ-side teardown first (matching prior
+    // expected ordering for tests asserting on event sequence).
+    newOrderSingleHandler.onSessionClose(session.id(), timestamp, eventSink);
   }
 
   @Override

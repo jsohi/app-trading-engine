@@ -16,6 +16,7 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
+import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
@@ -29,6 +30,8 @@ import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2LongHashMap;
+import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -96,6 +99,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private final NewOrderSingleDecoder nosDecoder = new NewOrderSingleDecoder();
   private final OrderCreatedEventEncoder orderCreatedEncoder = new OrderCreatedEventEncoder();
   private final OrderRejectedEventEncoder orderRejectedEncoder = new OrderRejectedEventEncoder();
+  private final OrderCanceledEventEncoder orderCanceledEncoder = new OrderCanceledEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
   /**
@@ -288,6 +292,58 @@ public final class NewOrderSingleHandler implements CommandHandler {
   final Long2LongHashMap accountDailyVolumeState =
       new Long2LongHashMap(
           ACCOUNT_DAILY_VOLUME_INITIAL_CAPACITY, 0.65f, ACCOUNT_DAILY_VOLUME_MISSING);
+
+  // ===========================================================================
+  // Session → orderKey tracking (APP-151 phase 1 — session-disconnect orphan cancel)
+  //
+  // Maps cluster session id (the Aeron {@code ClientSession#id()}) to the set of
+  // outstanding orderKeys placed by that session. Populated on every successful
+  // {@link #admitNewOrder}; iterated on {@link #onSessionClose} to emit one
+  // {@code OrderCanceledEvent} per orphan order before the session goes away.
+  //
+  // Phase-1 scope: in-memory only. NOT snapshot-persisted. Rationale:
+  //
+  //   - Aeron Cluster opens a fresh session table on restart; sessions that
+  //     existed before a snapshot do not exist after restore by definition.
+  //   - Orders that crossed a snapshot remain in the OrderBook (which IS
+  //     snapshotted) but are no longer associated with any live session.
+  //     Phase 2 (gateway egress) and phase 4 (idle-session timeout) revisit
+  //     this — until then, post-restore orphan orders remain in the book
+  //     until explicitly cancelled by some future admin path (APP-153).
+  //   - Worst-case impact of NOT snapshotting: orders that crossed a restart
+  //     keep their book slot but lose the auto-cancel-on-disconnect property.
+  //     This is strictly better than the pre-APP-151 behaviour (no
+  //     auto-cancel at all) and acceptable for phase 1.
+  //
+  // Sizing: outer map sized for 4096 active sessions (Artio's default upper
+  // bound). Inner {@link LongHashSet} per session sized for 64 outstanding
+  // orders — small to keep memory tight; the set auto-grows if a session
+  // genuinely sustains more than 64 live orders. Initial allocation:
+  // 4096 × (LongHashSet 64-entry overhead ≈ 1 KB) = ~4 MB worst-case.
+  // Steady state is dramatically lower because empty sets are released back
+  // to {@code null} on each session close.
+  // ===========================================================================
+
+  private static final int SESSION_ORDERS_INITIAL_CAPACITY = 4096;
+
+  /** Initial per-session order-set capacity. Grows automatically if exceeded. */
+  static final int SESSION_ORDERS_PER_SESSION_CAPACITY = 64;
+
+  /**
+   * Load factor for the per-session {@link LongHashSet}. Matches the convention used by the other
+   * Agrona maps on this class — keeps probe cost bounded while keeping memory overhead modest. The
+   * set manages its own internal missing-value sentinel; no caller-supplied sentinel is needed
+   * (Agrona's {@code LongHashSet(int, long)} signature does NOT exist — a {@code long} second arg
+   * would silently widen to {@code float} and corrupt the load factor).
+   */
+  private static final float SESSION_ORDERS_LOAD_FACTOR = 0.65f;
+
+  /**
+   * sessionId → set of orderKeys outstanding on that session. Package-private for direct-state
+   * assertions in {@code NewOrderSingleHandlerSessionCloseTest}.
+   */
+  final Long2ObjectHashMap<LongHashSet> sessionOrders =
+      new Long2ObjectHashMap<>(SESSION_ORDERS_INITIAL_CAPACITY, 0.65f);
 
   /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
@@ -1135,6 +1191,167 @@ public final class NewOrderSingleHandler implements CommandHandler {
       rfqStateMachine.commitAccept(pendingQuoteAcceptSlot, timestamp, eventSink);
       pendingQuoteAcceptSlot = null;
     }
+
+    // 14. (APP-151 phase 1) Track this orderKey under the session that placed it, so a subsequent
+    //     hard-disconnect of that session can cancel the order automatically via onSessionClose.
+    //     Test paths that pass a null session skip tracking (orphan-cancel only runs against
+    //     real cluster sessions; unit tests for the admit path do not depend on this side effect).
+    if (session != null) {
+      trackSessionOrder(session.id(), orderKey);
+    }
+  }
+
+  /**
+   * Pre-allocates the per-session {@link LongHashSet} for the given Aeron cluster session id, so
+   * subsequent {@link #trackSessionOrder} calls on the admit hot path are guaranteed
+   * zero-allocation. Called from {@link
+   * com.trading.engine.cluster.TradingClusteredService#onSessionOpen} on every new cluster client
+   * session. Idempotent — a re-open with an already-known sessionId is a no-op.
+   *
+   * <p><b>Why pre-allocate.</b> Allocating the per-session set lazily inside {@code
+   * trackSessionOrder} would surface a fresh {@code new LongHashSet(...)} on the FIRST order from
+   * any session — which is precisely the (already-latency-sensitive) order-admit hot path. Pulling
+   * the alloc forward to session-open (a cold, rare event) is the same pattern Aeron itself uses
+   * for per-session state.
+   *
+   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   */
+  public void onSessionOpen(final long sessionId) {
+    if (sessionOrders.get(sessionId) == null) {
+      sessionOrders.put(
+          sessionId,
+          new LongHashSet(SESSION_ORDERS_PER_SESSION_CAPACITY, SESSION_ORDERS_LOAD_FACTOR));
+    }
+  }
+
+  /**
+   * Records {@code orderKey} as outstanding on {@code sessionId}. The per-session {@link
+   * LongHashSet} is expected to have been pre-allocated by {@link #onSessionOpen}; if it is missing
+   * (test path bypassing onSessionOpen, or framework regression) the set is allocated lazily and a
+   * comment in the source documents the production invariant. Insert is idempotent — inserting an
+   * already-present orderKey is a no-op per {@code LongHashSet}.
+   *
+   * <p>Package-private to allow direct assertion in unit tests.
+   *
+   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   * @param orderKey monotonic cluster order key from {@link TradingState#generateOrderId()}
+   */
+  void trackSessionOrder(final long sessionId, final long orderKey) {
+    final var existing = sessionOrders.get(sessionId);
+    final LongHashSet set;
+    if (existing == null) {
+      // Production invariant: TradingClusteredService.onSessionOpen always calls
+      // this handler's onSessionOpen before any onCommand for that session, so this
+      // branch is unreachable in production. Kept defensively for tests that
+      // exercise admit paths without driving the full session lifecycle.
+      set = new LongHashSet(SESSION_ORDERS_PER_SESSION_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
+      sessionOrders.put(sessionId, set);
+    } else {
+      set = existing;
+    }
+    set.add(orderKey);
+  }
+
+  // ===========================================================================
+  // Session close — orphan cancel (APP-151 phase 1)
+  // ===========================================================================
+
+  /**
+   * Cancels every outstanding order placed by the given cluster session, emitting one {@code
+   * OrderCanceledEvent} (template 103) per cancelled order and releasing each book slot back to
+   * {@link com.trading.engine.cluster.OrderBook}.
+   *
+   * <p>Called from {@link com.trading.engine.cluster.TradingClusteredService#onSessionClose} after
+   * the existing {@code RfqStateMachine.onSessionClose} delegate. Aeron Cluster guarantees this
+   * runs on the single duty-cycle thread; no synchronisation needed.
+   *
+   * <p><b>Idempotency.</b> Double-close (rare — Aeron typically guarantees one terminal callback
+   * per session, but defensive coding is cheap) sees an empty tracker entry and returns silently
+   * without emitting events.
+   *
+   * <p><b>Race with book release.</b> An orderKey present in the tracker but absent from {@link
+   * com.trading.engine.cluster.OrderBook#get(long)} indicates the order was already terminated
+   * (filled / explicitly cancelled / book-evicted) but not yet untracked. Phase 1 has no explicit
+   * untrack path on terminal events (phases 2+ add this); for now the lookup-miss branch silently
+   * skips that key. Pre-prod traffic profile means this branch is exercised only by tests.
+   *
+   * <p><b>Allocation.</b> Zero allocation on the hot path. The per-session set is removed from the
+   * map but its backing array can be GC'd as the set goes out of scope — acceptable because
+   * session-close is a cold path (rare per session) and the alloc happens off the trading thread's
+   * critical path.
+   *
+   * @param sessionId Aeron cluster session id whose orders should be cancelled
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   * @param eventSink the event emission pipeline
+   */
+  public void onSessionClose(
+      final long sessionId, final long clusterTimestamp, final EventSink eventSink) {
+    Objects.requireNonNull(eventSink, "eventSink");
+    final var orderKeys = sessionOrders.remove(sessionId);
+    if (orderKeys == null || orderKeys.isEmpty()) {
+      return;
+    }
+    final var it = orderKeys.iterator();
+    while (it.hasNext()) {
+      final long orderKey = it.nextValue();
+      emitOrderCanceledEvent(eventSink, clusterTimestamp, orderKey);
+      tradingState.applyOrderCanceled(orderKey);
+    }
+  }
+
+  /**
+   * Encodes and emits one {@code OrderCanceledEvent} (template 103) for the given orderKey. Reads
+   * orderId / clOrdId / symbol / side from the live {@link OrderState} via {@link
+   * com.trading.engine.cluster.OrderBook#get(long)} and stamps them onto the event buffer.
+   *
+   * <p><b>OrigClOrdID.</b> Set equal to clOrdId. FIX 4.4 OrigClOrdID (tag 41) carries the prior
+   * client-assigned id when a cancel originates from a counterparty cancel request; for
+   * server-initiated cancels (session disconnect) there is no separate cancel request, so industry
+   * convention is to echo the original clOrdId.
+   *
+   * <p><b>ProductType.</b> Phase 1 emits {@link ProductTypeEnum#NULL_VAL} because product type is
+   * not retained on {@link OrderState} today. The read-side {@code OrderProjection} does not
+   * consume the cancel event's productType (it uses the productType already stored on the OrderView
+   * from the OrderCreated event), so this is consumer-safe. Phase 3 of APP-151 lifts this — it
+   * batches a productType field onto OrderState alongside the {@code cancelReason} enum schema
+   * change.
+   *
+   * @param eventSink the event emission pipeline
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   * @param orderKey the order key to cancel
+   */
+  private void emitOrderCanceledEvent(
+      final EventSink eventSink, final long clusterTimestamp, final long orderKey) {
+    final var state = tradingState.orderBook().get(orderKey);
+    if (state == null) {
+      // Order already terminated by another path. Tracker had a stale entry — skip silently.
+      return;
+    }
+
+    orderCanceledEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
+    orderCanceledEncoder.sequenceNumber(0L);
+    orderCanceledEncoder.timestamp(0L);
+
+    // SBE generated putXxx(byte[], int) copies bytes immediately into the egress buffer, so we
+    // can serially reuse one 20-byte scratch (clOrdIdScratch) for orderId / clOrdId / origClOrdId
+    // and the 8-byte symbolScratch for symbol. Safe because the cluster duty cycle is
+    // single-threaded — onSessionClose never interleaves with an in-flight onCommand admit/reject.
+    state.copyOrderIdTo(clOrdIdScratch, 0);
+    orderCanceledEncoder.putOrderId(clOrdIdScratch, 0);
+
+    state.copyClOrdIdTo(clOrdIdScratch, 0);
+    orderCanceledEncoder.putClOrdId(clOrdIdScratch, 0);
+    // OrigClOrdID echoes ClOrdID for server-initiated cancels — see Javadoc above.
+    orderCanceledEncoder.putOrigClOrdId(clOrdIdScratch, 0);
+
+    state.copySymbolTo(symbolScratch, 0);
+    orderCanceledEncoder.putSymbol(symbolScratch, 0);
+
+    orderCanceledEncoder.side(state.side());
+    orderCanceledEncoder.productType(ProductTypeEnum.NULL_VAL);
+
+    final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCanceledEncoder.encodedLength();
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, eventLen);
   }
 
   // ===========================================================================
