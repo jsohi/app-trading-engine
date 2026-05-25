@@ -1227,4 +1227,181 @@ class NewOrderSingleHandlerSessionCloseTest {
         rej.text().trim(),
         "rejection text must equal the production literal 'session order cap exceeded'");
   }
+
+  // =========================================================================
+  // Test 25 — APP-151 phase 5: recordQuoteRequest increments the per-session counter
+  // =========================================================================
+
+  /**
+   * Verifies {@link NewOrderSingleHandler#recordQuoteRequest} increments {@code
+   * sessionMetricQuoteRequests} for the given session id. After {@link
+   * NewOrderSingleHandler#onSessionOpen} seeds the counter at 0, three subsequent calls must drive
+   * the value to 3.
+   */
+  @Test
+  void recordQuoteRequest_afterOnSessionOpen_incrementsCounter() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    handler.recordQuoteRequest(SESSION_ID);
+    handler.recordQuoteRequest(SESSION_ID);
+    handler.recordQuoteRequest(SESSION_ID);
+
+    assertEquals(
+        3L,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "sessionMetricQuoteRequests must equal 3 after three recordQuoteRequest calls");
+  }
+
+  // =========================================================================
+  // Test 26 — APP-151 phase 5: recordQuoteRequest seeds at 1 when onSessionOpen was bypassed
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#recordQuoteRequest} called on a session that never
+   * went through {@link NewOrderSingleHandler#onSessionOpen} (and therefore has the {@code
+   * Long2LongHashMap.missingValue} sentinel for its quote-request entry) seeds the counter at 1
+   * instead of 1 + {@code Long.MIN_VALUE}. Locks in the {@code incrementSessionCounter} seeding
+   * branch.
+   */
+  @Test
+  void recordQuoteRequest_withoutOnSessionOpen_seedsAtOne() {
+    final long unopenedSessionId = 99_999L;
+
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricQuoteRequests.get(unopenedSessionId),
+        "precondition: an un-opened session must read METRIC_MISSING");
+
+    handler.recordQuoteRequest(unopenedSessionId);
+
+    assertEquals(
+        1L,
+        handler.sessionMetricQuoteRequests.get(unopenedSessionId),
+        "sessionMetricQuoteRequests must equal 1 after the first recordQuoteRequest on an "
+            + "unopened session (seeded branch in incrementSessionCounter)");
+  }
+
+  // =========================================================================
+  // Test 27 — APP-151 phase 5: onSessionClose drops the quote-requests counter
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#onSessionClose} removes the per-session entry from
+   * {@code sessionMetricQuoteRequests} after the summary log line has been emitted. The
+   * post-condition is {@code METRIC_MISSING}, matching the lifecycle invariant for the other four
+   * counters (asserted alongside in Test 22).
+   */
+  @Test
+  void onSessionClose_dropsQuoteRequestCounter() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    handler.recordQuoteRequest(SESSION_ID);
+    handler.recordQuoteRequest(SESSION_ID);
+
+    assertEquals(
+        2L,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "precondition: counter must be 2 before onSessionClose");
+
+    handler.onSessionClose(SESSION_ID, TS, eventSink);
+
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "sessionMetricQuoteRequests must be removed (METRIC_MISSING) after onSessionClose");
+  }
+
+  // =========================================================================
+  // Test 28 — APP-151 phase 5: NewOrderSingleHandler implements SessionMetricsRecorder
+  // =========================================================================
+
+  /**
+   * Verifies the LOW-10 review fix: {@link NewOrderSingleHandler} implements the {@link
+   * SessionMetricsRecorder} interface so {@link QuoteRequestHandler} can depend on the 1-method
+   * seam rather than the concrete handler class. Invokes {@code recordQuoteRequest} through the
+   * interface reference (not the concrete type) and asserts the counter advanced.
+   */
+  @Test
+  void newOrderSingleHandler_implementsSessionMetricsRecorder_routesThroughInterface() {
+    assertTrue(
+        handler instanceof SessionMetricsRecorder,
+        "NewOrderSingleHandler must implement SessionMetricsRecorder (LOW-10 decoupling seam)");
+
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    final SessionMetricsRecorder recorder = handler;
+    recorder.recordQuoteRequest(SESSION_ID);
+    recorder.recordQuoteRequest(SESSION_ID);
+
+    assertEquals(
+        2L,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "interface-typed recordQuoteRequest must increment the per-session counter exactly like "
+            + "the concrete reference");
+  }
+
+  // =========================================================================
+  // Test 29 — APP-151 LOW-9: untrackSessionOrder removes a tracked order key
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#untrackSessionOrder} removes the given order key
+   * from the session's outstanding set. Sets up the production sequence (onSessionOpen →
+   * trackSessionOrder) then untrackss one key and confirms only it was removed.
+   */
+  @Test
+  void untrackSessionOrder_trackedKey_removed() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    handler.trackSessionOrder(SESSION_ID, 100L);
+    handler.trackSessionOrder(SESSION_ID, 200L);
+    handler.trackSessionOrder(SESSION_ID, 300L);
+
+    handler.untrackSessionOrder(SESSION_ID, 200L);
+
+    final var set = handler.sessionOrders.get(SESSION_ID);
+    assertEquals(2, set.size(), "set must drop from 3 to 2 after one untrack");
+    assertTrue(set.contains(100L), "100L must remain tracked");
+    assertFalse(set.contains(200L), "200L must be removed");
+    assertTrue(set.contains(300L), "300L must remain tracked");
+  }
+
+  // =========================================================================
+  // Test 30 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing key
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#untrackSessionOrder} called for an order key that
+   * was never tracked is a silent no-op. The session's set must be untouched and no exception must
+   * propagate (defensive hook contract).
+   */
+  @Test
+  void untrackSessionOrder_unknownKey_isNoop() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    handler.trackSessionOrder(SESSION_ID, 100L);
+
+    handler.untrackSessionOrder(SESSION_ID, 999L);
+
+    final var set = handler.sessionOrders.get(SESSION_ID);
+    assertEquals(1, set.size(), "set must still contain exactly the 1 originally tracked key");
+    assertTrue(set.contains(100L), "100L must remain tracked");
+  }
+
+  // =========================================================================
+  // Test 31 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing session
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#untrackSessionOrder} called for a session id that
+   * was never opened is a silent no-op — the {@code sessionOrders} map must remain empty for that
+   * session id and no NPE/exception must propagate (defensive null-set guard).
+   */
+  @Test
+  void untrackSessionOrder_unknownSession_isNoop() {
+    final long unopenedSessionId = 77_777L;
+
+    handler.untrackSessionOrder(unopenedSessionId, 100L);
+
+    assertFalse(
+        handler.sessionOrders.containsKey(unopenedSessionId),
+        "sessionOrders must not gain an entry for an un-opened session");
+  }
 }

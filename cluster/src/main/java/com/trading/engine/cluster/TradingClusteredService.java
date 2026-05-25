@@ -504,10 +504,10 @@ public final class TradingClusteredService implements ClusteredService {
   }
 
   /**
-   * Correlation id for the APP-151 phase 4 idle-session-scan timer. Chosen as {@link
-   * Long#MAX_VALUE} — provably disjoint from any correlation id the {@link
-   * com.trading.engine.cluster.state.RfqStateMachine} can produce under any reachable {@code
-   * (generation, poolIndex)} combination.
+   * Correlation id for the APP-151 phase 4 idle-session-scan timer. Chosen as {@code -1L} —
+   * disjoint from every correlation id the {@link com.trading.engine.cluster.state.RfqStateMachine}
+   * can produce AND distinct from Aeron's internal {@code WheelTimerService} {@code
+   * Long2LongHashMap} missingValue sentinel.
    *
    * <p><b>Why not {@link Long#MIN_VALUE}.</b> The original choice — {@code Long.MIN_VALUE} —
    * appeared disjoint from RFQ's positive TTL ids but COLLIDED with RFQ's request-timeout

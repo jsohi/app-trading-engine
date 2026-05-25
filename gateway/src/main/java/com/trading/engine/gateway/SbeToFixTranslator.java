@@ -996,7 +996,7 @@ public final class SbeToFixTranslator {
   private static final byte[] CANCEL_TEXT_EXPLICIT =
       "Cancelled: explicit request".getBytes(StandardCharsets.US_ASCII);
 
-  /** ASCII text for cancels triggered by the idle-session timer (APP-151 phase 4 future work). */
+  /** ASCII text for cancels triggered by the idle-session timer (APP-151 phase 4). */
   private static final byte[] CANCEL_TEXT_IDLE_TIMEOUT =
       "Cancelled: idle session timeout".getBytes(StandardCharsets.US_ASCII);
 

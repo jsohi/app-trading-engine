@@ -88,10 +88,11 @@ public final class QuoteRequestHandler implements CommandHandler {
   /**
    * Per-session metrics recorder (APP-151 phase 5). Wired post-construction via {@link
    * #setSessionMetricsRecorder} from {@code TradingClusteredService}; null in tests that don't
-   * exercise the metrics path. Owns no state — just a reference to the handler whose maps hold the
-   * counters, so a single call site routes QuoteRequest activity into the per-session count.
+   * exercise the metrics path. Decoupled via the {@link SessionMetricsRecorder} interface so this
+   * handler doesn't depend on the concrete {@link NewOrderSingleHandler} class — a 1-method seam
+   * that future handlers (cancel/replace, admin-cancel) can also use.
    */
-  private NewOrderSingleHandler sessionMetricsRecorder;
+  private SessionMetricsRecorder sessionMetricsRecorder;
 
   /**
    * Constructs a {@link QuoteRequestHandler}.
@@ -122,13 +123,13 @@ public final class QuoteRequestHandler implements CommandHandler {
   }
 
   /**
-   * Wires the {@link NewOrderSingleHandler} as the per-session metrics recorder (APP-151 phase 5).
-   * Called once from {@code TradingClusteredService}'s constructor after both handlers exist.
-   * Optional — when null, {@link #onCommand} simply skips the per-session counter increment.
+   * Wires the per-session metrics recorder (APP-151 phase 5). Called once from {@code
+   * TradingClusteredService}'s constructor after both handlers exist. Optional — when null, {@link
+   * #onCommand} skips the per-session counter increment.
    *
-   * @param recorder the per-session metrics owner (may be null in unit-test fixtures)
+   * @param recorder the {@link SessionMetricsRecorder} seam (may be null in unit-test fixtures)
    */
-  public void setSessionMetricsRecorder(final NewOrderSingleHandler recorder) {
+  public void setSessionMetricsRecorder(final SessionMetricsRecorder recorder) {
     this.sessionMetricsRecorder = recorder;
   }
 
