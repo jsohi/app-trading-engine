@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trading.engine.cluster.IdGenerator;
@@ -1425,5 +1426,26 @@ class NewOrderSingleHandlerSessionCloseTest {
     assertFalse(
         handler.sessionOrders.containsKey(unopenedSessionId),
         "sessionOrders must not gain an entry for an un-opened session");
+  }
+
+  // =========================================================================
+  // Test 38 — APP-151 R9 (Gemini): OrderState.setProductType rejects null
+  // =========================================================================
+
+  /**
+   * Verifies that {@link OrderState#setProductType} rejects {@code null} with {@link
+   * IllegalArgumentException}, honouring the non-nullable contract documented on its Javadoc.
+   * Defense-in-depth check — SBE decoders never produce a {@code null} enum on the production wire
+   * path, but a null leak here would surface much later as a stale {@code
+   * OrderCanceledEvent.productType=NULL_VAL} on egress with the source long lost.
+   */
+  @Test
+  void orderState_setProductType_nullValue_throwsIllegalArgumentException() {
+    final var state = new OrderState();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> state.setProductType(null),
+        "setProductType(null) must throw IllegalArgumentException to preserve the non-nullable "
+            + "contract");
   }
 }

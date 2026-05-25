@@ -1006,10 +1006,18 @@ public final class SbeToFixTranslator {
 
   /**
    * Map a {@link CancelReasonEnum} value to its human-readable FIX Text(58) ASCII bytes. Returns
-   * {@code null} for {@link CancelReasonEnum#NULL_VAL} so the caller can skip the tag (FIX 4.4 Text
-   * is optional).
+   * {@code null} for {@link CancelReasonEnum#NULL_VAL} or for a {@code null} input so the caller
+   * can skip the tag (FIX 4.4 Text is optional). The null-input branch is defensive — SBE decoders
+   * never produce a {@code null} enum on the wire — but it keeps the switch total and prevents an
+   * NPE from leaking up the egress translator if a flyweight is misused.
+   *
+   * @param reason the cancel reason from the decoder (may be null)
+   * @return ASCII text bytes, or {@code null} if {@code reason} is {@code null} or {@code NULL_VAL}
    */
   private static byte[] mapCancelReasonToText(final CancelReasonEnum reason) {
+    if (reason == null) {
+      return null;
+    }
     return switch (reason) {
       case SessionDisconnect -> CANCEL_TEXT_SESSION_DISCONNECT;
       case ExplicitCancel -> CANCEL_TEXT_EXPLICIT;
