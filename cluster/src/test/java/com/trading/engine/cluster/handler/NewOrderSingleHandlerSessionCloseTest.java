@@ -325,6 +325,24 @@ class NewOrderSingleHandlerSessionCloseTest {
     return Integer.toString(i);
   }
 
+  /**
+   * Returns {@code true} if {@code bytes} contains at least one non-zero byte. The {@code int}
+   * counter inside falls under the project's "loop-control counter in a classic {@code for} header"
+   * carve-out (per CLAUDE.md); the early-return removes the mutable {@code boolean} flag that would
+   * otherwise be needed at the call site.
+   *
+   * @param bytes a non-null byte array to scan
+   * @return {@code true} iff any byte is non-zero
+   */
+  private static boolean anyNonZero(final byte[] bytes) {
+    for (int i = 0; i < bytes.length; i++) {
+      if (bytes[i] != 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // =========================================================================
   // Test 1 — onSessionOpen allocates an empty per-session set
   // =========================================================================
@@ -643,7 +661,7 @@ class NewOrderSingleHandlerSessionCloseTest {
     state.copyClOrdIdTo(expectedClOrdId, 0);
     final byte[] expectedSymbol = new byte[OrderState.SYMBOL_LENGTH];
     state.copySymbolTo(expectedSymbol, 0);
-    final SideEnum expectedSide = state.side();
+    final var expectedSide = state.side();
 
     handler.onSessionClose(SESSION_ID, TS, eventSink);
 
@@ -699,14 +717,8 @@ class NewOrderSingleHandlerSessionCloseTest {
     // execId must be non-empty — cluster minted a real one via tradingState.generateExecId().
     final byte[] actualExecId = new byte[OrderCanceledEventDecoder.execIdLength()];
     decoded.getExecId(actualExecId, 0);
-    boolean hasNonZeroByte = false;
-    for (final byte b : actualExecId) {
-      if (b != 0) {
-        hasNonZeroByte = true;
-        break;
-      }
-    }
-    assertTrue(hasNonZeroByte, "execId must be non-empty (cluster must mint a real exec id)");
+    assertTrue(
+        anyNonZero(actualExecId), "execId must be non-empty (cluster must mint a real exec id)");
   }
 
   // =========================================================================
@@ -1289,7 +1301,7 @@ class NewOrderSingleHandlerSessionCloseTest {
    * Verifies that {@link NewOrderSingleHandler#onSessionClose} removes the per-session entry from
    * {@code sessionMetricQuoteRequests} after the summary log line has been emitted. The
    * post-condition is {@code METRIC_MISSING}, matching the lifecycle invariant for the other four
-   * counters (asserted alongside in Test 22).
+   * counters (asserted in {@link #onSessionClose_clearsAllMetricCounterEntries()}).
    */
   @Test
   void onSessionClose_dropsQuoteRequestCounter() {
@@ -1328,7 +1340,7 @@ class NewOrderSingleHandlerSessionCloseTest {
 
     handler.onSessionOpen(SESSION_ID, TS);
 
-    final SessionMetricsRecorder recorder = handler;
+    final var recorder = (SessionMetricsRecorder) handler;
     recorder.recordQuoteRequest(SESSION_ID);
     recorder.recordQuoteRequest(SESSION_ID);
 
@@ -1346,7 +1358,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   /**
    * Verifies that {@link NewOrderSingleHandler#untrackSessionOrder} removes the given order key
    * from the session's outstanding set. Sets up the production sequence (onSessionOpen →
-   * trackSessionOrder) then untrackss one key and confirms only it was removed.
+   * trackSessionOrder) then untracks one key and confirms only it was removed.
    */
   @Test
   void untrackSessionOrder_trackedKey_removed() {
