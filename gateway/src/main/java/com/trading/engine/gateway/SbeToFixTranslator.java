@@ -149,10 +149,11 @@ public final class SbeToFixTranslator {
 
   // OrderCanceledEvent char fields (prefix "oxl" = orderCanceled — "oc" conflicts with
   // orderCreated above). APP-151 phase 2. Reuse-across-calls is safe because SBE's generated
-  // {@code getXxx(byte[], 0)} accessors copy the full fixed field length on every call (including
-  // null-padding the unused tail), so {@code trimNulls} observes only the current value — there
-  // is no stale-byte bleed from a longer prior call. Covered by
-  // {@code translateOrderCanceledEvent_consecutiveCalls_noScratchBufferCorruption}.
+  // {@code getXxx(byte[], 0)} accessors copy the full fixed field length on every call,
+  // re-overwriting any prior bytes; the trailing nulls in the source wire bytes (zero-padded by
+  // the encoder side at emit time) are copied across too, so {@code trimNulls} observes only the
+  // current value — no stale-byte bleed from a longer prior call. Covered by {@code
+  // translateOrderCanceledEvent_consecutiveCalls_noScratchBufferCorruption}.
   private final byte[] oxlOrderId = new byte[OrderCanceledEventDecoder.orderIdLength()];
   private final byte[] oxlClOrdId = new byte[OrderCanceledEventDecoder.clOrdIdLength()];
   private final byte[] oxlOrigClOrdId = new byte[OrderCanceledEventDecoder.origClOrdIdLength()];

@@ -1301,11 +1301,14 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * skips that key. Pre-prod traffic profile means this branch is exercised only by tests.
    *
    * <p><b>Allocation.</b> Zero allocation on the order-admit hot path (this method is itself the
-   * cold session-close path). One {@link LongHashSet.LongIterator} (~16 B) is lazy-allocated by the
-   * detached {@link LongHashSet} on the first {@code iterator()} call inside this method; the set
-   * is then GC-eligible. Cost is one tiny allocation per session-close that has tracked orders —
-   * strictly off the order-admit hot path. The detached set instance itself was allocated at {@link
-   * #onSessionOpen} — also a cold-path event.
+   * cold session-close path). The detached {@link LongHashSet} owns a cached {@link
+   * LongHashSet.LongIterator} field that is lazy-initialised on its first {@code iterator()} call;
+   * because the set has been {@code remove}-d from the outer map and only iterated once before
+   * becoming GC-eligible, that lazy-init fires exactly once per session-close that has tracked
+   * orders — cost is one tiny allocation (~16 B), strictly off the order-admit hot path. The
+   * detached set instance itself was allocated at {@link #onSessionOpen} (or, if {@code
+   * onSessionOpen} was bypassed by a test fixture, in the defensive lazy branch of {@link
+   * #trackSessionOrder}) — also a cold-path event.
    *
    * @param sessionId Aeron cluster session id whose orders should be cancelled
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
