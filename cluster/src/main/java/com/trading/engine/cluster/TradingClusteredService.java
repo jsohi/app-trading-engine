@@ -293,7 +293,8 @@ public final class TradingClusteredService implements ClusteredService {
         new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);
     // APP-151 phase 5 — route per-session QuoteRequest activity into the cluster's per-session
     // metrics maps. The recorder lives on the NewOrderSingleHandler (which owns the close-time
-    // GFLog summary path) so all four counters live in one place.
+    // GFLog summary path) so all five counters (admitted / rejected / canceled-on-disconnect /
+    // canceled-on-idle-timeout / quote-requests) live in one place.
     this.quoteRequestHandler.setSessionMetricsRecorder(this.newOrderSingleHandler);
     commandHandlers.put(quoteRequestHandler.commandTemplateId(), quoteRequestHandler);
     this.priceResponseHandler =
