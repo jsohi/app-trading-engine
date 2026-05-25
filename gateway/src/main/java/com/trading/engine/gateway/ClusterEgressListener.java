@@ -5,6 +5,7 @@ import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
@@ -46,6 +47,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final QuoteDecoder quoteDecoder = new QuoteDecoder();
   private final OrderCreatedEventDecoder orderCreatedDecoder = new OrderCreatedEventDecoder();
   private final OrderRejectedEventDecoder orderRejectedDecoder = new OrderRejectedEventDecoder();
+  private final OrderCanceledEventDecoder orderCanceledDecoder = new OrderCanceledEventDecoder();
 
   // --- Scratch buffers for correlation key extraction (zero-alloc) ---
   private final byte[] clOrdIdScratch = new byte[ExecutionReportDecoder.clOrdIdLength()];
@@ -53,6 +55,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final byte[] quoteReqIdScratch = new byte[QuoteDecoder.quoteReqIdLength()];
   private final byte[] ocClOrdIdScratch = new byte[OrderCreatedEventDecoder.clOrdIdLength()];
   private final byte[] orClOrdIdScratch = new byte[OrderRejectedEventDecoder.clOrdIdLength()];
+  private final byte[] oxlClOrdIdScratch = new byte[OrderCanceledEventDecoder.clOrdIdLength()];
 
   // --- Collaborators (injected, not owned) ---
   private final SbeToFixTranslator translator;
@@ -140,6 +143,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
       case QuoteDecoder.TEMPLATE_ID -> handleQuote(buffer, offset, timestamp);
       case OrderCreatedEventDecoder.TEMPLATE_ID -> handleOrderCreated(buffer, offset, timestamp);
       case OrderRejectedEventDecoder.TEMPLATE_ID -> handleOrderRejected(buffer, offset, timestamp);
+      case OrderCanceledEventDecoder.TEMPLATE_ID -> handleOrderCanceled(buffer, offset, timestamp);
       // QuoteRequestReject (templateId=3) is NOT handled here — it comes from the orchestrator
       // via stream 101 (OrchestratorResponseListener), not from the cluster egress.
       default -> {
@@ -339,6 +343,47 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     return Action.ABORT;
   }
 
+  /**
+   * Handles a cluster-emitted {@code OrderCanceledEvent} (SBE template 103). Correlation by {@code
+   * clOrdId} mirrors {@link #handleOrderRejected}. APP-151 phase 2 — the cluster's session-close
+   * orphan-cancel path (APP-151 phase 1) emits these, and this handler routes them through to the
+   * counterparty FIX session as an ExecutionReport with ExecType=Canceled.
+   *
+   * <p>If the FIX session has already disconnected by the time the cancel arrives (the common case,
+   * since the cluster emits the cancel BECAUSE the session disconnected), the in-flight tracker is
+   * drained and the event is dropped. The cancel is durably journaled in the cluster log
+   * regardless; the gateway is purely the egress hop. When Artio re-establishes the session, any
+   * pending offline-queued events are delivered via Artio's standard replay flow.
+   */
+  private Action handleOrderCanceled(
+      final DirectBuffer buffer, final int offset, final long timestamp) {
+    orderCanceledDecoder.wrap(
+        buffer,
+        offset + MessageHeaderDecoder.ENCODED_LENGTH,
+        headerDecoder.blockLength(),
+        headerDecoder.version());
+    orderCanceledDecoder.getClOrdId(oxlClOrdIdScratch, 0);
+    final int clOrdIdLen = trimNullPadding(oxlClOrdIdScratch);
+
+    lastCorrelationScratch = oxlClOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
+
+    final long sessionKey = sessionLookup.findByCorrelationId(oxlClOrdIdScratch, 0, clOrdIdLen);
+    if (sessionKey == SessionLookup.NULL_SESSION) {
+      inFlightTracker.onResponseReceived(oxlClOrdIdScratch, 0, clOrdIdLen);
+      LOG.info().append("Orphaned OrderCanceledEvent: clOrdIdLen=").append(clOrdIdLen).commit();
+      return Action.CONTINUE;
+    }
+
+    final boolean delivered =
+        callback.onEgressMessage(sessionKey, OrderCanceledEventDecoder.TEMPLATE_ID, timestamp);
+    if (delivered) {
+      inFlightTracker.onResponseReceived(oxlClOrdIdScratch, 0, clOrdIdLen);
+      return Action.CONTINUE;
+    }
+    return Action.ABORT;
+  }
+
   // ===========================================================================
   // Accessors — callback reads pre-wrapped decoders without re-decoding
   // ===========================================================================
@@ -386,6 +431,14 @@ public final class ClusterEgressListener implements ControlledEgressListener {
    */
   public OrderRejectedEventDecoder orderRejectedDecoder() {
     return orderRejectedDecoder;
+  }
+
+  /**
+   * Returns the pre-wrapped OrderCanceledEvent decoder. Valid only when the last {@code onMessage}
+   * invocation handled templateId {@link OrderCanceledEventDecoder#TEMPLATE_ID}. APP-151 phase 2.
+   */
+  public OrderCanceledEventDecoder orderCanceledDecoder() {
+    return orderCanceledDecoder;
   }
 
   /** Returns the SBE-to-FIX translator for use by the callback. */

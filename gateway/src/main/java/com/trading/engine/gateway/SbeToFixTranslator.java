@@ -11,6 +11,7 @@ import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
@@ -146,6 +147,23 @@ public final class SbeToFixTranslator {
   private final byte[] orCurrency = new byte[OrderRejectedEventDecoder.currencyLength()];
   private final byte[] orText = new byte[OrderRejectedEventDecoder.textLength()];
 
+  // OrderCanceledEvent char fields (prefix "oxl" = orderCanceled — "oc" conflicts with
+  // orderCreated above). APP-151 phase 2.
+  private final byte[] oxlOrderId = new byte[OrderCanceledEventDecoder.orderIdLength()];
+  private final byte[] oxlClOrdId = new byte[OrderCanceledEventDecoder.clOrdIdLength()];
+  private final byte[] oxlOrigClOrdId = new byte[OrderCanceledEventDecoder.origClOrdIdLength()];
+  private final byte[] oxlSymbol = new byte[OrderCanceledEventDecoder.symbolLength()];
+
+  /**
+   * Server-side cancel does not carry its own ExecID (FIX 4.4 requires tag 17 on every ER). For
+   * server-initiated cancels (session disconnect, future operator force-cancel), the cluster does
+   * not generate an exec id — the gateway synthesises one by prefixing the clOrdId with {@link
+   * #CANCEL_EXEC_ID_PREFIX} so the wire ExecID is unique-per-clOrdId-per-day. Phase 3 of APP-151
+   * may revisit this when the SBE schema adds a proper execId field on template 103.
+   */
+  private final byte[] oxlExecIdScratch =
+      new byte[CANCEL_EXEC_ID_PREFIX.length + OrderCanceledEventDecoder.clOrdIdLength()];
+
   /**
    * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
    * char fields applies to {@link UtcTimestampEncoder#buffer()}: it's the encoder's internal buffer
@@ -163,6 +181,9 @@ public final class SbeToFixTranslator {
 
   /** Same per-field rationale as {@link #erTransactTime}, for OrderRejectedEvent. */
   private final byte[] orTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for OrderCanceledEvent (APP-151 ph2). */
+  private final byte[] oxlTransactTime = new byte[32];
 
   /** Same per-field rationale as {@link #erTransactTime}, for Quote.transactTime. */
   private final byte[] qTransactTime = new byte[32];
@@ -823,6 +844,102 @@ public final class SbeToFixTranslator {
   }
 
   // ---------------------------------------------------------------------------
+  // OrderCanceledEvent → ExecutionReport (35=8, ExecType=Canceled) — APP-151 phase 2
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE {@code OrderCanceledEvent} (template 103) into a FIX 4.4 ExecutionReport with
+   * {@code ExecType=Canceled('4')} and {@code OrdStatus=Canceled('4')}. The cluster emits this
+   * domain event today only from session-disconnect orphan cancel (APP-151 phase 1); future cancel
+   * triggers (operator force-cancel, idle-session timeout, explicit FIX 35=F cancel) will reuse
+   * this same path.
+   *
+   * <p><b>FIX field mapping.</b>
+   *
+   * <ul>
+   *   <li>OrderID (37) ← event's orderId
+   *   <li>ExecID (17) ← {@code "CXL-" + clOrdId}, synthesised because the SBE event lacks an
+   *       execId. FIX 4.4 §4.4.5 requires ExecID unique per ExecType for the day; the
+   *       clOrdId-derived form satisfies that.
+   *   <li>ClOrdID (11) ← event's clOrdId
+   *   <li>OrigClOrdID (41) ← event's origClOrdId (phase-1 cluster emitter sets this equal to
+   *       clOrdId for server-initiated cancels per industry convention)
+   *   <li>ExecType (150) ← '4' (Canceled)
+   *   <li>OrdStatus (39) ← '4' (Canceled)
+   *   <li>Symbol (55) ← event's symbol
+   *   <li>Side (54) ← event's side mapped via {@link #mapSide}
+   *   <li>LeavesQty (151) ← 0 (per FIX 4.4 — a canceled order has no open quantity)
+   *   <li>CumQty (14) ← 0 — phase-2 limitation: cluster's {@code OrderCanceledEvent} does not carry
+   *       cumQty. The downstream consumer's correlation layer (e.g., projection state) already has
+   *       the true cumQty from prior {@code OrderFilledEvent}s; the gateway-side ER carries 0 here.
+   *       Future phase may extend the schema to carry the real value.
+   *   <li>AvgPx (6) ← 0 — same phase-2 limitation as CumQty.
+   *   <li>TransactTime (60) ← event's timestamp (cluster epoch nanos → FIX UTC timestamp ASCII)
+   * </ul>
+   *
+   * <p><b>ProductType.</b> Phase-1 emitter sets {@code productType=NULL_VAL} (see {@code
+   * NewOrderSingleHandler#emitOrderCanceledEvent} Javadoc). FIX 4.4 has no stock ProductType tag,
+   * so this is informational only and not emitted on the wire.
+   *
+   * @param sbe the decoder positioned over a complete OrderCanceledEvent message
+   * @param fix the Artio encoder — caller must populate the FIX session header before {@code
+   *     encode}
+   */
+  public void translateOrderCanceledEvent(
+      OrderCanceledEventDecoder sbe, ExecutionReportEncoder fix) {
+    // orderId (tag 37) — required
+    sbe.getOrderId(oxlOrderId, 0);
+    fix.orderID(oxlOrderId, 0, trimNulls(oxlOrderId));
+
+    // clOrdId (tag 11) — required; ALSO used to synthesise execId below
+    sbe.getClOrdId(oxlClOrdId, 0);
+    final int clOrdIdLen = trimNulls(oxlClOrdId);
+    fix.clOrdID(oxlClOrdId, 0, clOrdIdLen);
+
+    // execId (tag 17) — synthesised "CXL-<clOrdId>" because event has no execId field
+    System.arraycopy(CANCEL_EXEC_ID_PREFIX, 0, oxlExecIdScratch, 0, CANCEL_EXEC_ID_PREFIX.length);
+    System.arraycopy(oxlClOrdId, 0, oxlExecIdScratch, CANCEL_EXEC_ID_PREFIX.length, clOrdIdLen);
+    fix.execID(oxlExecIdScratch, 0, CANCEL_EXEC_ID_PREFIX.length + clOrdIdLen);
+
+    // origClOrdId (tag 41) — optional but standard on cancel ER
+    sbe.getOrigClOrdId(oxlOrigClOrdId, 0);
+    final int origClOrdIdLen = trimNulls(oxlOrigClOrdId);
+    if (origClOrdIdLen > 0) {
+      fix.origClOrdID(oxlOrigClOrdId, 0, origClOrdIdLen);
+    }
+
+    // execType (tag 150) — Canceled ('4')
+    fix.execType('4');
+
+    // ordStatus (tag 39) — Canceled ('4')
+    fix.ordStatus('4');
+
+    // symbol (tag 55) — required
+    sbe.getSymbol(oxlSymbol, 0);
+    fix.instrument().symbol(oxlSymbol, 0, trimNulls(oxlSymbol));
+
+    // side (tag 54) — required
+    fix.side(mapSide(sbe.side()));
+
+    // leavesQty (tag 151) — 0 (canceled)
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.leavesQty(dec);
+
+    // cumQty (tag 14) — 0 (phase-2 limitation; see Javadoc)
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.cumQty(dec);
+
+    // avgPx (tag 6) — 0 (phase-2 limitation; see Javadoc)
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.avgPx(dec);
+
+    // transactTime (tag 60) — required
+    final int tsLen = tsEnc.encodeFrom(sbe.timestamp(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, oxlTransactTime, 0, tsLen);
+    fix.transactTime(oxlTransactTime, 0, tsLen);
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -838,6 +955,15 @@ public final class SbeToFixTranslator {
    * {@link #NONE_ORDER_ID}.
    */
   private static final byte[] NONE_EXEC_ID = "NONE".getBytes(StandardCharsets.US_ASCII);
+
+  /**
+   * Prefix for the synthesised ExecID emitted on a server-initiated cancel (APP-151 phase 2). The
+   * cluster's {@code OrderCanceledEvent} (template 103) does not carry its own ExecID, but FIX 4.4
+   * requires tag 17 on every ExecutionReport and ExecID must be unique per ExecType for the day.
+   * Prefixing the order's ClOrdID with {@code "CXL-"} gives a clOrdId-unique cancel ExecID without
+   * a schema change. Phase 3 may add a proper execId field to template 103.
+   */
+  private static final byte[] CANCEL_EXEC_ID_PREFIX = "CXL-".getBytes(StandardCharsets.US_ASCII);
 
   /**
    * Find the length of the non-null prefix of {@code field}. SBE char fields are fixed length and
