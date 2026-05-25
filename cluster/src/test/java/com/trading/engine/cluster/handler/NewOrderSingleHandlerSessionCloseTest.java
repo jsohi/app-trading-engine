@@ -948,11 +948,13 @@ class NewOrderSingleHandlerSessionCloseTest {
     final long scanTs = TS + 6L * 60L * 1_000_000_000L;
     handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
 
-    // EventSink broadcasts to ALL registered sessions — every registered session receives all
-    // cancel events. Sessions A and C have 1 order each cancelled = 2 total cancel events.
-    // The setUp()-registered session (SESSION_ID=42) also receives the broadcast.
+    // The single setUp()-registered FakeClientSession observes 2 emissions because exactly 2
+    // orders were cancelled by the scan: A's order + C's order. B's order was preserved (its
+    // activity refresh at TS+5min is within the 5-min idle window). The count is per the broadcast
+    // pattern: FakeClientSession.messages records every event written to that session by
+    // EventSink.emit, and the cluster emits one OrderCanceledEvent per cancelled order — hence 2.
     assertEquals(
-        2, session.messages.size(), "2 cancel events must be broadcast (one for A, one for C)");
+        2, session.messages.size(), "2 cancel events emitted (one for A, one for C); B preserved");
 
     // Verify A and C were cancelled (book slots released), B preserved.
     assertNull(tradingState.orderBook().get(orderKeyA), "session A order must be cancelled");
