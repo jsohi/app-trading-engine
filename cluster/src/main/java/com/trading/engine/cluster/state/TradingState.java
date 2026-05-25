@@ -242,11 +242,14 @@ public final class TradingState {
   /**
    * Applies an OrderCanceled event (APP-151 phase 1). Releases the {@link OrderState} pool slot
    * keyed by {@code orderKey} back to the {@link OrderBook}. Called by {@link
-   * com.trading.engine.cluster.handler.NewOrderSingleHandler#onSessionClose} after the
-   * corresponding {@code OrderCanceledEvent} has been journaled via {@link
-   * com.trading.engine.cluster.handler.EventSink#emit}.
+   * com.trading.engine.cluster.handler.NewOrderSingleHandler#onSessionClose} (session-disconnect
+   * cancel) and {@link com.trading.engine.cluster.handler.NewOrderSingleHandler#onIdleScan}
+   * (idle-timeout cancel, APP-151 phase 4) after the corresponding {@code OrderCanceledEvent} has
+   * been journaled via {@link com.trading.engine.cluster.handler.EventSink#emit}.
    *
    * <p>Idempotent — releasing an unknown orderKey is a no-op per {@link OrderBook#release}.
+   *
+   * <p><b>Threading:</b> single-threaded — cluster duty-cycle only.
    *
    * @param orderKey the order key whose pool slot is to be released
    */

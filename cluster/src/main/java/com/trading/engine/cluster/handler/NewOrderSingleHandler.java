@@ -357,7 +357,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
   // terminal events (fill/cancel/reject) when phase 2 lands.
   // ===========================================================================
 
-  private static final int SESSION_ORDERS_INITIAL_CAPACITY = 4096;
+  /**
+   * Initial capacity shared by both per-session maps ({@code sessionOrders} and {@code
+   * sessionLastActivityNanos}) — both key by Aeron cluster session id, so one constant sizes both
+   * coherently. 4096 covers Artio's default upper bound on concurrent sessions; the maps auto-grow
+   * if a deployment legitimately sustains more.
+   */
+  private static final int SESSION_MAP_INITIAL_CAPACITY = 4096;
 
   /** Initial per-session order-set capacity. Grows automatically if exceeded. */
   static final int SESSION_ORDERS_PER_SESSION_CAPACITY = 64;
@@ -418,7 +424,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    */
   final Long2LongHashMap sessionLastActivityNanos =
       new Long2LongHashMap(
-          SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, IDLE_LAST_ACTIVITY_MISSING);
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, IDLE_LAST_ACTIVITY_MISSING);
 
   /**
    * Pending-removal scratch — sessions identified as idle during a scan are collected here and
@@ -427,7 +433,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * pre-allocated set is the standard Agrona idiom.
    */
   private final LongHashSet idleScanPendingRemoval =
-      new LongHashSet(SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
+      new LongHashSet(SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
 
   // Per-scan scratch context for {@link #idleScanConsumer} — set by {@link #onIdleScan} just
   // before {@code forEachLong}, read by the consumer body {@link #idleScanVisit}, reset by the
@@ -450,7 +456,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * assertions in {@code NewOrderSingleHandlerSessionCloseTest}.
    */
   final Long2ObjectHashMap<LongHashSet> sessionOrders =
-      new Long2ObjectHashMap<>(SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
+      new Long2ObjectHashMap<>(SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
 
   /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
@@ -1506,9 +1512,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * #sessionOrders} (a different map) IS modified during iteration via {@link
    * #cancelSessionOrders}, which is safe.
    *
-   * <p><b>Allocation.</b> Zero allocation on the scan path. The consumer is bound once at
-   * construction; {@code forEachLong} reuses Agrona's primitive-consumer interface. The
-   * pending-removal set is pre-allocated and {@code clear}-ed at the end of each scan.
+   * <p><b>Allocation.</b> Zero allocation on the order-admit hot path (this method is itself the
+   * cold scan path). The consumer is bound once at construction; {@code forEachLong} reuses
+   * Agrona's primitive-consumer interface. The pending-removal set is pre-allocated and {@code
+   * clear}-ed at the end of each scan. Its {@code iterator()} call (when at least one idle session
+   * was found) lazy-inits Agrona's cached {@link LongHashSet.LongIterator} on the first call — same
+   * one-time ~16 B allocation pattern documented on {@link #onSessionClose}, and like that path,
+   * strictly off the order-admit hot path.
    *
    * @param currentTimestamp cluster timestamp at scan time (epoch nanos)
    * @param timeoutNanos idle threshold — sessions whose last activity was before {@code

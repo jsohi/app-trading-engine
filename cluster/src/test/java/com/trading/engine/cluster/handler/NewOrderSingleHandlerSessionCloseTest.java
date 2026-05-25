@@ -1,6 +1,7 @@
 package com.trading.engine.cluster.handler;
 
 import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderCanceled;
+import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderRejected;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -31,6 +32,7 @@ import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
+import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 import com.trading.engine.testsupport.aeron.FakeClientSession;
@@ -1021,5 +1023,49 @@ class NewOrderSingleHandlerSessionCloseTest {
         CancelReasonEnum.IdleTimeout,
         decoded.cancelReason(),
         "cancelReason must be IdleTimeout for idle-scan-triggered cancels");
+  }
+
+  // =========================================================================
+  // Test 24 — APP-151 phase-3 session order cap: admit rejected with BookFull
+  // =========================================================================
+
+  /**
+   * Verifies the APP-151 phase-3 / Gemini-HIGH defence: when the per-session order set reaches
+   * {@link NewOrderSingleHandler#SESSION_ORDERS_HARD_CAP} (16,384), a subsequent NOS admit produces
+   * exactly one {@link com.trading.engine.messages.sbe.OrderRejectedEventDecoder} (template 101)
+   * with {@code rejectReason == BookFull} and {@code text == "session order cap exceeded"}.
+   */
+  @Test
+  void admitNewOrder_sessionOrderCapExceeded_rejectsWithBookFull() {
+    // Pre-seed the per-session set via the existing openSession helper so onSessionOpen semantics
+    // are satisfied (activity clock seeded, sessionOrders entry present).
+    final var sessionSet = openSession(SESSION_ID);
+
+    // Add SESSION_ORDERS_HARD_CAP fake orderKeys directly into the set — this reaches the cap
+    // without consuming any order book slots (the 128-slot test fixture would be exhausted long
+    // before 16,384 entries). Fake keys use large negative longs to guarantee no collision with
+    // real order book keys, which start at 1 and increment monotonically.
+    for (int i = 0; i < NewOrderSingleHandler.SESSION_ORDERS_HARD_CAP; i++) {
+      sessionSet.add(-(long) (i + 1));
+    }
+
+    assertEquals(
+        NewOrderSingleHandler.SESSION_ORDERS_HARD_CAP,
+        sessionSet.size(),
+        "set must be exactly at the hard cap before dispatching the NOS");
+
+    // Dispatch a valid NOS — must be rejected by the session-cap guard (step 12a in admitNewOrder).
+    dispatchNos("CAP-REJECT-001");
+
+    assertEquals(1, session.messages.size(), "exactly one OrderRejectedEvent must be emitted");
+    final var rej = decodeOrderRejected(session.messages.get(0));
+    assertEquals(
+        RejectReasonEnum.BookFull,
+        rej.rejectReason(),
+        "rejectReason must be BookFull when the session order cap is exceeded");
+    assertEquals(
+        "session order cap exceeded",
+        rej.text().trim(),
+        "rejection text must equal the production literal 'session order cap exceeded'");
   }
 }
