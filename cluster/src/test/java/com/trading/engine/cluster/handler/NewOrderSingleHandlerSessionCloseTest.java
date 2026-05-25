@@ -1026,6 +1026,165 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
+  // Tests 25-29 — APP-151 phase-5 per-session metrics
+  // =========================================================================
+
+  // =========================================================================
+  // Test 25 — onSessionOpen seeds all 4 metric counters at zero
+  // =========================================================================
+
+  /** Verifies that {@link NewOrderSingleHandler#onSessionOpen} seeds all four metric maps at 0. */
+  @Test
+  void onSessionOpen_seedsAllMetricCountersAtZero() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    assertEquals(
+        0L,
+        handler.sessionMetricOrdersAdmitted.get(SESSION_ID),
+        "sessionMetricOrdersAdmitted must be 0 immediately after onSessionOpen");
+    assertEquals(
+        0L,
+        handler.sessionMetricOrdersRejected.get(SESSION_ID),
+        "sessionMetricOrdersRejected must be 0 immediately after onSessionOpen");
+    assertEquals(
+        0L,
+        handler.sessionMetricOrdersCancelledOnDisconnect.get(SESSION_ID),
+        "sessionMetricOrdersCancelledOnDisconnect must be 0 immediately after onSessionOpen");
+    assertEquals(
+        0L,
+        handler.sessionMetricOrdersCancelledOnIdleTimeout.get(SESSION_ID),
+        "sessionMetricOrdersCancelledOnIdleTimeout must be 0 immediately after onSessionOpen");
+  }
+
+  // =========================================================================
+  // Test 26 — admit success increments the ordersAdmitted counter
+  // =========================================================================
+
+  /**
+   * Dispatches 3 valid NOS commands via {@link #dispatchNos} and asserts that {@code
+   * sessionMetricOrdersAdmitted} is 3 for the session.
+   */
+  @Test
+  void admitOrder_incrementsOrdersAdmittedCounter() {
+    // onSessionOpen seeds the counters and the sessionOrders set.
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    dispatchNos("METRIC-ADM-001");
+    dispatchNos("METRIC-ADM-002");
+    dispatchNos("METRIC-ADM-003");
+
+    assertEquals(
+        3L,
+        handler.sessionMetricOrdersAdmitted.get(SESSION_ID),
+        "sessionMetricOrdersAdmitted must equal 3 after 3 successful NOS admits");
+  }
+
+  // =========================================================================
+  // Test 27 — reject path increments the ordersRejected counter
+  // =========================================================================
+
+  /**
+   * Dispatches the same clOrdId twice — the first admit succeeds, the second is rejected by the
+   * dedup guard. Asserts {@code sessionMetricOrdersAdmitted == 1} and {@code
+   * sessionMetricOrdersRejected == 1}.
+   */
+  @Test
+  void rejectOrder_incrementsOrdersRejectedCounter() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    // First dispatch — succeeds.
+    dispatchNos("METRIC-REJ-DUP");
+    // Second dispatch of the same clOrdId — rejected with DuplicateClOrdId.
+    dispatchNos("METRIC-REJ-DUP");
+
+    assertEquals(
+        1L,
+        handler.sessionMetricOrdersAdmitted.get(SESSION_ID),
+        "sessionMetricOrdersAdmitted must be 1 (only the first succeeded)");
+    assertEquals(
+        1L,
+        handler.sessionMetricOrdersRejected.get(SESSION_ID),
+        "sessionMetricOrdersRejected must be 1 after one duplicate-clOrdId rejection");
+  }
+
+  // =========================================================================
+  // Test 28 — onSessionClose clears all 4 metric counter entries
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#onSessionClose} clears all four metric counter
+   * entries for the session — all four maps must return {@link
+   * NewOrderSingleHandler#METRIC_MISSING} for the closed session id after the call.
+   */
+  @Test
+  void onSessionClose_clearsAllMetricCounterEntries() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    // Seed 2 orders so the disconnect path has something to cancel and increment.
+    final long orderKey1 = seedOrderState("METRIC-CLR-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey1);
+    final long orderKey2 = seedOrderState("METRIC-CLR-002", "EURUSD", SideEnum.Sell);
+    handler.trackSessionOrder(SESSION_ID, orderKey2);
+
+    handler.onSessionClose(SESSION_ID, TS, eventSink);
+
+    // After close, all four counters must be cleared (METRIC_MISSING sentinel).
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricOrdersAdmitted.get(SESSION_ID),
+        "sessionMetricOrdersAdmitted must return METRIC_MISSING after onSessionClose");
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricOrdersRejected.get(SESSION_ID),
+        "sessionMetricOrdersRejected must return METRIC_MISSING after onSessionClose");
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricOrdersCancelledOnDisconnect.get(SESSION_ID),
+        "sessionMetricOrdersCancelledOnDisconnect must return METRIC_MISSING after onSessionClose");
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricOrdersCancelledOnIdleTimeout.get(SESSION_ID),
+        "sessionMetricOrdersCancelledOnIdleTimeout must return METRIC_MISSING after onSessionClose");
+  }
+
+  // =========================================================================
+  // Test 29 — onIdleScan idle cancel increments the idleTimeout counter
+  // =========================================================================
+
+  /**
+   * Opens a distinct session (SESSION_A), seeds 1 order, advances the idle scan past the timeout,
+   * and asserts that {@code sessionMetricOrdersCancelledOnIdleTimeout} is 1 for SESSION_A. Unlike
+   * {@link #onSessionClose_clearsAllMetricCounterEntries}, {@code onIdleScan} does NOT clear metric
+   * maps — the counter remains queryable after the scan.
+   */
+  @Test
+  void onIdleScan_cancelsIdleSession_incrementsIdleTimeoutCounter() {
+    // Use a distinct session id so it does not conflict with the setUp-registered SESSION_ID.
+    final long sessionA = 99L;
+    final var fakeSessionA = new FakeClientSession(sessionA);
+    fakeCluster.addClientSession(fakeSessionA);
+
+    handler.onSessionOpen(sessionA, TS);
+    final long orderKey = seedOrderState("METRIC-IDLE-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(sessionA, orderKey);
+
+    // Advance 6 minutes past last activity — exceeds the 5-minute idle threshold.
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    // The idle-timeout cancel must have incremented the counter.
+    assertEquals(
+        1L,
+        handler.sessionMetricOrdersCancelledOnIdleTimeout.get(sessionA),
+        "sessionMetricOrdersCancelledOnIdleTimeout must be 1 after one idle-timeout cancel");
+    // The disconnect counter must still be 0 — no session close occurred.
+    assertEquals(
+        0L,
+        handler.sessionMetricOrdersCancelledOnDisconnect.get(sessionA),
+        "sessionMetricOrdersCancelledOnDisconnect must remain 0 after an idle-timeout cancel");
+  }
+
+  // =========================================================================
   // Test 24 — APP-151 phase-3 session order cap: admit rejected with BookFull
   // =========================================================================
 

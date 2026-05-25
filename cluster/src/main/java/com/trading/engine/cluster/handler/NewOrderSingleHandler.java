@@ -1,5 +1,7 @@
 package com.trading.engine.cluster.handler;
 
+import com.epam.deltix.gflog.api.Log;
+import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.cluster.OrderState;
 import com.trading.engine.cluster.metrics.RfqMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
@@ -96,6 +98,9 @@ import org.agrona.concurrent.UnsafeBuffer;
  * @see TradingState
  */
 public final class NewOrderSingleHandler implements CommandHandler {
+
+  /** Zero-allocation GFLog logger (APP-151 phase 5 — per-session metrics summary on close). */
+  private static final Log LOG = LogFactory.getLog(NewOrderSingleHandler.class);
 
   // -- Pre-allocated SBE flyweights (zero-allocation hot path) --
   private final NewOrderSingleDecoder nosDecoder = new NewOrderSingleDecoder();
@@ -450,6 +455,49 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * binds once at construction so the inner {@code forEach} adds no per-call lambda allocation.
    */
   private final LongLongConsumer idleScanConsumer = this::idleScanVisit;
+
+  // ===========================================================================
+  // Per-session metrics (APP-151 phase 5)
+  //
+  // Four per-session counters tracked by sessionId. Surfaced via GFLog on
+  // {@link #onSessionClose} so operators get a one-line summary of every closed
+  // session. NOT exposed via Aeron cluster counters in this slice (would couple
+  // to deployment-time counter id allocation); GFLog is sufficient for the
+  // observability use case and matches the project's hot-path logging idiom.
+  //
+  // Counters are stored in separate {@link Long2LongHashMap}s rather than a
+  // pooled value class so reads/writes are single-field-update primitive ops.
+  // Memory overhead at 4096-session capacity: ~64 KB per counter × 4 = ~256 KB
+  // — same magnitude as the existing sessionOrders + sessionLastActivityNanos
+  // maps, well within the cluster's memory budget.
+  //
+  // NOT snapshot-persisted — consistent with the other per-session state; a
+  // session that crosses a snapshot loses its counter history. Acceptable
+  // because metrics are observability, not state-machine semantics.
+  // ===========================================================================
+
+  /** Sentinel for counter "no entry" (real counters are always non-negative). */
+  static final long METRIC_MISSING = Long.MIN_VALUE;
+
+  /** sessionId → count of successful NOS admissions for that session. */
+  final Long2LongHashMap sessionMetricOrdersAdmitted =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
+
+  /** sessionId → count of NOS rejections (any RejectReasonEnum) for that session. */
+  final Long2LongHashMap sessionMetricOrdersRejected =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
+
+  /** sessionId → count of orders auto-cancelled on session disconnect for that session. */
+  final Long2LongHashMap sessionMetricOrdersCancelledOnDisconnect =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
+
+  /** sessionId → count of orders auto-cancelled on idle timeout for that session. */
+  final Long2LongHashMap sessionMetricOrdersCancelledOnIdleTimeout =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
 
   /**
    * sessionId → set of orderKeys outstanding on that session. Package-private for direct-state
@@ -1333,6 +1381,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
     //     real cluster sessions; unit tests for the admit path do not depend on this side effect).
     if (session != null) {
       trackSessionOrder(session.id(), orderKey);
+      // APP-151 phase 5 — per-session metrics. Increment "orders admitted" counter for this
+      // session.
+      incrementSessionCounter(sessionMetricOrdersAdmitted, session.id());
     }
   }
 
@@ -1361,6 +1412,33 @@ public final class NewOrderSingleHandler implements CommandHandler {
     }
     // APP-151 phase 4 — seed last-activity so a brand-new session is not immediately flagged idle.
     sessionLastActivityNanos.put(sessionId, clusterTimestamp);
+    // APP-151 phase 5 — seed per-session counter entries at 0 so onSessionClose's GFLog summary
+    // always reports concrete numbers (instead of MISSING) even for sessions that never sent any
+    // commands. Using put rather than putIfAbsent is fine on this cold path; production
+    // re-open is idempotent.
+    sessionMetricOrdersAdmitted.put(sessionId, 0L);
+    sessionMetricOrdersRejected.put(sessionId, 0L);
+    sessionMetricOrdersCancelledOnDisconnect.put(sessionId, 0L);
+    sessionMetricOrdersCancelledOnIdleTimeout.put(sessionId, 0L);
+  }
+
+  /**
+   * Increments the counter for {@code sessionId} in {@code metricMap} by 1. If the session has no
+   * existing entry (e.g., a test that bypassed {@link #onSessionOpen}), seeds the counter at 1.
+   * Zero-allocation: a single {@link Long2LongHashMap#get} + {@code put} pair.
+   *
+   * @param metricMap the counter map (one of the four {@code sessionMetric*} fields)
+   * @param sessionId Aeron cluster session id
+   */
+  private void incrementSessionCounter(final Long2LongHashMap metricMap, final long sessionId) {
+    final long current = metricMap.get(sessionId);
+    if (current == METRIC_MISSING) {
+      // Production invariant: onSessionOpen seeds every counter at 0; reaching MISSING here means
+      // a test path bypassed onSessionOpen. Seed at 1 to keep the count honest.
+      metricMap.put(sessionId, 1L);
+    } else {
+      metricMap.put(sessionId, current + 1L);
+    }
   }
 
   /**
@@ -1454,6 +1532,55 @@ public final class NewOrderSingleHandler implements CommandHandler {
     cancelSessionOrders(sessionId, clusterTimestamp, eventSink, CancelReasonEnum.SessionDisconnect);
     // APP-151 phase 4 — clear the idle-activity entry so subsequent scans don't see a stale ts.
     sessionLastActivityNanos.remove(sessionId);
+    // APP-151 phase 5 — emit a one-line GFLog summary of this session's lifetime activity, then
+    // clear the per-session counters. Logged BEFORE clear so the values are still resident; the
+    // remove() calls return MISSING for never-opened sessions and that's reflected as 0 in the
+    // logged numbers (we materialise via getOrDefault).
+    logSessionMetricsSummary(sessionId);
+    sessionMetricOrdersAdmitted.remove(sessionId);
+    sessionMetricOrdersRejected.remove(sessionId);
+    sessionMetricOrdersCancelledOnDisconnect.remove(sessionId);
+    sessionMetricOrdersCancelledOnIdleTimeout.remove(sessionId);
+  }
+
+  /**
+   * Emit a one-line GFLog summary of the per-session metrics for {@code sessionId}. Called from
+   * {@link #onSessionClose} as the final step. Zero-allocation: GFLog's builder API takes primitive
+   * long appends; counter reads are single {@link Long2LongHashMap#get} ops.
+   *
+   * <p>Format: {@code Session {id} closed — orders: admitted={N} rejected={N}
+   * canceled-on-disconnect={N} canceled-on-idle-timeout={N}}. Missing counters (session that never
+   * sent commands) materialise as 0.
+   *
+   * @param sessionId Aeron cluster session id being closed
+   */
+  private void logSessionMetricsSummary(final long sessionId) {
+    LOG.info()
+        .append("Session ")
+        .append(sessionId)
+        .append(" closed — orders: admitted=")
+        .append(materialiseCounter(sessionMetricOrdersAdmitted, sessionId))
+        .append(" rejected=")
+        .append(materialiseCounter(sessionMetricOrdersRejected, sessionId))
+        .append(" canceled-on-disconnect=")
+        .append(materialiseCounter(sessionMetricOrdersCancelledOnDisconnect, sessionId))
+        .append(" canceled-on-idle-timeout=")
+        .append(materialiseCounter(sessionMetricOrdersCancelledOnIdleTimeout, sessionId))
+        .commit();
+  }
+
+  /**
+   * Read a counter for {@code sessionId} from {@code metricMap}, treating the {@link
+   * #METRIC_MISSING} sentinel as 0 so the summary log line shows concrete numbers for sessions that
+   * never sent any commands of that type.
+   *
+   * @param metricMap one of the four {@code sessionMetric*} maps
+   * @param sessionId session whose counter to read
+   * @return the count (0 if no entry)
+   */
+  private static long materialiseCounter(final Long2LongHashMap metricMap, final long sessionId) {
+    final long value = metricMap.get(sessionId);
+    return value == METRIC_MISSING ? 0L : value;
   }
 
   /**
@@ -1479,6 +1606,17 @@ public final class NewOrderSingleHandler implements CommandHandler {
     if (orderKeys == null || orderKeys.isEmpty()) {
       return;
     }
+    // APP-151 phase 5 — choose which counter to bump per cancel based on the reason.
+    final Long2LongHashMap counterMap;
+    if (cancelReason == CancelReasonEnum.SessionDisconnect) {
+      counterMap = sessionMetricOrdersCancelledOnDisconnect;
+    } else if (cancelReason == CancelReasonEnum.IdleTimeout) {
+      counterMap = sessionMetricOrdersCancelledOnIdleTimeout;
+    } else {
+      // ExplicitCancel / OperatorForce — future emitters will route through their own counters
+      // (APP-65 / APP-153). Default to null so we don't silently mis-bucket those reasons here.
+      counterMap = null;
+    }
     final var it = orderKeys.iterator();
     while (it.hasNext()) {
       final long orderKey = it.nextValue();
@@ -1491,6 +1629,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
       }
       emitOrderCanceledEvent(eventSink, clusterTimestamp, state, cancelReason);
       tradingState.applyOrderCanceled(orderKey);
+      if (counterMap != null) {
+        incrementSessionCounter(counterMap, sessionId);
+      }
     }
   }
 
@@ -1675,6 +1816,12 @@ public final class NewOrderSingleHandler implements CommandHandler {
       final SideEnum side,
       final RejectReasonEnum reason,
       final String text) {
+
+    // APP-151 phase 5 — per-session metrics. Increment "orders rejected" counter for this session.
+    // Skipped on the null-session test path (matches admit-counter convention).
+    if (session != null) {
+      incrementSessionCounter(sessionMetricOrdersRejected, session.id());
+    }
 
     orderRejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     // Authoritative sequenceNumber + timestamp stamped by EventSink at egress (see comment in
