@@ -2,6 +2,7 @@ package com.trading.engine.cluster;
 
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
+import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 
@@ -51,6 +52,12 @@ public final class OrderState {
   private SideEnum side = SideEnum.NULL_VAL;
   private OrdTypeEnum ordType = OrdTypeEnum.NULL_VAL;
   private TimeInForceEnum timeInForce = TimeInForceEnum.NULL_VAL;
+  // APP-151 phase 3 — productType retained on state so OrderCanceledEvent can populate the real
+  // value instead of NULL_VAL. NOT serialized in OrderBookSnapshot (template 202) in this slice —
+  // orders that cross a cluster snapshot revert to NULL_VAL after restore. Acceptable degradation
+  // matching the session-tracker's in-memory-only design (cancel-on-disconnect is the primary
+  // consumer; restored orders no longer have a live session and would not auto-cancel anyway).
+  private ProductTypeEnum productType = ProductTypeEnum.NULL_VAL;
   private long price;
   private long orderQty;
   private long leavesQty;
@@ -87,6 +94,7 @@ public final class OrderState {
     side = SideEnum.NULL_VAL;
     ordType = OrdTypeEnum.NULL_VAL;
     timeInForce = TimeInForceEnum.NULL_VAL;
+    productType = ProductTypeEnum.NULL_VAL;
     price = 0L;
     orderQty = 0L;
     leavesQty = 0L;
@@ -132,6 +140,10 @@ public final class OrderState {
 
   public void setTimeInForce(final TimeInForceEnum value) {
     this.timeInForce = value;
+  }
+
+  public void setProductType(final ProductTypeEnum value) {
+    this.productType = value;
   }
 
   public void setPrice(final long value) {
@@ -208,6 +220,10 @@ public final class OrderState {
 
   public TimeInForceEnum timeInForce() {
     return timeInForce;
+  }
+
+  public ProductTypeEnum productType() {
+    return productType;
   }
 
   public long price() {

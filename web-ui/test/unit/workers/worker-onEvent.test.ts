@@ -253,13 +253,18 @@ function makeOrderCanceledPayload(fields: {
   origClOrdId: string;
   symbol: string;
 }): Uint8Array {
+  // APP-151 phase 3 schema: body layout is
+  //   seq(0..7) timestamp(8..15) orderId(16..35) execId(36..55) clOrdId(56..75)
+  //   origClOrdId(76..95) symbol(96..103) side(104) cumQty(105..112)
+  //   productType(113) cancelReason(114) → BLOCK_LENGTH=115.
   const buf = new ArrayBuffer(OrderCanceledEventDecoder.BLOCK_LENGTH);
   const dv = new DataView(buf);
   dv.setBigInt64(0, fields.seq, true);
   dv.setBigUint64(8, fields.timestamp, true);
-  writeFixedString(dv, 36, fields.clOrdId, 20); // clOrdId at body[36]
-  writeFixedString(dv, 56, fields.origClOrdId, 20); // origClOrdId at body[56]
-  writeFixedString(dv, 76, fields.symbol, 8); // symbol at body[76]
+  // orderId (16..35) + execId (36..55) left as zero-padded; not asserted by this test.
+  writeFixedString(dv, 56, fields.clOrdId, 20); // clOrdId at body[56]
+  writeFixedString(dv, 76, fields.origClOrdId, 20); // origClOrdId at body[76]
+  writeFixedString(dv, 96, fields.symbol, 8); // symbol at body[96]
   return prependSbeHeader(new Uint8Array(buf));
 }
 

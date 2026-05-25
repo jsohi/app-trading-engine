@@ -13,6 +13,7 @@ import com.trading.engine.fix.builder.HeaderEncoder;
 import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.fix.decoder_flyweight.ExecutionReportDecoder;
 import com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder;
+import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
@@ -999,18 +1000,21 @@ class SbeToFixTranslatorTest {
     enc.sequenceNumber(1L);
     enc.timestamp(OXL_TS_NANOS);
     enc.orderId("ORD-001");
+    enc.execId("EXEC-001");
     enc.clOrdId("CL-001");
     enc.origClOrdId("CL-001"); // server-initiated: origClOrdId == clOrdId per industry convention
     enc.symbol("EURUSD");
     enc.side(SideEnum.Buy);
     enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDec = translateCanceled(sbeBuf);
 
     // tag 37 — OrderID
     assertEquals("ORD-001", fixDec.orderIDAsString());
-    // tag 17 — ExecID synthesised as "CXL-<clOrdId>"
-    assertEquals("CXL-CL-001", fixDec.execIDAsString());
+    // tag 17 — ExecID must equal the SBE event's execId field (phase 3: cluster mints real id)
+    assertEquals("EXEC-001", fixDec.execIDAsString());
     // tag 11 — ClOrdID
     assertEquals("CL-001", fixDec.clOrdIDAsString());
     // tag 41 — OrigClOrdID present because origClOrdId was non-empty
@@ -1025,11 +1029,11 @@ class SbeToFixTranslatorTest {
     assertEquals("EURUSD", fixDec.symbolAsString());
     // tag 54 — Side = '1' (Buy)
     assertEquals('1', fixDec.side());
-    // tag 151 — LeavesQty = 0 (phase-2 constant)
+    // tag 151 — LeavesQty = 0 (canceled order has no open qty)
     assertEquals(0L, fixDec.leavesQty().value());
-    // tag 14 — CumQty = 0 (phase-2 limitation)
+    // tag 14 — CumQty propagated from event (0 for unfilled cancel)
     assertEquals(0L, fixDec.cumQty().value());
-    // tag 6 — AvgPx = 0 (phase-2 limitation)
+    // tag 6 — AvgPx = 0
     assertEquals(0L, fixDec.avgPx().value());
     // tag 60 — TransactTime present and non-empty
     assertTrue(
@@ -1049,11 +1053,14 @@ class SbeToFixTranslatorTest {
     enc.sequenceNumber(2L);
     enc.timestamp(OXL_TS_NANOS);
     enc.orderId("ORD-002");
+    enc.execId("EXEC-002");
     enc.clOrdId("CL-002");
     enc.origClOrdId(""); // explicitly empty — SBE will null-pad the fixed-length field
     enc.symbol("USDJPY");
     enc.side(SideEnum.Sell);
     enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDec = translateCanceled(sbeBuf);
 
@@ -1065,29 +1072,33 @@ class SbeToFixTranslatorTest {
   }
 
   /**
-   * The synthesised ExecID must be byte-exact {@code "CXL-" + clOrdId} — verifies both the prefix
-   * constant and the concatenation into {@code oxlExecIdScratch}.
+   * The FIX ExecID (tag 17) on the wire must be byte-exact equal to the SBE event's {@code execId}
+   * field — phase 3 dropped the phase-2 {@code "CXL-"} synthesis; the gateway now reads directly
+   * from the event.
    */
   @Test
-  void translateOrderCanceledEvent_execIdIsCxlPrefixedClOrdId() {
+  void translateOrderCanceledEvent_execIdEqualsEventField() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
     final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(3L);
     enc.timestamp(OXL_TS_NANOS);
     enc.orderId("ORD-003");
+    enc.execId("EXEC-MYORDER42");
     enc.clOrdId("MYORDER42");
     enc.origClOrdId("MYORDER42");
     enc.symbol("GBPUSD");
     enc.side(SideEnum.Buy);
     enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDec = translateCanceled(sbeBuf);
 
     assertEquals(
-        "CXL-MYORDER42",
+        "EXEC-MYORDER42",
         fixDec.execIDAsString(),
-        "ExecID must be the literal string \"CXL-\" concatenated with the clOrdId");
+        "FIX ExecID (tag 17) must equal the SBE event execId field byte-for-byte");
   }
 
   /** Buy side on the SBE event must map to FIX side char {@code '1'}. */
@@ -1099,11 +1110,14 @@ class SbeToFixTranslatorTest {
     enc.sequenceNumber(4L);
     enc.timestamp(OXL_TS_NANOS);
     enc.orderId("ORD-004");
+    enc.execId("EXEC-004");
     enc.clOrdId("CL-004");
     enc.origClOrdId("CL-004");
     enc.symbol("EURUSD");
     enc.side(SideEnum.Buy);
     enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDec = translateCanceled(sbeBuf);
 
@@ -1119,11 +1133,14 @@ class SbeToFixTranslatorTest {
     enc.sequenceNumber(5L);
     enc.timestamp(OXL_TS_NANOS);
     enc.orderId("ORD-005");
+    enc.execId("EXEC-005");
     enc.clOrdId("CL-005");
     enc.origClOrdId("CL-005");
     enc.symbol("USDJPY");
     enc.side(SideEnum.Sell);
     enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDec = translateCanceled(sbeBuf);
 
@@ -1147,16 +1164,20 @@ class SbeToFixTranslatorTest {
     encA.sequenceNumber(10L);
     encA.timestamp(OXL_TS_NANOS);
     encA.orderId("ORD-LONGID-AAAAAA");
+    encA.execId("EXE-LONGID-AAAAAA");
     encA.clOrdId("CL-LONGID-AAAAAA");
     encA.origClOrdId("CL-LONGID-AAAAAA");
     encA.symbol("EURUSD");
     encA.side(SideEnum.Buy);
     encA.productType(ProductTypeEnum.NULL_VAL);
+    encA.cumQty(0L);
+    encA.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDecA = translateCanceledWith(translator, sbeBufA);
 
     assertEquals("ORD-LONGID-AAAAAA", fixDecA.orderIDAsString());
-    assertEquals("CXL-CL-LONGID-AAAAAA", fixDecA.execIDAsString());
+    // phase 3: ExecID comes directly from the SBE event execId field
+    assertEquals("EXE-LONGID-AAAAAA", fixDecA.execIDAsString());
     assertEquals('1', fixDecA.side()); // Buy
 
     // Second call: shorter orderId/clOrdId, Sell, USDJPY — must not carry stale tail bytes
@@ -1166,20 +1187,150 @@ class SbeToFixTranslatorTest {
     encB.sequenceNumber(11L);
     encB.timestamp(OXL_TS_NANOS + 1_000_000L);
     encB.orderId("ORD-B");
+    encB.execId("EXE-B");
     encB.clOrdId("CL-B");
     encB.origClOrdId("CL-B");
     encB.symbol("USDJPY");
     encB.side(SideEnum.Sell);
     encB.productType(ProductTypeEnum.NULL_VAL);
+    encB.cumQty(0L);
+    encB.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final var fixDecB = translateCanceledWith(translator, sbeBufB);
 
     assertEquals("ORD-B", fixDecB.orderIDAsString());
-    assertEquals("CXL-CL-B", fixDecB.execIDAsString());
+    // phase 3: ExecID must equal the SBE execId, no stale suffix from the longer first call
+    assertEquals("EXE-B", fixDecB.execIDAsString());
     assertEquals("USDJPY", fixDecB.symbolAsString());
     assertEquals('2', fixDecB.side()); // Sell — must not carry Buy from first call
     assertTrue(fixDecB.hasOrigClOrdID());
     assertEquals("CL-B", fixDecB.origClOrdIDAsString());
+  }
+
+  /**
+   * {@link CancelReasonEnum#SessionDisconnect} must produce FIX tag 58 containing {@code
+   * "Cancelled: session disconnected"}.
+   */
+  @Test
+  void translateOrderCanceledEvent_sessionDisconnect_emitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(20L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-SD-001");
+    enc.execId("EXEC-SD-001");
+    enc.clOrdId("CL-SD-001");
+    enc.origClOrdId("CL-SD-001");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertTrue(fixDec.hasText(), "tag 58 Text must be present for SessionDisconnect reason");
+    assertEquals(
+        "Cancelled: session disconnected",
+        fixDec.textAsString(),
+        "Text(58) must carry the session-disconnect reason string");
+  }
+
+  /**
+   * {@link CancelReasonEnum#ExplicitCancel} must produce FIX tag 58 containing {@code "Cancelled:
+   * explicit request"}.
+   */
+  @Test
+  void translateOrderCanceledEvent_explicitCancel_emitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(21L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-EX-001");
+    enc.execId("EXEC-EX-001");
+    enc.clOrdId("CL-EX-001");
+    enc.origClOrdId("CL-EX-001");
+    enc.symbol("USDJPY");
+    enc.side(SideEnum.Sell);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.ExplicitCancel);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertTrue(fixDec.hasText(), "tag 58 Text must be present for ExplicitCancel reason");
+    assertEquals(
+        "Cancelled: explicit request",
+        fixDec.textAsString(),
+        "Text(58) must carry the explicit-cancel reason string");
+  }
+
+  /**
+   * {@link CancelReasonEnum#NULL_VAL} must leave FIX tag 58 absent — the translator skips the tag
+   * when the reason is unknown.
+   */
+  @Test
+  void translateOrderCanceledEvent_nullCancelReason_omitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(22L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-NR-001");
+    enc.execId("EXEC-NR-001");
+    enc.clOrdId("CL-NR-001");
+    enc.origClOrdId("CL-NR-001");
+    enc.symbol("GBPUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(0L);
+    enc.cancelReason(CancelReasonEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertFalse(fixDec.hasText(), "tag 58 Text must be absent when cancelReason is NULL_VAL");
+  }
+
+  /**
+   * {@code cumQty} from the SBE event must propagate to FIX tag 14 — verifies the phase-3 change
+   * that replaced the hard-coded {@code 0L} with the real value read from the event.
+   */
+  @Test
+  void translateOrderCanceledEvent_cumQty_propagatesToFix14() {
+    // 123_45678900L in fixed-point 10^-8 represents 1.234567890 (nine significant figures).
+    // Artio normalises to the shortest decimal representation: value=12345678900, scale=10 OR a
+    // reduced form. We assert the round-trip mathematical value rather than the raw (value,scale)
+    // tuple so the assertion is robust to Artio's internal normalisation.
+    final long cumQtyFixed = 123_45678900L; // = 1.2345678900 × 10^8 raw units
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(23L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-CQ-001");
+    enc.execId("EXEC-CQ-001");
+    enc.clOrdId("CL-CQ-001");
+    enc.origClOrdId("CL-CQ-001");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.cumQty(cumQtyFixed);
+    enc.cancelReason(CancelReasonEnum.SessionDisconnect);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    // Artio normalises the FIX decimal; use BigDecimal round-trip to assert the mathematical
+    // value exactly (longValueExact throws if there is a fractional remainder).
+    final long actualScaled =
+        java.math.BigDecimal.valueOf(fixDec.cumQty().value(), fixDec.cumQty().scale())
+            .scaleByPowerOfTen(8) // move to fixed-point 10^-8 space
+            .longValueExact();
+    assertEquals(
+        cumQtyFixed,
+        actualScaled,
+        "CumQty (tag 14) must round-trip the fixed-point cumQty from the SBE event");
   }
 
   // ---------------------------------------------------------------------------

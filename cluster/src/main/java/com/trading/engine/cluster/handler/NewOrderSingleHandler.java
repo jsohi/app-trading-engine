@@ -10,6 +10,7 @@ import com.trading.engine.cluster.state.RfqSlot;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
@@ -350,6 +351,22 @@ public final class NewOrderSingleHandler implements CommandHandler {
 
   /** Initial per-session order-set capacity. Grows automatically if exceeded. */
   static final int SESSION_ORDERS_PER_SESSION_CAPACITY = 64;
+
+  /**
+   * Hard cap on outstanding orders per session — defends against unbounded growth of the per-
+   * session {@link LongHashSet} (Gemini HIGH from PR #82). At cap reached, new orders from that
+   * session are rejected with {@link RejectReasonEnum#BookFull} and a descriptive text. Phase 1 has
+   * no terminal-event untrack path, so the set grows monotonically across a session's lifetime;
+   * this cap bounds the worst-case {@link #onSessionClose} iteration cost on the cluster duty-cycle
+   * thread.
+   *
+   * <p>16 384 is ~16× typical exchange-grade session throughput (CME iLink caps clients around
+   * 1000–2000 orders/second; 4 s of unfilled sustained traffic = 8 000 outstanding). Beyond this
+   * limit is pathological. TODO(APP-151): phase 4+ adds terminal-event untrack (fill / explicit
+   * cancel / expire) which lowers the steady-state size dramatically, and chunked deferred
+   * cancellation on session close if real workloads ever approach the cap.
+   */
+  static final int SESSION_ORDERS_HARD_CAP = 16_384;
 
   /**
    * Load factor for the per-session {@link LongHashSet}. Matches the convention used by the other
@@ -920,6 +937,27 @@ public final class NewOrderSingleHandler implements CommandHandler {
       return null;
     }
 
+    // 12a. (APP-151 phase 3) Per-session order cap — bound the worst-case onSessionClose
+    //      iteration on the duty cycle (Gemini HIGH from PR #82). Without a terminal-event
+    //      untrack path (phase 4+), sessionOrders grows monotonically until session-close. A
+    //      pathological session that admits >SESSION_ORDERS_HARD_CAP orders without any
+    //      cancel/fill would force a multi-hundred-millisecond iteration on duty cycle,
+    //      blocking the cluster heartbeat. Fail-closed at the cap with BookFull keeps the
+    //      worst case bounded. Skipped on the null-session test path.
+    if (session != null) {
+      final var sessionSet = sessionOrders.get(session.id());
+      if (sessionSet != null && sessionSet.size() >= SESSION_ORDERS_HARD_CAP) {
+        emitOrderRejected(
+            eventSink,
+            session,
+            timestamp,
+            side,
+            RejectReasonEnum.BookFull,
+            "session order cap exceeded");
+        return null;
+      }
+    }
+
     // 11c. (APP-62 slice 2) Per-account rate limit — at most maxOrdersPerSecond NewOrderSingle
     //      admissions per 1-second wall-clock-aligned window. Skipped when the account has no
     //      rate limit configured (maxOrdersPerSecond == 0 == unlimited).
@@ -1195,7 +1233,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
             clOrdIdScratch,
             0,
             symbolScratch,
-            0);
+            0,
+            safeProductType());
 
     if (state == null) {
       // The pre-validation guard (isOrderBookFull) should prevent this. If we reach here, the
@@ -1362,6 +1401,11 @@ public final class NewOrderSingleHandler implements CommandHandler {
    */
   private void emitOrderCanceledEvent(
       final EventSink eventSink, final long clusterTimestamp, final OrderState state) {
+    // Generate a fresh execId per cancel (FIX 4.4 §4.4.5 requires ExecID unique per ExecType per
+    // day). Uses the same id-generator backing OrderCreatedEvent so the gateway no longer needs
+    // to synthesise a sentinel.
+    tradingState.generateExecId();
+
     orderCanceledEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
     // sequenceNumber + timestamp written as zero by design: EventSink.emit overwrites both fields
     // with the authoritative cluster sequence + nanosecond timestamp during egress publication
@@ -1369,12 +1413,15 @@ public final class NewOrderSingleHandler implements CommandHandler {
     orderCanceledEncoder.sequenceNumber(0L);
     orderCanceledEncoder.timestamp(0L);
 
-    // SBE generated putXxx(byte[], int) copies bytes immediately into the egress buffer, so we
-    // can serially reuse one 20-byte scratch (clOrdIdScratch) for orderId / clOrdId / origClOrdId
-    // and the 8-byte symbolScratch for symbol. Safe because the cluster duty cycle is
-    // single-threaded — onSessionClose never interleaves with an in-flight onCommand admit/reject.
+    // orderId — copy from state via the shared clOrdIdScratch (both fields are 20-byte char).
+    // SBE-generated putXxx(byte[], int) copies bytes immediately into the egress buffer, so we
+    // can serially reuse the scratch for orderId / clOrdId / origClOrdId. Safe because the
+    // cluster duty cycle is single-threaded — onSessionClose never interleaves with an admit.
     state.copyOrderIdTo(clOrdIdScratch, 0);
     orderCanceledEncoder.putOrderId(clOrdIdScratch, 0);
+
+    // execId — from the fresh id minted above (lives in tradingState.execIdScratch()).
+    orderCanceledEncoder.putExecId(tradingState.execIdScratch(), 0);
 
     state.copyClOrdIdTo(clOrdIdScratch, 0);
     orderCanceledEncoder.putClOrdId(clOrdIdScratch, 0);
@@ -1385,7 +1432,15 @@ public final class NewOrderSingleHandler implements CommandHandler {
     orderCanceledEncoder.putSymbol(symbolScratch, 0);
 
     orderCanceledEncoder.side(state.side());
-    orderCanceledEncoder.productType(ProductTypeEnum.NULL_VAL);
+    // cumQty from live state — non-zero only for partial-filled orders cancelled mid-life
+    // (no such path exists today, but the field is wire-correct from the moment phase 4+ work
+    // enables cancel-of-partially-filled).
+    orderCanceledEncoder.cumQty(state.cumQty());
+    orderCanceledEncoder.productType(state.productType());
+    // APP-151 phase 1 emitter is the session-disconnect path → SessionDisconnect. Other reasons
+    // (ExplicitCancel for APP-65, IdleTimeout for phase 4, OperatorForce for APP-153) plug into
+    // their respective emitters when those land.
+    orderCanceledEncoder.cancelReason(CancelReasonEnum.SessionDisconnect);
 
     final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCanceledEncoder.encodedLength();
     eventSink.emit(clusterTimestamp, egressBuffer, 0, eventLen);

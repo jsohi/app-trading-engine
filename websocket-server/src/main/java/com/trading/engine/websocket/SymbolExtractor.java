@@ -44,7 +44,10 @@ public final class SymbolExtractor {
   private static final int OFFSET_ORDER_CREATED = HEADER_SIZE + 76; // template 100
   private static final int OFFSET_ORDER_REJECTED = HEADER_SIZE + 36; // template 101
   private static final int OFFSET_ORDER_FILLED = HEADER_SIZE + 76; // template 102
-  private static final int OFFSET_ORDER_CANCELED = HEADER_SIZE + 76; // template 103
+  private static final int OFFSET_ORDER_CANCELED =
+      HEADER_SIZE
+          + 96; // template 103 (APP-151 phase 3 added execId before clOrdId, pushing symbol from 76
+  // → 96)
   private static final int OFFSET_QUOTE_REQUESTED = HEADER_SIZE + 36; // template 104
   private static final int OFFSET_QUOTE_CREATED = HEADER_SIZE + 56; // template 105
   private static final int OFFSET_QUOTE_REJECTED = HEADER_SIZE + 36; // template 106

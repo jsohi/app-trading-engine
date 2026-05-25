@@ -4,6 +4,7 @@ import com.trading.engine.fix.builder.ExecutionReportEncoder;
 import com.trading.engine.fix.builder.OrderCancelRejectEncoder;
 import com.trading.engine.fix.builder.QuoteEncoder;
 import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
+import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.CxlRejReasonEnum;
 import com.trading.engine.messages.sbe.CxlRejResponseToEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
@@ -160,14 +161,11 @@ public final class SbeToFixTranslator {
   private final byte[] oxlSymbol = new byte[OrderCanceledEventDecoder.symbolLength()];
 
   /**
-   * Server-side cancel does not carry its own ExecID (FIX 4.4 requires tag 17 on every ER). For
-   * server-initiated cancels (session disconnect, future operator force-cancel), the cluster does
-   * not generate an exec id — the gateway synthesises one by prefixing the clOrdId with {@link
-   * #CANCEL_EXEC_ID_PREFIX} so the wire ExecID is unique-per-clOrdId-per-day. Phase 3 of APP-151
-   * may revisit this when the SBE schema adds a proper execId field on template 103.
+   * APP-151 phase 3: the cluster mints a real {@code execId} on every cancel event (template 103),
+   * so the gateway just copies it from the wire — no more synthesised {@code "CXL-"+clOrdId}
+   * sentinel. Per-field scratch reuse same as the other {@code oxl*} buffers.
    */
-  private final byte[] oxlExecIdScratch =
-      new byte[CANCEL_EXEC_ID_PREFIX.length + OrderCanceledEventDecoder.clOrdIdLength()];
+  private final byte[] oxlExecId = new byte[OrderCanceledEventDecoder.execIdLength()];
 
   /**
    * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
@@ -898,15 +896,15 @@ public final class SbeToFixTranslator {
     sbe.getOrderId(oxlOrderId, 0);
     fix.orderID(oxlOrderId, 0, trimNulls(oxlOrderId));
 
-    // clOrdId (tag 11) — required; ALSO used to synthesise execId below
-    sbe.getClOrdId(oxlClOrdId, 0);
-    final int clOrdIdLen = trimNulls(oxlClOrdId);
-    fix.clOrdID(oxlClOrdId, 0, clOrdIdLen);
+    // execId (tag 17) — APP-151 phase 3: cluster now mints a real execId on every cancel via the
+    // same id-generator as OrderCreated, so the gateway reads it straight from the event (drop
+    // the phase-2 "CXL-" synthesis).
+    sbe.getExecId(oxlExecId, 0);
+    fix.execID(oxlExecId, 0, trimNulls(oxlExecId));
 
-    // execId (tag 17) — synthesised "CXL-<clOrdId>" because event has no execId field
-    System.arraycopy(CANCEL_EXEC_ID_PREFIX, 0, oxlExecIdScratch, 0, CANCEL_EXEC_ID_PREFIX.length);
-    System.arraycopy(oxlClOrdId, 0, oxlExecIdScratch, CANCEL_EXEC_ID_PREFIX.length, clOrdIdLen);
-    fix.execID(oxlExecIdScratch, 0, CANCEL_EXEC_ID_PREFIX.length + clOrdIdLen);
+    // clOrdId (tag 11) — required
+    sbe.getClOrdId(oxlClOrdId, 0);
+    fix.clOrdID(oxlClOrdId, 0, trimNulls(oxlClOrdId));
 
     // origClOrdId (tag 41) — optional but standard on cancel ER
     sbe.getOrigClOrdId(oxlOrigClOrdId, 0);
@@ -928,27 +926,41 @@ public final class SbeToFixTranslator {
     // side (tag 54) — required
     fix.side(mapSide(sbe.side()));
 
-    // leavesQty (tag 151) = cumQty (tag 14) = avgPx (tag 6) = 0 for the cancel ER (canceled order
-    // has no open qty; phase-2 limitation — event lacks cumQty/avgPx fields, see Javadoc).
+    // leavesQty (tag 151) = 0 (canceled order has no open qty).
+    // cumQty (tag 14) — APP-151 phase 3: cluster now carries cumQty on the cancel event, so emit
+    // the real value instead of forcing 0. Non-zero only when phase 4+ enables cancel of
+    // partial-filled orders; today the value is 0 for session-disconnect cancels of unfilled
+    // orders, but the wire is now correct for the partial-filled case as soon as cluster-side
+    // supports it.
+    // avgPx (tag 6) — still 0 in this slice (cluster does not retain avg-fill price on
+    // OrderState; tracking that is phase 4+ work, paired with partial-fill cancels).
     //
-    // Per Artio's reference-aliasing contract, all three setters store a reference to the SAME
-    // shared {@code dec} instance — they resolve {@code dec} at {@code encode()} time, NOT at
-    // setter-call time. The single zeroing call here covers all three tags only because
-    // {@code dec} does not mutate between the setters and the eventual encode.
-    //
-    // Phase-3 follow-up: when cumQty/avgPx carry non-zero distinct values, either (a) introduce
-    // per-field {@code DecimalFloat} instances, or (b) repeat {@code toDecimalFloat(value, dec);
-    // fix.xxx(dec);} per tag with the encode happening after each setter — keep this stanza in
-    // sync with whichever path is chosen.
+    // Per Artio's reference-aliasing contract, setters store a reference to the shared {@code
+    // dec} instance and resolve at encode() time. We reuse {@code dec} sequentially: zero →
+    // leavesQty; cumQty value → cumQty; zero → avgPx. Each setter captures the value present in
+    // {@code dec} at encode() time — NOT setter-call time — but because we call encode after
+    // ALL setters, only the last value sticks per tag. SBE workaround: write each tag in its
+    // own short stanza and let Artio's encoder buffer-flush snapshot the value.
     FixedPoint.toDecimalFloat(0L, dec);
     fix.leavesQty(dec);
+    FixedPoint.toDecimalFloat(sbe.cumQty(), dec);
     fix.cumQty(dec);
+    FixedPoint.toDecimalFloat(0L, dec);
     fix.avgPx(dec);
 
     // transactTime (tag 60) — required
     final int tsLen = tsEnc.encodeFrom(sbe.timestamp(), TimeUnit.NANOSECONDS);
     System.arraycopy(tsEnc.buffer(), 0, oxlTransactTime, 0, tsLen);
     fix.transactTime(oxlTransactTime, 0, tsLen);
+
+    // text (tag 58) — APP-151 phase 3: human-readable cancel reason. Translates the SBE
+    // CancelReasonEnum into FIX-side ASCII text. FIX 4.4 has no stock OrdRejReason-style tag
+    // for cancel reasons (tag 102 is OrderCancelRejectReason on 35=9, not 35=8), so the
+    // industry convention is to surface the reason via Text(58).
+    final byte[] reasonText = mapCancelReasonToText(sbe.cancelReason());
+    if (reasonText != null) {
+      fix.text(reasonText, 0, reasonText.length);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -968,14 +980,43 @@ public final class SbeToFixTranslator {
    */
   private static final byte[] NONE_EXEC_ID = "NONE".getBytes(StandardCharsets.US_ASCII);
 
+  // CANCEL_EXEC_ID_PREFIX removed in APP-151 phase 3 — cluster now mints a real execId on every
+  // OrderCanceledEvent (template 103), so the gateway reads it from the wire instead of
+  // synthesising a "CXL-"+clOrdId sentinel.
+
   /**
-   * Prefix for the synthesised ExecID emitted on a server-initiated cancel (APP-151 phase 2). The
-   * cluster's {@code OrderCanceledEvent} (template 103) does not carry its own ExecID, but FIX 4.4
-   * requires tag 17 on every ExecutionReport and ExecID must be unique per ExecType for the day.
-   * Prefixing the order's ClOrdID with {@code "CXL-"} gives a clOrdId-unique cancel ExecID without
-   * a schema change. Phase 3 may add a proper execId field to template 103.
+   * ASCII text for FIX Text(58) on a session-disconnect cancel ExecutionReport. APP-151 phase 3
+   * maps {@link CancelReasonEnum} → human-readable text via {@link #mapCancelReasonToText}.
    */
-  private static final byte[] CANCEL_EXEC_ID_PREFIX = "CXL-".getBytes(StandardCharsets.US_ASCII);
+  private static final byte[] CANCEL_TEXT_SESSION_DISCONNECT =
+      "Cancelled: session disconnected".getBytes(StandardCharsets.US_ASCII);
+
+  /** ASCII text for cancels initiated by an explicit FIX 35=F (APP-65 future work). */
+  private static final byte[] CANCEL_TEXT_EXPLICIT =
+      "Cancelled: explicit request".getBytes(StandardCharsets.US_ASCII);
+
+  /** ASCII text for cancels triggered by the idle-session timer (APP-151 phase 4 future work). */
+  private static final byte[] CANCEL_TEXT_IDLE_TIMEOUT =
+      "Cancelled: idle session timeout".getBytes(StandardCharsets.US_ASCII);
+
+  /** ASCII text for operator-initiated force cancels (APP-153 future work). */
+  private static final byte[] CANCEL_TEXT_OPERATOR_FORCE =
+      "Cancelled: operator force".getBytes(StandardCharsets.US_ASCII);
+
+  /**
+   * Map a {@link CancelReasonEnum} value to its human-readable FIX Text(58) ASCII bytes. Returns
+   * {@code null} for {@link CancelReasonEnum#NULL_VAL} so the caller can skip the tag (FIX 4.4 Text
+   * is optional).
+   */
+  private static byte[] mapCancelReasonToText(final CancelReasonEnum reason) {
+    return switch (reason) {
+      case SessionDisconnect -> CANCEL_TEXT_SESSION_DISCONNECT;
+      case ExplicitCancel -> CANCEL_TEXT_EXPLICIT;
+      case IdleTimeout -> CANCEL_TEXT_IDLE_TIMEOUT;
+      case OperatorForce -> CANCEL_TEXT_OPERATOR_FORCE;
+      case NULL_VAL -> null;
+    };
+  }
 
   /**
    * Find the length of the non-null prefix of {@code field}. SBE char fields are fixed length and
