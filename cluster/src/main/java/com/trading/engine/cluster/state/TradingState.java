@@ -5,6 +5,7 @@ import com.trading.engine.cluster.OrderBook;
 import com.trading.engine.cluster.OrderState;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
+import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 import java.util.Objects;
@@ -183,6 +184,10 @@ public final class TradingState {
    * @param clOrdIdOffset the offset into clOrdId
    * @param symbol the symbol bytes
    * @param symbolOffset the offset into symbol
+   * @param productType the product type from the NOS decoder (APP-151 phase 3) — retained on the
+   *     {@link OrderState} so a subsequent {@link
+   *     com.trading.engine.cluster.handler.NewOrderSingleHandler#onSessionClose} can emit the real
+   *     value on the {@code OrderCanceledEvent} instead of {@code NULL_VAL}
    * @return the populated {@link OrderState}, or {@code null} if pool exhausted
    */
   public OrderState applyOrderCreated(
@@ -199,7 +204,8 @@ public final class TradingState {
       final byte[] clOrdId,
       final int clOrdIdOffset,
       final byte[] symbol,
-      final int symbolOffset) {
+      final int symbolOffset,
+      final ProductTypeEnum productType) {
 
     final var state = orderBook.acquire(orderKey);
     if (state == null) {
@@ -213,6 +219,7 @@ public final class TradingState {
     state.setSide(side);
     state.setOrdType(ordType);
     state.setTimeInForce(timeInForce);
+    state.setProductType(productType);
     state.setPrice(price);
     state.setOrderQty(orderQty);
     state.setLeavesQty(orderQty);

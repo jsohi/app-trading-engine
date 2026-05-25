@@ -26,6 +26,7 @@ import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
+import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
@@ -44,7 +45,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the APP-151 phase 1 session-disconnect orphan-cancel feature in {@link
+ * Unit tests for the APP-151 session-disconnect orphan-cancel feature in {@link
  * NewOrderSingleHandler}.
  *
  * <p>Covers:
@@ -57,6 +58,9 @@ import org.junit.jupiter.api.Test;
  *       event field matching; pool slot release; session-map eviction.
  *   <li>Edge cases — never-opened session (no-op), empty session (no-op), double-close idempotency,
  *       and stale orderKey (already-released slot skipped silently).
+ *   <li>Phase-3 schema fields — {@code cancelReason}, {@code cumQty}, {@code execId}, and real
+ *       {@code productType} populated from {@link OrderState} on every emitted {@link
+ *       OrderCanceledEventDecoder}.
  * </ul>
  *
  * <p><b>Threading:</b> test-only — runs on the JUnit worker thread. All operations are
@@ -275,7 +279,8 @@ class NewOrderSingleHandlerSessionCloseTest {
         clOrdIdBytes,
         0,
         symbolBytes,
-        0);
+        0,
+        ProductTypeEnum.Spot);
     return orderKey;
   }
 
@@ -577,10 +582,12 @@ class NewOrderSingleHandlerSessionCloseTest {
   // =========================================================================
 
   /**
-   * Seeds an {@link OrderState} with known orderId / clOrdId / symbol / side fields and verifies
-   * that the emitted {@link OrderCanceledEventDecoder} round-trips back to the same values: {@code
-   * clOrdId == origClOrdId} (server-initiated cancel convention) and {@code productType ==
-   * NULL_VAL} (phase 1 — productType not yet retained on OrderState).
+   * Seeds an {@link OrderState} with known orderId / clOrdId / symbol / side fields via a full NOS
+   * dispatch and verifies that the emitted {@link OrderCanceledEventDecoder} round-trips back to
+   * the same values: {@code clOrdId == origClOrdId} (server-initiated cancel convention), {@code
+   * productType == Spot} (phase 3 — populated from {@link OrderState#productType()}), {@code
+   * cancelReason == SessionDisconnect}, {@code cumQty == 0} (unfilled order), and a non-empty
+   * {@code execId} minted by the cluster.
    */
   @Test
   void onSessionClose_eventFields_matchOrderState() {
@@ -663,8 +670,59 @@ class NewOrderSingleHandlerSessionCloseTest {
     // side must match.
     assertEquals(expectedSide, decoded.side(), "side must match the seeded OrderState");
 
-    // productType must be NULL_VAL (phase 1 — productType not yet retained on OrderState).
+    // productType must be Spot (phase 3 — populated from OrderState.productType() which was set
+    // to Spot by the NOS admit path via applyOrderCreated).
     assertEquals(
-        ProductTypeEnum.NULL_VAL, decoded.productType(), "productType must be NULL_VAL in phase 1");
+        ProductTypeEnum.Spot,
+        decoded.productType(),
+        "productType must equal the value seeded on OrderState (Spot)");
+
+    // cancelReason must be SessionDisconnect (phase 3 — emitOrderCanceledEvent always sets this
+    // for session-close cancels).
+    assertEquals(
+        CancelReasonEnum.SessionDisconnect,
+        decoded.cancelReason(),
+        "cancelReason must be SessionDisconnect for session-disconnect cancels");
+
+    // cumQty must be 0 — this order was never filled.
+    assertEquals(0L, decoded.cumQty(), "cumQty must be 0 for an unfilled order");
+
+    // execId must be non-empty — cluster minted a real one via tradingState.generateExecId().
+    final byte[] actualExecId = new byte[OrderCanceledEventDecoder.execIdLength()];
+    decoded.getExecId(actualExecId, 0);
+    boolean hasNonZeroByte = false;
+    for (final byte b : actualExecId) {
+      if (b != 0) {
+        hasNonZeroByte = true;
+        break;
+      }
+    }
+    assertTrue(hasNonZeroByte, "execId must be non-empty (cluster must mint a real exec id)");
+  }
+
+  // =========================================================================
+  // Test 13 — cancel reason is SessionDisconnect on session-disconnect cancel
+  // =========================================================================
+
+  /**
+   * Seeds one order, closes the session, and asserts that the emitted {@link
+   * OrderCanceledEventDecoder} carries {@link CancelReasonEnum#SessionDisconnect} in the {@code
+   * cancelReason} field — confirming the phase-3 emitter sets the correct reason for orphan cancels
+   * triggered by {@link NewOrderSingleHandler#onSessionClose}.
+   */
+  @Test
+  void onSessionClose_eventCancelReason_isSessionDisconnect() {
+    openSession(SESSION_ID);
+    final long orderKey = seedOrderState("ORD-REASON-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    handler.onSessionClose(SESSION_ID, TS, eventSink);
+
+    assertEquals(1, session.messages.size(), "exactly one OrderCanceledEvent must be emitted");
+    final var decoded = decodeOrderCanceled(wrapDecodeBuf(0), 0);
+    assertEquals(
+        CancelReasonEnum.SessionDisconnect,
+        decoded.cancelReason(),
+        "cancelReason must be SessionDisconnect for a session-close orphan cancel");
   }
 }
