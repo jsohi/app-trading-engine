@@ -97,7 +97,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  * @see EventSink
  * @see TradingState
  */
-public final class NewOrderSingleHandler implements CommandHandler {
+public final class NewOrderSingleHandler implements CommandHandler, SessionMetricsRecorder {
 
   /** Zero-allocation GFLog logger (APP-151 phase 5 — per-session metrics summary on close). */
   private static final Log LOG = LogFactory.getLog(NewOrderSingleHandler.class);
@@ -467,7 +467,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //
   // Counters are stored in separate {@link Long2LongHashMap}s rather than a
   // pooled value class so reads/writes are single-field-update primitive ops.
-  // Memory overhead at 4096-session capacity: ~64 KB per counter × 4 = ~256 KB
+  // Memory overhead at 4096-session capacity: ~64 KB per counter × 5 = ~320 KB
   // — same magnitude as the existing sessionOrders + sessionLastActivityNanos
   // maps, well within the cluster's memory budget.
   //
@@ -1424,8 +1424,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
     sessionLastActivityNanos.put(sessionId, clusterTimestamp);
     // APP-151 phase 5 — seed per-session counter entries at 0 so onSessionClose's GFLog summary
     // always reports concrete numbers (instead of MISSING) even for sessions that never sent any
-    // commands. Using put rather than putIfAbsent is fine on this cold path; production
-    // re-open is idempotent.
+    // commands. {@code put} (not {@code putIfAbsent}) is correct here: Aeron Cluster never
+    // re-uses a session id (each new cluster connection gets a fresh monotonic id), so the two
+    // operations are observationally equivalent on the production path. The seeding-with-put
+    // pattern is consistent with the per-session lastActivity seeding above.
     sessionMetricOrdersAdmitted.put(sessionId, 0L);
     sessionMetricOrdersRejected.put(sessionId, 0L);
     sessionMetricOrdersCancelledOnDisconnect.put(sessionId, 0L);
@@ -1434,12 +1436,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
   }
 
   /**
-   * Records a QuoteRequest command observed for {@code sessionId}. Called from {@link
-   * QuoteRequestHandler#onCommand} via the wired metrics recorder so the per-session counter
-   * completes the phase 5 AC list.
+   * Records a QuoteRequest command observed for {@code sessionId} (APP-151 phase 5 — completes the
+   * AC list "orders submitted, rejections, quote requests, cancel-on-disconnect"). Called from
+   * {@link QuoteRequestHandler#onCommand} via the wired {@link SessionMetricsRecorder} seam.
    *
    * @param sessionId Aeron cluster session id observed sending a QuoteRequest
    */
+  @Override
   public void recordQuoteRequest(final long sessionId) {
     incrementSessionCounter(sessionMetricQuoteRequests, sessionId);
   }
@@ -1449,7 +1452,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * existing entry (e.g., a test that bypassed {@link #onSessionOpen}), seeds the counter at 1.
    * Zero-allocation: a single {@link Long2LongHashMap#get} + {@code put} pair.
    *
-   * @param metricMap the counter map (one of the four {@code sessionMetric*} fields)
+   * @param metricMap the counter map (one of the five {@code sessionMetric*} fields:
+   *     ordersAdmitted, ordersRejected, ordersCancelledOnDisconnect, ordersCancelledOnIdleTimeout,
+   *     quoteRequests)
    * @param sessionId Aeron cluster session id
    */
   private void incrementSessionCounter(final Long2LongHashMap metricMap, final long sessionId) {
@@ -1466,9 +1471,13 @@ public final class NewOrderSingleHandler implements CommandHandler {
   /**
    * Records observed activity on {@code sessionId} (APP-151 phase 4). Called by {@link
    * com.trading.engine.cluster.TradingClusteredService#onSessionMessage} at the top of dispatch
-   * BEFORE any handler runs, so every command — including refdata, halt/resume, and trading
-   * commands — resets the idle-activity clock for the source session. Quote requests and price
-   * responses also count as activity.
+   * BEFORE any handler runs, so every CLIENT-session command — including refdata, halt/resume,
+   * trading, and quote-request commands — resets the idle-activity clock for the source session.
+   *
+   * <p>Note: pricing-service responses arrive on the PRICING service's own cluster session id, so
+   * they refresh the pricing-service session's clock — not the originating user session's. Timer
+   * events and other internal ingress without a {@code ClientSession} are skipped at the dispatcher
+   * level (null-session guard) and never reach this method.
    *
    * <p>Zero-allocation: {@link Long2LongHashMap#put} on existing key replaces in-place without
    * resize for any session that has been through {@link #onSessionOpen}.
@@ -1480,21 +1489,6 @@ public final class NewOrderSingleHandler implements CommandHandler {
     sessionLastActivityNanos.put(sessionId, clusterTimestamp);
   }
 
-  /**
-   * Records {@code orderKey} as outstanding on {@code sessionId}. The per-session {@link
-   * LongHashSet} is expected to have been pre-allocated by {@link #onSessionOpen}; if it is missing
-   * (test path bypassing onSessionOpen, or framework regression) the set is allocated lazily and a
-   * comment in the source documents the production invariant.
-   *
-   * <p>Insert is idempotent ({@code LongHashSet.add} is set-semantics). In production the
-   * idempotency is defensive only — {@link TradingState#generateOrderId} is monotonic so duplicate
-   * orderKeys are unreachable; tests exercise the idempotent path.
-   *
-   * <p>Package-private to allow direct assertion in unit tests.
-   *
-   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
-   * @param orderKey monotonic cluster order key from {@link TradingState#generateOrderId()}
-   */
   /**
    * Removes {@code orderKey} from the per-session set — the inverse of {@link #trackSessionOrder}.
    * Defensive hook for future terminal-event emitters (fill, explicit cancel via APP-65, expire) so
@@ -1516,6 +1510,21 @@ public final class NewOrderSingleHandler implements CommandHandler {
     }
   }
 
+  /**
+   * Records {@code orderKey} as outstanding on {@code sessionId}. The per-session {@link
+   * LongHashSet} is expected to have been pre-allocated by {@link #onSessionOpen}; if it is missing
+   * (test path bypassing onSessionOpen, or framework regression) the set is allocated lazily and a
+   * comment in the source documents the production invariant.
+   *
+   * <p>Insert is idempotent ({@code LongHashSet.add} is set-semantics). In production the
+   * idempotency is defensive only — {@link TradingState#generateOrderId} is monotonic so duplicate
+   * orderKeys are unreachable; tests exercise the idempotent path.
+   *
+   * <p>Package-private to allow direct assertion in unit tests.
+   *
+   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   * @param orderKey monotonic cluster order key from {@link TradingState#generateOrderId()}
+   */
   void trackSessionOrder(final long sessionId, final long orderKey) {
     final var existing = sessionOrders.get(sessionId);
     final LongHashSet set;
@@ -1593,8 +1602,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * long appends; counter reads are single {@link Long2LongHashMap#get} ops.
    *
    * <p>Format: {@code Session {id} closed — orders: admitted={N} rejected={N}
-   * canceled-on-disconnect={N} canceled-on-idle-timeout={N}}. Missing counters (session that never
-   * sent commands) materialise as 0.
+   * canceled-on-disconnect={N} canceled-on-idle-timeout={N} quote-requests={N}}. Missing counters
+   * (session that never sent commands) materialise as 0.
    *
    * @param sessionId Aeron cluster session id being closed
    */
@@ -1620,7 +1629,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * #METRIC_MISSING} sentinel as 0 so the summary log line shows concrete numbers for sessions that
    * never sent any commands of that type.
    *
-   * @param metricMap one of the four {@code sessionMetric*} maps
+   * @param metricMap one of the five {@code sessionMetric*} maps
    * @param sessionId session whose counter to read
    * @return the count (0 if no entry)
    */
@@ -1774,14 +1783,10 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * server-initiated cancels (session disconnect) there is no separate cancel request, so industry
    * convention is to echo the original clOrdId.
    *
-   * <p><b>ProductType.</b> Phase 1 emits {@link ProductTypeEnum#NULL_VAL} because product type is
-   * not retained on {@link OrderState} today. The read-side {@code OrderProjection.onOrderCanceled}
-   * (see {@code projections/src/main/java/.../OrderProjection.java}) does NOT read the cancel
-   * event's productType — it reuses the productType already on the OrderView from the prior
-   * OrderCreated event — so this is consumer-safe today. A future consumer that DOES read the
-   * cancel event's productType (e.g., the gateway phase-2 FIX egress path) must wait for the
-   * phase-3 schema change. TODO(APP-151): phase 3 batches a {@code productType} field onto
-   * OrderState alongside the {@code cancelReason} enum schema change.
+   * <p><b>ProductType.</b> Emitted as {@code state.productType()} — the value the order was
+   * admitted with, captured by APP-151 phase 3's addition of the {@code productType} field on
+   * {@link OrderState}. Reverts to {@code NULL_VAL} only for orders that crossed a cluster snapshot
+   * (the field is in-memory only — separate slice tracks snapshot persistence).
    *
    * @param eventSink the event emission pipeline
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
