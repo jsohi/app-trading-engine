@@ -884,6 +884,8 @@ public final class SbeToFixTranslator {
    * @param sbe the decoder positioned over a complete OrderCanceledEvent message
    * @param fix the Artio encoder — caller must populate the FIX session header before {@code
    *     encode}
+   * @throws IllegalStateException if {@code sbe.side()} is {@code NULL_VAL} or otherwise unmapped
+   *     (per the class-level "Unmapped enum values throw" contract)
    */
   public void translateOrderCanceledEvent(
       OrderCanceledEventDecoder sbe, ExecutionReportEncoder fix) {
@@ -921,16 +923,15 @@ public final class SbeToFixTranslator {
     // side (tag 54) — required
     fix.side(mapSide(sbe.side()));
 
-    // leavesQty (tag 151) — 0 (canceled)
+    // leavesQty (tag 151) = cumQty (tag 14) = avgPx (tag 6) = 0 for the cancel ER (canceled order
+    // has no open qty; phase-2 limitation — event lacks cumQty/avgPx fields, see Javadoc). All
+    // three tags read the SAME shared {@code dec} instance per Artio's reference-aliasing
+    // contract; one zeroing call covers all three. Phase 3 (separate-value cumQty/avgPx) will
+    // need per-field {@code DecimalFloat} instances or repeated `toDecimalFloat` calls between
+    // setters — keep this stanza in sync with that change.
     FixedPoint.toDecimalFloat(0L, dec);
     fix.leavesQty(dec);
-
-    // cumQty (tag 14) — 0 (phase-2 limitation; see Javadoc)
-    FixedPoint.toDecimalFloat(0L, dec);
     fix.cumQty(dec);
-
-    // avgPx (tag 6) — 0 (phase-2 limitation; see Javadoc)
-    FixedPoint.toDecimalFloat(0L, dec);
     fix.avgPx(dec);
 
     // transactTime (tag 60) — required
