@@ -147,9 +147,20 @@ public final class OrderState {
    * later {@code OrderCanceledEvent} can carry the real productType instead of {@code NULL_VAL}.
    * APP-151 phase 3.
    *
+   * <p>Defensive null check: SBE decoders return enum constants only — never {@code null} on the
+   * production wire path — but a null here would surface much later as a stale {@code
+   * OrderCanceledEvent.productType=NULL_VAL} on the egress side, with the source long lost.
+   * Throwing at write time keeps the failure local to the admit call and consistent with the
+   * non-nullable contract documented above. Manual check (no {@code Objects.requireNonNull}) to
+   * preserve cluster-hot-path zero-allocation invariants.
+   *
    * @param value the product type from the NOS command — must not be null
+   * @throws IllegalArgumentException if {@code value} is null
    */
   public void setProductType(final ProductTypeEnum value) {
+    if (value == null) {
+      throw new IllegalArgumentException("productType must not be null");
+    }
     this.productType = value;
   }
 
