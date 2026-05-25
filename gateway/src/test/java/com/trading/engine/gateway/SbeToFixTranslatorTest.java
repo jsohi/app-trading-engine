@@ -18,6 +18,8 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
+import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
+import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
@@ -27,6 +29,7 @@ import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
+import java.nio.charset.StandardCharsets;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.Test;
@@ -991,7 +994,7 @@ class SbeToFixTranslatorTest {
   @Test
   void translateOrderCanceledEvent_happyPath_emitsExpectedFixFields() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(1L);
     enc.timestamp(OXL_TS_NANOS);
@@ -1041,7 +1044,7 @@ class SbeToFixTranslatorTest {
   @Test
   void translateOrderCanceledEvent_emptyOrigClOrdId_omitsTag41() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(2L);
     enc.timestamp(OXL_TS_NANOS);
@@ -1068,7 +1071,7 @@ class SbeToFixTranslatorTest {
   @Test
   void translateOrderCanceledEvent_execIdIsCxlPrefixedClOrdId() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(3L);
     enc.timestamp(OXL_TS_NANOS);
@@ -1091,7 +1094,7 @@ class SbeToFixTranslatorTest {
   @Test
   void translateOrderCanceledEvent_buySide_mapsToFix1() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(4L);
     enc.timestamp(OXL_TS_NANOS);
@@ -1111,7 +1114,7 @@ class SbeToFixTranslatorTest {
   @Test
   void translateOrderCanceledEvent_sellSide_mapsToFix2() {
     final var sbeBuf = new ExpandableArrayBuffer(512);
-    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var enc = new OrderCanceledEventEncoder();
     enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
     enc.sequenceNumber(5L);
     enc.timestamp(OXL_TS_NANOS);
@@ -1134,12 +1137,12 @@ class SbeToFixTranslatorTest {
    * oxlOrigClOrdId}, {@code oxlSymbol}, and {@code oxlExecIdScratch}).
    */
   @Test
-  void translateOrderCanceledEvent_callTwice_noByteArrayCorruption() {
+  void translateOrderCanceledEvent_consecutiveCalls_noScratchBufferCorruption() {
     final var translator = new SbeToFixTranslator();
 
     // First call: longer orderId/clOrdId, Buy, EURUSD
     final var sbeBufA = new ExpandableArrayBuffer(512);
-    final var encA = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var encA = new OrderCanceledEventEncoder();
     encA.wrapAndApplyHeader(sbeBufA, 0, new MessageHeaderEncoder());
     encA.sequenceNumber(10L);
     encA.timestamp(OXL_TS_NANOS);
@@ -1158,7 +1161,7 @@ class SbeToFixTranslatorTest {
 
     // Second call: shorter orderId/clOrdId, Sell, USDJPY — must not carry stale tail bytes
     final var sbeBufB = new ExpandableArrayBuffer(512);
-    final var encB = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    final var encB = new OrderCanceledEventEncoder();
     encB.wrapAndApplyHeader(sbeBufB, 0, new MessageHeaderEncoder());
     encB.sequenceNumber(11L);
     encB.timestamp(OXL_TS_NANOS + 1_000_000L);
@@ -1200,13 +1203,14 @@ class SbeToFixTranslatorTest {
       final SbeToFixTranslator translator, final MutableDirectBuffer sbeBuf) {
     final var hdrDec = new MessageHeaderDecoder();
     hdrDec.wrap(sbeBuf, 0);
-    final var sbeDec = new com.trading.engine.messages.sbe.OrderCanceledEventDecoder();
+    final var sbeDec = new OrderCanceledEventDecoder();
     sbeDec.wrap(
         sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
 
     final var fix = new ExecutionReportEncoder();
     fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
-    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    // Charset-explicit to avoid platform-default ASCII fallback ambiguity in this helper.
+    fix.header().sendingTime("20260407-12:00:00".getBytes(StandardCharsets.US_ASCII));
     translator.translateOrderCanceledEvent(sbeDec, fix);
 
     final var wire = new MutableAsciiBuffer(new byte[2048]);
