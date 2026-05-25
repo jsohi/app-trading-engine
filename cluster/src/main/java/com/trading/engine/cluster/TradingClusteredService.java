@@ -443,11 +443,11 @@ public final class TradingClusteredService implements ClusteredService {
       newOrderSingleHandler.recordSessionActivity(session.id(), timestamp);
     }
     // APP-151 phase 4 — Aeron Cluster forbids scheduleTimer from onStart, so we lazy-bootstrap
-    // the idle-scan chain on the first session message. After this, onTimerEvent reschedules
-    // itself indefinitely.
+    // the idle-scan chain on the first session message. The flag is flipped INSIDE
+    // scheduleIdleScan only on a successful schedule, so a partial-wire path (cluster == null,
+    // typically tests) does NOT permanently mark the bootstrap done.
     if (!idleScanScheduled) {
       scheduleIdleScan(timestamp);
-      idleScanScheduled = true;
     }
     headerDecoder.wrap(buffer, offset);
     final int templateId = headerDecoder.templateId();
@@ -546,6 +546,11 @@ public final class TradingClusteredService implements ClusteredService {
       return; // No cluster wired — typically a unit-test path; harmless.
     }
     cluster.scheduleTimer(IDLE_SCAN_TIMER_CORRELATION_ID, baseTimestamp + IDLE_SCAN_INTERVAL_NANOS);
+    // Only mark scheduled AFTER cluster.scheduleTimer was actually invoked. If we set this in the
+    // caller, a no-cluster path would silently mark bootstrap done forever — a real bug if the
+    // cluster gets wired later (test-fixture order-of-operations) or if Aeron ever returns false
+    // for a transient reason that we want to retry on the next onSessionMessage.
+    idleScanScheduled = true;
   }
 
   @Override

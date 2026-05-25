@@ -853,36 +853,37 @@ public final class SbeToFixTranslator {
   /**
    * Translate an SBE {@code OrderCanceledEvent} (template 103) into a FIX 4.4 ExecutionReport with
    * {@code ExecType=Canceled('4')} and {@code OrdStatus=Canceled('4')}. The cluster emits this
-   * domain event today only from session-disconnect orphan cancel (APP-151 phase 1); future cancel
-   * triggers (operator force-cancel, idle-session timeout, explicit FIX 35=F cancel) will reuse
-   * this same path.
+   * domain event from session-disconnect orphan cancel (APP-151 phase 1) and idle-session timeout
+   * (APP-151 phase 4); future cancel triggers (operator force-cancel via APP-153, explicit FIX 35=F
+   * via APP-65) will reuse this same path.
    *
    * <p><b>FIX field mapping.</b>
    *
    * <ul>
    *   <li>OrderID (37) ← event's orderId
-   *   <li>ExecID (17) ← {@code "CXL-" + clOrdId}, synthesised because the SBE event lacks an
-   *       execId. FIX 4.4 §4.4.5 requires ExecID unique per ExecType for the day; the
-   *       clOrdId-derived form satisfies that.
+   *   <li>ExecID (17) ← event's execId (APP-151 phase 3 — cluster mints a real one per cancel via
+   *       the same id-generator as OrderCreated)
    *   <li>ClOrdID (11) ← event's clOrdId
-   *   <li>OrigClOrdID (41) ← event's origClOrdId (phase-1 cluster emitter sets this equal to
-   *       clOrdId for server-initiated cancels per industry convention)
+   *   <li>OrigClOrdID (41) ← event's origClOrdId (server-initiated cancel paths echo clOrdId per
+   *       industry convention; APP-65 explicit cancel will set the original-id properly)
    *   <li>ExecType (150) ← '4' (Canceled)
    *   <li>OrdStatus (39) ← '4' (Canceled)
    *   <li>Symbol (55) ← event's symbol
    *   <li>Side (54) ← event's side mapped via {@link #mapSide}
    *   <li>LeavesQty (151) ← 0 (per FIX 4.4 — a canceled order has no open quantity)
-   *   <li>CumQty (14) ← 0 — phase-2 limitation: cluster's {@code OrderCanceledEvent} does not carry
-   *       cumQty. The downstream consumer's correlation layer (e.g., projection state) already has
-   *       the true cumQty from prior {@code OrderFilledEvent}s; the gateway-side ER carries 0 here.
-   *       Future phase may extend the schema to carry the real value.
-   *   <li>AvgPx (6) ← 0 — same phase-2 limitation as CumQty.
+   *   <li>CumQty (14) ← {@code sbe.cumQty()} (APP-151 phase 3 — schema added the field; today the
+   *       value is 0 for session-disconnect / idle-timeout cancels of unfilled orders, but the wire
+   *       is correct for partial-filled cancels once phase-4+ work enables that path)
+   *   <li>AvgPx (6) ← 0 — phase-3 limitation: cluster does not retain avg-fill price on {@code
+   *       OrderState} yet. Tracking lands alongside partial-fill cancel support.
    *   <li>TransactTime (60) ← event's timestamp (cluster epoch nanos → FIX UTC timestamp ASCII)
+   *   <li>Text (58) ← human-readable cancel reason mapped from {@code sbe.cancelReason()} via
+   *       {@link #mapCancelReasonToText} (APP-151 phase 3)
    * </ul>
    *
-   * <p><b>ProductType.</b> Phase-1 emitter sets {@code productType=NULL_VAL} (see {@code
-   * NewOrderSingleHandler#emitOrderCanceledEvent} Javadoc). FIX 4.4 has no stock ProductType tag,
-   * so this is informational only and not emitted on the wire.
+   * <p><b>ProductType.</b> Cluster populates {@code productType} from {@link OrderState} (APP-151
+   * phase 3). FIX 4.4 has no stock ProductType tag, so this is informational only and not emitted
+   * on the wire — APP-45 will add the custom tag if/when required by downstream consumers.
    *
    * @param sbe the decoder positioned over a complete OrderCanceledEvent message
    * @param fix the Artio encoder — caller must populate the FIX session header before {@code
@@ -929,18 +930,18 @@ public final class SbeToFixTranslator {
     // leavesQty (tag 151) = 0 (canceled order has no open qty).
     // cumQty (tag 14) — APP-151 phase 3: cluster now carries cumQty on the cancel event, so emit
     // the real value instead of forcing 0. Non-zero only when phase 4+ enables cancel of
-    // partial-filled orders; today the value is 0 for session-disconnect cancels of unfilled
-    // orders, but the wire is now correct for the partial-filled case as soon as cluster-side
-    // supports it.
+    // partial-filled orders; today the value is 0 for session-disconnect / idle-timeout cancels
+    // of unfilled orders, but the wire is now correct for the partial-filled case as soon as
+    // cluster-side supports it.
     // avgPx (tag 6) — still 0 in this slice (cluster does not retain avg-fill price on
     // OrderState; tracking that is phase 4+ work, paired with partial-fill cancels).
     //
-    // Per Artio's reference-aliasing contract, setters store a reference to the shared {@code
-    // dec} instance and resolve at encode() time. We reuse {@code dec} sequentially: zero →
-    // leavesQty; cumQty value → cumQty; zero → avgPx. Each setter captures the value present in
-    // {@code dec} at encode() time — NOT setter-call time — but because we call encode after
-    // ALL setters, only the last value sticks per tag. SBE workaround: write each tag in its
-    // own short stanza and let Artio's encoder buffer-flush snapshot the value.
+    // Sequential reuse of {@code dec} across the three setters is safe: Artio's encoder
+    // {@code xxx(ReadOnlyDecimalFloat)} setters COPY the value (via a per-field
+    // {@code DecimalFloat.set(value, scale)}) at setter-call time, NOT by capturing a reference
+    // resolved at encode() time. So we can rewrite {@code dec} between calls and each tag retains
+    // its distinct value. (Verified by {@code translateOrderCanceledEvent_cumQty_propagatesToFix14}
+    // which sets three different values and reads three different tags off the wire.)
     FixedPoint.toDecimalFloat(0L, dec);
     fix.leavesQty(dec);
     FixedPoint.toDecimalFloat(sbe.cumQty(), dec);
