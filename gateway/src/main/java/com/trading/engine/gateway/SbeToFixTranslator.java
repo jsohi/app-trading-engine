@@ -148,7 +148,11 @@ public final class SbeToFixTranslator {
   private final byte[] orText = new byte[OrderRejectedEventDecoder.textLength()];
 
   // OrderCanceledEvent char fields (prefix "oxl" = orderCanceled — "oc" conflicts with
-  // orderCreated above). APP-151 phase 2.
+  // orderCreated above). APP-151 phase 2. Reuse-across-calls is safe because SBE's generated
+  // {@code getXxx(byte[], 0)} accessors copy the full fixed field length on every call (including
+  // null-padding the unused tail), so {@code trimNulls} observes only the current value — there
+  // is no stale-byte bleed from a longer prior call. Covered by
+  // {@code translateOrderCanceledEvent_consecutiveCalls_noScratchBufferCorruption}.
   private final byte[] oxlOrderId = new byte[OrderCanceledEventDecoder.orderIdLength()];
   private final byte[] oxlClOrdId = new byte[OrderCanceledEventDecoder.clOrdIdLength()];
   private final byte[] oxlOrigClOrdId = new byte[OrderCanceledEventDecoder.origClOrdIdLength()];
@@ -924,11 +928,17 @@ public final class SbeToFixTranslator {
     fix.side(mapSide(sbe.side()));
 
     // leavesQty (tag 151) = cumQty (tag 14) = avgPx (tag 6) = 0 for the cancel ER (canceled order
-    // has no open qty; phase-2 limitation — event lacks cumQty/avgPx fields, see Javadoc). All
-    // three tags read the SAME shared {@code dec} instance per Artio's reference-aliasing
-    // contract; one zeroing call covers all three. Phase 3 (separate-value cumQty/avgPx) will
-    // need per-field {@code DecimalFloat} instances or repeated `toDecimalFloat` calls between
-    // setters — keep this stanza in sync with that change.
+    // has no open qty; phase-2 limitation — event lacks cumQty/avgPx fields, see Javadoc).
+    //
+    // Per Artio's reference-aliasing contract, all three setters store a reference to the SAME
+    // shared {@code dec} instance — they resolve {@code dec} at {@code encode()} time, NOT at
+    // setter-call time. The single zeroing call here covers all three tags only because
+    // {@code dec} does not mutate between the setters and the eventual encode.
+    //
+    // Phase-3 follow-up: when cumQty/avgPx carry non-zero distinct values, either (a) introduce
+    // per-field {@code DecimalFloat} instances, or (b) repeat {@code toDecimalFloat(value, dec);
+    // fix.xxx(dec);} per tag with the encode happening after each setter — keep this stanza in
+    // sync with whichever path is chosen.
     FixedPoint.toDecimalFloat(0L, dec);
     fix.leavesQty(dec);
     fix.cumQty(dec);
