@@ -1042,10 +1042,10 @@ class NewOrderSingleHandlerSessionCloseTest {
   // =========================================================================
 
   // =========================================================================
-  // Test 25 — onSessionOpen seeds all 4 metric counters at zero
+  // Test 25 — onSessionOpen seeds all 5 metric counters at zero
   // =========================================================================
 
-  /** Verifies that {@link NewOrderSingleHandler#onSessionOpen} seeds all four metric maps at 0. */
+  /** Verifies that {@link NewOrderSingleHandler#onSessionOpen} seeds all five metric maps at 0. */
   @Test
   void onSessionOpen_seedsAllMetricCountersAtZero() {
     handler.onSessionOpen(SESSION_ID, TS);
@@ -1066,6 +1066,10 @@ class NewOrderSingleHandlerSessionCloseTest {
         0L,
         handler.sessionMetricOrdersCancelledOnIdleTimeout.get(SESSION_ID),
         "sessionMetricOrdersCancelledOnIdleTimeout must be 0 immediately after onSessionOpen");
+    assertEquals(
+        0L,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "sessionMetricQuoteRequests must be 0 immediately after onSessionOpen");
   }
 
   // =========================================================================
@@ -1120,12 +1124,12 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 28 — onSessionClose clears all 4 metric counter entries
+  // Test 28 — onSessionClose clears all 5 metric counter entries
   // =========================================================================
 
   /**
-   * Verifies that {@link NewOrderSingleHandler#onSessionClose} clears all four metric counter
-   * entries for the session — all four maps must return {@link
+   * Verifies that {@link NewOrderSingleHandler#onSessionClose} clears all five metric counter
+   * entries for the session — all five maps must return {@link
    * NewOrderSingleHandler#METRIC_MISSING} for the closed session id after the call.
    */
   @Test
@@ -1137,10 +1141,12 @@ class NewOrderSingleHandlerSessionCloseTest {
     handler.trackSessionOrder(SESSION_ID, orderKey1);
     final long orderKey2 = seedOrderState("METRIC-CLR-002", "EURUSD", SideEnum.Sell);
     handler.trackSessionOrder(SESSION_ID, orderKey2);
+    // Also seed the quote-request counter so the close-time clear is observable on all 5 maps.
+    handler.recordQuoteRequest(SESSION_ID);
 
     handler.onSessionClose(SESSION_ID, TS, eventSink);
 
-    // After close, all four counters must be cleared (METRIC_MISSING sentinel).
+    // After close, all five counters must be cleared (METRIC_MISSING sentinel).
     assertEquals(
         NewOrderSingleHandler.METRIC_MISSING,
         handler.sessionMetricOrdersAdmitted.get(SESSION_ID),
@@ -1157,6 +1163,10 @@ class NewOrderSingleHandlerSessionCloseTest {
         NewOrderSingleHandler.METRIC_MISSING,
         handler.sessionMetricOrdersCancelledOnIdleTimeout.get(SESSION_ID),
         "sessionMetricOrdersCancelledOnIdleTimeout must return METRIC_MISSING after onSessionClose");
+    assertEquals(
+        NewOrderSingleHandler.METRIC_MISSING,
+        handler.sessionMetricQuoteRequests.get(SESSION_ID),
+        "sessionMetricQuoteRequests must return METRIC_MISSING after onSessionClose");
   }
 
   // =========================================================================
@@ -1197,7 +1207,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 24 — APP-151 phase-3 session order cap: admit rejected with BookFull
+  // Test 30 — APP-151 phase-3 session order cap: admit rejected with BookFull
   // =========================================================================
 
   /**
@@ -1241,7 +1251,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 25 — APP-151 phase 5: recordQuoteRequest increments the per-session counter
+  // Test 31 — APP-151 phase 5: recordQuoteRequest increments the per-session counter
   // =========================================================================
 
   /**
@@ -1265,7 +1275,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 26 — APP-151 phase 5: recordQuoteRequest seeds at 1 when onSessionOpen was bypassed
+  // Test 32 — APP-151 phase 5: recordQuoteRequest seeds at 1 when onSessionOpen was bypassed
   // =========================================================================
 
   /**
@@ -1294,7 +1304,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 27 — APP-151 phase 5: onSessionClose drops the quote-requests counter
+  // Test 33 — APP-151 phase 5: onSessionClose drops the quote-requests counter
   // =========================================================================
 
   /**
@@ -1323,7 +1333,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 28 — APP-151 phase 5: NewOrderSingleHandler implements SessionMetricsRecorder
+  // Test 34 — APP-151 phase 5: NewOrderSingleHandler implements SessionMetricsRecorder
   // =========================================================================
 
   /**
@@ -1352,7 +1362,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 29 — APP-151 LOW-9: untrackSessionOrder removes a tracked order key
+  // Test 35 — APP-151 LOW-9: untrackSessionOrder removes a tracked order key
   // =========================================================================
 
   /**
@@ -1377,7 +1387,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 30 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing key
+  // Test 36 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing key
   // =========================================================================
 
   /**
@@ -1398,7 +1408,7 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 31 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing session
+  // Test 37 — APP-151 LOW-9: untrackSessionOrder is idempotent on a missing session
   // =========================================================================
 
   /**

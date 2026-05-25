@@ -81,16 +81,21 @@ jobs:
         # package-lock.json. `npm ci` is the strict-CI variant: errors on any
         # lockfile drift.
         #
-        # HUSKY=0 disables the root-package `prepare` script (which would run
-        # `husky` to install git hooks). With `--workspace web-ui` the root
-        # devDependencies (including husky itself) are NOT installed, so the
-        # `prepare` invocation would fail with exit 127 — pre-existing CI bug
-        # that was masking real e2e signal across the previous three pushes
-        # (b582c62, 8487b07, 257b62f). Git hooks are not needed inside the CI
-        # runner anyway; they're a local-developer ergonomics tool.
+        # `--include-workspace-root` installs root devDependencies alongside the
+        # web-ui workspace. This is required so the root `prepare` script (which
+        # invokes `husky`) can find the `husky` binary — without root devDeps,
+        # the bare `npm ci --workspace web-ui` form failed with exit 127 because
+        # `sh: 1: husky: not found`. The prior `HUSKY=0` env-var fix did not work
+        # because husky's "skip git-hooks install" semantics require the binary
+        # to be present in the first place. Matches the local Gradle
+        # `:web-ui:webUiInstall` task which runs `npm ci` from the root.
+        #
+        # HUSKY=0 is kept as belt-and-braces so even when husky IS installed it
+        # is a no-op inside the CI runner — git hooks are a local-developer
+        # ergonomics tool, never needed in CI.
         env:
           HUSKY: "0"
-        run: npm ci --workspace web-ui
+        run: npm ci --include-workspace-root --workspace web-ui
 
       - name: npm audit (high+)
         # Plan §11 — run audit before the heavy E2E so a known HIGH/CRITICAL fails fast.
