@@ -1495,6 +1495,27 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
    * @param orderKey monotonic cluster order key from {@link TradingState#generateOrderId()}
    */
+  /**
+   * Removes {@code orderKey} from the per-session set — the inverse of {@link #trackSessionOrder}.
+   * Defensive hook for future terminal-event emitters (fill, explicit cancel via APP-65, expire) so
+   * they can keep the per-session set bounded by *currently outstanding* orders instead of *all
+   * orders ever placed*. Currently UNUSED in production — the cluster has no fill/expire emitter
+   * yet; this method exists so the call site is ready when those tickets land, and so the
+   * documented terminal-event-untrack contract has a concrete API to point at. Silently no-ops if
+   * the session has no entry or the key was not tracked.
+   *
+   * <p>Package-private — only callable from sibling handlers within this package.
+   *
+   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   * @param orderKey the order key to remove from this session's outstanding set
+   */
+  void untrackSessionOrder(final long sessionId, final long orderKey) {
+    final var set = sessionOrders.get(sessionId);
+    if (set != null) {
+      set.remove(orderKey);
+    }
+  }
+
   void trackSessionOrder(final long sessionId, final long orderKey) {
     final var existing = sessionOrders.get(sessionId);
     final LongHashSet set;
