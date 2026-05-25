@@ -86,6 +86,14 @@ public final class QuoteRequestHandler implements CommandHandler {
   private Cluster cluster;
 
   /**
+   * Per-session metrics recorder (APP-151 phase 5). Wired post-construction via {@link
+   * #setSessionMetricsRecorder} from {@code TradingClusteredService}; null in tests that don't
+   * exercise the metrics path. Owns no state — just a reference to the handler whose maps hold the
+   * counters, so a single call site routes QuoteRequest activity into the per-session count.
+   */
+  private NewOrderSingleHandler sessionMetricsRecorder;
+
+  /**
    * Constructs a {@link QuoteRequestHandler}.
    *
    * @param rfqStateMachine the cluster-side RFQ state machine
@@ -113,6 +121,17 @@ public final class QuoteRequestHandler implements CommandHandler {
     this.cluster = cluster;
   }
 
+  /**
+   * Wires the {@link NewOrderSingleHandler} as the per-session metrics recorder (APP-151 phase 5).
+   * Called once from {@code TradingClusteredService}'s constructor after both handlers exist.
+   * Optional — when null, {@link #onCommand} simply skips the per-session counter increment.
+   *
+   * @param recorder the per-session metrics owner (may be null in unit-test fixtures)
+   */
+  public void setSessionMetricsRecorder(final NewOrderSingleHandler recorder) {
+    this.sessionMetricsRecorder = recorder;
+  }
+
   @Override
   public int commandTemplateId() {
     return QuoteRequestDecoder.TEMPLATE_ID;
@@ -128,6 +147,14 @@ public final class QuoteRequestHandler implements CommandHandler {
       final int blockLength,
       final int version,
       final EventSink eventSink) {
+
+    // APP-151 phase 5 — per-session quote-request counter. Runs BEFORE the length precondition
+    // so even malformed quote requests count toward the session's lifetime activity (matches the
+    // order-side rejection-counter pattern). Skipped on the null-session test path and when the
+    // metrics recorder is not wired.
+    if (session != null && sessionMetricsRecorder != null) {
+      sessionMetricsRecorder.recordQuoteRequest(session.id());
+    }
 
     // 1. Length precondition
     if (length < HDR_LEN + QuoteRequestDecoder.BLOCK_LENGTH) {

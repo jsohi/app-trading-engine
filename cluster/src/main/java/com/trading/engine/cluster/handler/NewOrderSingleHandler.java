@@ -500,6 +500,16 @@ public final class NewOrderSingleHandler implements CommandHandler {
           SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
 
   /**
+   * sessionId → count of QuoteRequest commands accepted from that session (APP-151 phase 5 —
+   * completes the AC's "quote requests" counter). Incremented from {@link
+   * QuoteRequestHandler#onCommand} via {@link #recordQuoteRequest}. NOT shared with the
+   * RFQ-internal {@code RfqMetrics} (which are global, not per-session).
+   */
+  final Long2LongHashMap sessionMetricQuoteRequests =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, METRIC_MISSING);
+
+  /**
    * sessionId → set of orderKeys outstanding on that session. Package-private for direct-state
    * assertions in {@code NewOrderSingleHandlerSessionCloseTest}.
    */
@@ -1420,6 +1430,18 @@ public final class NewOrderSingleHandler implements CommandHandler {
     sessionMetricOrdersRejected.put(sessionId, 0L);
     sessionMetricOrdersCancelledOnDisconnect.put(sessionId, 0L);
     sessionMetricOrdersCancelledOnIdleTimeout.put(sessionId, 0L);
+    sessionMetricQuoteRequests.put(sessionId, 0L);
+  }
+
+  /**
+   * Records a QuoteRequest command observed for {@code sessionId}. Called from {@link
+   * QuoteRequestHandler#onCommand} via the wired metrics recorder so the per-session counter
+   * completes the phase 5 AC list.
+   *
+   * @param sessionId Aeron cluster session id observed sending a QuoteRequest
+   */
+  public void recordQuoteRequest(final long sessionId) {
+    incrementSessionCounter(sessionMetricQuoteRequests, sessionId);
   }
 
   /**
@@ -1541,6 +1563,7 @@ public final class NewOrderSingleHandler implements CommandHandler {
     sessionMetricOrdersRejected.remove(sessionId);
     sessionMetricOrdersCancelledOnDisconnect.remove(sessionId);
     sessionMetricOrdersCancelledOnIdleTimeout.remove(sessionId);
+    sessionMetricQuoteRequests.remove(sessionId);
   }
 
   /**
@@ -1566,6 +1589,8 @@ public final class NewOrderSingleHandler implements CommandHandler {
         .append(materialiseCounter(sessionMetricOrdersCancelledOnDisconnect, sessionId))
         .append(" canceled-on-idle-timeout=")
         .append(materialiseCounter(sessionMetricOrdersCancelledOnIdleTimeout, sessionId))
+        .append(" quote-requests=")
+        .append(materialiseCounter(sessionMetricQuoteRequests, sessionId))
         .commit();
   }
 

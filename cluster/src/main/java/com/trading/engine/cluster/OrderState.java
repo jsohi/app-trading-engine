@@ -142,6 +142,13 @@ public final class OrderState {
     this.timeInForce = value;
   }
 
+  /**
+   * Sets the product type (FIX custom tag 10013). Captured at admit time from the NOS decoder so a
+   * later {@code OrderCanceledEvent} can carry the real productType instead of {@code NULL_VAL}.
+   * APP-151 phase 3.
+   *
+   * @param value the product type from the NOS command — must not be null
+   */
   public void setProductType(final ProductTypeEnum value) {
     this.productType = value;
   }
@@ -222,6 +229,14 @@ public final class OrderState {
     return timeInForce;
   }
 
+  /**
+   * Returns the product type for this order (FIX custom tag 10013). Read by {@code
+   * NewOrderSingleHandler.emitOrderCanceledEvent} so the cancel event carries the same product type
+   * the order was admitted with (APP-151 phase 3).
+   *
+   * @return the product type, or {@link ProductTypeEnum#NULL_VAL} if the order crossed a cluster
+   *     snapshot/restart (the field is in-memory only, not snapshot-persisted in this slice)
+   */
   public ProductTypeEnum productType() {
     return productType;
   }

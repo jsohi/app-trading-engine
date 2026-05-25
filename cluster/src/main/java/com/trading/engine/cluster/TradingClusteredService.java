@@ -291,6 +291,10 @@ public final class TradingClusteredService implements ClusteredService {
     commandHandlers.put(newOrderSingleHandler.commandTemplateId(), newOrderSingleHandler);
     this.quoteRequestHandler =
         new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);
+    // APP-151 phase 5 — route per-session QuoteRequest activity into the cluster's per-session
+    // metrics maps. The recorder lives on the NewOrderSingleHandler (which owns the close-time
+    // GFLog summary path) so all four counters live in one place.
+    this.quoteRequestHandler.setSessionMetricsRecorder(this.newOrderSingleHandler);
     commandHandlers.put(quoteRequestHandler.commandTemplateId(), quoteRequestHandler);
     this.priceResponseHandler =
         new PriceResponseHandler(rfqStateMachine, tradingState.quoteIdGen(), rfqMetrics);
@@ -500,18 +504,41 @@ public final class TradingClusteredService implements ClusteredService {
   }
 
   /**
-   * Correlation id for the APP-151 phase 4 idle-session-scan timer. {@code Long.MIN_VALUE} is well
-   * outside any positive correlation id used by {@link
-   * com.trading.engine.cluster.state.RfqStateMachine} (whose ids are derived from slot pool indices
-   * with a namespace bit), so the timer-event dispatch can distinguish them with a single equality
-   * check. The non-collision invariant is structural: RFQ correlation ids start at a positive base
-   * value computed from the slot pool capacity (see {@code RfqStateMachine}'s correlation-id
-   * generation), and {@link Long#MIN_VALUE} cannot equal any positive long. If a future RFQ change
-   * uses negative correlation ids, this invariant breaks — a unit test asserting the disjointness
-   * lives at {@code TradingClusteredServiceCorrelationIdTest} (add when the RFQ id-generation site
-   * exposes a constant for the lower bound).
+   * Correlation id for the APP-151 phase 4 idle-session-scan timer. Chosen as {@link
+   * Long#MAX_VALUE} — provably disjoint from any correlation id the {@link
+   * com.trading.engine.cluster.state.RfqStateMachine} can produce under any reachable {@code
+   * (generation, poolIndex)} combination.
+   *
+   * <p><b>Why not {@link Long#MIN_VALUE}.</b> The original choice — {@code Long.MIN_VALUE} —
+   * appeared disjoint from RFQ's positive TTL ids but COLLIDED with RFQ's request-timeout
+   * namespace: {@code RfqStateMachine.REQUEST_TIMEOUT_NAMESPACE_BIT == 0x8000_0000_0000_0000L ==
+   * Long.MIN_VALUE}, and {@code REQUEST_TIMEOUT_NAMESPACE_BIT | ttlCorrelationFor(slot)} reduces to
+   * exactly {@code Long.MIN_VALUE} when the slot's TTL correlation is zero (slot 0, generation 0).
+   * That silently routed the very first slot's request-timeout fire into the idle-scan handler.
+   *
+   * <p><b>Why not {@link Long#MAX_VALUE} either.</b> The intermediate fix tried {@code
+   * Long.MAX_VALUE} (provably disjoint from every RFQ correlation id), but Aeron's internal {@code
+   * WheelTimerService} stores correlation ids in an Agrona {@link
+   * org.agrona.collections.Long2LongHashMap} whose {@code missingValue} sentinel is {@code
+   * Long.MAX_VALUE}; calling {@code scheduleTimer(Long.MAX_VALUE, …)} throws {@code "cannot accept
+   * missingValue"}.
+   *
+   * <p><b>Why {@code -1L} is safe.</b> The value is:
+   *
+   * <ul>
+   *   <li>Above the entire RFQ request-timeout range. Request-timeout ids equal {@code
+   *       0x8000_0000_0000_0000L | ttlCorrelation}; with the lower 63 bits bounded by the max TTL
+   *       ({@code 0x3FFF_FFFF_FFFF_FFFFL}) the range tops out at {@code 0xBFFF_FFFF_FFFF_FFFFL} (≈
+   *       {@code -4.6e18}). {@code -1L} = {@code 0xFFFF_FFFF_FFFF_FFFFL} is strictly greater, so
+   *       disjoint.
+   *   <li>Distinct from {@link Long#MIN_VALUE} (original colliding value) and {@link
+   *       Long#MAX_VALUE} (Aeron sentinel collider).
+   *   <li>Not in RFQ's TTL range (TTL ids are non-negative).
+   * </ul>
+   *
+   * <p>Verified by {@code TradingClusteredServiceCorrelationIdTest}.
    */
-  static final long IDLE_SCAN_TIMER_CORRELATION_ID = Long.MIN_VALUE;
+  static final long IDLE_SCAN_TIMER_CORRELATION_ID = -1L;
 
   /**
    * Interval between idle-session scans (30 seconds). At 5-minute idle threshold, this gives

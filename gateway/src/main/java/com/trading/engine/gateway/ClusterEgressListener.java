@@ -436,6 +436,10 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   /**
    * Returns the pre-wrapped OrderCanceledEvent decoder. Valid only when the last {@code onMessage}
    * invocation handled templateId {@link OrderCanceledEventDecoder#TEMPLATE_ID}. APP-151 phase 2.
+   *
+   * @return the pre-wrapped {@link OrderCanceledEventDecoder} positioned over the last received
+   *     cancel-event message body — never null; reading fields outside the templateId-103
+   *     invocation window returns stale bytes from a previous message
    */
   public OrderCanceledEventDecoder orderCanceledDecoder() {
     return orderCanceledDecoder;
