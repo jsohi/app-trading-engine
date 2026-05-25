@@ -338,6 +338,12 @@ public final class TradingClusteredService implements ClusteredService {
     rfqStateMachine.setCluster(cluster);
     quoteRequestHandler.setCluster(cluster);
     priceResponseHandler.setCluster(cluster);
+    // APP-151 phase 4 — defer the first idle-session-scan timer to the first session message.
+    // Aeron Cluster forbids scheduling timers from onStart (it throws
+    // ClusterException: "sending messages or scheduling timers is not allowed from onStart").
+    // The lazy-schedule flag below is flipped on first onSessionMessage; subsequent scans
+    // self-sustain via onTimerEvent rescheduling.
+    idleScanScheduled = false;
     if (snapshotImage == null) {
       return;
     }
@@ -396,9 +402,9 @@ public final class TradingClusteredService implements ClusteredService {
   public void onSessionOpen(final ClientSession session, final long timestamp) {
     Objects.requireNonNull(session, "session");
     // APP-151 phase 1 — pre-allocate the per-session order tracker so the order-admit hot path
-    // is guaranteed zero-allocation. See NewOrderSingleHandler.onSessionOpen Javadoc for the
-    // alloc-at-session-open rationale.
-    newOrderSingleHandler.onSessionOpen(session.id());
+    // is guaranteed zero-allocation. APP-151 phase 4 — also seed the idle-activity clock so a
+    // freshly-opened session is not immediately considered idle.
+    newOrderSingleHandler.onSessionOpen(session.id(), timestamp);
     // Future: authenticate, wire session → trader / desk mapping.
   }
 
@@ -428,6 +434,19 @@ public final class TradingClusteredService implements ClusteredService {
       final int offset,
       final int length,
       final Header header) {
+    // APP-151 phase 4 — every command resets the idle-activity clock for its source session.
+    // Cheap (one Long2LongHashMap.put on existing key); runs BEFORE dispatch so even commands
+    // that fail validation still count as "session is alive".
+    if (session != null) {
+      newOrderSingleHandler.recordSessionActivity(session.id(), timestamp);
+    }
+    // APP-151 phase 4 — Aeron Cluster forbids scheduleTimer from onStart, so we lazy-bootstrap
+    // the idle-scan chain on the first session message. After this, onTimerEvent reschedules
+    // itself indefinitely.
+    if (!idleScanScheduled) {
+      scheduleIdleScan(timestamp);
+      idleScanScheduled = true;
+    }
     headerDecoder.wrap(buffer, offset);
     final int templateId = headerDecoder.templateId();
 
@@ -466,7 +485,54 @@ public final class TradingClusteredService implements ClusteredService {
 
   @Override
   public void onTimerEvent(final long correlationId, final long timestamp) {
+    if (correlationId == IDLE_SCAN_TIMER_CORRELATION_ID) {
+      // APP-151 phase 4 — periodic idle-session scan. Cancel any session's outstanding orders
+      // where last activity is older than IDLE_SESSION_TIMEOUT_NANOS, then reschedule for the
+      // next interval.
+      newOrderSingleHandler.onIdleScan(
+          timestamp, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+      scheduleIdleScan(timestamp);
+      return;
+    }
     rfqStateMachine.onTimerExpiry(correlationId, timestamp, eventSink);
+  }
+
+  /**
+   * Correlation id for the APP-151 phase 4 idle-session-scan timer. Long.MIN_VALUE is well outside
+   * any positive correlation id used by {@code RfqStateMachine} (whose ids are derived from slot
+   * pool indices with a namespace bit), so the timer-event dispatch can distinguish them with a
+   * single equality check.
+   */
+  static final long IDLE_SCAN_TIMER_CORRELATION_ID = Long.MIN_VALUE;
+
+  /**
+   * Interval between idle-session scans (30 seconds). At 5-minute idle threshold, this gives
+   * scan-resolution of ~10× the threshold, plenty fine-grained for a circuit-breaker timeout. The
+   * scan itself is bounded by the number of open sessions (typically ≤ 4096) so total duty-cycle
+   * cost per scan is sub-millisecond even at the cap.
+   */
+  static final long IDLE_SCAN_INTERVAL_NANOS = 30L * 1_000_000_000L;
+
+  /**
+   * Lazy-bootstrap flag for the idle-scan timer chain. Aeron Cluster forbids {@code scheduleTimer}
+   * from {@link #onStart}; the first call is made from {@link #onSessionMessage} once the cluster
+   * is fully started. Subsequent scans reschedule themselves from {@link #onTimerEvent}, so this
+   * flag flips true on the first session message and stays true.
+   */
+  private boolean idleScanScheduled = false;
+
+  /**
+   * Schedule the next idle-session scan. Called once from {@link #onStart} (bootstrap) and again
+   * from {@link #onTimerEvent} after every scan fires. Aeron Cluster's {@code scheduleTimer}
+   * returns {@code false} only on cluster shutdown — we accept that and stop rescheduling.
+   *
+   * @param baseTimestamp the cluster timestamp from which the next deadline is offset
+   */
+  private void scheduleIdleScan(final long baseTimestamp) {
+    if (cluster == null) {
+      return; // No cluster wired — typically a unit-test path; harmless.
+    }
+    cluster.scheduleTimer(IDLE_SCAN_TIMER_CORRELATION_ID, baseTimestamp + IDLE_SCAN_INTERVAL_NANOS);
   }
 
   @Override
