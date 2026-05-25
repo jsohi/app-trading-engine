@@ -434,9 +434,11 @@ public final class TradingClusteredService implements ClusteredService {
       final int offset,
       final int length,
       final Header header) {
-    // APP-151 phase 4 — every command resets the idle-activity clock for its source session.
-    // Cheap (one Long2LongHashMap.put on existing key); runs BEFORE dispatch so even commands
-    // that fail validation still count as "session is alive".
+    // APP-151 phase 4 — every CLIENT-session command resets the idle-activity clock for its
+    // source session. Cheap (one Long2LongHashMap.put on existing key); runs BEFORE dispatch so
+    // even commands that fail validation still count as "session is alive". Timer events and
+    // internal ingress (with null session) are NOT session-attributable and skip the refresh —
+    // they have no business resetting any user session's idle clock.
     if (session != null) {
       newOrderSingleHandler.recordSessionActivity(session.id(), timestamp);
     }
@@ -498,10 +500,16 @@ public final class TradingClusteredService implements ClusteredService {
   }
 
   /**
-   * Correlation id for the APP-151 phase 4 idle-session-scan timer. Long.MIN_VALUE is well outside
-   * any positive correlation id used by {@code RfqStateMachine} (whose ids are derived from slot
-   * pool indices with a namespace bit), so the timer-event dispatch can distinguish them with a
-   * single equality check.
+   * Correlation id for the APP-151 phase 4 idle-session-scan timer. {@code Long.MIN_VALUE} is well
+   * outside any positive correlation id used by {@link
+   * com.trading.engine.cluster.state.RfqStateMachine} (whose ids are derived from slot pool indices
+   * with a namespace bit), so the timer-event dispatch can distinguish them with a single equality
+   * check. The non-collision invariant is structural: RFQ correlation ids start at a positive base
+   * value computed from the slot pool capacity (see {@code RfqStateMachine}'s correlation-id
+   * generation), and {@link Long#MIN_VALUE} cannot equal any positive long. If a future RFQ change
+   * uses negative correlation ids, this invariant breaks — a unit test asserting the disjointness
+   * lives at {@code TradingClusteredServiceCorrelationIdTest} (add when the RFQ id-generation site
+   * exposes a constant for the lower bound).
    */
   static final long IDLE_SCAN_TIMER_CORRELATION_ID = Long.MIN_VALUE;
 
@@ -522,9 +530,14 @@ public final class TradingClusteredService implements ClusteredService {
   private boolean idleScanScheduled = false;
 
   /**
-   * Schedule the next idle-session scan. Called once from {@link #onStart} (bootstrap) and again
-   * from {@link #onTimerEvent} after every scan fires. Aeron Cluster's {@code scheduleTimer}
-   * returns {@code false} only on cluster shutdown — we accept that and stop rescheduling.
+   * Schedule the next idle-session scan. Called once lazily from {@link #onSessionMessage} (the
+   * first message after {@link #onStart}, because Aeron forbids {@code scheduleTimer} from onStart)
+   * and again from {@link #onTimerEvent} after every scan fires.
+   *
+   * <p>Aeron's {@code scheduleTimer} returns {@code false} only during cluster shutdown — after
+   * which the cluster duty cycle stops and no further session messages will arrive to retry the
+   * schedule. Return value is intentionally ignored on that basis; logging it would never reach an
+   * operator since the cluster is exiting anyway.
    *
    * @param baseTimestamp the cluster timestamp from which the next deadline is offset
    */

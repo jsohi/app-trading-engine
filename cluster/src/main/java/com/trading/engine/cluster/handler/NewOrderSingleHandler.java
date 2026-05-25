@@ -33,6 +33,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.LongHashSet;
+import org.agrona.collections.LongLongConsumer;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -318,13 +319,22 @@ public final class NewOrderSingleHandler implements CommandHandler {
   //     replicas, so the in-memory-only design does NOT break replay
   //     determinism. If snapshots were taken asynchronously per node, this
   //     design would be unsafe — but Aeron's Raft contract rules that out.
-  //   - Phase 2 (gateway egress) and phase 4 (idle-session timeout) revisit
-  //     this — until then, post-restore orphan orders remain in the book
-  //     until explicitly cancelled by some future admin path (APP-153).
+  //   - APP-151 phase 4 — {@link #sessionLastActivityNanos} (per-session idle
+  //     clock) is ALSO in-memory only, NOT snapshot-persisted. On restore the
+  //     activity map is empty; the FIRST onSessionMessage post-restore reseeds
+  //     each surviving session's clock via {@link #recordSessionActivity}. An
+  //     order that crossed a snapshot whose session never sends another command
+  //     keeps its book slot indefinitely — neither the session-close nor the
+  //     idle-timeout path will fire — until the future APP-153 admin-force
+  //     cancel path lands. This is the same trade-off as the session→order
+  //     tracker above; documented here so a future maintainer doesn't add a
+  //     snapshot field thinking it closes a leak. Determinism is unaffected
+  //     (Aeron atomic snapshots ⇒ every replica restores the same empty maps).
   //   - Worst-case impact of NOT snapshotting: orders that crossed a restart
-  //     keep their book slot but lose the auto-cancel-on-disconnect property.
+  //     keep their book slot but lose the auto-cancel-on-disconnect AND the
+  //     auto-cancel-on-idle properties until APP-153 admin cancel ships.
   //     This is strictly better than the pre-APP-151 behaviour (no
-  //     auto-cancel at all) and acceptable for phase 1.
+  //     auto-cancel at all) and acceptable for the current phase.
   //
   // Sizing: outer {@link Long2ObjectHashMap} initial capacity 4096. At load
   // factor 0.65 the map rehashes before reaching 4096 entries (around 2660
@@ -419,17 +429,21 @@ public final class NewOrderSingleHandler implements CommandHandler {
   private final LongHashSet idleScanPendingRemoval =
       new LongHashSet(SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
 
-  // Per-scan context for {@link #idleScanConsumer} — set on every onIdleScan call before
-  // forEachLong, read by the consumer. Safe because the cluster duty cycle is single-threaded.
-  private long idleScanCurrentTs;
-  private long idleScanThresholdTs;
-  private EventSink idleScanEventSink;
+  // Per-scan scratch context for {@link #idleScanConsumer} — set by {@link #onIdleScan} just
+  // before {@code forEachLong}, read by the consumer body {@link #idleScanVisit}, reset by the
+  // try/finally in {@code onIdleScan}. Safe to be plain mutable fields because the cluster duty
+  // cycle is single-threaded — no other code path observes them outside the scan window.
+  // Same idiom as {@code EventSink.broadcastBuffer} (one-call mutable context for a final-field
+  // consumer that runs synchronously inside the enclosing method).
+  private long idleScanScratchCurrentTs;
+  private long idleScanScratchThresholdTs;
+  private EventSink idleScanScratchEventSink;
 
   /**
    * Pre-allocated forEach consumer for {@link #sessionLastActivityNanos}. Method-reference form
    * binds once at construction so the inner {@code forEach} adds no per-call lambda allocation.
    */
-  private final org.agrona.collections.LongLongConsumer idleScanConsumer = this::idleScanVisit;
+  private final LongLongConsumer idleScanConsumer = this::idleScanVisit;
 
   /**
    * sessionId → set of orderKeys outstanding on that session. Package-private for direct-state
@@ -1507,39 +1521,49 @@ public final class NewOrderSingleHandler implements CommandHandler {
     if (sessionLastActivityNanos.isEmpty()) {
       return;
     }
-    idleScanCurrentTs = currentTimestamp;
-    idleScanThresholdTs = currentTimestamp - timeoutNanos;
-    idleScanEventSink = eventSink;
-    sessionLastActivityNanos.forEachLong(idleScanConsumer);
-    // Second pass — remove timed-out sessions from the activity map (cannot do mid-iteration).
-    if (!idleScanPendingRemoval.isEmpty()) {
-      final var rit = idleScanPendingRemoval.iterator();
-      while (rit.hasNext()) {
-        sessionLastActivityNanos.remove(rit.nextValue());
+    idleScanScratchCurrentTs = currentTimestamp;
+    idleScanScratchThresholdTs = currentTimestamp - timeoutNanos;
+    idleScanScratchEventSink = eventSink;
+    try {
+      sessionLastActivityNanos.forEachLong(idleScanConsumer);
+      // Second pass — remove timed-out sessions from the activity map (cannot do mid-iteration).
+      if (!idleScanPendingRemoval.isEmpty()) {
+        final var rit = idleScanPendingRemoval.iterator();
+        while (rit.hasNext()) {
+          sessionLastActivityNanos.remove(rit.nextValue());
+        }
       }
+    } finally {
+      // Reset scratch state on EVERY exit path — including exceptions from cancelSessionOrders /
+      // EventSink emission. Without this, a mid-scan throw would leave idleScanScratchEventSink
+      // dangling (preventing GC of a closed sink) AND idleScanPendingRemoval populated with
+      // stale ids that the NEXT scan would erroneously evict from the activity map.
       idleScanPendingRemoval.clear();
+      idleScanScratchEventSink = null;
     }
-    // Drop the per-scan EventSink reference to avoid leaking it past the scan window. Timestamp
-    // fields are scalar longs — overwritten on the next scan, no leak.
-    idleScanEventSink = null;
   }
 
   /**
    * Inner-loop body for {@link #onIdleScan} — bound as the {@link
    * org.agrona.collections.LongLongConsumer} for {@link Long2LongHashMap#forEachLong}. Cancels all
-   * orders for any session whose {@code lastActivity} predates {@link #idleScanThresholdTs}; marks
-   * that session id for removal from {@link #sessionLastActivityNanos} after the iteration
+   * orders for any session whose {@code lastActivity} predates {@link #idleScanScratchThresholdTs};
+   * marks that session id for removal from {@link #sessionLastActivityNanos} after the iteration
    * completes.
    *
    * @param sessionId Aeron cluster session id (forEach key)
    * @param lastActivity cluster timestamp of the most recent observed activity for this session
    */
   private void idleScanVisit(final long sessionId, final long lastActivity) {
-    if (lastActivity == IDLE_LAST_ACTIVITY_MISSING || lastActivity >= idleScanThresholdTs) {
+    // {@code Long2LongHashMap.forEachLong} does NOT visit absent entries, so the missing-sentinel
+    // check is defensive (guards against any future seeding bug that puts MISSING explicitly).
+    if (lastActivity == IDLE_LAST_ACTIVITY_MISSING || lastActivity >= idleScanScratchThresholdTs) {
       return;
     }
     cancelSessionOrders(
-        sessionId, idleScanCurrentTs, idleScanEventSink, CancelReasonEnum.IdleTimeout);
+        sessionId,
+        idleScanScratchCurrentTs,
+        idleScanScratchEventSink,
+        CancelReasonEnum.IdleTimeout);
     idleScanPendingRemoval.add(sessionId);
   }
 
