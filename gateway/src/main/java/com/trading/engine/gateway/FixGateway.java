@@ -10,6 +10,7 @@ import com.trading.engine.fix.builder.QuoteEncoder;
 import com.trading.engine.fix.builder.QuoteRequestRejectEncoder;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
+import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
@@ -548,6 +549,16 @@ public final class FixGateway implements Agent {
         egressListener
             .translator()
             .translateOrderRejectedEvent(egressListener.orderRejectedDecoder(), erEncoder);
+        position = session.trySend(erEncoder);
+      }
+      case OrderCanceledEventDecoder.TEMPLATE_ID -> {
+        // APP-151 phase 2 — cluster-emitted OrderCanceledEvent (template 103) → FIX ER
+        // ExecType=Canceled('4'). Cluster phase-1 emitter is the session-disconnect orphan-cancel
+        // path in NewOrderSingleHandler.onSessionClose.
+        erEncoder.reset();
+        egressListener
+            .translator()
+            .translateOrderCanceledEvent(egressListener.orderCanceledDecoder(), erEncoder);
         position = session.trySend(erEncoder);
       }
       default -> {

@@ -977,6 +977,248 @@ class SbeToFixTranslatorTest {
     assertEquals("USDJPY", iterB.next().symbolAsString());
   }
 
+  // ===========================================================================
+  // OrderCanceledEvent → ExecutionReport (ExecType=Canceled) — APP-151 phase 2
+  // ===========================================================================
+
+  /** Arbitrary epoch-nanos timestamp reused across OrderCanceledEvent tests. */
+  private static final long OXL_TS_NANOS = 1_712_491_200_000_000_000L;
+
+  /**
+   * Happy-path: all required FIX 4.4 ExecutionReport fields present with correct values when the
+   * SBE event carries orderId, clOrdId, origClOrdId, symbol, Buy side, and a timestamp.
+   */
+  @Test
+  void translateOrderCanceledEvent_happyPath_emitsExpectedFixFields() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-001");
+    enc.clOrdId("CL-001");
+    enc.origClOrdId("CL-001"); // server-initiated: origClOrdId == clOrdId per industry convention
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    // tag 37 — OrderID
+    assertEquals("ORD-001", fixDec.orderIDAsString());
+    // tag 17 — ExecID synthesised as "CXL-<clOrdId>"
+    assertEquals("CXL-CL-001", fixDec.execIDAsString());
+    // tag 11 — ClOrdID
+    assertEquals("CL-001", fixDec.clOrdIDAsString());
+    // tag 41 — OrigClOrdID present because origClOrdId was non-empty
+    assertTrue(
+        fixDec.hasOrigClOrdID(), "tag 41 OrigClOrdID must be present when origClOrdId is set");
+    assertEquals("CL-001", fixDec.origClOrdIDAsString());
+    // tag 150 — ExecType = '4' (Canceled)
+    assertEquals('4', fixDec.execType());
+    // tag 39 — OrdStatus = '4' (Canceled)
+    assertEquals('4', fixDec.ordStatus());
+    // tag 55 — Symbol
+    assertEquals("EURUSD", fixDec.symbolAsString());
+    // tag 54 — Side = '1' (Buy)
+    assertEquals('1', fixDec.side());
+    // tag 151 — LeavesQty = 0 (phase-2 constant)
+    assertEquals(0L, fixDec.leavesQty().value());
+    // tag 14 — CumQty = 0 (phase-2 limitation)
+    assertEquals(0L, fixDec.cumQty().value());
+    // tag 6 — AvgPx = 0 (phase-2 limitation)
+    assertEquals(0L, fixDec.avgPx().value());
+    // tag 60 — TransactTime present and non-empty
+    assertTrue(
+        fixDec.transactTimeLength() > 0,
+        "tag 60 TransactTime must be populated from event timestamp");
+  }
+
+  /**
+   * When origClOrdId is empty (all null bytes), the translator must NOT emit tag 41 (OrigClOrdID)
+   * on the FIX wire — the conditional guard {@code if (origClOrdIdLen > 0)} must fire correctly.
+   */
+  @Test
+  void translateOrderCanceledEvent_emptyOrigClOrdId_omitsTag41() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(2L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-002");
+    enc.clOrdId("CL-002");
+    enc.origClOrdId(""); // explicitly empty — SBE will null-pad the fixed-length field
+    enc.symbol("USDJPY");
+    enc.side(SideEnum.Sell);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    // tag 41 must be absent when origClOrdId was empty
+    assertFalse(
+        fixDec.hasOrigClOrdID(), "tag 41 OrigClOrdID must be absent when origClOrdId is empty");
+    // tag 11 must still be present
+    assertEquals("CL-002", fixDec.clOrdIDAsString());
+  }
+
+  /**
+   * The synthesised ExecID must be byte-exact {@code "CXL-" + clOrdId} — verifies both the prefix
+   * constant and the concatenation into {@code oxlExecIdScratch}.
+   */
+  @Test
+  void translateOrderCanceledEvent_execIdIsCxlPrefixedClOrdId() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(3L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-003");
+    enc.clOrdId("MYORDER42");
+    enc.origClOrdId("MYORDER42");
+    enc.symbol("GBPUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertEquals(
+        "CXL-MYORDER42",
+        fixDec.execIDAsString(),
+        "ExecID must be the literal string \"CXL-\" concatenated with the clOrdId");
+  }
+
+  /** Buy side on the SBE event must map to FIX side char {@code '1'}. */
+  @Test
+  void translateOrderCanceledEvent_buySide_mapsToFix1() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(4L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-004");
+    enc.clOrdId("CL-004");
+    enc.origClOrdId("CL-004");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertEquals('1', fixDec.side(), "Buy side (SBE) must map to FIX char '1'");
+  }
+
+  /** Sell side on the SBE event must map to FIX side char {@code '2'}. */
+  @Test
+  void translateOrderCanceledEvent_sellSide_mapsToFix2() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(5L);
+    enc.timestamp(OXL_TS_NANOS);
+    enc.orderId("ORD-005");
+    enc.clOrdId("CL-005");
+    enc.origClOrdId("CL-005");
+    enc.symbol("USDJPY");
+    enc.side(SideEnum.Sell);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDec = translateCanceled(sbeBuf);
+
+    assertEquals('2', fixDec.side(), "Sell side (SBE) must map to FIX char '2'");
+  }
+
+  /**
+   * Translating two consecutive cancel events through the same {@link SbeToFixTranslator} instance
+   * must produce independent FIX ERs — the second encode must not carry stale bytes from the first
+   * (guards the per-field-scratch reuse invariant of {@code oxlOrderId}, {@code oxlClOrdId}, {@code
+   * oxlOrigClOrdId}, {@code oxlSymbol}, and {@code oxlExecIdScratch}).
+   */
+  @Test
+  void translateOrderCanceledEvent_callTwice_noByteArrayCorruption() {
+    final var translator = new SbeToFixTranslator();
+
+    // First call: longer orderId/clOrdId, Buy, EURUSD
+    final var sbeBufA = new ExpandableArrayBuffer(512);
+    final var encA = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    encA.wrapAndApplyHeader(sbeBufA, 0, new MessageHeaderEncoder());
+    encA.sequenceNumber(10L);
+    encA.timestamp(OXL_TS_NANOS);
+    encA.orderId("ORD-LONGID-AAAAAA");
+    encA.clOrdId("CL-LONGID-AAAAAA");
+    encA.origClOrdId("CL-LONGID-AAAAAA");
+    encA.symbol("EURUSD");
+    encA.side(SideEnum.Buy);
+    encA.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDecA = translateCanceledWith(translator, sbeBufA);
+
+    assertEquals("ORD-LONGID-AAAAAA", fixDecA.orderIDAsString());
+    assertEquals("CXL-CL-LONGID-AAAAAA", fixDecA.execIDAsString());
+    assertEquals('1', fixDecA.side()); // Buy
+
+    // Second call: shorter orderId/clOrdId, Sell, USDJPY — must not carry stale tail bytes
+    final var sbeBufB = new ExpandableArrayBuffer(512);
+    final var encB = new com.trading.engine.messages.sbe.OrderCanceledEventEncoder();
+    encB.wrapAndApplyHeader(sbeBufB, 0, new MessageHeaderEncoder());
+    encB.sequenceNumber(11L);
+    encB.timestamp(OXL_TS_NANOS + 1_000_000L);
+    encB.orderId("ORD-B");
+    encB.clOrdId("CL-B");
+    encB.origClOrdId("CL-B");
+    encB.symbol("USDJPY");
+    encB.side(SideEnum.Sell);
+    encB.productType(ProductTypeEnum.NULL_VAL);
+
+    final var fixDecB = translateCanceledWith(translator, sbeBufB);
+
+    assertEquals("ORD-B", fixDecB.orderIDAsString());
+    assertEquals("CXL-CL-B", fixDecB.execIDAsString());
+    assertEquals("USDJPY", fixDecB.symbolAsString());
+    assertEquals('2', fixDecB.side()); // Sell — must not carry Buy from first call
+    assertTrue(fixDecB.hasOrigClOrdID());
+    assertEquals("CL-B", fixDecB.origClOrdIDAsString());
+  }
+
+  // ---------------------------------------------------------------------------
+  // OrderCanceledEvent test helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Convenience pipeline: wraps the SBE buffer with a fresh translator instance, translates,
+   * encodes to wire, and decodes via Artio's FIX ExecutionReportDecoder. Mirrors the QRR helper
+   * pattern.
+   */
+  private static ExecutionReportDecoder translateCanceled(final MutableDirectBuffer sbeBuf) {
+    return translateCanceledWith(new SbeToFixTranslator(), sbeBuf);
+  }
+
+  /**
+   * Translator-injecting variant of {@link #translateCanceled} — used by the double-call reuse test
+   * where the same {@link SbeToFixTranslator} instance must be driven twice.
+   */
+  private static ExecutionReportDecoder translateCanceledWith(
+      final SbeToFixTranslator translator, final MutableDirectBuffer sbeBuf) {
+    final var hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    final var sbeDec = new com.trading.engine.messages.sbe.OrderCanceledEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    final var fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes());
+    translator.translateOrderCanceledEvent(sbeDec, fix);
+
+    final var wire = new MutableAsciiBuffer(new byte[2048]);
+    final long encoded = fix.encode(wire, 0);
+    final int wireOffset = (int) (encoded >>> 32);
+    final int wireLen = (int) encoded;
+
+    final var fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+    return fixDec;
+  }
+
   // ---------------------------------------------------------------------------
   // QRR test helpers
   // ---------------------------------------------------------------------------
