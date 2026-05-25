@@ -61,14 +61,21 @@ import org.junit.jupiter.api.Test;
  *   <li>Phase-3 schema fields — {@code cancelReason}, {@code cumQty}, {@code execId}, and real
  *       {@code productType} populated from {@link OrderState} on every emitted {@link
  *       OrderCanceledEventDecoder}.
+ *   <li>Phase-4 idle-session timeout — {@link NewOrderSingleHandler#onIdleScan} behaviour: no-op on
+ *       empty map, active sessions preserved, idle sessions cancelled with {@code
+ *       cancelReason=IdleTimeout}, activity-reset prevents cancellation, and mixed-session
+ *       selectivity; also covers {@link NewOrderSingleHandler#recordSessionActivity} and {@link
+ *       NewOrderSingleHandler#sessionLastActivityNanos} seeding/clearing semantics.
  * </ul>
  *
  * <p><b>Threading:</b> test-only — runs on the JUnit worker thread. All operations are
  * single-threaded, consistent with the cluster duty-cycle invariant.
  *
- * @see NewOrderSingleHandler#onSessionOpen(long)
+ * @see NewOrderSingleHandler#onSessionOpen(long, long)
  * @see NewOrderSingleHandler#onSessionClose(long, long, EventSink)
  * @see NewOrderSingleHandler#trackSessionOrder(long, long)
+ * @see NewOrderSingleHandler#recordSessionActivity(long, long)
+ * @see NewOrderSingleHandler#onIdleScan(long, long, EventSink)
  */
 class NewOrderSingleHandlerSessionCloseTest {
 
@@ -326,7 +333,7 @@ class NewOrderSingleHandlerSessionCloseTest {
    */
   @Test
   void onSessionOpen_freshSessionId_allocatesEmptySet() {
-    handler.onSessionOpen(SESSION_ID);
+    handler.onSessionOpen(SESSION_ID, TS);
 
     assertTrue(
         handler.sessionOrders.containsKey(SESSION_ID),
@@ -345,10 +352,10 @@ class NewOrderSingleHandlerSessionCloseTest {
    */
   @Test
   void onSessionOpen_alreadyOpen_isIdempotent() {
-    handler.onSessionOpen(SESSION_ID);
+    handler.onSessionOpen(SESSION_ID, TS);
     final var firstSet = handler.sessionOrders.get(SESSION_ID);
 
-    handler.onSessionOpen(SESSION_ID);
+    handler.onSessionOpen(SESSION_ID, TS);
     final var secondSet = handler.sessionOrders.get(SESSION_ID);
 
     assertSame(firstSet, secondSet, "onSessionOpen called twice must not replace the existing set");
@@ -724,5 +731,293 @@ class NewOrderSingleHandlerSessionCloseTest {
         CancelReasonEnum.SessionDisconnect,
         decoded.cancelReason(),
         "cancelReason must be SessionDisconnect for a session-close orphan cancel");
+  }
+
+  // =========================================================================
+  // Phase-4 tests — idle session timeout (APP-151 phase 4)
+  // =========================================================================
+
+  // =========================================================================
+  // Test 14 — onSessionOpen seeds the activity clock
+  // =========================================================================
+
+  /** Verifies that {@link NewOrderSingleHandler#onSessionOpen} seeds the activity map entry. */
+  @Test
+  void onSessionOpen_seedsActivityClock() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    assertEquals(
+        TS,
+        handler.sessionLastActivityNanos.get(SESSION_ID),
+        "sessionLastActivityNanos must equal the cluster timestamp passed to onSessionOpen");
+  }
+
+  // =========================================================================
+  // Test 15 — recordSessionActivity updates the activity clock
+  // =========================================================================
+
+  /** Verifies that {@link NewOrderSingleHandler#recordSessionActivity} overwrites the stored ts. */
+  @Test
+  void recordSessionActivity_updatesClock() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long newTs = TS + 1_000L;
+    handler.recordSessionActivity(SESSION_ID, newTs);
+
+    assertEquals(
+        newTs,
+        handler.sessionLastActivityNanos.get(SESSION_ID),
+        "sessionLastActivityNanos must reflect the updated activity timestamp");
+  }
+
+  // =========================================================================
+  // Test 16 — onSessionClose clears the activity clock
+  // =========================================================================
+
+  /** Verifies that {@link NewOrderSingleHandler#onSessionClose} removes the activity map entry. */
+  @Test
+  void onSessionClose_clearsActivityClock() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    handler.onSessionClose(SESSION_ID, TS, eventSink);
+
+    assertEquals(
+        NewOrderSingleHandler.IDLE_LAST_ACTIVITY_MISSING,
+        handler.sessionLastActivityNanos.get(SESSION_ID),
+        "sessionLastActivityNanos must return the missing-sentinel after onSessionClose");
+  }
+
+  // =========================================================================
+  // Test 17 — onIdleScan with no sessions is a no-op
+  // =========================================================================
+
+  /**
+   * Verifies that {@link NewOrderSingleHandler#onIdleScan} on an empty activity map emits nothing.
+   */
+  @Test
+  void onIdleScan_noSessions_isNoop() {
+    handler.onIdleScan(TS, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(0, session.messages.size(), "no events must be emitted when no sessions are open");
+  }
+
+  // =========================================================================
+  // Test 18 — onIdleScan leaves active session untouched
+  // =========================================================================
+
+  /**
+   * Opens a session at TS, scans at TS+1s with a 5-minute timeout — the session is still active and
+   * must NOT be cancelled.
+   */
+  @Test
+  void onIdleScan_activeSession_noCancellation() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey = seedOrderState("IDLE-ACTIVE-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    // Scan 1 second after open — well within the 5-minute timeout.
+    final long scanTs = TS + 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(
+        0, session.messages.size(), "no cancel events must be emitted for an active session");
+    assertTrue(
+        handler.sessionLastActivityNanos.containsKey(SESSION_ID),
+        "activity entry must be preserved for an active session");
+    assertNotNull(
+        tradingState.orderBook().get(orderKey),
+        "order must still be in the book after a no-op idle scan");
+  }
+
+  // =========================================================================
+  // Test 19 — onIdleScan cancels idle session and emits IdleTimeout events
+  // =========================================================================
+
+  /**
+   * Opens a session at TS, seeds 2 orders, scans at TS+6min with a 5-minute timeout — both orders
+   * must be cancelled with {@link CancelReasonEnum#IdleTimeout}.
+   */
+  @Test
+  void onIdleScan_idleSession_cancelsOrders_emitsIdleTimeoutEvents() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey1 = seedOrderState("IDLE-IDLE-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey1);
+    final long orderKey2 = seedOrderState("IDLE-IDLE-002", "EURUSD", SideEnum.Sell);
+    handler.trackSessionOrder(SESSION_ID, orderKey2);
+
+    // Scan 6 minutes after last activity — exceeds the 5-minute threshold.
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(
+        2,
+        session.messages.size(),
+        "exactly 2 OrderCanceledEvents must be emitted for idle session");
+
+    final var decoded0 = decodeOrderCanceled(wrapDecodeBuf(0), 0);
+    assertEquals(
+        CancelReasonEnum.IdleTimeout,
+        decoded0.cancelReason(),
+        "first cancel event cancelReason must be IdleTimeout");
+
+    final var decoded1 = decodeOrderCanceled(wrapDecodeBuf(1), 0);
+    assertEquals(
+        CancelReasonEnum.IdleTimeout,
+        decoded1.cancelReason(),
+        "second cancel event cancelReason must be IdleTimeout");
+
+    assertFalse(
+        handler.sessionOrders.containsKey(SESSION_ID),
+        "sessionOrders entry must be removed after idle cancellation");
+    assertFalse(
+        handler.sessionLastActivityNanos.containsKey(SESSION_ID),
+        "sessionLastActivityNanos entry must be removed after idle cancellation");
+
+    assertNull(tradingState.orderBook().get(orderKey1), "book slot for order 1 must be released");
+    assertNull(tradingState.orderBook().get(orderKey2), "book slot for order 2 must be released");
+  }
+
+  // =========================================================================
+  // Test 20 — recordSessionActivity prevents idle cancellation
+  // =========================================================================
+
+  /**
+   * Opens a session at TS, refreshes activity at TS+4min, scans at TS+6min with 5-min timeout —
+   * last activity is only 2 minutes ago so the session must NOT be cancelled.
+   */
+  @Test
+  void onIdleScan_activityResetsClock() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey = seedOrderState("IDLE-RESET-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    // Refresh activity 4 minutes after session open.
+    final long refreshTs = TS + 4L * 60L * 1_000_000_000L;
+    handler.recordSessionActivity(SESSION_ID, refreshTs);
+
+    // Scan at TS+6min — last activity is only 2 minutes ago (< 5-minute threshold).
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(
+        0,
+        session.messages.size(),
+        "no cancel events must be emitted when activity was refreshed recently");
+    assertNotNull(
+        tradingState.orderBook().get(orderKey),
+        "order must still be in the book after activity-reset prevents cancellation");
+  }
+
+  // =========================================================================
+  // Test 21 — onIdleScan cancels only idle sessions, preserves active ones
+  // =========================================================================
+
+  /**
+   * Three sessions: A and C opened at TS (idle), B opened at TS with activity at TS+5min (active).
+   * Scan at TS+6min with 5-min timeout — only A and C are cancelled; B is preserved.
+   */
+  @Test
+  void onIdleScan_mixedSessions_cancelsOnlyIdleOnes() {
+    final long sessionA = 101L;
+    final long sessionB = 102L;
+    final long sessionC = 103L;
+
+    final var fakeA = new FakeClientSession(sessionA);
+    final var fakeB = new FakeClientSession(sessionB);
+    final var fakeC = new FakeClientSession(sessionC);
+    fakeCluster.addClientSession(fakeA);
+    fakeCluster.addClientSession(fakeB);
+    fakeCluster.addClientSession(fakeC);
+
+    handler.onSessionOpen(sessionA, TS);
+    handler.onSessionOpen(sessionB, TS);
+    handler.onSessionOpen(sessionC, TS);
+
+    final long orderKeyA = seedOrderState("IDLE-MIX-A01", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(sessionA, orderKeyA);
+
+    final long orderKeyB = seedOrderState("IDLE-MIX-B01", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(sessionB, orderKeyB);
+
+    final long orderKeyC = seedOrderState("IDLE-MIX-C01", "EURUSD", SideEnum.Sell);
+    handler.trackSessionOrder(sessionC, orderKeyC);
+
+    // Session B refreshed at TS+5min — only 1 minute idle when scanned at TS+6min.
+    final long refreshTs = TS + 5L * 60L * 1_000_000_000L;
+    handler.recordSessionActivity(sessionB, refreshTs);
+
+    // Scan at TS+6min — A and C are 6 minutes idle (> 5-min threshold); B is only 1 minute idle.
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    // EventSink broadcasts to ALL registered sessions — every registered session receives all
+    // cancel events. Sessions A and C have 1 order each cancelled = 2 total cancel events.
+    // The setUp()-registered session (SESSION_ID=42) also receives the broadcast.
+    assertEquals(
+        2, session.messages.size(), "2 cancel events must be broadcast (one for A, one for C)");
+
+    // Verify A and C were cancelled (book slots released), B preserved.
+    assertNull(tradingState.orderBook().get(orderKeyA), "session A order must be cancelled");
+    assertNull(tradingState.orderBook().get(orderKeyC), "session C order must be cancelled");
+    assertNotNull(tradingState.orderBook().get(orderKeyB), "session B order must NOT be cancelled");
+
+    // Activity map: A and C removed; B preserved.
+    assertFalse(
+        handler.sessionLastActivityNanos.containsKey(sessionA),
+        "session A activity entry must be removed");
+    assertFalse(
+        handler.sessionLastActivityNanos.containsKey(sessionC),
+        "session C activity entry must be removed");
+    assertTrue(
+        handler.sessionLastActivityNanos.containsKey(sessionB),
+        "session B activity entry must be preserved");
+  }
+
+  // =========================================================================
+  // Test 22 — onIdleScan on idle session with no orders clears clock silently
+  // =========================================================================
+
+  /**
+   * Opens a session at TS without tracking any orders, then scans past the timeout — no events must
+   * be emitted but the activity entry must be removed.
+   */
+  @Test
+  void onIdleScan_idleSessionWithNoOrders_clearsClockSilently() {
+    handler.onSessionOpen(SESSION_ID, TS);
+
+    // Scan 6 minutes after open with no orders tracked.
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(
+        0, session.messages.size(), "no events must be emitted for an idle session with no orders");
+    assertFalse(
+        handler.sessionLastActivityNanos.containsKey(SESSION_ID),
+        "activity entry must be removed even when no orders were present");
+  }
+
+  // =========================================================================
+  // Test 23 — emitOrderCanceledEvent via onIdleScan sets cancelReason=IdleTimeout
+  // =========================================================================
+
+  /**
+   * Confirms via the {@link NewOrderSingleHandler#onIdleScan} code path that the emitted {@link
+   * OrderCanceledEventDecoder} carries {@link CancelReasonEnum#IdleTimeout} in the {@code
+   * cancelReason} field.
+   */
+  @Test
+  void emitOrderCanceledEvent_idleTimeout_setsCancelReasonField() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey = seedOrderState("IDLE-REASON-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    // Scan at TS+6min — exceeds the 5-minute threshold.
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(1, session.messages.size(), "exactly one OrderCanceledEvent must be emitted");
+    final var decoded = decodeOrderCanceled(wrapDecodeBuf(0), 0);
+    assertEquals(
+        CancelReasonEnum.IdleTimeout,
+        decoded.cancelReason(),
+        "cancelReason must be IdleTimeout for idle-scan-triggered cancels");
   }
 }

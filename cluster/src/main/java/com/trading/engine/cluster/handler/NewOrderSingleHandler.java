@@ -377,6 +377,60 @@ public final class NewOrderSingleHandler implements CommandHandler {
    */
   private static final float SESSION_ORDERS_LOAD_FACTOR = 0.65f;
 
+  // ===========================================================================
+  // Idle session timeout (APP-151 phase 4)
+  //
+  // Tracks the cluster timestamp of the last command observed on each open session. The
+  // {@link com.trading.engine.cluster.TradingClusteredService} schedules a periodic global timer
+  // (default 30 s) that calls {@link #onIdleScan}; the scan walks every entry and emits an
+  // {@code OrderCanceledEvent} with {@code cancelReason=IdleTimeout} for every order belonging
+  // to a session whose last-activity timestamp is older than {@link
+  // #IDLE_SESSION_TIMEOUT_NANOS}. The FIX session itself is NOT closed (Artio owns FIX
+  // lifecycle); only its outstanding orders are cancelled. A subsequent command on the same
+  // session resets the activity timer naturally via {@link #recordSessionActivity}.
+  // ===========================================================================
+
+  /** Sentinel for "no last-activity timestamp recorded" on {@link #sessionLastActivityNanos}. */
+  static final long IDLE_LAST_ACTIVITY_MISSING = Long.MIN_VALUE;
+
+  /**
+   * Default idle threshold: 5 minutes. A session that goes longer than this between commands has
+   * its outstanding orders cancelled with {@link CancelReasonEnum#IdleTimeout}. The actual
+   * threshold is supplied per-call by {@link
+   * com.trading.engine.cluster.TradingClusteredService#onTimerEvent} so tests can override.
+   */
+  public static final long IDLE_SESSION_TIMEOUT_NANOS = 5L * 60L * 1_000_000_000L;
+
+  /**
+   * sessionId → cluster-timestamp of the most-recent command observed on that session. Updated by
+   * {@link #recordSessionActivity}; cleared in {@link #onSessionClose} and after an idle scan
+   * cancels the session's orders. Package-private for direct-state assertions in unit tests.
+   */
+  final Long2LongHashMap sessionLastActivityNanos =
+      new Long2LongHashMap(
+          SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, IDLE_LAST_ACTIVITY_MISSING);
+
+  /**
+   * Pending-removal scratch — sessions identified as idle during a scan are collected here and
+   * removed from {@link #sessionLastActivityNanos} after {@link Long2LongHashMap#forEachLong}
+   * returns. Cannot mutate the map mid-iteration (probing/rehash breaks); collecting into this
+   * pre-allocated set is the standard Agrona idiom.
+   */
+  private final LongHashSet idleScanPendingRemoval =
+      new LongHashSet(SESSION_ORDERS_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
+
+  // Per-scan context for {@link #idleScanConsumer} — set on every onIdleScan call before
+  // forEachLong, read by the consumer. Safe because the cluster duty cycle is single-threaded.
+  private long idleScanCurrentTs;
+  private long idleScanThresholdTs;
+  private EventSink idleScanEventSink;
+
+  /**
+   * Pre-allocated forEach consumer for {@link #sessionLastActivityNanos}. Method-reference form
+   * binds once at construction so the inner {@code forEach} adds no per-call lambda allocation.
+   */
+  private final org.agrona.collections.LongLongConsumer idleScanConsumer = this::idleScanVisit;
+
   /**
    * sessionId → set of orderKeys outstanding on that session. Package-private for direct-state
    * assertions in {@code NewOrderSingleHandlerSessionCloseTest}.
@@ -1276,13 +1330,34 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * for per-session state.
    *
    * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   * @param clusterTimestamp cluster timestamp at session-open — seeds the idle-activity clock so a
+   *     freshly-opened session is not immediately considered idle (APP-151 phase 4)
    */
-  public void onSessionOpen(final long sessionId) {
+  public void onSessionOpen(final long sessionId, final long clusterTimestamp) {
     if (sessionOrders.get(sessionId) == null) {
       sessionOrders.put(
           sessionId,
           new LongHashSet(SESSION_ORDERS_PER_SESSION_CAPACITY, SESSION_ORDERS_LOAD_FACTOR));
     }
+    // APP-151 phase 4 — seed last-activity so a brand-new session is not immediately flagged idle.
+    sessionLastActivityNanos.put(sessionId, clusterTimestamp);
+  }
+
+  /**
+   * Records observed activity on {@code sessionId} (APP-151 phase 4). Called by {@link
+   * com.trading.engine.cluster.TradingClusteredService#onSessionMessage} at the top of dispatch
+   * BEFORE any handler runs, so every command — including refdata, halt/resume, and trading
+   * commands — resets the idle-activity clock for the source session. Quote requests and price
+   * responses also count as activity.
+   *
+   * <p>Zero-allocation: {@link Long2LongHashMap#put} on existing key replaces in-place without
+   * resize for any session that has been through {@link #onSessionOpen}.
+   *
+   * @param sessionId Aeron cluster session id ({@code ClientSession#id()})
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   */
+  public void recordSessionActivity(final long sessionId, final long clusterTimestamp) {
+    sessionLastActivityNanos.put(sessionId, clusterTimestamp);
   }
 
   /**
@@ -1356,6 +1431,30 @@ public final class NewOrderSingleHandler implements CommandHandler {
   public void onSessionClose(
       final long sessionId, final long clusterTimestamp, final EventSink eventSink) {
     Objects.requireNonNull(eventSink, "eventSink");
+    cancelSessionOrders(sessionId, clusterTimestamp, eventSink, CancelReasonEnum.SessionDisconnect);
+    // APP-151 phase 4 — clear the idle-activity entry so subsequent scans don't see a stale ts.
+    sessionLastActivityNanos.remove(sessionId);
+  }
+
+  /**
+   * Shared cancel-all-orders-for-session path used by both {@link #onSessionClose} (cancelReason =
+   * {@code SessionDisconnect}) and {@link #onIdleScan} (cancelReason = {@code IdleTimeout}).
+   * Removes the session's entry from {@link #sessionOrders}, iterates its orderKeys, emits one
+   * {@code OrderCanceledEvent} per live order, and releases each pool slot. Stale orderKeys (whose
+   * {@link OrderState} is no longer in the {@link com.trading.engine.cluster.OrderBook}) are
+   * silently skipped — emit and apply stay coupled.
+   *
+   * @param sessionId session whose orders should be cancelled
+   * @param clusterTimestamp cluster epoch-nanos to stamp on each emitted event
+   * @param eventSink event emission pipeline
+   * @param cancelReason {@link CancelReasonEnum#SessionDisconnect} or {@link
+   *     CancelReasonEnum#IdleTimeout} today; phase 5+ may add more triggers
+   */
+  private void cancelSessionOrders(
+      final long sessionId,
+      final long clusterTimestamp,
+      final EventSink eventSink,
+      final CancelReasonEnum cancelReason) {
     final var orderKeys = sessionOrders.remove(sessionId);
     if (orderKeys == null || orderKeys.isEmpty()) {
       return;
@@ -1365,15 +1464,83 @@ public final class NewOrderSingleHandler implements CommandHandler {
       final long orderKey = it.nextValue();
       final var state = tradingState.orderBook().get(orderKey);
       if (state == null) {
-        // Order already terminated by another path (race with future phase-2+ untrack work, or
-        // book-level eviction during pre-close teardown). Tracker had a stale key — skip silently
+        // Order already terminated by another path. Tracker had a stale key — skip silently
         // so emit and apply stay coupled: we never emit a cancel without an actual book release,
         // and we never release a slot for an order whose cancel event was not emitted.
         continue;
       }
-      emitOrderCanceledEvent(eventSink, clusterTimestamp, state);
+      emitOrderCanceledEvent(eventSink, clusterTimestamp, state, cancelReason);
       tradingState.applyOrderCanceled(orderKey);
     }
+  }
+
+  // ===========================================================================
+  // Idle session timeout — APP-151 phase 4
+  // ===========================================================================
+
+  /**
+   * Periodic scan invoked by {@link
+   * com.trading.engine.cluster.TradingClusteredService#onTimerEvent} on the idle-scan timer. Any
+   * session whose last-activity timestamp is older than {@code currentTimestamp - timeoutNanos} has
+   * its outstanding orders cancelled with {@code cancelReason=IdleTimeout}; the session is NOT
+   * closed (Artio owns FIX lifecycle), only its orders are released.
+   *
+   * <p><b>Iteration safety.</b> {@link Long2LongHashMap#forEachLong} cannot tolerate mid-iteration
+   * modification of the map being walked. The consumer collects idle session ids into a
+   * pre-allocated {@link #idleScanPendingRemoval} {@link LongHashSet}; after {@code forEachLong}
+   * returns, a second pass removes them from {@link #sessionLastActivityNanos}. {@link
+   * #sessionOrders} (a different map) IS modified during iteration via {@link
+   * #cancelSessionOrders}, which is safe.
+   *
+   * <p><b>Allocation.</b> Zero allocation on the scan path. The consumer is bound once at
+   * construction; {@code forEachLong} reuses Agrona's primitive-consumer interface. The
+   * pending-removal set is pre-allocated and {@code clear}-ed at the end of each scan.
+   *
+   * @param currentTimestamp cluster timestamp at scan time (epoch nanos)
+   * @param timeoutNanos idle threshold — sessions whose last activity was before {@code
+   *     currentTimestamp - timeoutNanos} are cancelled
+   * @param eventSink event emission pipeline
+   */
+  public void onIdleScan(
+      final long currentTimestamp, final long timeoutNanos, final EventSink eventSink) {
+    Objects.requireNonNull(eventSink, "eventSink");
+    if (sessionLastActivityNanos.isEmpty()) {
+      return;
+    }
+    idleScanCurrentTs = currentTimestamp;
+    idleScanThresholdTs = currentTimestamp - timeoutNanos;
+    idleScanEventSink = eventSink;
+    sessionLastActivityNanos.forEachLong(idleScanConsumer);
+    // Second pass — remove timed-out sessions from the activity map (cannot do mid-iteration).
+    if (!idleScanPendingRemoval.isEmpty()) {
+      final var rit = idleScanPendingRemoval.iterator();
+      while (rit.hasNext()) {
+        sessionLastActivityNanos.remove(rit.nextValue());
+      }
+      idleScanPendingRemoval.clear();
+    }
+    // Drop the per-scan EventSink reference to avoid leaking it past the scan window. Timestamp
+    // fields are scalar longs — overwritten on the next scan, no leak.
+    idleScanEventSink = null;
+  }
+
+  /**
+   * Inner-loop body for {@link #onIdleScan} — bound as the {@link
+   * org.agrona.collections.LongLongConsumer} for {@link Long2LongHashMap#forEachLong}. Cancels all
+   * orders for any session whose {@code lastActivity} predates {@link #idleScanThresholdTs}; marks
+   * that session id for removal from {@link #sessionLastActivityNanos} after the iteration
+   * completes.
+   *
+   * @param sessionId Aeron cluster session id (forEach key)
+   * @param lastActivity cluster timestamp of the most recent observed activity for this session
+   */
+  private void idleScanVisit(final long sessionId, final long lastActivity) {
+    if (lastActivity == IDLE_LAST_ACTIVITY_MISSING || lastActivity >= idleScanThresholdTs) {
+      return;
+    }
+    cancelSessionOrders(
+        sessionId, idleScanCurrentTs, idleScanEventSink, CancelReasonEnum.IdleTimeout);
+    idleScanPendingRemoval.add(sessionId);
   }
 
   /**
@@ -1398,9 +1565,15 @@ public final class NewOrderSingleHandler implements CommandHandler {
    * @param eventSink the event emission pipeline
    * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
    * @param state the live OrderState (must be non-null; caller's responsibility)
+   * @param cancelReason {@link CancelReasonEnum} value chosen by the caller — {@code
+   *     SessionDisconnect} from {@link #onSessionClose}, {@code IdleTimeout} from {@link
+   *     #onIdleScan}. Other values plug in as future emitters land (APP-65 / APP-153).
    */
   private void emitOrderCanceledEvent(
-      final EventSink eventSink, final long clusterTimestamp, final OrderState state) {
+      final EventSink eventSink,
+      final long clusterTimestamp,
+      final OrderState state,
+      final CancelReasonEnum cancelReason) {
     // Generate a fresh execId per cancel (FIX 4.4 §4.4.5 requires ExecID unique per ExecType per
     // day). Uses the same id-generator backing OrderCreatedEvent so the gateway no longer needs
     // to synthesise a sentinel.
@@ -1437,10 +1610,9 @@ public final class NewOrderSingleHandler implements CommandHandler {
     // enables cancel-of-partially-filled).
     orderCanceledEncoder.cumQty(state.cumQty());
     orderCanceledEncoder.productType(state.productType());
-    // APP-151 phase 1 emitter is the session-disconnect path → SessionDisconnect. Other reasons
-    // (ExplicitCancel for APP-65, IdleTimeout for phase 4, OperatorForce for APP-153) plug into
-    // their respective emitters when those land.
-    orderCanceledEncoder.cancelReason(CancelReasonEnum.SessionDisconnect);
+    // Caller-supplied cancel reason — SessionDisconnect from onSessionClose, IdleTimeout from
+    // onIdleScan, ExplicitCancel (APP-65) / OperatorForce (APP-153) from future emitters.
+    orderCanceledEncoder.cancelReason(cancelReason);
 
     final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCanceledEncoder.encodedLength();
     eventSink.emit(clusterTimestamp, egressBuffer, 0, eventLen);
