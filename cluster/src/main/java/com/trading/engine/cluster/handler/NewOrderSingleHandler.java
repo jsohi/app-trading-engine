@@ -1587,7 +1587,8 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // APP-151 phase 5 — emit a one-line GFLog summary of this session's lifetime activity, then
     // clear the per-session counters. Logged BEFORE clear so the values are still resident; the
     // remove() calls return MISSING for never-opened sessions and that's reflected as 0 in the
-    // logged numbers (we materialise via getOrDefault).
+    // logged numbers (materialised through materialiseCounter, which maps the METRIC_MISSING
+    // sentinel to 0).
     logSessionMetricsSummary(sessionId);
     sessionMetricOrdersAdmitted.remove(sessionId);
     sessionMetricOrdersRejected.remove(sessionId);
