@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test;
 
 class LoadRiskLimitBatchHandlerTest {
 
-  private static final long FIRST_SEQ = 300L;
-  private static final long TS = 1_700_000_000_000_000_000L;
+  private static long FIRST_SEQ = 300L;
+  private static long TS = 1_700_000_000_000_000_000L;
 
   /** Encode a LoadRiskLimitBatch with the given risk limit records. */
   private static int encodeBatch(final MutableDirectBuffer dst, final RiskLimitRecord... records) {
@@ -27,16 +27,16 @@ class LoadRiskLimitBatchHandlerTest {
   private static int dispatch(
       final LoadRiskLimitBatchHandler handler,
       final MutableDirectBuffer src,
-      final int srcLength,
+      int srcLength,
       final MutableDirectBuffer eventDst) {
     final MessageHeaderDecoder header = new MessageHeaderDecoder();
     header.wrap(src, 0);
     return handler.onBatchCommand(header, src, 0, srcLength, eventDst, 0, FIRST_SEQ, TS);
   }
 
-  private static AccountStore accountStoreWith(final long... ids) {
+  private static AccountStore accountStoreWith(long... ids) {
     final AccountStore store = new AccountStore();
-    for (final long id : ids) {
+    for (long id : ids) {
       store.put(AccountFixtures.account(id, "ACC" + id, "Account", "USD"));
     }
     return store;
@@ -50,14 +50,14 @@ class LoadRiskLimitBatchHandlerTest {
         new LoadRiskLimitBatchHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(2048);
-    final int srcLength =
+    int srcLength =
         encodeBatch(
             src,
             new RiskLimitRecord(1L, 100_00000000L, 0L, 1000_00000000L),
             new RiskLimitRecord(2L, 200_00000000L, 0L, 2000_00000000L),
             new RiskLimitRecord(3L, 0L, 0L, 0L)); // unlimited
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
-    final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
+    int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertTrue(totalEventBytes > 0);
     assertEquals(3, riskStore.size());
 
@@ -90,14 +90,14 @@ class LoadRiskLimitBatchHandlerTest {
         new LoadRiskLimitBatchHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(2048);
-    final int srcLength =
+    int srcLength =
         encodeBatch(
             src,
             new RiskLimitRecord(1L, 100L, 0L, 1000L), // valid
             new RiskLimitRecord(2L, 200L, 0L, 2000L), // accountId not in AccountStore
             new RiskLimitRecord(3L, -1L, 0L, 1000L)); // negative limit
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
-    final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
+    int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertEquals(1, riskStore.size()); // only id 1
     assertNotNull(riskStore.get(1L));
 
@@ -143,9 +143,9 @@ class LoadRiskLimitBatchHandlerTest {
         new LoadRiskLimitBatchHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(64);
-    final int srcLength = encodeBatch(src);
+    int srcLength = encodeBatch(src);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(64);
-    final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
+    int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
 
     assertEquals(0, totalEventBytes);
     assertEquals(0, riskStore.size());
@@ -157,4 +157,11 @@ class LoadRiskLimitBatchHandlerTest {
         new LoadRiskLimitBatchHandler(new RiskLimitStore(), new AccountStore());
     assertEquals(LoadRiskLimitBatchEncoder.TEMPLATE_ID, h.batchCommandTemplateId());
   }
+
+  // TODO(APP-62): cover §H FourEyesViolation on the batch path. Mirrors the four §H tests on
+  // LoadRiskLimitHandlerTest (emptyProposerId, emptyApproverId, proposerEqualsApprover,
+  // distinctAccepted) but requires direct SBE batch-group encoding (the auto-fill helpers in
+  // SbeTestEncoder always populate DEFAULT_PROPOSER_ID / DEFAULT_APPROVER_ID at the per-record
+  // level inside the group). Deferred to plan §17 — Unit + integration + alloc tests — which
+  // adds a `SbeTestEncoder.encodeLoadRiskLimitBatchWith4EyesBytes` helper.
 }

@@ -18,15 +18,15 @@ import org.junit.jupiter.api.Test;
 
 class LoadRiskLimitHandlerTest {
 
-  private static final long SEQ_NO = 99L;
-  private static final long TS = 1_700_000_000_000_000_000L;
+  private static long SEQ_NO = 99L;
+  private static long TS = 1_700_000_000_000_000_000L;
 
   private static int encodeLoadRiskLimit(
       final MutableDirectBuffer dst,
-      final long accountId,
-      final long maxOrderSize,
-      final long maxOrderNotional,
-      final long maxDailyVolume) {
+      long accountId,
+      long maxOrderSize,
+      long maxOrderNotional,
+      long maxDailyVolume) {
     return SbeTestEncoder.encodeLoadRiskLimit(
         dst,
         0,
@@ -41,16 +41,16 @@ class LoadRiskLimitHandlerTest {
   private static int dispatch(
       final LoadRiskLimitHandler handler,
       final MutableDirectBuffer src,
-      final int srcLength,
+      int srcLength,
       final MutableDirectBuffer eventDst) {
     final MessageHeaderDecoder header = new MessageHeaderDecoder();
     header.wrap(src, 0);
     return handler.onCommand(header, src, 0, srcLength, eventDst, 0, SEQ_NO, TS);
   }
 
-  private static AccountStore accountStoreWith(final long... ids) {
+  private static AccountStore accountStoreWith(long... ids) {
     final AccountStore store = new AccountStore();
-    for (final long id : ids) {
+    for (long id : ids) {
       store.put(AccountFixtures.account(id, "ACC" + id, "Account " + id, "USD"));
     }
     return store;
@@ -63,7 +63,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 1L, 100_00000000L, 0L, 1000_00000000L);
+    int srcLength = encodeLoadRiskLimit(src, 1L, 100_00000000L, 0L, 1000_00000000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -87,7 +87,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 0L, 100L, 0L, 1000L);
+    int srcLength = encodeLoadRiskLimit(src, 0L, 100L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -108,7 +108,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 999L, 100L, 0L, 1000L);
+    int srcLength = encodeLoadRiskLimit(src, 999L, 100L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -129,7 +129,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 1L, -1L, 0L, 1000L);
+    int srcLength = encodeLoadRiskLimit(src, 1L, -1L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -175,7 +175,7 @@ class LoadRiskLimitHandlerTest {
   // ---------------------------------------------------------------------------
 
   private static int encodeLoadRiskLimitWith4EyesBytes(
-      final MutableDirectBuffer dst, final byte[] proposerId, final byte[] approverId) {
+      final MutableDirectBuffer dst, byte[] proposerId, byte[] approverId) {
     final var headerEnc = new MessageHeaderEncoder();
     final var enc = new LoadRiskLimitEncoder();
     enc.wrapAndApplyHeader(dst, 0, headerEnc);
@@ -191,8 +191,8 @@ class LoadRiskLimitHandlerTest {
   }
 
   private static byte[] padded(final String s) {
-    final byte[] out = new byte[16];
-    final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
+    byte[] out = new byte[16];
+    byte[] src = s.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
     return out;
   }
@@ -204,7 +204,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength =
+    int srcLength =
         encodeLoadRiskLimitWith4EyesBytes(src, new byte[16] /* empty */, padded("APPROVER"));
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
@@ -226,7 +226,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength =
+    int srcLength =
         encodeLoadRiskLimitWith4EyesBytes(src, padded("PROPOSER"), new byte[16] /* empty */);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
@@ -248,8 +248,8 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final byte[] same = padded("ALICE");
-    final int srcLength = encodeLoadRiskLimitWith4EyesBytes(src, same, same);
+    byte[] same = padded("ALICE");
+    int srcLength = encodeLoadRiskLimitWith4EyesBytes(src, same, same);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -270,7 +270,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimitWith4EyesBytes(src, padded("ALICE"), padded("BOB"));
+    int srcLength = encodeLoadRiskLimitWith4EyesBytes(src, padded("ALICE"), padded("BOB"));
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 

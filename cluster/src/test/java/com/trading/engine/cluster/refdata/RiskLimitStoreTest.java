@@ -14,8 +14,7 @@ import org.junit.jupiter.api.Test;
 
 class RiskLimitStoreTest {
 
-  static RiskLimitState makeState(
-      final long accountId, final long maxOrderSize, final long maxDailyVolume) {
+  static RiskLimitState makeState(long accountId, long maxOrderSize, long maxDailyVolume) {
     final RiskLimitState s = new RiskLimitState();
     s.setAccountId(accountId);
     s.setMaxOrderSize(maxOrderSize);
@@ -71,11 +70,11 @@ class RiskLimitStoreTest {
     src.put(makeState(3L, 0L, 0L)); // unlimited
 
     final MutableDirectBuffer buf = new ExpandableArrayBuffer(2048);
-    final int written = src.snapshotTo(buf, 0);
+    int written = src.snapshotTo(buf, 0);
     assertTrue(written > 0);
 
     final RiskLimitStore restored = new RiskLimitStore();
-    final int read = restored.restoreFrom(buf, 0);
+    int read = restored.restoreFrom(buf, 0);
     assertEquals(written, read);
     assertEquals(3, restored.size());
 
@@ -116,12 +115,12 @@ class RiskLimitStoreTest {
 
     final MutableDirectBuffer bufA = new ExpandableArrayBuffer(1024);
     final MutableDirectBuffer bufB = new ExpandableArrayBuffer(1024);
-    final int wA = a.snapshotTo(bufA, 0);
-    final int wB = b.snapshotTo(bufB, 0);
+    int wA = a.snapshotTo(bufA, 0);
+    int wB = b.snapshotTo(bufB, 0);
     assertEquals(wA, wB);
 
-    final byte[] bA = new byte[wA];
-    final byte[] bB = new byte[wB];
+    byte[] bA = new byte[wA];
+    byte[] bB = new byte[wB];
     bufA.getBytes(0, bA);
     bufB.getBytes(0, bB);
     assertArrayEquals(bA, bB);

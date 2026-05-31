@@ -1495,7 +1495,7 @@
         <field name="symbol"                    id="55"    type="Symbol"/>
         <field name="tradingAllowed"            id="10070" type="uint8"/>
         <field name="shortSaleAllowed"          id="10071" type="uint8"/>
-        <field name="priceDeviationBpsOverride" id="10103" type="uint32"  description="APP-62 §I per-symbol override (0 = use per-account knob)"/>
+        <field name="priceDeviationBpsOverride" id="10124" type="uint32"  description="APP-62 §I per-symbol override (0 = use per-account knob — id=10103 in LoadRiskLimit). Distinct id from the per-account knob; see LoadSymbolEligibility commentary."/>
         <field name="transactTime"              id="60"    type="uint64"  description="Original LoadSymbolEligibility transactTime"/>
     </sbe:message>
 
