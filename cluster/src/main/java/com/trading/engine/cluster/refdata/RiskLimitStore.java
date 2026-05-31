@@ -52,8 +52,6 @@ public final class RiskLimitStore implements ReferenceDataStore {
    * Account-identifier byte length for proposerId / approverId — bounded by the SBE {@code Account}
    * char[16] type.
    */
-  private static final int ACCOUNT_ID_BYTE_LEN = 16;
-
   private final Long2ObjectHashMap<RiskLimitState> byAccountId =
       new Long2ObjectHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR);
 
@@ -70,8 +68,8 @@ public final class RiskLimitStore implements ReferenceDataStore {
       (key, state) -> snapshotKeysScratch[snapshotKeysFillIdx++] = key;
 
   // Scratch for the restore path's proposerId / approverId byte reads (zero-alloc steady state).
-  private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
-  private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] proposerIdScratch = new byte[AccountIdentifierBytes.LENGTH];
+  private final byte[] approverIdScratch = new byte[AccountIdentifierBytes.LENGTH];
 
   @Override
   public int snapshotTemplateId() {
@@ -183,9 +181,9 @@ public final class RiskLimitStore implements ReferenceDataStore {
       state.setFatFingerFailClosed(group.fatFingerFailClosed() != 0);
       state.setIdleSessionTimeoutNanos(group.idleSessionTimeoutNanos());
       group.getProposerId(proposerIdScratch, 0);
-      state.setProposerId(proposerIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
+      state.setProposerId(proposerIdScratch, 0, AccountIdentifierBytes.LENGTH);
       group.getApproverId(approverIdScratch, 0);
-      state.setApproverId(approverIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
+      state.setApproverId(approverIdScratch, 0, AccountIdentifierBytes.LENGTH);
       state.setStatus(group.status());
       state.setTransactTime(group.transactTime());
       byAccountId.put(state.accountId(), state);

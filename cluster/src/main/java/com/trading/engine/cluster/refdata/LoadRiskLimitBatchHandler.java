@@ -25,9 +25,6 @@ import org.agrona.MutableDirectBuffer;
  * reference-data ingress path and is acceptable per the CLAUDE.md carve-out.
  */
 public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader {
-
-  private static final int ACCOUNT_ID_BYTE_LEN = 16;
-
   private final RiskLimitStore riskLimitStore;
   private final AccountStore accountStore;
 
@@ -37,8 +34,8 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       new RiskLimitLoadRejectedEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
-  private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
-  private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] proposerIdScratch = new byte[AccountIdentifierBytes.LENGTH];
+  private final byte[] approverIdScratch = new byte[AccountIdentifierBytes.LENGTH];
 
   public LoadRiskLimitBatchHandler(
       final RiskLimitStore riskLimitStore, final AccountStore accountStore) {
@@ -183,8 +180,8 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       state.setFatFingerEnabled(fatFingerEnabled);
       state.setFatFingerFailClosed(fatFingerFailClosed);
       state.setIdleSessionTimeoutNanos(idleSessionTimeoutNanos);
-      state.setProposerId(proposerIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
-      state.setApproverId(approverIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
+      state.setProposerId(proposerIdScratch, 0, AccountIdentifierBytes.LENGTH);
+      state.setApproverId(approverIdScratch, 0, AccountIdentifierBytes.LENGTH);
       state.setStatus(group.status());
       state.setTransactTime(batchTransactTime);
       riskLimitStore.put(state);

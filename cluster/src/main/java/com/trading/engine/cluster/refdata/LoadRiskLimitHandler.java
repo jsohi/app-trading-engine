@@ -40,8 +40,6 @@ import org.agrona.MutableDirectBuffer;
  */
 public final class LoadRiskLimitHandler implements ReferenceDataLoader {
 
-  private static final int ACCOUNT_ID_BYTE_LEN = 16;
-
   private final RiskLimitStore riskLimitStore;
   private final AccountStore accountStore; // FK target
 
@@ -51,8 +49,8 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
       new RiskLimitLoadRejectedEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
-  private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
-  private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] proposerIdScratch = new byte[AccountIdentifierBytes.LENGTH];
+  private final byte[] approverIdScratch = new byte[AccountIdentifierBytes.LENGTH];
 
   public LoadRiskLimitHandler(
       final RiskLimitStore riskLimitStore, final AccountStore accountStore) {
@@ -180,8 +178,8 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     state.setFatFingerEnabled(fatFingerEnabled);
     state.setFatFingerFailClosed(fatFingerFailClosed);
     state.setIdleSessionTimeoutNanos(idleSessionTimeoutNanos);
-    state.setProposerId(proposerIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
-    state.setApproverId(approverIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
+    state.setProposerId(proposerIdScratch, 0, AccountIdentifierBytes.LENGTH);
+    state.setApproverId(approverIdScratch, 0, AccountIdentifierBytes.LENGTH);
     state.setStatus(decoder.status());
     state.setTransactTime(decoder.transactTime());
     riskLimitStore.put(state);

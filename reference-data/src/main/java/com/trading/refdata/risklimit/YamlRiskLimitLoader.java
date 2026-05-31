@@ -133,13 +133,13 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
     return filePath.getFileName().toString();
   }
 
-  private RiskLimitRecord toRecord(final Map<String, Object> entry, final int index)
+  private RiskLimitRecord toRecord(final Map<String, Object> entry, int index)
       throws ReferenceDataLoadException {
     try {
-      final long accountId = requireLong(entry, "accountId");
-      final long maxOrderSize = toLong(entry, "maxOrderSize");
-      final long maxOrderNotional = toLong(entry, "maxOrderNotional");
-      final long maxDailyVolume = toLong(entry, "maxDailyVolume");
+      long accountId = requireLong(entry, "accountId");
+      long maxOrderSize = toLong(entry, "maxOrderSize");
+      long maxOrderNotional = toLong(entry, "maxOrderNotional");
+      long maxDailyVolume = toLong(entry, "maxDailyVolume");
       // APP-62: maxDailyLossBps removed; loudly WARN if a stale fixture still carries the key so
       // operators notice configuration drift rather than running with a control they expect.
       if (entry.containsKey("maxDailyLossBps")) {

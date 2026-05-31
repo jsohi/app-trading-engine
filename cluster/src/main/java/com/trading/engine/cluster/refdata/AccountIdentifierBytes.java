@@ -15,6 +15,14 @@ package com.trading.engine.cluster.refdata;
  */
 final class AccountIdentifierBytes {
 
+  /**
+   * Wire length of the SBE {@code Account} char[16] type — every proposerId / approverId byte
+   * buffer in APP-62 §H validation is exactly this many bytes. Hoisted here to remove duplicate
+   * {@code ACCOUNT_ID_BYTE_LEN = 16} constants previously declared in {@link RiskLimitState},
+   * {@link RiskLimitStore}, {@link LoadRiskLimitHandler}, and {@link LoadRiskLimitBatchHandler}.
+   */
+  static final int LENGTH = 16;
+
   private AccountIdentifierBytes() {}
 
   /** Returns {@code true} when every byte of {@code buf} is zero (empty / unpopulated buffer). */
