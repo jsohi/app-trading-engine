@@ -4,6 +4,7 @@ import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.trading.engine.cluster.OrderState;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
@@ -640,6 +641,16 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   private RfqMetrics rfqMetrics;
 
   /**
+   * Cluster-scoped APP-62 risk-engine observability counters (plan §3.8 / §F). Wired via {@link
+   * #setRiskMetrics(RiskMetrics)} from {@code TradingClusteredService}; null on the legacy test
+   * paths that instantiate this handler without metrics (every increment site is null-safe).
+   *
+   * <p><b>Threading:</b> single-threaded cluster duty cycle only — plain {@code long} fields,
+   * unsynchronized increments, zero allocation. See {@link RiskMetrics} class Javadoc.
+   */
+  private RiskMetrics riskMetrics;
+
+  /**
    * Scratch field holding the QUOTED slot returned by {@link RfqStateMachine#peekByQuoteId} during
    * the peek phase. Cleared after commit (or on any reject path). Single-threaded duty cycle
    * invariant means this never races.
@@ -676,6 +687,19 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       final RfqStateMachine rfqStateMachine, final RfqMetrics rfqMetrics) {
     this.rfqStateMachine = rfqStateMachine;
     this.rfqMetrics = rfqMetrics;
+  }
+
+  /**
+   * Wires the cluster-scoped APP-62 risk-engine metrics. Called from {@code
+   * TradingClusteredService} at bootstrap; left unset on the legacy test paths that exercise the
+   * handler directly without metrics observability. Every counter-increment site in this class is
+   * null-safe on {@code riskMetrics} so callers are not forced to thread a stub through.
+   *
+   * @param riskMetrics observability counters for the position-limit, fat-finger, fail-closed boot,
+   *     and reference-cache-feed code paths (may be null in tests)
+   */
+  public void setRiskMetrics(final RiskMetrics riskMetrics) {
+    this.riskMetrics = riskMetrics;
   }
 
   /** {@inheritDoc} */
@@ -2172,10 +2196,47 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       final long limitValue,
       final long projectedValue) {
 
+    // APP-62 §F — structured WARN per reject for ops triage. Zero-allocation: enum.name() returns
+    // an interned String constant, text is a String literal at every call site, all numerics are
+    // primitives. One line per reject; GFLog overflow strategy is DISCARD so a flood cannot block
+    // the cluster duty cycle. The audit-grade record is OrderRejectedEvent (template 101); this
+    // log is operator visibility only.
+    LOG.warn()
+        .append("NOS rejected — reason=")
+        .append(reason.name())
+        .append(" check=")
+        .append(checkId.name())
+        .append(" session=")
+        .append(session != null ? session.id() : -1L)
+        .append(" limit=")
+        .append(limitValue)
+        .append(" proj=")
+        .append(projectedValue)
+        .append(" text=")
+        .append(text)
+        .commit();
+
     // APP-151 phase 5 — per-session metrics. Increment "orders rejected" counter for this session.
     // Skipped on the null-session test path (matches admit-counter convention).
     if (session != null) {
       incrementSessionCounter(sessionMetricOrdersRejected, session.id());
+    }
+
+    // APP-62 §F — cluster-scoped reject counters for ops dashboards. Single switch on the
+    // RiskCheckEnum keeps every new check (existing + future) routed through one site so
+    // RiskMetrics gains a field and a case-arm, nothing else changes. Null-safe on the legacy
+    // test path that exercises emitOrderRejected without wiring metrics.
+    if (riskMetrics != null) {
+      switch (checkId) {
+        case PositionLimit -> riskMetrics.rejectPositionLimit++;
+        case FatFinger -> riskMetrics.rejectFatFinger++;
+        case RiskLimitsNotLoaded -> riskMetrics.rejectRiskLimitsNotLoaded++;
+        default -> {
+          // Other RiskCheckEnum values (RateLimit, MaxOrderSize, TradingHalted, etc.) are
+          // pre-APP-62 paths whose counters live elsewhere (rfqMetrics, sessionMetric*); no
+          // double-counting at this site. Future check additions get an explicit arm here.
+        }
+      }
     }
 
     orderRejectedEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
@@ -2380,10 +2441,21 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       final long clusterTimestamp) {
     // Skip crossed / locked / sentinel-zero markets — mid is non-meaningful for fat-finger.
     if (bidPrice <= 0L || askPrice <= 0L || bidPrice >= askPrice) {
+      // APP-62 §F — skip-counter for ops triage. Expected during fast markets; alert only on
+      // sustained high rate. Null-safe for the standalone-handler test path.
+      if (riskMetrics != null) {
+        riskMetrics.priceCrossedLockedSkips++;
+      }
       return;
     }
     // Upper-bound sanity: reject obviously-garbage prices before they pollute the cache.
     if (bidPrice > MAX_REASONABLE_PRICE || askPrice > MAX_REASONABLE_PRICE) {
+      // APP-62 §F — distinct counter from crossed/locked because operators alert differently:
+      // a non-zero priceUpperBoundSkips suggests a pricing-service decimal-place bug or hostile
+      // input and should page on first occurrence in production.
+      if (riskMetrics != null) {
+        riskMetrics.priceUpperBoundSkips++;
+      }
       return;
     }
     // Overflow-safe midpoint: ask > bid > 0 and both bounded above by MAX_REASONABLE_PRICE so
@@ -2391,6 +2463,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     long mid = bidPrice + (askPrice - bidPrice) / 2L;
     // Defense-in-depth — never let a sentinel value slip into the cache.
     if (mid == LAST_PRICE_MISSING) {
+      // Reuse the upper-bound counter: the only path to this branch is a near-overflow arithmetic
+      // edge that survived the MAX_REASONABLE_PRICE guard, which is the same operational class of
+      // "garbage input made it past the gate" the upper-bound counter tracks.
+      if (riskMetrics != null) {
+        riskMetrics.priceUpperBoundSkips++;
+      }
       return;
     }
     lastQuotedMidPrice.put(symbolHash, mid);
