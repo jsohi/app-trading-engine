@@ -372,9 +372,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
 
   /**
    * Staleness window for the last-quoted-mid reference. A reference older than this is treated as
-   * "no reference" by check 11f. Set to 5 minutes per plan §3.2 default. Should become a {@code
-   * LauncherConfig.riskEngine.lastPriceStalenessNanos} knob in a follow-up slice; left as a
-   * constant here for the first commit.
+   * "no reference" by check 11f. Set to 5 minutes per plan §3.2 default.
+   *
+   * <p>TODO(APP-62): promote to {@code LauncherConfig.riskEngine.lastPriceStalenessNanos} so ops
+   * can tune the window without a redeploy. Left as a constant here so the first §5 fat-finger
+   * slice could land without entangling LauncherConfig plumbing.
    */
   static final long LAST_PRICE_STALENESS_NANOS = 5L * 60L * 1_000_000_000L;
 
@@ -382,6 +384,9 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * Upper-bound guard on PriceResponse mid input. Prices above this are skipped as nonsense
    * (defends against pricing-service malfunctions that could otherwise poison the fat-finger
    * reference). Fixed-point 10⁻⁸; corresponds to ~10¹⁰ raw price units.
+   *
+   * <p>TODO(APP-62): promote to {@code LauncherConfig.riskEngine.maxReasonablePrice} alongside the
+   * staleness knob above.
    */
   static final long MAX_REASONABLE_PRICE = 1_000_000_000_000_000_000L;
 
@@ -1247,13 +1252,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      explicit boolean removes the "0 means disabled" ambiguity. Saturation overflow on the
     //      projected sum is treated as a breach via the strict `>` comparison.
     if (riskLimit != null && riskLimit.positionLimitEnabled()) {
-      final long symbolHash = packSymbolKey(symbolScratch, 0);
-      final long currentLong = workingLongFor(account.accountId(), symbolHash);
-      final long currentShort = workingShortFor(account.accountId(), symbolHash);
-      final long projectedLong =
-          side == SideEnum.Buy ? safeAdd(currentLong, orderQty) : currentLong;
-      final long projectedShort =
-          side == SideEnum.Sell ? safeAdd(currentShort, orderQty) : currentShort;
+      long symbolHash = packSymbolKey(symbolScratch, 0);
+      long currentLong = workingLongFor(account.accountId(), symbolHash);
+      long currentShort = workingShortFor(account.accountId(), symbolHash);
+      long projectedLong = side == SideEnum.Buy ? safeAdd(currentLong, orderQty) : currentLong;
+      long projectedShort = side == SideEnum.Sell ? safeAdd(currentShort, orderQty) : currentShort;
       if (projectedLong > riskLimit.maxLongPosition()) {
         emitOrderRejectedWithBreachContext(
             eventSink,
@@ -1611,7 +1614,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //     only AFTER all admission side-effects so a cancel-revert (see emitOrderCanceledEvent)
     //     can safely subtract the same delta. Symbol bytes are read from the handler's stashed
     //     symbolScratch — already populated during this onCommand pass.
-    final long symbolHashApp62 = packSymbolKey(symbolScratch, 0);
+    long symbolHashApp62 = packSymbolKey(symbolScratch, 0);
     applyWorkingPosition(account.accountId(), symbolHashApp62, side, orderQty);
   }
 
@@ -2067,8 +2070,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // The revert is idempotent (no-op when the inner map is missing); applies regardless of
     // cancelReason (SessionDisconnect / IdleTimeout / ExplicitCancel / OperatorForce all release
     // the working exposure).
-    final long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
-    revertWorkingPosition(state.accountId(), symbolHashApp62Cxl, state.side(), state.orderQty());
+    //
+    // Subtract the LIVE working leaves (orderQty - cumQty), NOT the original orderQty. Today
+    // cumQty is always 0 (no matching engine) so the two are equal, but once APP-180 lands and
+    // partial fills become possible, only the un-filled remainder is still "working" — the filled
+    // portion was already decremented when the fill landed via applyFill (future). Subtracting the
+    // full orderQty here would drive the counter negative and silently let the next admit exceed
+    // the configured cap.
+    long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
+    long leavesQtyApp62Cxl = state.orderQty() - state.cumQty();
+    if (leavesQtyApp62Cxl > 0L) {
+      revertWorkingPosition(state.accountId(), symbolHashApp62Cxl, state.side(), leavesQtyApp62Cxl);
+    }
   }
 
   // ===========================================================================
@@ -2108,8 +2121,13 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * <p>Use from APP-62 validation checks 11e (position), 11f (fat-finger), 11g (symbol
    * eligibility), and 0a (RiskLimitsNotLoaded) where the audit semantics require explicit limit /
    * projected values for SEC 15c3-5(b) reconstruction. Existing call sites continue to use the
-   * 6-arg {@link #emitOrderRejected} which defaults to {@code RiskCheckEnum.NULL_VAL} + {@code 0L}
-   * / {@code 0L} — backward-compatible by SBE block-length zero-padding semantics.
+   * 6-arg {@link #emitOrderRejected} which delegates to this method with {@code
+   * RiskCheckEnum.NULL_VAL} + {@code 0L} + {@code 0L} for the breach-context fields. The encoder
+   * always writes the new {@code orderQty} / {@code price} / {@code limitValue} / {@code
+   * projectedValue} / {@code checkId} fields on every reject — {@code orderQty} and {@code price}
+   * come from {@link #stashedOrderQty} / {@link #stashedPrice} captured during NOS decode, so even
+   * legacy reject paths now emit the rejected command's qty/price on the audit event (this is
+   * explicit encoder writes — not SBE zero-padding).
    *
    * @param checkId the validation check that produced this reject (audit discriminator)
    * @param limitValue the configured limit at time of check, fixed-point (semantics depend on
@@ -2221,6 +2239,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * (order quantity), so mixed-sign overflow is impossible by construction.
    */
   static long safeAdd(final long a, final long b) {
+    assert b >= 0L : "safeAdd requires non-negative b (caller passes order quantity)";
     if (a > 0L && b > Long.MAX_VALUE - a) {
       return Long.MAX_VALUE;
     }
@@ -2248,9 +2267,15 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
 
   /**
    * Adds {@code orderQty} (fixed-point 10⁻⁸) to the working LONG or SHORT counter for the given
-   * {@code (accountId, symbolHash)}, depending on {@code side}. Allocates the per-account inner map
-   * on first touch only (not a steady-state hot-path allocation). Called from the admit path after
+   * {@code (accountId, symbolHash)}, depending on {@code side}. Called from the admit path after
    * Check 11e accepts the order.
+   *
+   * <p><b>Allocation.</b> Cold path: lazy first-touch only. One {@link Long2LongHashMap} per {@code
+   * (accountId, side)} is allocated on the first admission against that account from that side;
+   * every subsequent admit for the same {@code (accountId, side)} reuses the existing inner map and
+   * is strictly zero-allocation. A follow-up slice can move the allocation to {@code LoadRiskLimit}
+   * ingress (where the risk record is registered) so even the first-touch is off the admit path;
+   * the lazy form here keeps the §4 slice standalone.
    */
   void applyWorkingPosition(
       final long accountId, final long symbolHash, final SideEnum side, final long orderQty) {
@@ -2306,10 +2331,21 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * after construction.
    *
    * <p>This method is called from the cluster's PriceResponse dispatch path (Raft-replicated), so
-   * the cache mutation is deterministic across replicas. Wiring lives in {@link
-   * com.trading.engine.cluster.handler.PriceResponseHandler PriceResponseHandler} (or directly from
-   * {@link com.trading.engine.cluster.TradingClusteredService TradingClusteredService} — slice TBD;
-   * this method is the contract).
+   * the cache mutation is deterministic across replicas.
+   *
+   * <p><b>OPERATIONAL GATE — KNOWN GAP.</b> As of commit {@code fb8fb11} this method has no caller;
+   * the {@link com.trading.engine.cluster.handler.PriceResponseHandler PriceResponseHandler}
+   * dispatch hook lands in a follow-up slice. Until that wires up, the {@link #lastQuotedMidPrice}
+   * cache stays empty, and any {@code LoadRiskLimit} that sets {@code fatFingerEnabled=true} with
+   * the industry-standard {@code fatFingerFailClosed=true} default will reject EVERY limit /
+   * PreviouslyQuoted order (no reference → fail-closed). Test fixtures default {@code
+   * fatFingerEnabled=false} so unit tests do not surface this, but production YAML loads MUST keep
+   * {@code fatFingerEnabled=false} until the wire-up commit lands. The risk is documented here so a
+   * future reviewer landing the hook can close this finding by removing this paragraph.
+   *
+   * <p>TODO(APP-62): wire PriceResponseHandler / TradingClusteredService dispatch on tpl 51
+   * (PriceResponse) to call {@link #updateLastQuotedMid}; remove the OPERATIONAL GATE paragraph
+   * above when the wire-up lands.
    *
    * @param symbolHash packed symbol key, see {@link #packSymbolKey}
    * @param bidPrice bid side, fixed-point 10⁻⁸; values &le; 0 cause a skip
