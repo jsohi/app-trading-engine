@@ -20,6 +20,7 @@ import com.trading.engine.cluster.refdata.LoadCurrencyHandler;
 import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
@@ -138,6 +139,7 @@ class RfqLifecycleEventsIT {
     final var accountStore = new AccountStore();
     final var currencyStore = new CurrencyStore();
     final var riskLimitStore = new RiskLimitStore();
+    final var symbolEligibilityStore = new SymbolEligibilityStore();
 
     // Seed a CAN_RFQ-capable account (id=10, code=RFQACCT).
     accountStore.put(makeRfqAccount(10L, RFQ_ACCOUNT));
@@ -154,6 +156,7 @@ class RfqLifecycleEventsIT {
     registry.registerStore(accountStore);
     registry.registerStore(currencyStore);
     registry.registerStore(riskLimitStore);
+    registry.registerStore(symbolEligibilityStore);
     registry.registerLoader(new LoadAccountHandler(accountStore, currencyStore));
     registry.registerLoader(new LoadCurrencyHandler(currencyStore));
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
@@ -169,6 +172,7 @@ class RfqLifecycleEventsIT {
             accountStore,
             currencyStore,
             riskLimitStore,
+            symbolEligibilityStore,
             registry,
             rfqStateMachine,
             rfqMetrics,

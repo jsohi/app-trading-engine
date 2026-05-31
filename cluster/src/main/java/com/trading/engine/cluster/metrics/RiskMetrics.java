@@ -47,6 +47,15 @@ public final class RiskMetrics {
    */
   public long rejectRiskLimitsNotLoaded;
 
+  /**
+   * Increments on every {@code OrderRejectedEvent} emitted with {@code
+   * RejectReasonEnum.RegulatoryRestriction} (plan §3.3 check 11g, §G symbol-eligibility). Counts
+   * all three breach paths (no eligibility loaded, symbol-trading-halted, short-sale-restricted)
+   * under a single field — operators triage by GFLog WARN tag-58 prefix which carries the specific
+   * breach reason.
+   */
+  public long rejectSymbolEligibility;
+
   // ---- Silent-skip counters on the PriceResponse → reference-cache feed path ----
 
   /**
@@ -114,7 +123,10 @@ public final class RiskMetrics {
    * @return sum of all reject counters
    */
   public long totalRejects() {
-    return rejectPositionLimit + rejectFatFinger + rejectRiskLimitsNotLoaded;
+    return rejectPositionLimit
+        + rejectFatFinger
+        + rejectRiskLimitsNotLoaded
+        + rejectSymbolEligibility;
   }
 
   /**

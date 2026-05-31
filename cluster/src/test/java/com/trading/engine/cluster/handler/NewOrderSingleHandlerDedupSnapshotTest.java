@@ -13,6 +13,7 @@ import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyFixtures;
 import com.trading.engine.cluster.refdata.CurrencyStore;
+import com.trading.engine.cluster.refdata.ReferenceDataSeeder;
 import com.trading.engine.cluster.refdata.RiskLimitFixtures;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.state.RfqStateMachine;
@@ -117,7 +118,12 @@ class NewOrderSingleHandlerDedupSnapshotTest {
     final var quoteIdGen = new IdGenerator("QTE");
     final var tradingState = new TradingState(orderBook, orderIdGen, execIdGen, quoteIdGen);
     final var h =
-        new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
+        new NewOrderSingleHandler(
+            tradingState,
+            accountStore,
+            currencyStore,
+            riskLimitStore,
+            ReferenceDataSeeder.permissiveSymbolEligibilityStore());
     final var rfqMetrics = new RfqMetrics();
     final var rfqStateMachine =
         new RfqStateMachine(

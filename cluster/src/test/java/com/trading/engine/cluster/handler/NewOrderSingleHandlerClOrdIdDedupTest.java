@@ -16,6 +16,7 @@ import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyFixtures;
 import com.trading.engine.cluster.refdata.CurrencyStore;
+import com.trading.engine.cluster.refdata.ReferenceDataSeeder;
 import com.trading.engine.cluster.refdata.RiskLimitFixtures;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
@@ -93,7 +94,13 @@ class NewOrderSingleHandlerClOrdIdDedupTest {
     final var rfqMetrics = new RfqMetrics();
     final var rfqStateMachine = buildRfqStateMachine();
 
-    handler = new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
+    handler =
+        new NewOrderSingleHandler(
+            tradingState,
+            accountStore,
+            currencyStore,
+            riskLimitStore,
+            ReferenceDataSeeder.permissiveSymbolEligibilityStore());
     handler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
 
     session = new FakeClientSession(42L);

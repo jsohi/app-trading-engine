@@ -9,6 +9,7 @@ import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.state.RfqSlot;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
@@ -165,6 +166,13 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   private final AccountStore accountStore;
   private final CurrencyStore currencyStore;
   private final RiskLimitStore riskLimitStore;
+
+  /**
+   * APP-62 §G — per-symbol restricted-symbol / short-sale-restricted gate. Held as a final field so
+   * check 11g (to be implemented separately) can read it without a registry lookup on the hot path.
+   * Populated by the constructor; null is rejected via {@link Objects#requireNonNull}.
+   */
+  private final SymbolEligibilityStore symbolEligibilityStore;
 
   // ===========================================================================
   // ClOrdID dedup (APP-206)
@@ -664,16 +672,22 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * @param accountStore the account reference data store (must not be null)
    * @param currencyStore the currency reference data store (must not be null)
    * @param riskLimitStore the risk limit store (must not be null)
+   * @param symbolEligibilityStore the APP-62 §G symbol-eligibility store backing check 11g
+   *     (restricted-symbol / short-sale-restricted gate); must not be null. Held as a final field
+   *     so the future check 11g reads it without a registry lookup on the hot path.
    */
   public NewOrderSingleHandler(
       final TradingState tradingState,
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
-      final RiskLimitStore riskLimitStore) {
+      final RiskLimitStore riskLimitStore,
+      final SymbolEligibilityStore symbolEligibilityStore) {
     this.tradingState = Objects.requireNonNull(tradingState, "tradingState");
     this.accountStore = Objects.requireNonNull(accountStore, "accountStore");
     this.currencyStore = Objects.requireNonNull(currencyStore, "currencyStore");
     this.riskLimitStore = Objects.requireNonNull(riskLimitStore, "riskLimitStore");
+    this.symbolEligibilityStore =
+        Objects.requireNonNull(symbolEligibilityStore, "symbolEligibilityStore");
   }
 
   /**
@@ -1403,6 +1417,61 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
           return null;
         }
       }
+    }
+
+    // 11g. (APP-62 §G) Symbol-eligibility / Reg SHO restricted-symbol gate (SEC 15c3-5(c)(1)(ii)
+    //      restricted-symbol subset). Fail-closed: if no eligibility record has been loaded for
+    //      the symbol, the order is rejected — same posture as Check 0a (no risk limits → reject)
+    //      and §5 fat-finger no-reference fail-closed. Operators MUST load symbol-eligibility
+    //      records at start-of-day for every tradable symbol.
+    //
+    //      Phase-1 short-sale check (per plan §3.9a): every Sell against a short-restricted
+    //      symbol rejects. True long/short discrimination needs per-account filled position from
+    //      the matching engine (APP-180); conservative behaviour is documented in operations.md.
+    //
+    //      Primitive locals bare (no `final`) per memory feedback_final_primitives_autoboxing.md.
+    long symEligHash = packSymbolKey(symbolScratch, 0);
+    final var eligibility = symbolEligibilityStore.get(symEligHash);
+    if (eligibility == null) {
+      emitOrderRejectedWithBreachContext(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RegulatoryRestriction,
+          "symbol-eligibility record not loaded — fail-closed (§G)",
+          RiskCheckEnum.SymbolEligibility,
+          0L,
+          0L);
+      return null;
+    }
+    if (!eligibility.tradingAllowed()) {
+      emitOrderRejectedWithBreachContext(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RegulatoryRestriction,
+          "symbol trading halted (§G tradingAllowed=0)",
+          RiskCheckEnum.SymbolEligibility,
+          1L,
+          0L);
+      return null;
+    }
+    if (side == SideEnum.Sell && !eligibility.shortSaleAllowed()) {
+      // Phase-1 conservative: every Sell against a short-restricted symbol rejects. Refinement
+      // to long-vs-short discrimination depends on filled-position state from APP-180.
+      emitOrderRejectedWithBreachContext(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RegulatoryRestriction,
+          "short-sale restricted for symbol (§G Reg SHO)",
+          RiskCheckEnum.SymbolEligibility,
+          1L,
+          0L);
+      return null;
     }
 
     return account;
@@ -2231,6 +2300,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
         case PositionLimit -> riskMetrics.rejectPositionLimit++;
         case FatFinger -> riskMetrics.rejectFatFinger++;
         case RiskLimitsNotLoaded -> riskMetrics.rejectRiskLimitsNotLoaded++;
+        case SymbolEligibility -> riskMetrics.rejectSymbolEligibility++;
         default -> {
           // Other RiskCheckEnum values (RateLimit, MaxOrderSize, TradingHalted, etc.) are
           // pre-APP-62 paths whose counters live elsewhere (rfqMetrics, sessionMetric*); no

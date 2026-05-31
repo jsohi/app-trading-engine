@@ -17,6 +17,7 @@ import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
@@ -112,7 +113,7 @@ public final class TradingClusteredService implements ClusteredService {
    * {@code ClOrdIdDedupSnapshot} (template 210) — required so the 24h ClOrdID-uniqueness contract
    * survives snapshot+restore.
    */
-  private static final int SNAPSHOT_STORE_COUNT = 8;
+  private static final int SNAPSHOT_STORE_COUNT = 9;
 
   /**
    * Maximum consecutive empty polls tolerated during snapshot reassembly in {@link #onStart} before
@@ -138,6 +139,7 @@ public final class TradingClusteredService implements ClusteredService {
   private final AccountStore accountStore;
   private final CurrencyStore currencyStore;
   private final RiskLimitStore riskLimitStore;
+  private final SymbolEligibilityStore symbolEligibilityStore;
   private final ReferenceDataRegistry referenceDataRegistry;
   private final RfqStateMachine rfqStateMachine;
   private final RfqMetrics rfqMetrics;
@@ -184,6 +186,7 @@ public final class TradingClusteredService implements ClusteredService {
   private final MutableDirectBuffer accountSnapBuf = new ExpandableArrayBuffer(64 * 1024);
   private final MutableDirectBuffer currencySnapBuf = new ExpandableArrayBuffer(8 * 1024);
   private final MutableDirectBuffer riskLimitSnapBuf = new ExpandableArrayBuffer(64 * 1024);
+  private final MutableDirectBuffer symbolEligibilitySnapBuf = new ExpandableArrayBuffer(64 * 1024);
   private final MutableDirectBuffer orderBookSnapBuf = new ExpandableArrayBuffer(8 * 1024 * 1024);
 
   /** Snapshot 203 (RfqStateSnapshot) staging buffer. Sized for capacity 8192 × ~320 bytes/slot. */
@@ -204,6 +207,7 @@ public final class TradingClusteredService implements ClusteredService {
   private int accountSnapLen;
   private int currencySnapLen;
   private int riskLimitSnapLen;
+  private int symbolEligibilitySnapLen;
   private int orderBookSnapLen;
   private int rfqStateSnapLen;
   private int clOrdIdDedupSnapLen;
@@ -230,6 +234,7 @@ public final class TradingClusteredService implements ClusteredService {
   private boolean accountFragmentSeen;
   private boolean currencyFragmentSeen;
   private boolean riskLimitFragmentSeen;
+  private boolean symbolEligibilityFragmentSeen;
   private boolean rfqStateFragmentSeen;
   private boolean clOrdIdDedupFragmentSeen;
   private boolean orderIdGenRestored;
@@ -248,6 +253,8 @@ public final class TradingClusteredService implements ClusteredService {
    * @param accountStore the account reference data store (must not be null)
    * @param currencyStore the currency reference data store (must not be null)
    * @param riskLimitStore the risk limit store (must not be null)
+   * @param symbolEligibilityStore the APP-62 §G symbol-eligibility store (must not be null) —
+   *     drives the restricted-symbol / short-sale-restricted admission check
    * @param referenceDataRegistry the ref-data command dispatcher + snapshot registry (must not be
    *     null)
    */
@@ -258,6 +265,7 @@ public final class TradingClusteredService implements ClusteredService {
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore,
+      final SymbolEligibilityStore symbolEligibilityStore,
       final ReferenceDataRegistry referenceDataRegistry,
       final RfqStateMachine rfqStateMachine,
       final RfqMetrics rfqMetrics,
@@ -268,6 +276,7 @@ public final class TradingClusteredService implements ClusteredService {
     this.accountStore = notNull(accountStore, "accountStore");
     this.currencyStore = notNull(currencyStore, "currencyStore");
     this.riskLimitStore = notNull(riskLimitStore, "riskLimitStore");
+    this.symbolEligibilityStore = notNull(symbolEligibilityStore, "symbolEligibilityStore");
     this.referenceDataRegistry = notNull(referenceDataRegistry, "referenceDataRegistry");
     this.rfqStateMachine = notNull(rfqStateMachine, "rfqStateMachine");
     this.rfqMetrics = notNull(rfqMetrics, "rfqMetrics");
@@ -285,12 +294,18 @@ public final class TradingClusteredService implements ClusteredService {
         RiskLimitStore.SNAPSHOT_TEMPLATE_ID,
         riskLimitStore,
         "riskLimitStore");
+    requireSameStore(
+        referenceDataRegistry,
+        SymbolEligibilityStore.SNAPSHOT_TEMPLATE_ID,
+        symbolEligibilityStore,
+        "symbolEligibilityStore");
 
     // Register trading command handlers. Each handler is keyed by its SBE template ID for
     // O(1) dispatch in onSessionMessage.
     this.commandHandlers = new Int2ObjectHashMap<>();
     this.newOrderSingleHandler =
-        new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
+        new NewOrderSingleHandler(
+            tradingState, accountStore, currencyStore, riskLimitStore, symbolEligibilityStore);
     this.newOrderSingleHandler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
     // APP-62 §F — wire cluster-scoped risk counters so emitOrderRejected and updateLastQuotedMid
     // can record per-reason rejects + reference-cache skips. The setter form mirrors
@@ -638,6 +653,7 @@ public final class TradingClusteredService implements ClusteredService {
             + accountSnapLen
             + currencySnapLen
             + riskLimitSnapLen
+            + symbolEligibilitySnapLen
             + orderBookSnapLen
             + rfqStateSnapLen
             + clOrdIdDedupSnapLen;
@@ -685,6 +701,10 @@ public final class TradingClusteredService implements ClusteredService {
     pos += currencySnapLen;
     snapshotReassemblyBuf.putBytes(pos, riskLimitSnapBuf, 0, riskLimitSnapLen);
     pos += riskLimitSnapLen;
+    // APP-62 §G — emit SymbolEligibilitySnapshot (tpl 213) alongside the other ref-data fragments.
+    // Order matters only for CRC matching; the loadSnapshot dispatch walks by templateId.
+    snapshotReassemblyBuf.putBytes(pos, symbolEligibilitySnapBuf, 0, symbolEligibilitySnapLen);
+    pos += symbolEligibilitySnapLen;
     snapshotReassemblyBuf.putBytes(pos, orderBookSnapBuf, 0, orderBookSnapLen);
     pos += orderBookSnapLen;
     snapshotReassemblyBuf.putBytes(pos, rfqStateSnapBuf, 0, rfqStateSnapLen);
@@ -831,10 +851,15 @@ public final class TradingClusteredService implements ClusteredService {
     idGenGroup.counter(tradingState.quoteIdGen().currentCounter());
     idGenSnapLen = MessageHeaderEncoder.ENCODED_LENGTH + idGenSnapEncoder.encodedLength();
 
-    // 3-5. Ref-data stores — each returns the total bytes including header.
+    // 3-6. Ref-data stores — each returns the total bytes including header.
     accountSnapLen = accountStore.snapshotTo(accountSnapBuf, 0);
     currencySnapLen = currencyStore.snapshotTo(currencySnapBuf, 0);
     riskLimitSnapLen = riskLimitStore.snapshotTo(riskLimitSnapBuf, 0);
+    // APP-62 §G — SymbolEligibilitySnapshot (template 213). Required for the §G fail-closed
+    // contract to survive cluster snapshot restore: loadSnapshot calls
+    // referenceDataRegistry.resetAll() which clears the eligibility map; without restoring tpl
+    // 213 the map ends up empty and every order would be rejected with RegulatoryRestriction.
+    symbolEligibilitySnapLen = symbolEligibilityStore.snapshotTo(symbolEligibilitySnapBuf, 0);
 
     // 6. OrderBookSnapshot.
     orderBookSnapLen = tradingState.snapshotOrderBookTo(orderBookSnapBuf, 0);
@@ -855,6 +880,7 @@ public final class TradingClusteredService implements ClusteredService {
     crc.update(accountSnapBuf.byteArray(), 0, accountSnapLen);
     crc.update(currencySnapBuf.byteArray(), 0, currencySnapLen);
     crc.update(riskLimitSnapBuf.byteArray(), 0, riskLimitSnapLen);
+    crc.update(symbolEligibilitySnapBuf.byteArray(), 0, symbolEligibilitySnapLen);
     crc.update(orderBookSnapBuf.byteArray(), 0, orderBookSnapLen);
     crc.update(rfqStateSnapBuf.byteArray(), 0, rfqStateSnapLen);
     crc.update(clOrdIdDedupSnapBuf.byteArray(), 0, clOrdIdDedupSnapLen);
@@ -866,6 +892,7 @@ public final class TradingClusteredService implements ClusteredService {
             + accountSnapLen
             + currencySnapLen
             + riskLimitSnapLen
+            + symbolEligibilitySnapLen
             + orderBookSnapLen
             + rfqStateSnapLen
             + clOrdIdDedupSnapLen;
@@ -907,6 +934,10 @@ public final class TradingClusteredService implements ClusteredService {
     return riskLimitSnapLen;
   }
 
+  int symbolEligibilitySnapLength() {
+    return symbolEligibilitySnapLen;
+  }
+
   int orderBookSnapLength() {
     return orderBookSnapLen;
   }
@@ -941,6 +972,10 @@ public final class TradingClusteredService implements ClusteredService {
 
   MutableDirectBuffer riskLimitSnapBuffer() {
     return riskLimitSnapBuf;
+  }
+
+  MutableDirectBuffer symbolEligibilitySnapBuffer() {
+    return symbolEligibilitySnapBuf;
   }
 
   MutableDirectBuffer orderBookSnapBuffer() {
@@ -1034,6 +1069,7 @@ public final class TradingClusteredService implements ClusteredService {
     accountFragmentSeen = false;
     currencyFragmentSeen = false;
     riskLimitFragmentSeen = false;
+    symbolEligibilityFragmentSeen = false;
     rfqStateFragmentSeen = false;
     clOrdIdDedupFragmentSeen = false;
     orderIdGenRestored = false;
@@ -1085,6 +1121,7 @@ public final class TradingClusteredService implements ClusteredService {
         || !accountFragmentSeen
         || !currencyFragmentSeen
         || !riskLimitFragmentSeen
+        || !symbolEligibilityFragmentSeen
         || !rfqStateFragmentSeen) {
       throw new IllegalStateException(
           "snapshot missing required fragments"
@@ -1098,6 +1135,8 @@ public final class TradingClusteredService implements ClusteredService {
               + currencyFragmentSeen
               + ", riskLimit="
               + riskLimitFragmentSeen
+              + ", symbolEligibility="
+              + symbolEligibilityFragmentSeen
               + ", orderBook="
               + orderBookFragmentSeen
               + ", rfqState="
@@ -1223,6 +1262,13 @@ public final class TradingClusteredService implements ClusteredService {
         throw new IllegalStateException("duplicate RiskLimitSnapshot fragment in snapshot");
       }
       riskLimitFragmentSeen = true;
+    } else if (templateId == SymbolEligibilityStore.SNAPSHOT_TEMPLATE_ID) {
+      // APP-62 §G — gate duplicate eligibility fragments the same way as the other ref-data
+      // stores. Restore itself is dispatched through referenceDataRegistry.restoreFragment below.
+      if (symbolEligibilityFragmentSeen) {
+        throw new IllegalStateException("duplicate SymbolEligibilitySnapshot fragment in snapshot");
+      }
+      symbolEligibilityFragmentSeen = true;
     }
     final int consumed = referenceDataRegistry.restoreFragment(headerDecoder, src, offset);
     if (consumed != ReferenceDataRegistry.NOT_HANDLED) {
