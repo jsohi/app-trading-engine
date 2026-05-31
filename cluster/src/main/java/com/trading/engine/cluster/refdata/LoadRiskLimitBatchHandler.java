@@ -15,6 +15,14 @@ import org.agrona.MutableDirectBuffer;
  * (templateId 16). Iterates the {@code noRiskLimits} repeating group, validates each record with
  * the same rules as {@link LoadRiskLimitHandler} (including APP-62 §H 4-eyes), and emits one event
  * per record.
+ *
+ * <p><b>Threading.</b> Not thread-safe — single-threaded cluster duty cycle only. The {@code
+ * proposerIdScratch} and {@code approverIdScratch} byte arrays are mutable per-instance buffers
+ * that are reused on every {@link #onBatchCommand} call.
+ *
+ * <p><b>Allocation.</b> Zero-allocation on the validate-and-emit hot path. The single exception is
+ * the first-load {@code new RiskLimitState()} for accounts without a prior record; this is the
+ * reference-data ingress path and is acceptable per the CLAUDE.md carve-out.
  */
 public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader {
 
@@ -32,7 +40,8 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
   private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
   private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
 
-  public LoadRiskLimitBatchHandler(RiskLimitStore riskLimitStore, AccountStore accountStore) {
+  public LoadRiskLimitBatchHandler(
+      final RiskLimitStore riskLimitStore, final AccountStore accountStore) {
     if (riskLimitStore == null) {
       throw new NullPointerException("riskLimitStore must not be null");
     }
@@ -50,11 +59,11 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
 
   @Override
   public int onBatchCommand(
-      MessageHeaderDecoder header,
-      DirectBuffer src,
+      final MessageHeaderDecoder header,
+      final DirectBuffer src,
       int srcOffset,
       int srcLength,
-      MutableDirectBuffer eventDst,
+      final MutableDirectBuffer eventDst,
       int eventDstOffset,
       long firstSequenceNumber,
       long clusterTimestampNanos) {
@@ -128,7 +137,8 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       // §H 4-eyes
       group.getProposerId(proposerIdScratch, 0);
       group.getApproverId(approverIdScratch, 0);
-      if (isAllZero(proposerIdScratch) || isAllZero(approverIdScratch)) {
+      if (AccountIdentifierBytes.isAllZero(proposerIdScratch)
+          || AccountIdentifierBytes.isAllZero(approverIdScratch)) {
         written +=
             emitRejected(
                 eventDst,
@@ -140,7 +150,7 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
                 "proposerId and approverId must be non-empty");
         continue;
       }
-      if (byteEquals(proposerIdScratch, approverIdScratch)) {
+      if (AccountIdentifierBytes.byteEquals(proposerIdScratch, approverIdScratch)) {
         written +=
             emitRejected(
                 eventDst,
@@ -205,13 +215,13 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
   }
 
   private int emitRejected(
-      MutableDirectBuffer eventDst,
+      final MutableDirectBuffer eventDst,
       int eventDstOffset,
       long sequenceNumber,
       long clusterTimestampNanos,
       long accountId,
-      RejectReasonEnum reason,
-      String text) {
+      final RejectReasonEnum reason,
+      final String text) {
     rejectedEncoder.wrapAndApplyHeader(eventDst, eventDstOffset, headerEncoder);
     rejectedEncoder.sequenceNumber(sequenceNumber);
     rejectedEncoder.timestamp(clusterTimestampNanos);
@@ -219,23 +229,5 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
     rejectedEncoder.rejectReason(reason);
     rejectedEncoder.text(text);
     return MessageHeaderEncoder.ENCODED_LENGTH + rejectedEncoder.encodedLength();
-  }
-
-  private static boolean isAllZero(byte[] buf) {
-    for (int i = 0; i < buf.length; i++) {
-      if (buf[i] != 0) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private static boolean byteEquals(byte[] a, byte[] b) {
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 }

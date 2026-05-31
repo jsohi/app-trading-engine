@@ -62,6 +62,7 @@ import com.trading.engine.messages.sbe.WebSocketGapRequestEncoder;
 import com.trading.engine.messages.sbe.WebSocketHeartbeatEncoder;
 import com.trading.engine.messages.sbe.WebSocketSubscribeEncoder;
 import com.trading.engine.messages.sbe.WebSocketUnsubscribeEncoder;
+import java.nio.charset.StandardCharsets;
 import org.agrona.MutableDirectBuffer;
 
 /**
@@ -100,9 +101,9 @@ public final class SbeTestEncoder {
 
   private static final byte[] DEFAULT_APPROVER_ID = paddedAscii("TEST-APPROVER");
 
-  private static byte[] paddedAscii(String s) {
-    byte[] out = new byte[16];
-    byte[] src = s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  private static byte[] paddedAscii(final String s) {
+    final byte[] out = new byte[16];
+    final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
     return out;
   }
@@ -508,11 +509,10 @@ public final class SbeTestEncoder {
    * @param status risk limit status
    * @param transactTime transaction time epoch nanos (TransactTime, tag 60)
    * @return total encoded length including SBE header
-   *
-   * <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates {@code proposerId} = {@code
-   * "TEST-PROPOSER"} and {@code approverId} = {@code "TEST-APPROVER"} so the §H 4-eyes validation
-   * in {@link com.trading.engine.cluster.refdata.LoadRiskLimitHandler} sees valid distinct
-   * identifiers. All other new APP-62 fields default to 0 / false in SBE.
+   *     <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates {@code proposerId} = {@code
+   *     "TEST-PROPOSER"} and {@code approverId} = {@code "TEST-APPROVER"} so the §H 4-eyes
+   *     validation in {@link com.trading.engine.cluster.refdata.LoadRiskLimitHandler} sees valid
+   *     distinct identifiers. All other new APP-62 fields default to 0 / false in SBE.
    */
   public static int encodeLoadRiskLimit(
       final MutableDirectBuffer dst,
@@ -1180,8 +1180,7 @@ public final class SbeTestEncoder {
    * @param maxOrderNotional maximum single-order notional in fixed-point 10^8
    * @param maxDailyVolume maximum daily volume in fixed-point 10^8
    * @return total encoded length including SBE header
-   *
-   * <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates proposerId/approverId for §H.
+   *     <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates proposerId/approverId for §H.
    */
   public static int encodeRiskLimitLoadedEvent(
       final MutableDirectBuffer dst,
