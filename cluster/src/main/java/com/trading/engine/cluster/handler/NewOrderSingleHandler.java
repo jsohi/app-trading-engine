@@ -310,6 +310,40 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
           ACCOUNT_DAILY_VOLUME_INITIAL_CAPACITY, 0.65f, ACCOUNT_DAILY_VOLUME_MISSING);
 
   // ===========================================================================
+  // APP-62 §4 — per-(account, symbol) WORKING long / short position state
+  //
+  // The position-limit check (11e) bounds each account's maximum simultaneous
+  // working buy quantity and maximum working sell quantity per symbol, separately
+  // (CME PTRM Long-Qty / Short-Qty convention; matches plan §3.1 / §3.3).
+  //
+  // Storage: outer Long2ObjectHashMap keyed by accountId → inner Long2LongHashMap
+  // keyed by packed symbolHash → working quantity (fixed-point 10⁻⁸).
+  // The outer map allocates an inner map exactly once per account on first
+  // admission against that account's symbol; subsequent admissions reuse it.
+  // First-touch is per-account-per-symbol, not the order-matching hot path.
+  //
+  // Sentinel: 0L missing-value (no working quantity for that (account, symbol)).
+  // The hot path uses primitive long get/put; no boxing.
+  //
+  // Inner maps are sized to 64 entries × 0.55 load factor (Agrona default) =
+  // ~35 symbols per account before rehashing. Adequate for typical FX desks.
+  // ===========================================================================
+
+  /** Initial inner-map capacity for per-account working position scratch. */
+  private static final int WORKING_POSITION_INNER_INITIAL_CAPACITY = 64;
+
+  /** Sentinel: missing means "no working long quantity recorded for (account, symbol)." */
+  static final long WORKING_POSITION_MISSING = 0L;
+
+  /** Per-(account, symbol) working LONG quantity in fixed-point 10⁻⁸ (APP-62 §4). */
+  final Long2ObjectHashMap<Long2LongHashMap> accountSymbolWorkingLong =
+      new Long2ObjectHashMap<>(1024, 0.65f);
+
+  /** Per-(account, symbol) working SHORT quantity in fixed-point 10⁻⁸ (APP-62 §4). */
+  final Long2ObjectHashMap<Long2LongHashMap> accountSymbolWorkingShort =
+      new Long2ObjectHashMap<>(1024, 0.65f);
+
+  // ===========================================================================
   // Session → orderKey tracking (APP-151 phase 1 — session-disconnect orphan cancel)
   //
   // Maps cluster session id (the Aeron {@code ClientSession#id()}) to the set of
@@ -1157,6 +1191,48 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       return null;
     }
 
+    // 11e. (APP-62 §4) Per-(account, symbol) position limit — worst-case fill exposure check.
+    //      Working LONG and working SHORT quantities are bounded independently against
+    //      RiskLimit.maxLongPosition / maxShortPosition (CME PTRM Long-Qty / Short-Qty convention).
+    //      The check gates only when positionLimitEnabled = true on the loaded risk record; the
+    //      explicit boolean removes the "0 means disabled" ambiguity. Saturation overflow on the
+    //      projected sum is treated as a breach via the strict `>` comparison.
+    if (riskLimit != null && riskLimit.positionLimitEnabled()) {
+      final long symbolHash = packSymbolKey(symbolScratch, 0);
+      final long currentLong = workingLongFor(account.accountId(), symbolHash);
+      final long currentShort = workingShortFor(account.accountId(), symbolHash);
+      final long projectedLong =
+          side == SideEnum.Buy ? safeAdd(currentLong, orderQty) : currentLong;
+      final long projectedShort =
+          side == SideEnum.Sell ? safeAdd(currentShort, orderQty) : currentShort;
+      if (projectedLong > riskLimit.maxLongPosition()) {
+        emitOrderRejectedWithBreachContext(
+            eventSink,
+            session,
+            timestamp,
+            side,
+            RejectReasonEnum.PositionLimitExceeded,
+            "projected working long position would exceed maxLongPosition",
+            RiskCheckEnum.PositionLimit,
+            riskLimit.maxLongPosition(),
+            projectedLong);
+        return null;
+      }
+      if (projectedShort > riskLimit.maxShortPosition()) {
+        emitOrderRejectedWithBreachContext(
+            eventSink,
+            session,
+            timestamp,
+            side,
+            RejectReasonEnum.PositionLimitExceeded,
+            "projected working short position would exceed maxShortPosition",
+            RiskCheckEnum.PositionLimit,
+            riskLimit.maxShortPosition(),
+            projectedShort);
+        return null;
+      }
+    }
+
     return account;
   }
 
@@ -1409,6 +1485,15 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       // session.
       incrementSessionCounter(sessionMetricOrdersAdmitted, session.id());
     }
+
+    // 15. (APP-62 §4) Apply the admitted order's quantity to the per-(account, symbol) working
+    //     position counter. Check 11e in validateNewOrder has already verified the projected
+    //     post-admission value does not exceed the configured cap. The increment is performed
+    //     only AFTER all admission side-effects so a cancel-revert (see emitOrderCanceledEvent)
+    //     can safely subtract the same delta. Symbol bytes are read from the handler's stashed
+    //     symbolScratch — already populated during this onCommand pass.
+    final long symbolHashApp62 = packSymbolKey(symbolScratch, 0);
+    applyWorkingPosition(account.accountId(), symbolHashApp62, side, orderQty);
   }
 
   /**
@@ -1857,6 +1942,14 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
 
     final int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderCanceledEncoder.encodedLength();
     eventSink.emit(clusterTimestamp, egressBuffer, 0, eventLen);
+
+    // APP-62 §4 — release the working position counter that was incremented at admit time.
+    // symbolScratch was just populated by state.copySymbolTo above, so the packed hash is current.
+    // The revert is idempotent (no-op when the inner map is missing); applies regardless of
+    // cancelReason (SessionDisconnect / IdleTimeout / ExplicitCancel / OperatorForce all release
+    // the working exposure).
+    final long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
+    revertWorkingPosition(state.accountId(), symbolHashApp62Cxl, state.side(), state.orderQty());
   }
 
   // ===========================================================================
@@ -1974,6 +2067,111 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       end--;
     }
     return end;
+  }
+
+  // ===========================================================================
+  // APP-62 §4 — position helpers
+  // ===========================================================================
+
+  /**
+   * Packs an 8-byte SBE Symbol field (NUL-padded char[8]) into a little-endian {@code long} for use
+   * as a primitive map key. Zero-allocation; matches {@code
+   * com.trading.engine.projections.SymbolPacker.pack(byte[], int)} semantics so cluster and
+   * projection state share the same symbol-to-key encoding without a cross-module dependency.
+   *
+   * @param src the symbol bytes (must be at least 8 bytes long)
+   * @param offset the start offset of the 8-byte field
+   * @return the packed symbol as a little-endian long
+   */
+  static long packSymbolKey(final byte[] src, final int offset) {
+    return (src[offset] & 0xFFL)
+        | ((src[offset + 1] & 0xFFL) << 8)
+        | ((src[offset + 2] & 0xFFL) << 16)
+        | ((src[offset + 3] & 0xFFL) << 24)
+        | ((src[offset + 4] & 0xFFL) << 32)
+        | ((src[offset + 5] & 0xFFL) << 40)
+        | ((src[offset + 6] & 0xFFL) << 48)
+        | ((src[offset + 7] & 0xFFL) << 56);
+  }
+
+  /**
+   * Overflow-saturating addition. Saturates to {@link Long#MAX_VALUE} on positive overflow and
+   * {@link Long#MIN_VALUE} on negative overflow. The caller treats saturation as a breach (compares
+   * strictly {@code projected > limit}); no {@code ArithmeticException} is thrown because the hot
+   * path is zero-allocation. Precondition: callers in this handler only pass non-negative {@code b}
+   * (order quantity), so mixed-sign overflow is impossible by construction.
+   */
+  static long safeAdd(final long a, final long b) {
+    if (a > 0L && b > Long.MAX_VALUE - a) {
+      return Long.MAX_VALUE;
+    }
+    if (a < 0L && b < Long.MIN_VALUE - a) {
+      return Long.MIN_VALUE;
+    }
+    return a + b;
+  }
+
+  /**
+   * Returns the current working LONG quantity for {@code (accountId, symbolHash)}, or {@link
+   * #WORKING_POSITION_MISSING} (0) when no working buy has been admitted yet. Zero-allocation;
+   * primitive long return.
+   */
+  long workingLongFor(final long accountId, final long symbolHash) {
+    final var inner = accountSymbolWorkingLong.get(accountId);
+    return inner == null ? WORKING_POSITION_MISSING : inner.get(symbolHash);
+  }
+
+  /** See {@link #workingLongFor} — symmetric for SELL side. */
+  long workingShortFor(final long accountId, final long symbolHash) {
+    final var inner = accountSymbolWorkingShort.get(accountId);
+    return inner == null ? WORKING_POSITION_MISSING : inner.get(symbolHash);
+  }
+
+  /**
+   * Adds {@code orderQty} (fixed-point 10⁻⁸) to the working LONG or SHORT counter for the given
+   * {@code (accountId, symbolHash)}, depending on {@code side}. Allocates the per-account inner map
+   * on first touch only (not a steady-state hot-path allocation). Called from the admit path after
+   * Check 11e accepts the order.
+   */
+  void applyWorkingPosition(
+      final long accountId, final long symbolHash, final SideEnum side, final long orderQty) {
+    final var outer = side == SideEnum.Buy ? accountSymbolWorkingLong : accountSymbolWorkingShort;
+    var inner = outer.get(accountId);
+    if (inner == null) {
+      inner =
+          new Long2LongHashMap(
+              WORKING_POSITION_INNER_INITIAL_CAPACITY, 0.65f, WORKING_POSITION_MISSING);
+      outer.put(accountId, inner);
+    }
+    inner.put(symbolHash, safeAdd(inner.get(symbolHash), orderQty));
+  }
+
+  /**
+   * Subtracts {@code orderQty} from the working LONG or SHORT counter — inverse of {@link
+   * #applyWorkingPosition}. Called from the cancel path (no-op if the inner map is absent;
+   * underflow saturates at {@code 0L} to preserve invariant). Zero-allocation.
+   */
+  void revertWorkingPosition(
+      final long accountId, final long symbolHash, final SideEnum side, final long orderQty) {
+    final var outer = side == SideEnum.Buy ? accountSymbolWorkingLong : accountSymbolWorkingShort;
+    final var inner = outer.get(accountId);
+    if (inner == null) {
+      return;
+    }
+    final long current = inner.get(symbolHash);
+    if (current == WORKING_POSITION_MISSING) {
+      return;
+    }
+    final long next = current - orderQty;
+    // Agrona Long2LongHashMap rejects writing the missing-value sentinel via put(). When the
+    // counter reaches zero we remove the key instead, restoring the "no working quantity"
+    // semantics the sentinel encodes. Negative results (orderQty larger than current — should
+    // never happen for matched admit↔revert pairs but defensive) are also coalesced to "absent".
+    if (next <= 0L) {
+      inner.remove(symbolHash);
+    } else {
+      inner.put(symbolHash, next);
+    }
   }
 
   /**
