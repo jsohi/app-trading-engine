@@ -24,6 +24,7 @@ import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.RiskCheckEnum;
 import com.trading.engine.messages.sbe.SettlTypeEnum;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
@@ -149,6 +150,14 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   private byte currencyByte0;
   private byte currencyByte1;
   private byte currencyByte2;
+
+  // -- APP-62 §D — orderQty and price stashed for the reject path --
+  // OrderRejectedEvent (template 101) now carries the submitted orderQty and price as part of
+  // the SEC 15c3-5(b) audit reconstruction contract. Same rationale as currency bytes above:
+  // stashed on instance fields so emitOrderRejected can write them regardless of which
+  // validation branch fired.
+  private long stashedOrderQty;
+  private long stashedPrice;
 
   // -- Injected dependencies --
   private final TradingState tradingState;
@@ -619,6 +628,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     final long price = nosDecoder.price();
     final var side = nosDecoder.side();
     final var timeInForce = nosDecoder.timeInForce();
+
+    // APP-62 §D — stash orderQty + price on instance fields so any subsequent emitOrderRejected
+    // call can populate the new OrderRejectedEvent audit fields without re-decoding.
+    this.stashedOrderQty = orderQty;
+    this.stashedPrice = price;
 
     nosDecoder.getClOrdId(clOrdIdScratch, 0);
     // Trim trailing zeros BEFORE the dedup hash so equivalent ASCII strings ("ABC\0\0..." vs the
@@ -1851,8 +1865,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
 
   /**
    * Encodes and emits an {@code OrderRejectedEvent} via {@link EventSink}. Uses the pre-stashed
-   * {@link #clOrdIdScratch}, {@link #symbolScratch}, {@link #accountCodeScratch}, and currency
-   * bytes from the current NOS decode pass.
+   * {@link #clOrdIdScratch}, {@link #symbolScratch}, {@link #accountCodeScratch}, currency bytes,
+   * and APP-62 §D stashed {@code stashedOrderQty} / {@code stashedPrice} from the current NOS
+   * decode pass. The breach-context fields ({@code limitValue}, {@code projectedValue}, {@code
+   * checkId}) default to safe zero/null values; call {@link #emitOrderRejectedWithBreachContext} to
+   * write non-default audit context.
    *
    * @param eventSink the event emission pipeline
    * @param session the client session for egress reply
@@ -1868,6 +1885,35 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       final SideEnum side,
       final RejectReasonEnum reason,
       final String text) {
+    emitOrderRejectedWithBreachContext(
+        eventSink, session, timestamp, side, reason, text, RiskCheckEnum.NULL_VAL, 0L, 0L);
+  }
+
+  /**
+   * APP-62 §D — extended {@link #emitOrderRejected} that writes breach-context audit fields ({@code
+   * limitValue}, {@code projectedValue}, {@code checkId}) onto {@code OrderRejectedEvent}.
+   *
+   * <p>Use from APP-62 validation checks 11e (position), 11f (fat-finger), 11g (symbol
+   * eligibility), and 0a (RiskLimitsNotLoaded) where the audit semantics require explicit limit /
+   * projected values for SEC 15c3-5(b) reconstruction. Existing call sites continue to use the
+   * 6-arg {@link #emitOrderRejected} which defaults to {@code RiskCheckEnum.NULL_VAL} + {@code 0L}
+   * / {@code 0L} — backward-compatible by SBE block-length zero-padding semantics.
+   *
+   * @param checkId the validation check that produced this reject (audit discriminator)
+   * @param limitValue the configured limit at time of check, fixed-point (semantics depend on
+   *     {@code checkId})
+   * @param projectedValue the value that breached the limit, fixed-point
+   */
+  private void emitOrderRejectedWithBreachContext(
+      final EventSink eventSink,
+      final ClientSession session,
+      final long timestamp,
+      final SideEnum side,
+      final RejectReasonEnum reason,
+      final String text,
+      final RiskCheckEnum checkId,
+      final long limitValue,
+      final long projectedValue) {
 
     // APP-151 phase 5 — per-session metrics. Increment "orders rejected" counter for this session.
     // Skipped on the null-session test path (matches admit-counter convention).
@@ -1893,6 +1939,13 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     orderRejectedEncoder.productType(safeProductType());
     // Currency bytes — stashed from the current NOS decode pass.
     orderRejectedEncoder.putCurrency(currencyByte0, currencyByte1, currencyByte2);
+    // APP-62 §D audit fields — orderQty/price echo the rejected command; limitValue/projectedValue
+    // /checkId give a regulator-friendly reconstruction without log-join via clOrdId.
+    orderRejectedEncoder.orderQty(stashedOrderQty);
+    orderRejectedEncoder.price(stashedPrice);
+    orderRejectedEncoder.limitValue(limitValue);
+    orderRejectedEncoder.projectedValue(projectedValue);
+    orderRejectedEncoder.checkId(checkId);
     orderRejectedEncoder.text(text);
 
     final int rejEventLen =

@@ -1219,6 +1219,18 @@ public final class SbeToFixTranslator {
       case InvalidCurrencyCode -> 99; // FIX: Other
       case InvalidAccountId -> 15; // FIX: Unknown account
       case InvalidLimitValue -> 99; // FIX: Other
+      case PositionLimitExceeded -> 3; // APP-62 §4 — FIX: Order exceeds limit. CME PTRM "Long Qty"
+      // / "Short Qty" breach. Tag 58 carries the limit + projected values for ops triage.
+      case PriceTooFarFromMarket -> 99; // APP-62 §5 — FIX: Other. FIX 4.4 has no dedicated
+      // "price band" code (FIX 5.0 SP2 added value 16); 99 chosen to avoid colliding with
+      // RateLimitExceeded (=8) on tag-103 ops triage. Tag 58 carries deviationBps.
+      case RiskLimitsNotLoaded -> 3; // APP-62 §E — FIX: Order exceeds limit. Account has no
+      // RiskLimitRecord; fail-closed boot semantic. Tag 58 carries the accountId.
+      case RegulatoryRestriction -> 99; // APP-62 §G — FIX: Other. Symbol-eligibility breach
+      // (Reg SHO restricted-symbol subset). Tag 58 carries the restriction kind.
+      case FourEyesViolation -> 99; // APP-62 §H — FIX: Other. MiFID II RTS 6 §1(2) dual-control
+      // failure on a LoadRiskLimit ingress; never reaches an OrderRejectedEvent today (lives on
+      // the reference-data reject path) — case is here for switch-exhaustiveness only.
       default ->
           throw new IllegalStateException("Unsupported SBE RejectReason for FIX wire: " + sbe);
     };
