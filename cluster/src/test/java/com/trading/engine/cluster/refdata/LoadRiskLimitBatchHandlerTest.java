@@ -53,9 +53,9 @@ class LoadRiskLimitBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new RiskLimitRecord(1L, 100_00000000L, 0L, 1000_00000000L, 50L),
-            new RiskLimitRecord(2L, 200_00000000L, 0L, 2000_00000000L, 100L),
-            new RiskLimitRecord(3L, 0L, 0L, 0L, 0L)); // unlimited
+            new RiskLimitRecord(1L, 100_00000000L, 0L, 1000_00000000L),
+            new RiskLimitRecord(2L, 200_00000000L, 0L, 2000_00000000L),
+            new RiskLimitRecord(3L, 0L, 0L, 0L)); // unlimited
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertTrue(totalEventBytes > 0);
@@ -93,9 +93,9 @@ class LoadRiskLimitBatchHandlerTest {
     final int srcLength =
         encodeBatch(
             src,
-            new RiskLimitRecord(1L, 100L, 0L, 1000L, 0L), // valid
-            new RiskLimitRecord(2L, 200L, 0L, 2000L, 0L), // accountId not in AccountStore
-            new RiskLimitRecord(3L, -1L, 0L, 1000L, 0L)); // negative limit
+            new RiskLimitRecord(1L, 100L, 0L, 1000L), // valid
+            new RiskLimitRecord(2L, 200L, 0L, 2000L), // accountId not in AccountStore
+            new RiskLimitRecord(3L, -1L, 0L, 1000L)); // negative limit
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(4096);
     final int totalEventBytes = dispatch(handler, src, srcLength, eventDst);
     assertEquals(1, riskStore.size()); // only id 1

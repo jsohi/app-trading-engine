@@ -137,7 +137,7 @@ class NewOrderSingleHandlerMaxNotionalTest {
     // maxOrderSize = 1_000_000 whole units — effectively unlimited for test quantities.
     riskLimitStore.put(
         RiskLimitFixtures.riskLimit(
-            ACCOUNT_ID, 1_000_000L * FixedPointScale.PRICE_SCALE, maxOrderNotional, 0L, 0L));
+            ACCOUNT_ID, 1_000_000L * FixedPointScale.PRICE_SCALE, maxOrderNotional, 0L));
   }
 
   private RfqStateMachine buildRfqStateMachine() {
@@ -292,7 +292,6 @@ class NewOrderSingleHandlerMaxNotionalTest {
             ACCOUNT_ID,
             1_000_000L * FixedPointScale.PRICE_SCALE /* maxOrderSize — very large */,
             TIGHT_NOTIONAL_LIMIT /* maxOrderNotional — tight, but must be bypassed */,
-            0L,
             0L));
 
     final long qty = 1_000L * ONE_UNIT; // would be 1000 units notional at price=1.0

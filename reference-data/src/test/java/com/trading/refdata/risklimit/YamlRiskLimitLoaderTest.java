@@ -32,7 +32,6 @@ final class YamlRiskLimitLoaderTest {
     assertEquals(1_000_000_000L, first.maxOrderSize());
     assertEquals(500_000_000L, first.maxOrderNotional());
     assertEquals(10_000_000_000L, first.maxDailyVolume());
-    assertEquals(50L, first.maxDailyLossBps());
     assertEquals("Active", first.status());
 
     final var second = records.get(1);
@@ -40,7 +39,6 @@ final class YamlRiskLimitLoaderTest {
     assertEquals(0L, second.maxOrderSize());
     assertEquals(0L, second.maxOrderNotional());
     assertEquals(0L, second.maxDailyVolume());
-    assertEquals(100L, second.maxDailyLossBps());
     assertEquals("Suspended", second.status());
   }
 
@@ -114,7 +112,6 @@ final class YamlRiskLimitLoaderTest {
     assertEquals(0L, record.maxOrderSize());
     assertEquals(0L, record.maxOrderNotional());
     assertEquals(0L, record.maxDailyVolume());
-    assertEquals(0L, record.maxDailyLossBps());
     assertEquals("Active", record.status());
   }
 
@@ -122,12 +119,12 @@ final class YamlRiskLimitLoaderTest {
   void recordRejectsMaxDailyLossBpsOverflow() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> new RiskLimitRecord(1L, 0L, 0L, 0L, 0xFFFF_FFFFL + 1, "Active"));
+        () -> new RiskLimitRecord(1L, 0L, 0L, 0L, "Active"));
   }
 
   @Test
   void recordRejectsNegativeMaxOrderSize() {
     assertThrows(
-        IllegalArgumentException.class, () -> new RiskLimitRecord(1L, -1L, 0L, 0L, 0L, "Active"));
+        IllegalArgumentException.class, () -> new RiskLimitRecord(1L, -1L, 0L, 0L, "Active"));
   }
 }

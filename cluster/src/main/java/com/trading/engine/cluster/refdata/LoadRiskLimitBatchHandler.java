@@ -13,9 +13,12 @@ import org.agrona.MutableDirectBuffer;
 /**
  * {@link ReferenceDataBatchLoader} for {@link LoadRiskLimitBatchDecoder LoadRiskLimitBatch}
  * (templateId 16). Iterates the {@code noRiskLimits} repeating group, validates each record with
- * the same rules as {@link LoadRiskLimitHandler}, and emits one event per record.
+ * the same rules as {@link LoadRiskLimitHandler} (including APP-62 §H 4-eyes), and emits one event
+ * per record.
  */
 public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader {
+
+  private static final int ACCOUNT_ID_BYTE_LEN = 16;
 
   private final RiskLimitStore riskLimitStore;
   private final AccountStore accountStore;
@@ -26,8 +29,10 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       new RiskLimitLoadRejectedEventEncoder();
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
-  public LoadRiskLimitBatchHandler(
-      final RiskLimitStore riskLimitStore, final AccountStore accountStore) {
+  private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
+
+  public LoadRiskLimitBatchHandler(RiskLimitStore riskLimitStore, AccountStore accountStore) {
     if (riskLimitStore == null) {
       throw new NullPointerException("riskLimitStore must not be null");
     }
@@ -45,29 +50,29 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
 
   @Override
   public int onBatchCommand(
-      final MessageHeaderDecoder header,
-      final DirectBuffer src,
-      final int srcOffset,
-      final int srcLength,
-      final MutableDirectBuffer eventDst,
-      final int eventDstOffset,
-      final long firstSequenceNumber,
-      final long clusterTimestampNanos) {
+      MessageHeaderDecoder header,
+      DirectBuffer src,
+      int srcOffset,
+      int srcLength,
+      MutableDirectBuffer eventDst,
+      int eventDstOffset,
+      long firstSequenceNumber,
+      long clusterTimestampNanos) {
     decoder.wrap(
         src,
         srcOffset + MessageHeaderDecoder.ENCODED_LENGTH,
         header.blockLength(),
         header.version());
-    final long batchTransactTime = decoder.transactTime();
+    long batchTransactTime = decoder.transactTime();
 
     int written = 0;
     long seqNo = firstSequenceNumber;
 
-    final LoadRiskLimitBatchDecoder.NoRiskLimitsDecoder group = decoder.noRiskLimits();
+    final var group = decoder.noRiskLimits();
     while (group.hasNext()) {
       group.next();
 
-      final long accountId = group.accountId();
+      long accountId = group.accountId();
       if (accountId <= 0L) {
         written +=
             emitRejected(
@@ -92,16 +97,22 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
                 "accountId not in AccountStore");
         continue;
       }
-      final long maxOrderSize = group.maxOrderSize();
-      final long maxOrderNotional = group.maxOrderNotional();
-      final long maxDailyVolume = group.maxDailyVolume();
-      final long maxDailyLossBps = group.maxDailyLossBps();
-      final long maxOrdersPerSecond = group.maxOrdersPerSecond();
+      long maxOrderSize = group.maxOrderSize();
+      long maxOrderNotional = group.maxOrderNotional();
+      long maxDailyVolume = group.maxDailyVolume();
+      long maxOrdersPerSecond = group.maxOrdersPerSecond();
+      long maxLongPosition = group.maxLongPosition();
+      long maxShortPosition = group.maxShortPosition();
+      long priceDeviationBps = group.priceDeviationBps();
+      long idleSessionTimeoutNanos = group.idleSessionTimeoutNanos();
       if (maxOrderSize < 0L
           || maxOrderNotional < 0L
           || maxDailyVolume < 0L
-          || maxDailyLossBps < 0L
-          || maxOrdersPerSecond < 0L) {
+          || maxOrdersPerSecond < 0L
+          || maxLongPosition < 0L
+          || maxShortPosition < 0L
+          || priceDeviationBps < 0L
+          || idleSessionTimeoutNanos < 0L) {
         written +=
             emitRejected(
                 eventDst,
@@ -114,8 +125,39 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
         continue;
       }
 
-      // Upsert.
-      RiskLimitState state = riskLimitStore.get(accountId);
+      // §H 4-eyes
+      group.getProposerId(proposerIdScratch, 0);
+      group.getApproverId(approverIdScratch, 0);
+      if (isAllZero(proposerIdScratch) || isAllZero(approverIdScratch)) {
+        written +=
+            emitRejected(
+                eventDst,
+                eventDstOffset + written,
+                seqNo++,
+                clusterTimestampNanos,
+                accountId,
+                RejectReasonEnum.FourEyesViolation,
+                "proposerId and approverId must be non-empty");
+        continue;
+      }
+      if (byteEquals(proposerIdScratch, approverIdScratch)) {
+        written +=
+            emitRejected(
+                eventDst,
+                eventDstOffset + written,
+                seqNo++,
+                clusterTimestampNanos,
+                accountId,
+                RejectReasonEnum.FourEyesViolation,
+                "proposerId must not equal approverId");
+        continue;
+      }
+
+      boolean positionLimitEnabled = group.positionLimitEnabled() != 0;
+      boolean fatFingerEnabled = group.fatFingerEnabled() != 0;
+      boolean fatFingerFailClosed = group.fatFingerFailClosed() != 0;
+
+      var state = riskLimitStore.get(accountId);
       if (state == null) {
         state = new RiskLimitState();
       }
@@ -123,8 +165,16 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       state.setMaxOrderSize(maxOrderSize);
       state.setMaxOrderNotional(maxOrderNotional);
       state.setMaxDailyVolume(maxDailyVolume);
-      state.setMaxDailyLossBps(maxDailyLossBps);
       state.setMaxOrdersPerSecond(maxOrdersPerSecond);
+      state.setMaxLongPosition(maxLongPosition);
+      state.setMaxShortPosition(maxShortPosition);
+      state.setPositionLimitEnabled(positionLimitEnabled);
+      state.setPriceDeviationBps(priceDeviationBps);
+      state.setFatFingerEnabled(fatFingerEnabled);
+      state.setFatFingerFailClosed(fatFingerFailClosed);
+      state.setIdleSessionTimeoutNanos(idleSessionTimeoutNanos);
+      state.setProposerId(proposerIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
+      state.setApproverId(approverIdScratch, 0, ACCOUNT_ID_BYTE_LEN);
       state.setStatus(group.status());
       state.setTransactTime(batchTransactTime);
       riskLimitStore.put(state);
@@ -137,8 +187,16 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
       loadedEncoder.maxOrderSize(maxOrderSize);
       loadedEncoder.maxOrderNotional(maxOrderNotional);
       loadedEncoder.maxDailyVolume(maxDailyVolume);
-      loadedEncoder.maxDailyLossBps(maxDailyLossBps);
       loadedEncoder.maxOrdersPerSecond(maxOrdersPerSecond);
+      loadedEncoder.maxLongPosition(maxLongPosition);
+      loadedEncoder.maxShortPosition(maxShortPosition);
+      loadedEncoder.positionLimitEnabled((short) (positionLimitEnabled ? 1 : 0));
+      loadedEncoder.priceDeviationBps(priceDeviationBps);
+      loadedEncoder.fatFingerEnabled((short) (fatFingerEnabled ? 1 : 0));
+      loadedEncoder.fatFingerFailClosed((short) (fatFingerFailClosed ? 1 : 0));
+      loadedEncoder.idleSessionTimeoutNanos(idleSessionTimeoutNanos);
+      loadedEncoder.putProposerId(proposerIdScratch, 0);
+      loadedEncoder.putApproverId(approverIdScratch, 0);
       loadedEncoder.status(state.status());
       loadedEncoder.transactTime(batchTransactTime);
       written += MessageHeaderEncoder.ENCODED_LENGTH + loadedEncoder.encodedLength();
@@ -147,13 +205,13 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
   }
 
   private int emitRejected(
-      final MutableDirectBuffer eventDst,
-      final int eventDstOffset,
-      final long sequenceNumber,
-      final long clusterTimestampNanos,
-      final long accountId,
-      final RejectReasonEnum reason,
-      final String text) {
+      MutableDirectBuffer eventDst,
+      int eventDstOffset,
+      long sequenceNumber,
+      long clusterTimestampNanos,
+      long accountId,
+      RejectReasonEnum reason,
+      String text) {
     rejectedEncoder.wrapAndApplyHeader(eventDst, eventDstOffset, headerEncoder);
     rejectedEncoder.sequenceNumber(sequenceNumber);
     rejectedEncoder.timestamp(clusterTimestampNanos);
@@ -161,5 +219,23 @@ public final class LoadRiskLimitBatchHandler implements ReferenceDataBatchLoader
     rejectedEncoder.rejectReason(reason);
     rejectedEncoder.text(text);
     return MessageHeaderEncoder.ENCODED_LENGTH + rejectedEncoder.encodedLength();
+  }
+
+  private static boolean isAllZero(byte[] buf) {
+    for (int i = 0; i < buf.length; i++) {
+      if (buf[i] != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean byteEquals(byte[] a, byte[] b) {
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
   }
 }

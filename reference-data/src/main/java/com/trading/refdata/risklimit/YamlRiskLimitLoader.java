@@ -136,13 +136,13 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
       final long maxOrderSize = toLong(entry, "maxOrderSize");
       final long maxOrderNotional = toLong(entry, "maxOrderNotional");
       final long maxDailyVolume = toLong(entry, "maxDailyVolume");
-      final long maxDailyLossBps = toLong(entry, "maxDailyLossBps");
+      // APP-62: maxDailyLossBps removed; YAML key is now ignored if present (silent forward-compat).
       final String status = requireStringOrDefault(entry, "status", "Active");
       StatusValidator.validateStatus(status, ENTITY_TYPE);
 
       // RiskLimitRecord compact constructor validates remaining constraints
       return new RiskLimitRecord(
-          accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, maxDailyLossBps, status);
+          accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, status);
     } catch (final ReferenceDataLoadException e) {
       throw e;
     } catch (final IllegalArgumentException e) {

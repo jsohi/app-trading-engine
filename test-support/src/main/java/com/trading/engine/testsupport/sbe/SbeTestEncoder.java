@@ -90,6 +90,23 @@ public final class SbeTestEncoder {
    */
   private static final String DEFAULT_SETTL_DATE = "20260101";
 
+  /**
+   * APP-62 §H — default proposerId / approverId for test paths. 4-eyes validation in {@link
+   * com.trading.engine.cluster.refdata.LoadRiskLimitHandler} requires both to be non-empty and not
+   * equal; these sentinel buffers satisfy both. Tests that need to exercise the §H reject paths
+   * call the encoder methods directly with their own proposer/approver bytes.
+   */
+  private static final byte[] DEFAULT_PROPOSER_ID = paddedAscii("TEST-PROPOSER");
+
+  private static final byte[] DEFAULT_APPROVER_ID = paddedAscii("TEST-APPROVER");
+
+  private static byte[] paddedAscii(String s) {
+    byte[] out = new byte[16];
+    byte[] src = s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
+    return out;
+  }
+
   private SbeTestEncoder() {}
 
   // -----------------------------------------------------------------------
@@ -488,10 +505,14 @@ public final class SbeTestEncoder {
    * @param maxOrderSize maximum single-order size in fixed-point 10^8
    * @param maxOrderNotional maximum single-order notional in fixed-point 10^8
    * @param maxDailyVolume maximum daily volume in fixed-point 10^8
-   * @param maxDailyLossBps maximum daily loss in basis points
    * @param status risk limit status
    * @param transactTime transaction time epoch nanos (TransactTime, tag 60)
    * @return total encoded length including SBE header
+   *
+   * <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates {@code proposerId} = {@code
+   * "TEST-PROPOSER"} and {@code approverId} = {@code "TEST-APPROVER"} so the §H 4-eyes validation
+   * in {@link com.trading.engine.cluster.refdata.LoadRiskLimitHandler} sees valid distinct
+   * identifiers. All other new APP-62 fields default to 0 / false in SBE.
    */
   public static int encodeLoadRiskLimit(
       final MutableDirectBuffer dst,
@@ -500,7 +521,6 @@ public final class SbeTestEncoder {
       final long maxOrderSize,
       final long maxOrderNotional,
       final long maxDailyVolume,
-      final long maxDailyLossBps,
       final AccountStatusEnum status,
       final long transactTime) {
 
@@ -512,7 +532,8 @@ public final class SbeTestEncoder {
         .maxOrderSize(maxOrderSize)
         .maxOrderNotional(maxOrderNotional)
         .maxDailyVolume(maxDailyVolume)
-        .maxDailyLossBps(maxDailyLossBps)
+        .putProposerId(DEFAULT_PROPOSER_ID, 0)
+        .putApproverId(DEFAULT_APPROVER_ID, 0)
         .status(status)
         .transactTime(transactTime);
 
@@ -552,7 +573,8 @@ public final class SbeTestEncoder {
           .maxOrderSize(r.maxOrderSize())
           .maxOrderNotional(r.maxOrderNotional())
           .maxDailyVolume(r.maxDailyVolume())
-          .maxDailyLossBps(r.maxDailyLossBps())
+          .putProposerId(DEFAULT_PROPOSER_ID, 0)
+          .putApproverId(DEFAULT_APPROVER_ID, 0)
           .status(AccountStatusEnum.Active);
     }
 
@@ -1157,8 +1179,9 @@ public final class SbeTestEncoder {
    * @param maxOrderSize maximum single-order size in fixed-point 10^8
    * @param maxOrderNotional maximum single-order notional in fixed-point 10^8
    * @param maxDailyVolume maximum daily volume in fixed-point 10^8
-   * @param maxDailyLossBps maximum daily loss in basis points
    * @return total encoded length including SBE header
+   *
+   * <p>APP-62: dropped {@code maxDailyLossBps}; auto-populates proposerId/approverId for §H.
    */
   public static int encodeRiskLimitLoadedEvent(
       final MutableDirectBuffer dst,
@@ -1168,8 +1191,7 @@ public final class SbeTestEncoder {
       final long accountId,
       final long maxOrderSize,
       final long maxOrderNotional,
-      final long maxDailyVolume,
-      final long maxDailyLossBps) {
+      final long maxDailyVolume) {
 
     final MessageHeaderEncoder header = new MessageHeaderEncoder();
     final RiskLimitLoadedEventEncoder enc = new RiskLimitLoadedEventEncoder();
@@ -1181,7 +1203,8 @@ public final class SbeTestEncoder {
         .maxOrderSize(maxOrderSize)
         .maxOrderNotional(maxOrderNotional)
         .maxDailyVolume(maxDailyVolume)
-        .maxDailyLossBps(maxDailyLossBps)
+        .putProposerId(DEFAULT_PROPOSER_ID, 0)
+        .putApproverId(DEFAULT_APPROVER_ID, 0)
         .status(AccountStatusEnum.Active)
         .transactTime(0L);
 

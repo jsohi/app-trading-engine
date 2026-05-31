@@ -277,14 +277,51 @@
             <validValue name="InvalidLimitValue"         description="Risk limit value is negative">19</validValue>
             <validValue name="TradingHalted"             description="Trading globally halted by operator (APP-152 first slice — cluster-side halt primitive; the admin command path lands later)">20</validValue>
             <validValue name="RateLimitExceeded"          description="Account exceeded its maxOrdersPerSecond rate limit for the current 1-second window (APP-62 slice 2)">21</validValue>
-            <validValue name="DailyVolumeExceeded"        description="Order would push the account's daily admitted-quantity total over its maxDailyVolume limit (APP-62 slice 3 — current implementation tracks ADMITTED qty, not filled; slice 4 follow-up will refine to filled-qty if needed)">22</validValue>
+            <validValue name="DailyVolumeExceeded"        description="Order would push the account's daily admitted-quantity total over its maxDailyVolume limit (APP-62 slice 3 — current implementation tracks ADMITTED qty, not filled; filled-qty refinement lands in APP-180 matching engine).">22</validValue>
+            <validValue name="PositionLimitExceeded"      description="Projected working long or short position would exceed the per-(account, symbol) limit (APP-62 §4 — worst-case fill exposure semantics; CME PTRM Long Qty / Short Qty convention). FIX tag 103 = 3.">23</validValue>
+            <validValue name="PriceTooFarFromMarket"      description="Limit price deviates from the cluster's last-known mid by more than priceDeviationBps relative to the per-account knob (or per-symbol override). FIX tag 103 = 99; tag 58 carries the breach detail. (APP-62 §5 — fat-finger check, fail-closed default until reference established.)">24</validValue>
+            <validValue name="RiskLimitsNotLoaded"        description="The submitting account has no RiskLimitRecord loaded in the cluster; per fail-closed boot semantics every account must be explicitly provisioned before trading. FIX tag 103 = 3. (APP-62 §E.)">25</validValue>
+            <validValue name="RegulatoryRestriction"     description="Symbol-eligibility breach — either trading is halted for the symbol or the order is a sell against a short-sale-restricted symbol (Reg SHO restricted-symbol subset). FIX tag 103 = 99. (APP-62 §G.)">26</validValue>
+            <validValue name="FourEyesViolation"         description="LoadRiskLimit ingress: proposerId and approverId must both be non-empty and not equal (MiFID II RTS 6 §1(2) dual-control). FIX tag 103 = 99. (APP-62 §H.)">27</validValue>
         </enum>
 
         <enum name="CancelReasonEnum" encodingType="uint8" nullValue="255" description="Reason an order was cancelled (APP-151 phase 3). Drives FIX Text(58) augmentation on the cancel ExecutionReport so the counterparty can distinguish server-initiated cancels (session disconnect, idle timeout, operator force) from counterparty-initiated cancels (explicit FIX 35=F).">
             <validValue name="ExplicitCancel"       description="Counterparty-initiated FIX OrderCancelRequest (35=F) — APP-65 cancel/replace path will set this when it lands.">1</validValue>
             <validValue name="SessionDisconnect"    description="Cluster auto-cancelled the order because the FIX session that placed it hard-disconnected — APP-151 phase 1 emitter sets this.">2</validValue>
-            <validValue name="IdleTimeout"          description="Cluster auto-cancelled the order because the session crossed the idle-timeout threshold — APP-151 phase 4 emitter will set this.">3</validValue>
+            <validValue name="IdleTimeout"          description="Cluster auto-cancelled the order because the session crossed the idle-timeout threshold — APP-151 phase 4 emitter will set this. APP-62 §J: idle-timeout cancels now emit OrderExpiredEvent (template 121) instead of OrderCanceledEvent so the FIX wire form is ExecType=Expired; this enum value is retained for the OrderCanceledEvent path used by SessionDisconnect / ExplicitCancel / OperatorForce.">3</validValue>
             <validValue name="OperatorForce"        description="Operator-initiated force-cancel via admin path — APP-153 admin command will set this.">4</validValue>
+        </enum>
+
+        <!-- RiskCheckEnum (APP-62 §D) — audit-fingerprint identifier on every OrderRejectedEvent.
+             Frozen 18 values + 14 reserved slots (append-only post-this-PR; SBE uint8 caps at 255).
+             Tag-58 (Text) Reject-Text prefix is drawn verbatim from RiskCheckEnum.name() per APP-62 §3.9. -->
+        <enum name="RiskCheckEnum" encodingType="uint8" nullValue="255" description="Identifies which pre-trade validation check produced an OrderRejectedEvent (APP-62 §D — audit field set required by SEC 15c3-5(b) and MiFID II RTS 6 §15 reconstruction). Frozen, append-only; values 19–32 RESERVED.">
+            <validValue name="PositionLimit"              description="APP-62 §4 worst-case fill exposure breach (working long or short)">1</validValue>
+            <validValue name="FatFinger"                  description="APP-62 §5 price deviates from last-known mid by more than priceDeviationBps">2</validValue>
+            <validValue name="RateLimit"                  description="APP-62 slice 2 rate-limit breach">3</validValue>
+            <validValue name="DailyVolume"                description="APP-62 slice 3 daily-volume breach (admit-only semantics)">4</validValue>
+            <validValue name="MaxNotional"                description="APP-62 slice 1 order-notional cap">5</validValue>
+            <validValue name="MaxOrderSize"               description="APP-60 order-quantity cap">6</validValue>
+            <validValue name="RiskLimitsNotLoaded"        description="APP-62 §E fail-closed boot — no RiskLimitRecord for account">7</validValue>
+            <validValue name="TradingHalted"              description="APP-152 cluster-wide halt circuit breaker">8</validValue>
+            <validValue name="AccountSuspended"           description="Account status != Active">9</validValue>
+            <validValue name="AccountNoTradePermission"   description="Account lacks CAN_TRADE permission">10</validValue>
+            <validValue name="BookFull"                   description="Order book pool exhausted">11</validValue>
+            <validValue name="InvalidPrice"               description="Non-positive or non-meaningful price">12</validValue>
+            <validValue name="InvalidQuantity"            description="Non-positive quantity">13</validValue>
+            <validValue name="DuplicateClOrdId"           description="ClOrdID already seen within dedup window">14</validValue>
+            <validValue name="UnknownSymbol"              description="Symbol empty or not in known set">15</validValue>
+            <validValue name="UnknownCurrency"            description="Currency code not in CurrencyStore">16</validValue>
+            <validValue name="SymbolEligibility"          description="APP-62 §G Reg SHO restricted-symbol breach (symbol halted or short-sale restricted)">17</validValue>
+            <validValue name="FourEyes"                   description="APP-62 §H 4-eyes proposerId/approverId enforcement on LoadRiskLimit">18</validValue>
+        </enum>
+
+        <!-- ExpireReasonEnum (APP-62 §J) — discriminator on OrderExpiredEvent (template 121).
+             OrderExpiredEvent is emitted instead of OrderCanceledEvent for time-based / TIF-driven
+             expiries so the FIX 4.4 wire form is 35=8 ExecType=Expired (tag 150=C). -->
+        <enum name="ExpireReasonEnum" encodingType="uint8" nullValue="255" description="Why an order was expired (APP-62 §J). Drives FIX Text(58) augmentation on the ExecType=Expired ExecutionReport.">
+            <validValue name="IdleTimeout"          description="Cluster idle-timeout reaper — the FIX session that placed the order crossed the idle threshold (APP-151 phase 4 hook now routes to OrderExpiredEvent instead of OrderCanceledEvent for ExecType=Expired wire form)">1</validValue>
+            <validValue name="TimeInForceExpired"   description="TIF window elapsed (e.g., GTD past expireDate, IOC residual). Reserved for future TIF enforcement work.">2</validValue>
         </enum>
 
         <!-- Variable-length data encoding for WebSocket messages (templates 60, 66, 67) -->
@@ -690,32 +727,51 @@
         </group>
     </sbe:message>
 
-    <!-- LoadRiskLimit (15) — single per-account risk limit upsert. accountId must exist in AccountStore. -->
+    <!-- LoadRiskLimit (15) — single per-account risk limit upsert. accountId must exist in AccountStore.
+         APP-62: added 9 fields (maxLongPosition, maxShortPosition, positionLimitEnabled, priceDeviationBps,
+         fatFingerEnabled, fatFingerFailClosed, idleSessionTimeoutNanos, proposerId, approverId);
+         REMOVED maxDailyLossBps (re-introduced in APP-180 when filled-position + mark price land). -->
     <sbe:message name="LoadRiskLimit" id="15"
-                 description="Load (or reload) one risk-limit record into the cluster's RiskLimitStore. accountId must already exist in AccountStore. Flat per-account limits in this PR; hierarchical (firm/desk/trader) is a follow-up.">
-        <field name="accountId"        id="10024" type="int64"             description="Foreign key to AccountStore"/>
-        <field name="maxOrderSize"        id="10030" type="int64"             description="Max single-order quantity, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxOrderNotional"    id="10047" type="int64"             description="Max single-order notional value (price × qty), fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyVolume"      id="10031" type="int64"             description="Max daily aggregate quantity, fixed-point 10^-8 (0 = unlimited)"/>
-        <field name="maxDailyLossBps"     id="10048" type="uint32"            description="Max intraday loss in basis points (0 = unlimited)"/>
-        <field name="maxOrdersPerSecond"  id="10055" type="uint32"            description="Max NewOrderSingle admissions per 1-second window per account (0 = unlimited) — APP-62 slice 2"/>
-        <field name="status"              id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for risk-limit lifecycle"/>
-        <field name="transactTime"        id="60"    type="uint64"            description="Epoch nanos"/>
+                 description="Load (or reload) one risk-limit record into the cluster's RiskLimitStore. accountId must already exist in AccountStore. Flat per-account limits in this PR; hierarchical (firm/desk/trader) is APP-58. Cluster validates proposerId/approverId non-empty and not equal (APP-62 §H 4-eyes).">
+        <field name="accountId"               id="10024" type="int64"             description="Foreign key to AccountStore"/>
+        <field name="maxOrderSize"            id="10030" type="int64"             description="Max single-order quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxOrderNotional"        id="10047" type="int64"             description="Max single-order notional value (price × qty), fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxDailyVolume"          id="10031" type="int64"             description="Max daily aggregate quantity, fixed-point 10^-8 (0 = unlimited)"/>
+        <field name="maxOrdersPerSecond"      id="10055" type="uint32"            description="Max NewOrderSingle admissions per 1-second window per account (0 = unlimited) — APP-62 slice 2"/>
+        <field name="maxLongPosition"         id="10100" type="int64"             description="APP-62 §4 — max working long position per (account, symbol), fixed-point 10^-8 (CME PTRM Long Qty convention; one-sided gross cap)"/>
+        <field name="maxShortPosition"        id="10101" type="int64"             description="APP-62 §4 — max working short position per (account, symbol), fixed-point 10^-8 (CME PTRM Short Qty convention; one-sided gross cap)"/>
+        <field name="positionLimitEnabled"    id="10102" type="uint8"             description="APP-62 §4 — 0 = check skipped; 1 = enforce maxLongPosition / maxShortPosition. Eliminates 0-as-disabled ambiguity."/>
+        <field name="priceDeviationBps"       id="10103" type="uint32"            description="APP-62 §5 — per-account fat-finger tolerance (basis points). §I per-symbol override falls back to this."/>
+        <field name="fatFingerEnabled"        id="10104" type="uint8"             description="APP-62 §5 — 0 = check skipped; 1 = enforce"/>
+        <field name="fatFingerFailClosed"     id="10105" type="uint8"             description="APP-62 §5 — 0 = skip check when no reference price established; 1 = reject limit orders until a reference is established (industry standard, default 1)"/>
+        <field name="idleSessionTimeoutNanos" id="10106" type="uint64"            description="APP-62 §B / APP-151 follow-up — per-account idle-session-timeout override; 0 = use LauncherConfig system default"/>
+        <field name="proposerId"              id="10107" type="Account"           description="APP-62 §H — operator submitting the limit update; populated from Session.principal(). Cluster validates non-empty."/>
+        <field name="approverId"              id="10108" type="Account"           description="APP-62 §H — operator approving the limit update (MiFID II RTS 6 §1(2) dual-control). Cluster validates non-empty AND ≠ proposerId."/>
+        <field name="status"                  id="10027" type="AccountStatusEnum" description="Reuse Active/Suspended/Closed for risk-limit lifecycle"/>
+        <field name="transactTime"            id="60"    type="uint64"            description="Epoch nanos"/>
     </sbe:message>
 
-    <!-- LoadRiskLimitBatch (16) — batch risk-limit upsert. -->
+    <!-- LoadRiskLimitBatch (16) — batch risk-limit upsert. APP-62: same field extensions as LoadRiskLimit. -->
     <sbe:message name="LoadRiskLimitBatch" id="16"
-                 description="Bulk load N risk-limit records in one consensus round-trip.">
+                 description="Bulk load N risk-limit records in one consensus round-trip. APP-62 §H 4-eyes: proposerId/approverId validated per-record at ingress (same semantics as LoadRiskLimit).">
         <field name="transactTime" id="60" type="uint64"/>
         <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding"
                description="One entry per risk-limit record in the batch">
-            <field name="accountId"           id="10024" type="int64"/>
-            <field name="maxOrderSize"        id="10030" type="int64"/>
-            <field name="maxOrderNotional"    id="10047" type="int64"/>
-            <field name="maxDailyVolume"      id="10031" type="int64"/>
-            <field name="maxDailyLossBps"     id="10048" type="uint32"/>
-            <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2 — see LoadRiskLimit"/>
-            <field name="status"              id="10027" type="AccountStatusEnum"/>
+            <field name="accountId"               id="10024" type="int64"/>
+            <field name="maxOrderSize"            id="10030" type="int64"/>
+            <field name="maxOrderNotional"        id="10047" type="int64"/>
+            <field name="maxDailyVolume"          id="10031" type="int64"/>
+            <field name="maxOrdersPerSecond"      id="10055" type="uint32" description="APP-62 slice 2"/>
+            <field name="maxLongPosition"         id="10100" type="int64"  description="APP-62 §4"/>
+            <field name="maxShortPosition"        id="10101" type="int64"  description="APP-62 §4"/>
+            <field name="positionLimitEnabled"    id="10102" type="uint8"  description="APP-62 §4"/>
+            <field name="priceDeviationBps"       id="10103" type="uint32" description="APP-62 §5"/>
+            <field name="fatFingerEnabled"        id="10104" type="uint8"  description="APP-62 §5"/>
+            <field name="fatFingerFailClosed"     id="10105" type="uint8"  description="APP-62 §5"/>
+            <field name="idleSessionTimeoutNanos" id="10106" type="uint64" description="APP-62 §B"/>
+            <field name="proposerId"              id="10107" type="Account" description="APP-62 §H"/>
+            <field name="approverId"              id="10108" type="Account" description="APP-62 §H"/>
+            <field name="status"                  id="10027" type="AccountStatusEnum"/>
         </group>
     </sbe:message>
 
@@ -748,6 +804,33 @@
                  description="Admin command: clear the cluster-wide trading-halt flag (resume admitting new orders). Idempotent — issuing while already resumed is a no-op for state but still emits an audit event.">
         <field name="reason"       id="58" type="Text"   description="Free-text reason (audit-only — e.g., 'Feed restored, resuming trading')"/>
         <field name="transactTime" id="60" type="uint64" description="Caller's epoch nanos (advisory only — cluster restamps with its own timestamp on emit)"/>
+    </sbe:message>
+
+    <!-- ======================== Symbol-eligibility commands (APP-62 §G; templateId 19-20) ======================== -->
+
+    <!-- LoadSymbolEligibility (19) — single per-symbol eligibility upsert. Drives the §G symbol-eligibility check
+         (Reg SHO restricted-symbol subset). Full Reg SHO compliance (locate flow, HTB/ETB, threshold-security
+         list) rolls into APP-58 AccountStore reference-data work; this command lands the minimal restricted-symbol
+         primitive required by SEC 15c3-5(c)(1)(ii). -->
+    <sbe:message name="LoadSymbolEligibility" id="19"
+                 description="Load (or reload) one per-symbol eligibility record. Drives the §G check 11g restricted-symbol / short-sale-restricted decision. Fail-closed: if no eligibility record exists for a symbol at order admission, the order is rejected with RegulatoryRestriction.">
+        <field name="symbol"                    id="55"    type="Symbol"  description="FIX tag 55 — instrument symbol"/>
+        <field name="tradingAllowed"            id="10070" type="uint8"   description="0 = trading halted/restricted for this symbol (every order rejected); 1 = trading allowed"/>
+        <field name="shortSaleAllowed"          id="10071" type="uint8"   description="0 = short sales prohibited (Reg SHO threshold security, halt-and-locate violation, hard-to-borrow); 1 = short sales allowed. Phase-1 §G treats every Sell as potentially-short for the restricted set (conservative; refined to long/short discrimination under APP-180)."/>
+        <field name="priceDeviationBpsOverride" id="10103" type="uint32"  description="APP-62 §I — per-symbol fat-finger override (basis points). 0 = no override; use the per-account knob from RiskLimit. Field id reuses 10103 from LoadRiskLimit since the semantic is the same."/>
+        <field name="transactTime"              id="60"    type="uint64"  description="Epoch nanos"/>
+    </sbe:message>
+
+    <!-- LoadSymbolEligibilityBatch (20) — batch upsert -->
+    <sbe:message name="LoadSymbolEligibilityBatch" id="20"
+                 description="Bulk load N symbol-eligibility records (APP-62 §G). Same per-record semantics as LoadSymbolEligibility.">
+        <field name="transactTime" id="60" type="uint64"/>
+        <group name="noEligibilities" id="10126" dimensionType="groupSizeEncoding">
+            <field name="symbol"                    id="55"    type="Symbol"/>
+            <field name="tradingAllowed"            id="10070" type="uint8"/>
+            <field name="shortSaleAllowed"          id="10071" type="uint8"/>
+            <field name="priceDeviationBpsOverride" id="10103" type="uint32"/>
+        </group>
     </sbe:message>
 
     <!-- ======================== Internal inter-process messages (templateId 50-99) ======================== -->
@@ -1052,9 +1135,10 @@
         <field name="tenor"          id="10001" type="TenorEnum"/>
     </sbe:message>
 
-    <!-- OrderRejectedEvent -->
+    <!-- OrderRejectedEvent — APP-62 §D extended with orderQty, price, limitValue, projectedValue, checkId
+         for SEC 15c3-5(b) reject reconstruction without log-join via clOrdId. -->
     <sbe:message name="OrderRejectedEvent" id="101"
-                 description="Emitted when a new order is rejected">
+                 description="Emitted when a new order is rejected. APP-62 §D adds five audit fields so a regulator-side reject reconstruction does not require a log join: orderQty + price echo the submitted command; limitValue + projectedValue carry the breached limit and the value that exceeded it; checkId is the RiskCheckEnum discriminator that produced the reject (matches the tag-58 prefix produced by RejectTextFormatter).">
         <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
         <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
         <field name="clOrdId"        id="11"    type="ClOrdID"/>
@@ -1064,6 +1148,11 @@
         <field name="accountCode"    id="1"     type="Account"/>
         <field name="productType"    id="10013" type="ProductTypeEnum"/>
         <field name="currency"       id="15"    type="Currency" description="Order currency for gateway FIX translation"/>
+        <field name="orderQty"       id="38"    type="int64"   description="APP-62 §D — FIX tag 38; rejected order's quantity, fixed-point 10^-8"/>
+        <field name="price"          id="44"    type="int64"   description="APP-62 §D — FIX tag 44; rejected order's price, fixed-point 10^-8 (0 for market orders)"/>
+        <field name="limitValue"     id="10110" type="int64"   description="APP-62 §D — the configured limit at time of check, fixed-point (semantics depend on checkId; 0 if not applicable)"/>
+        <field name="projectedValue" id="10111" type="int64"   description="APP-62 §D — the value that breached the limit, fixed-point (e.g., projectedNetPosition for PositionLimit, deviationBps for FatFinger; 0 if not applicable)"/>
+        <field name="checkId"        id="10112" type="RiskCheckEnum" description="APP-62 §D — which validation produced this reject. Matches the [CHECK_NAME] prefix written into the text field by RejectTextFormatter."/>
         <field name="text"           id="58"    type="Text"/>
     </sbe:message>
 
@@ -1328,19 +1417,27 @@
         <field name="text"           id="58"    type="Text"             description="Free-text reason"/>
     </sbe:message>
 
-    <!-- RiskLimitLoadedEvent (115) — mirrors LoadRiskLimit. -->
+    <!-- RiskLimitLoadedEvent (115) — mirrors LoadRiskLimit. APP-62: see LoadRiskLimit for field semantics. -->
     <sbe:message name="RiskLimitLoadedEvent" id="115"
                  description="Emitted when a risk-limit record is loaded into RiskLimitStore.">
-        <field name="sequenceNumber"      id="10020" type="int64"             description="Monotonic event sequence number"/>
-        <field name="timestamp"           id="10021" type="uint64"            description="Cluster timestamp nanos"/>
-        <field name="accountId"           id="10024" type="int64"/>
-        <field name="maxOrderSize"        id="10030" type="int64"/>
-        <field name="maxOrderNotional"    id="10047" type="int64"/>
-        <field name="maxDailyVolume"      id="10031" type="int64"/>
-        <field name="maxDailyLossBps"     id="10048" type="uint32"/>
-        <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2 — see LoadRiskLimit"/>
-        <field name="status"              id="10027" type="AccountStatusEnum"/>
-        <field name="transactTime"        id="60"    type="uint64"            description="Original LoadRiskLimit transactTime"/>
+        <field name="sequenceNumber"          id="10020" type="int64"             description="Monotonic event sequence number"/>
+        <field name="timestamp"               id="10021" type="uint64"            description="Cluster timestamp nanos"/>
+        <field name="accountId"               id="10024" type="int64"/>
+        <field name="maxOrderSize"            id="10030" type="int64"/>
+        <field name="maxOrderNotional"        id="10047" type="int64"/>
+        <field name="maxDailyVolume"          id="10031" type="int64"/>
+        <field name="maxOrdersPerSecond"      id="10055" type="uint32" description="APP-62 slice 2"/>
+        <field name="maxLongPosition"         id="10100" type="int64"  description="APP-62 §4"/>
+        <field name="maxShortPosition"        id="10101" type="int64"  description="APP-62 §4"/>
+        <field name="positionLimitEnabled"    id="10102" type="uint8"  description="APP-62 §4"/>
+        <field name="priceDeviationBps"       id="10103" type="uint32" description="APP-62 §5"/>
+        <field name="fatFingerEnabled"        id="10104" type="uint8"  description="APP-62 §5"/>
+        <field name="fatFingerFailClosed"     id="10105" type="uint8"  description="APP-62 §5"/>
+        <field name="idleSessionTimeoutNanos" id="10106" type="uint64" description="APP-62 §B"/>
+        <field name="proposerId"              id="10107" type="Account" description="APP-62 §H"/>
+        <field name="approverId"              id="10108" type="Account" description="APP-62 §H"/>
+        <field name="status"                  id="10027" type="AccountStatusEnum"/>
+        <field name="transactTime"            id="60"    type="uint64"            description="Original LoadRiskLimit transactTime"/>
     </sbe:message>
 
     <!-- RiskLimitLoadRejectedEvent (116) -->
@@ -1371,6 +1468,53 @@
         <field name="adminSessionId"  id="10049" type="int64"  description="Aeron Cluster ClientSession id of the admin that issued the command"/>
         <field name="previouslyHalted" id="10050" type="uint8" description="1 if the flag was set when the command arrived (state cleared), 0 if it was already cleared (no-op for state)"/>
         <field name="reason"          id="58"    type="Text"   description="Free-text reason supplied by the admin"/>
+    </sbe:message>
+
+    <!-- RiskLimitChangedEvent (119) — APP-62 §D audit event capturing prior/new values of a LoadRiskLimit.
+         Required by MiFID II RTS 6 §13(2): "the change and the person who made it" must be auditable. -->
+    <sbe:message name="RiskLimitChangedEvent" id="119"
+                 description="APP-62 §D — emitted on every applied LoadRiskLimit, capturing prior values from the existing RiskLimitRecord (zero-filled on first-load) alongside the new values plus the proposer/approver identities. One event per applied LoadRiskLimit, not per-field (RTS 6 §13(2) requires the change record, not field-granular events). Field-type coercion: uint32 fields zero-extend into low 32 bits of int64; uint8 booleans encode as 0/1 in low byte.">
+        <field name="sequenceNumber" id="10020" type="int64"   description="Monotonic event sequence number"/>
+        <field name="timestamp"      id="10021" type="uint64"  description="Cluster timestamp nanos"/>
+        <field name="accountId"      id="10024" type="int64"   description="Target account"/>
+        <field name="proposerId"     id="10107" type="Account" description="Operator submitting the change (validated non-empty)"/>
+        <field name="approverId"     id="10108" type="Account" description="Operator approving (validated non-empty AND ≠ proposerId)"/>
+        <group name="oldRecord" id="10127" dimensionType="groupSizeEncoding"
+               description="Old/new value pairs for each changed field. Empty group on first-load (no prior record).">
+            <field name="fieldName" id="10128" type="Text"   description="Field name (e.g., 'maxLongPosition', 'priceDeviationBps'). ASCII, ≤24 bytes (Text type)."/>
+            <field name="oldValue"  id="10129" type="int64"  description="Prior value, sign-extended/zero-extended into int64 per the type-coercion contract"/>
+            <field name="newValue"  id="10130" type="int64"  description="New value, sign-extended/zero-extended into int64 per the type-coercion contract"/>
+        </group>
+    </sbe:message>
+
+    <!-- SymbolEligibilityLoadedEvent (120) — APP-62 §G mirror of LoadSymbolEligibility for read-side projection. -->
+    <sbe:message name="SymbolEligibilityLoadedEvent" id="120"
+                 description="APP-62 §G — emitted when a symbol-eligibility record is loaded into the cluster. Consumed by SymbolEligibilityProjection (read-side) and by NewOrderSingleHandler's in-cluster eligibility cache.">
+        <field name="sequenceNumber"            id="10020" type="int64"   description="Monotonic event sequence number"/>
+        <field name="timestamp"                 id="10021" type="uint64"  description="Cluster timestamp nanos"/>
+        <field name="symbol"                    id="55"    type="Symbol"/>
+        <field name="tradingAllowed"            id="10070" type="uint8"/>
+        <field name="shortSaleAllowed"          id="10071" type="uint8"/>
+        <field name="priceDeviationBpsOverride" id="10103" type="uint32"  description="APP-62 §I per-symbol override (0 = use per-account knob)"/>
+        <field name="transactTime"              id="60"    type="uint64"  description="Original LoadSymbolEligibility transactTime"/>
+    </sbe:message>
+
+    <!-- OrderExpiredEvent (121) — APP-62 §J. Emitted in place of OrderCanceledEvent for idle-timeout (and
+         future TIF-driven) expiries so the FIX 4.4 wire form is 35=8 ExecType=Expired (tag 150=C) per
+         FIX 4.4 spec rather than ExecType=Canceled. Carries the same shape as OrderCanceledEvent so the
+         gateway's egress path is structurally identical aside from the ExecType mapping. -->
+    <sbe:message name="OrderExpiredEvent" id="121"
+                 description="APP-62 §J — emitted for idle-timeout and time-in-force-driven expiries. Gateway translates to FIX 4.4 ExecutionReport (35=8) with ExecType=Expired (tag 150=C).">
+        <field name="sequenceNumber" id="10020" type="int64"  description="Monotonic event sequence number"/>
+        <field name="timestamp"      id="10021" type="uint64" description="Cluster timestamp nanos"/>
+        <field name="orderId"        id="37"    type="OrderID"/>
+        <field name="execId"         id="17"    type="ExecID" description="Engine-generated execution id for this expire event (FIX tag 17)"/>
+        <field name="clOrdId"        id="11"    type="ClOrdID"/>
+        <field name="symbol"         id="55"    type="Symbol"/>
+        <field name="side"           id="54"    type="SideEnum"/>
+        <field name="cumQty"         id="14"    type="int64"  description="Cumulative filled quantity at expire time, fixed-point 10^-8 (0 for the common phase-1 case)"/>
+        <field name="productType"    id="10013" type="ProductTypeEnum"/>
+        <field name="expireReason"   id="10131" type="ExpireReasonEnum" description="Why the expire was triggered (IdleTimeout for APP-151 phase 4 hook; TimeInForceExpired reserved)"/>
     </sbe:message>
 
     <!-- ======================== Snapshot Messages (templateId 200+) ======================== -->
@@ -1548,6 +1692,16 @@
             <field name="firstSeenTimestamp" id="10054" type="int64"
                    description="Cluster timestamp (epoch nanos) at which the dedupKey was first observed. Compared against CLORDID_DEDUP_WINDOW_NS at restore time."/>
         </group>
+        <!-- APP-62 §C — per-account daily-volume state persisted alongside dedup. Co-located because both
+             are produced and consumed by NewOrderSingleHandler in the same handler thread; bounded N (one
+             per account), comfortably within the snapshot fragment budget (§3.5a). -->
+        <group name="noDailyVolumeEntries" id="10113" dimensionType="groupSizeEncoding"
+               description="APP-62 §C — per-account daily-volume admit counter, snapshot-persistent so a cluster restart does not reset the day's accumulator (issue body called this the HIGH-value gap). Restore-time stale-day-bucket entries are dropped (see NewOrderSingleHandler.restoreDedupFrom).">
+            <field name="dvAccountId"           id="10114" type="int64"
+                   description="Account whose daily-volume accumulator this entry carries"/>
+            <field name="packedDayBucketAndQty" id="10115" type="int64"
+                   description="Packed (dayBucket &lt;&lt; DAILY_VOLUME_DAY_SHIFT) | qty, preserving the existing in-memory state layout"/>
+        </group>
     </sbe:message>
 
     <!-- CurrencySnapshot (208) — repeating group of currencies, ordered by ccyCode for determinism -->
@@ -1568,14 +1722,66 @@
     <sbe:message name="RiskLimitSnapshot" id="209"
                  description="Repeating group of full risk-limit records, used to restore RiskLimitStore on cluster recovery. Records are ordered by accountId for deterministic snapshot output.">
         <group name="noRiskLimits" id="10049" dimensionType="groupSizeEncoding">
-            <field name="accountId"           id="10024" type="int64"/>
-            <field name="maxOrderSize"        id="10030" type="int64"/>
-            <field name="maxOrderNotional"    id="10047" type="int64"/>
-            <field name="maxDailyVolume"      id="10031" type="int64"/>
-            <field name="maxDailyLossBps"     id="10048" type="uint32"/>
-            <field name="maxOrdersPerSecond"  id="10055" type="uint32" description="APP-62 slice 2"/>
-            <field name="status"              id="10027" type="AccountStatusEnum"/>
+            <field name="accountId"               id="10024" type="int64"/>
+            <field name="maxOrderSize"            id="10030" type="int64"/>
+            <field name="maxOrderNotional"        id="10047" type="int64"/>
+            <field name="maxDailyVolume"          id="10031" type="int64"/>
+            <field name="maxOrdersPerSecond"      id="10055" type="uint32" description="APP-62 slice 2"/>
+            <field name="maxLongPosition"         id="10100" type="int64"  description="APP-62 §4"/>
+            <field name="maxShortPosition"        id="10101" type="int64"  description="APP-62 §4"/>
+            <field name="positionLimitEnabled"    id="10102" type="uint8"  description="APP-62 §4"/>
+            <field name="priceDeviationBps"       id="10103" type="uint32" description="APP-62 §5"/>
+            <field name="fatFingerEnabled"        id="10104" type="uint8"  description="APP-62 §5"/>
+            <field name="fatFingerFailClosed"     id="10105" type="uint8"  description="APP-62 §5"/>
+            <field name="idleSessionTimeoutNanos" id="10106" type="uint64" description="APP-62 §B"/>
+            <field name="proposerId"              id="10107" type="Account" description="APP-62 §H"/>
+            <field name="approverId"              id="10108" type="Account" description="APP-62 §H"/>
+            <field name="status"                  id="10027" type="AccountStatusEnum"/>
             <field name="transactTime"        id="60"    type="uint64"          description="Original LoadRiskLimit transactTime (epoch nanos)"/>
+        </group>
+    </sbe:message>
+
+    <!-- LastQuotedPriceSnapshot (211) — APP-62 §5 — per-symbol last quoted-mid cache. Fed deterministically
+         from PriceResponse (template 51) consumed via TradingClusteredService.onSessionMessage; restored on
+         cluster recovery so the fat-finger check has a reference price immediately. Records are ordered by
+         symbolHash for deterministic snapshot output. -->
+    <sbe:message name="LastQuotedPriceSnapshot" id="211"
+                 description="APP-62 §5 — per-symbol last quoted-mid + staleness timestamp. Used by check 11f (fat-finger) as the reference price. fail-closed default rejects limit orders for symbols with no stored reference; restoring this snapshot avoids the cold-boot reject window after a cluster restart.">
+        <group name="noEntries" id="10116" dimensionType="groupSizeEncoding"
+               description="One entry per symbol with a recorded mid">
+            <field name="symbolHash"    id="10117" type="int64"  description="SymbolPacker.pack() of the 8-byte symbol"/>
+            <field name="lastMidPrice"  id="10118" type="int64"  description="Last computed (bid + (ask - bid) / 2), fixed-point 10^-8"/>
+            <field name="asOfTimestamp" id="10119" type="uint64" description="Cluster timestamp (epoch ns) when the mid was last updated; staleness window applied at check time"/>
+        </group>
+    </sbe:message>
+
+    <!-- AccountPositionSnapshot (212) — APP-62 §4 — per-(account, symbol) working long + short position.
+         Required so a cluster restart does not silently allow a doubled-up position when working orders persist
+         (the order pool is snapshotted; without this companion snapshot, the position counters that gate the
+         per-(account, symbol) check would rebuild empty). Records ordered by (accountId, symbolHash). -->
+    <sbe:message name="AccountPositionSnapshot" id="212"
+                 description="APP-62 §4 — per-(account, symbol) working long and short quantity. Worst-case-fill exposure semantics: workingLong and workingShort are independent caps (CME PTRM Long-Qty / Short-Qty convention).">
+        <group name="noEntries" id="10120" dimensionType="groupSizeEncoding"
+               description="One entry per (account, symbol) with non-zero exposure">
+            <field name="accountId"       id="10024" type="int64"/>
+            <field name="symbolHash"      id="10117" type="int64"/>
+            <field name="workingLongQty"  id="10121" type="int64" description="Sum of working buy quantities, fixed-point 10^-8 (≥ 0)"/>
+            <field name="workingShortQty" id="10122" type="int64" description="Sum of working sell quantities, fixed-point 10^-8 (≥ 0)"/>
+        </group>
+    </sbe:message>
+
+    <!-- SymbolEligibilitySnapshot (213) — APP-62 §G — per-symbol restricted-symbol + per-symbol fat-finger
+         override (§I piggybacks here since both are symbol-keyed reference data). Restores so check 11g has
+         its admission gating ready immediately on recovery without re-loading from disk. -->
+    <sbe:message name="SymbolEligibilitySnapshot" id="213"
+                 description="APP-62 §G + §I — per-symbol restricted-symbol flags and per-symbol fat-finger override. Restoring this snapshot is required for fail-closed §G semantics: if not restored, every symbol would be in 'no eligibility loaded' state and every order rejected.">
+        <group name="noEntries" id="10123" dimensionType="groupSizeEncoding"
+               description="One entry per known symbol">
+            <field name="symbolHash"                id="10117" type="int64"/>
+            <field name="tradingAllowed"            id="10070" type="uint8"/>
+            <field name="shortSaleAllowed"          id="10071" type="uint8"/>
+            <field name="priceDeviationBpsOverride" id="10103" type="uint32"/>
+            <field name="asOfTimestamp"             id="10125" type="uint64" description="Cluster timestamp when last loaded (audit)"/>
         </group>
     </sbe:message>
 

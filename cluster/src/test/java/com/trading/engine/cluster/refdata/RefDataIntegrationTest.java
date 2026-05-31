@@ -73,7 +73,7 @@ class RefDataIntegrationTest {
     assertNotNull(accountStore.get(100L));
 
     // ----- Step 3: load risk limit for accountId 100 -----
-    srcLength = encodeLoadRiskLimit(src, 100L, 1_000_00000000L, 0L, 10_000_00000000L, 50L, rlTime);
+    srcLength = encodeLoadRiskLimit(src, 100L, 1_000_00000000L, 0L, 10_000_00000000L, rlTime);
     eventLength = dispatch(registry, src, srcLength, eventDst, 3L, 3_000_000_000L);
 
     header.wrap(eventDst, 0);
@@ -128,7 +128,6 @@ class RefDataIntegrationTest {
     final RiskLimitState rl = restoredRiskLimit.get(100L);
     assertNotNull(rl);
     assertEquals(1_000_00000000L, rl.maxOrderSize());
-    assertEquals(50L, rl.maxDailyLossBps());
     assertEquals(rlTime, rl.transactTime());
   }
 
@@ -236,10 +235,9 @@ class RefDataIntegrationTest {
       final long accountId,
       final long maxOrderSize,
       final long maxOrderNotional,
-      final long maxDailyVolume,
-      final long maxDailyLossBps) {
+      final long maxDailyVolume) {
     return encodeLoadRiskLimit(
-        dst, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, maxDailyLossBps, 0L);
+        dst, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, 0L);
   }
 
   private static int encodeLoadRiskLimit(
@@ -248,7 +246,6 @@ class RefDataIntegrationTest {
       final long maxOrderSize,
       final long maxOrderNotional,
       final long maxDailyVolume,
-      final long maxDailyLossBps,
       final long transactTime) {
     return SbeTestEncoder.encodeLoadRiskLimit(
         dst,
@@ -257,7 +254,6 @@ class RefDataIntegrationTest {
         maxOrderSize,
         maxOrderNotional,
         maxDailyVolume,
-        maxDailyLossBps,
         AccountStatusEnum.Active,
         transactTime);
   }

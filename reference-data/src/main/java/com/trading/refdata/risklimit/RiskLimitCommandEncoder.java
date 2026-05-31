@@ -20,8 +20,24 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
   private static final int MAX_BATCH_SIZE = 200;
   private static final String ENTITY_TYPE = "RiskLimit";
 
+  /**
+   * APP-62 §H — default proposerId / approverId populated for ops-loaded YAML fixtures so the
+   * cluster's 4-eyes validation accepts the load. The byte buffers must be 16 bytes (SBE Account
+   * type) and not byte-equal. Real ops flows (operator console) override these per command.
+   */
+  private static final byte[] DEFAULT_PROPOSER_ID = paddedAscii("OPS-LOADER");
+
+  private static final byte[] DEFAULT_APPROVER_ID = paddedAscii("OPS-APPROVER");
+
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final LoadRiskLimitBatchEncoder batchEncoder = new LoadRiskLimitBatchEncoder();
+
+  private static byte[] paddedAscii(String s) {
+    byte[] out = new byte[16];
+    byte[] src = s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
+    return out;
+  }
 
   /** {@inheritDoc} */
   @Override
@@ -48,7 +64,8 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
           .maxOrderSize(record.maxOrderSize())
           .maxOrderNotional(record.maxOrderNotional())
           .maxDailyVolume(record.maxDailyVolume())
-          .maxDailyLossBps(record.maxDailyLossBps())
+          .putProposerId(DEFAULT_PROPOSER_ID, 0)
+          .putApproverId(DEFAULT_APPROVER_ID, 0)
           .status(toStatus(record.status()));
     }
 

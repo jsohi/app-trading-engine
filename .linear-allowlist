@@ -13,10 +13,16 @@
 # Format: one ID per line; lines starting with `#` are comments; blank lines
 # ignored. The Spotless step strips comments + whitespace before matching.
 #
+APP-52
+APP-58
+APP-62
 APP-125
+APP-137
 APP-149
 APP-151
+APP-152
 APP-160
+APP-180
 APP-185
 APP-203
 APP-225
