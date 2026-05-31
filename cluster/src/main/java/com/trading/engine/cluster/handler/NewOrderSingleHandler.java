@@ -1252,6 +1252,8 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      explicit boolean removes the "0 means disabled" ambiguity. Saturation overflow on the
     //      projected sum is treated as a breach via the strict `>` comparison.
     if (riskLimit != null && riskLimit.positionLimitEnabled()) {
+      // Primitive locals intentionally bare (no `final`) per memory rule
+      // feedback_final_primitives_autoboxing.md — `final` on primitives can hide autoboxing.
       long symbolHash = packSymbolKey(symbolScratch, 0);
       long currentLong = workingLongFor(account.accountId(), symbolHash);
       long currentShort = workingShortFor(account.accountId(), symbolHash);
@@ -1301,7 +1303,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     if (riskLimit != null
         && riskLimit.fatFingerEnabled()
         && (ordType == OrdTypeEnum.Limit || ordType == OrdTypeEnum.PreviouslyQuoted)) {
-      final long symbolHash = packSymbolKey(symbolScratch, 0);
+      long symbolHash = packSymbolKey(symbolScratch, 0);
       long lastMid = lastQuotedMidPrice.get(symbolHash);
       long lastTs = lastQuotedMidAsOfNanos.get(symbolHash);
       // Reference is usable only if both maps have an entry AND the timestamp is in the past or
@@ -2071,15 +2073,16 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // cancelReason (SessionDisconnect / IdleTimeout / ExplicitCancel / OperatorForce all release
     // the working exposure).
     //
-    // Subtract the LIVE working leaves (orderQty - cumQty), NOT the original orderQty. Today
-    // cumQty is always 0 (no matching engine) so the two are equal, but once APP-180 lands and
-    // partial fills become possible, only the un-filled remainder is still "working" — the filled
-    // portion was already decremented when the fill landed via applyFill (future). Subtracting the
-    // full orderQty here would drive the counter negative and silently let the next admit exceed
-    // the configured cap.
-    long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
-    long leavesQtyApp62Cxl = state.orderQty() - state.cumQty();
+    // Subtract the LIVE working leaves (state.leavesQty() — set to orderQty at admit, decremented
+    // by future fill emitters in APP-180). Today cumQty is always 0 so leavesQty == orderQty, but
+    // once partial fills land, only the un-filled remainder is still "working"; the filled portion
+    // was already decremented when the fill landed via applyFill (future). Subtracting the full
+    // orderQty here would drive the counter negative and silently let the next admit exceed the
+    // configured cap. Using state.leavesQty() keeps the future fill emitter responsible for one
+    // field, not two — single source of truth.
+    long leavesQtyApp62Cxl = state.leavesQty();
     if (leavesQtyApp62Cxl > 0L) {
+      long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
       revertWorkingPosition(state.accountId(), symbolHashApp62Cxl, state.side(), leavesQtyApp62Cxl);
     }
   }
@@ -2333,15 +2336,15 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * <p>This method is called from the cluster's PriceResponse dispatch path (Raft-replicated), so
    * the cache mutation is deterministic across replicas.
    *
-   * <p><b>OPERATIONAL GATE — KNOWN GAP.</b> As of commit {@code fb8fb11} this method has no caller;
-   * the {@link com.trading.engine.cluster.handler.PriceResponseHandler PriceResponseHandler}
-   * dispatch hook lands in a follow-up slice. Until that wires up, the {@link #lastQuotedMidPrice}
-   * cache stays empty, and any {@code LoadRiskLimit} that sets {@code fatFingerEnabled=true} with
-   * the industry-standard {@code fatFingerFailClosed=true} default will reject EVERY limit /
-   * PreviouslyQuoted order (no reference → fail-closed). Test fixtures default {@code
-   * fatFingerEnabled=false} so unit tests do not surface this, but production YAML loads MUST keep
-   * {@code fatFingerEnabled=false} until the wire-up commit lands. The risk is documented here so a
-   * future reviewer landing the hook can close this finding by removing this paragraph.
+   * <p><b>OPERATIONAL GATE — KNOWN GAP.</b> As of the APP-62 §5 first slice this method has no
+   * caller; the {@link com.trading.engine.cluster.handler.PriceResponseHandler
+   * PriceResponseHandler} dispatch hook lands in a follow-up slice. Until that wires up, the {@link
+   * #lastQuotedMidPrice} cache stays empty, and any {@code LoadRiskLimit} that sets {@code
+   * fatFingerEnabled=true} with the industry-standard {@code fatFingerFailClosed=true} default will
+   * reject EVERY limit / PreviouslyQuoted order (no reference → fail-closed). Test fixtures default
+   * {@code fatFingerEnabled=false} so unit tests do not surface this, but production YAML loads
+   * MUST keep {@code fatFingerEnabled=false} until the wire-up commit lands. The risk is documented
+   * here so a future reviewer landing the hook can close this finding by removing this paragraph.
    *
    * <p>TODO(APP-62): wire PriceResponseHandler / TradingClusteredService dispatch on tpl 51
    * (PriceResponse) to call {@link #updateLastQuotedMid}; remove the OPERATIONAL GATE paragraph
