@@ -5,6 +5,7 @@ import com.trading.engine.messages.sbe.LoadRiskLimitEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.RiskLimitChangedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventEncoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventEncoder;
 import org.agrona.DirectBuffer;
@@ -47,6 +48,16 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
   private final RiskLimitLoadedEventEncoder loadedEncoder = new RiskLimitLoadedEventEncoder();
   private final RiskLimitLoadRejectedEventEncoder rejectedEncoder =
       new RiskLimitLoadRejectedEventEncoder();
+
+  /**
+   * APP-62 §D audit event — emitted after every successful LoadRiskLimit upsert. Carries the
+   * proposerId / approverId from {@link #setProposerId}/{@link #setApproverId} plus a repeating
+   * group of (fieldName, oldValue, newValue) for each scalar field whose value changed. First-load
+   * (no prior {@code RiskLimitRecord}) emits an empty group per plan §3.1; the operator
+   * distinguishes first-load from update by checking the group count.
+   */
+  private final RiskLimitChangedEventEncoder changedEncoder = new RiskLimitChangedEventEncoder();
+
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
   private final byte[] proposerIdScratch = new byte[AccountIdentifierBytes.LENGTH];
@@ -163,7 +174,24 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
 
     // Upsert.
     var state = riskLimitStore.get(accountId);
-    if (state == null) {
+    boolean firstLoad = state == null;
+    // APP-62 §D — capture prior scalar field values BEFORE mutating the state, so the
+    // RiskLimitChangedEvent (template 119) carries accurate old/new pairs for the audit trail.
+    // On first-load (state == null) the prior values are all zero and the oldRecord group will
+    // be emitted empty per the schema convention.
+    long oldMaxOrderSize = firstLoad ? 0L : state.maxOrderSize();
+    long oldMaxOrderNotional = firstLoad ? 0L : state.maxOrderNotional();
+    long oldMaxDailyVolume = firstLoad ? 0L : state.maxDailyVolume();
+    long oldMaxOrdersPerSecond = firstLoad ? 0L : state.maxOrdersPerSecond();
+    long oldMaxLongPosition = firstLoad ? 0L : state.maxLongPosition();
+    long oldMaxShortPosition = firstLoad ? 0L : state.maxShortPosition();
+    boolean oldPositionLimitEnabled = !firstLoad && state.positionLimitEnabled();
+    long oldPriceDeviationBps = firstLoad ? 0L : state.priceDeviationBps();
+    boolean oldFatFingerEnabled = !firstLoad && state.fatFingerEnabled();
+    boolean oldFatFingerFailClosed = !firstLoad && state.fatFingerFailClosed();
+    long oldIdleSessionTimeoutNanos = firstLoad ? 0L : state.idleSessionTimeoutNanos();
+
+    if (firstLoad) {
       state = new RiskLimitState();
     }
     state.setAccountId(accountId);
@@ -205,7 +233,184 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     loadedEncoder.status(state.status());
     loadedEncoder.transactTime(state.transactTime());
 
-    return MessageHeaderEncoder.ENCODED_LENGTH + loadedEncoder.encodedLength();
+    int loadedLen = MessageHeaderEncoder.ENCODED_LENGTH + loadedEncoder.encodedLength();
+
+    // APP-62 §D — append RiskLimitChangedEvent (template 119) right after the loaded event so
+    // both land in the same EventSink emit call. The cluster's event sequencer will assign
+    // sequenceNumber + 1 to this event when it stamps the egress.
+    int changedLen =
+        encodeChangedEvent(
+            eventDst,
+            eventDstOffset + loadedLen,
+            sequenceNumber + 1L,
+            clusterTimestampNanos,
+            accountId,
+            firstLoad,
+            oldMaxOrderSize,
+            maxOrderSize,
+            oldMaxOrderNotional,
+            maxOrderNotional,
+            oldMaxDailyVolume,
+            maxDailyVolume,
+            oldMaxOrdersPerSecond,
+            maxOrdersPerSecond,
+            oldMaxLongPosition,
+            maxLongPosition,
+            oldMaxShortPosition,
+            maxShortPosition,
+            oldPositionLimitEnabled,
+            positionLimitEnabled,
+            oldPriceDeviationBps,
+            priceDeviationBps,
+            oldFatFingerEnabled,
+            fatFingerEnabled,
+            oldFatFingerFailClosed,
+            fatFingerFailClosed,
+            oldIdleSessionTimeoutNanos,
+            idleSessionTimeoutNanos);
+
+    return loadedLen + changedLen;
+  }
+
+  /**
+   * APP-62 §D — encodes one {@code RiskLimitChangedEvent} (template 119) into the egress buffer.
+   * The repeating {@code oldRecord} group carries one entry per scalar field whose value changed
+   * (oldValue != newValue); on first-load the group is emitted empty per the schema convention.
+   * Boolean fields are sign-extended to int64 as 0/1; uint32 fields are zero-extended.
+   *
+   * @return total encoded length including the SBE message header
+   */
+  private int encodeChangedEvent(
+      final MutableDirectBuffer eventDst,
+      int eventDstOffset,
+      long sequenceNumber,
+      long clusterTimestampNanos,
+      long accountId,
+      boolean firstLoad,
+      long oldMaxOrderSize,
+      long newMaxOrderSize,
+      long oldMaxOrderNotional,
+      long newMaxOrderNotional,
+      long oldMaxDailyVolume,
+      long newMaxDailyVolume,
+      long oldMaxOrdersPerSecond,
+      long newMaxOrdersPerSecond,
+      long oldMaxLongPosition,
+      long newMaxLongPosition,
+      long oldMaxShortPosition,
+      long newMaxShortPosition,
+      boolean oldPositionLimitEnabled,
+      boolean newPositionLimitEnabled,
+      long oldPriceDeviationBps,
+      long newPriceDeviationBps,
+      boolean oldFatFingerEnabled,
+      boolean newFatFingerEnabled,
+      boolean oldFatFingerFailClosed,
+      boolean newFatFingerFailClosed,
+      long oldIdleSessionTimeoutNanos,
+      long newIdleSessionTimeoutNanos) {
+    changedEncoder.wrapAndApplyHeader(eventDst, eventDstOffset, headerEncoder);
+    changedEncoder.sequenceNumber(sequenceNumber);
+    changedEncoder.timestamp(clusterTimestampNanos);
+    changedEncoder.accountId(accountId);
+    changedEncoder.putProposerId(proposerIdScratch, 0);
+    changedEncoder.putApproverId(approverIdScratch, 0);
+
+    // Group population — first-load → empty group (count=0). Update → one entry per CHANGED field.
+    int diffCount =
+        firstLoad
+            ? 0
+            : countDiffs(
+                oldMaxOrderSize, newMaxOrderSize,
+                oldMaxOrderNotional, newMaxOrderNotional,
+                oldMaxDailyVolume, newMaxDailyVolume,
+                oldMaxOrdersPerSecond, newMaxOrdersPerSecond,
+                oldMaxLongPosition, newMaxLongPosition,
+                oldMaxShortPosition, newMaxShortPosition,
+                oldPositionLimitEnabled, newPositionLimitEnabled,
+                oldPriceDeviationBps, newPriceDeviationBps,
+                oldFatFingerEnabled, newFatFingerEnabled,
+                oldFatFingerFailClosed, newFatFingerFailClosed,
+                oldIdleSessionTimeoutNanos, newIdleSessionTimeoutNanos);
+
+    final var group = changedEncoder.oldRecordCount(diffCount);
+    if (diffCount > 0) {
+      writeDiffIfChanged(group, "maxOrderSize", oldMaxOrderSize, newMaxOrderSize);
+      writeDiffIfChanged(group, "maxOrderNotional", oldMaxOrderNotional, newMaxOrderNotional);
+      writeDiffIfChanged(group, "maxDailyVolume", oldMaxDailyVolume, newMaxDailyVolume);
+      writeDiffIfChanged(group, "maxOrdersPerSecond", oldMaxOrdersPerSecond, newMaxOrdersPerSecond);
+      writeDiffIfChanged(group, "maxLongPosition", oldMaxLongPosition, newMaxLongPosition);
+      writeDiffIfChanged(group, "maxShortPosition", oldMaxShortPosition, newMaxShortPosition);
+      writeDiffIfChanged(
+          group,
+          "positionLimitEnabled",
+          oldPositionLimitEnabled ? 1L : 0L,
+          newPositionLimitEnabled ? 1L : 0L);
+      writeDiffIfChanged(group, "priceDeviationBps", oldPriceDeviationBps, newPriceDeviationBps);
+      writeDiffIfChanged(
+          group, "fatFingerEnabled", oldFatFingerEnabled ? 1L : 0L, newFatFingerEnabled ? 1L : 0L);
+      writeDiffIfChanged(
+          group,
+          "fatFingerFailClosed",
+          oldFatFingerFailClosed ? 1L : 0L,
+          newFatFingerFailClosed ? 1L : 0L);
+      writeDiffIfChanged(
+          group, "idleSessionTimeoutNanos", oldIdleSessionTimeoutNanos, newIdleSessionTimeoutNanos);
+    }
+
+    return MessageHeaderEncoder.ENCODED_LENGTH + changedEncoder.encodedLength();
+  }
+
+  private static void writeDiffIfChanged(
+      final RiskLimitChangedEventEncoder.OldRecordEncoder group,
+      final String fieldName,
+      long oldValue,
+      long newValue) {
+    if (oldValue == newValue) {
+      return;
+    }
+    group.next();
+    group.fieldName(fieldName);
+    group.oldValue(oldValue);
+    group.newValue(newValue);
+  }
+
+  private static int countDiffs(
+      long oldA,
+      long newA,
+      long oldB,
+      long newB,
+      long oldC,
+      long newC,
+      long oldD,
+      long newD,
+      long oldE,
+      long newE,
+      long oldF,
+      long newF,
+      boolean oldG,
+      boolean newG,
+      long oldH,
+      long newH,
+      boolean oldI,
+      boolean newI,
+      boolean oldJ,
+      boolean newJ,
+      long oldK,
+      long newK) {
+    int count = 0;
+    if (oldA != newA) count++;
+    if (oldB != newB) count++;
+    if (oldC != newC) count++;
+    if (oldD != newD) count++;
+    if (oldE != newE) count++;
+    if (oldF != newF) count++;
+    if (oldG != newG) count++;
+    if (oldH != newH) count++;
+    if (oldI != newI) count++;
+    if (oldJ != newJ) count++;
+    if (oldK != newK) count++;
+    return count;
   }
 
   private int emitRejected(
