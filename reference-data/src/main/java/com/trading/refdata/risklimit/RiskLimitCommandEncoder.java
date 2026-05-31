@@ -70,12 +70,26 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
 
     for (int i = fromIndex; i < toIndex; i++) {
       final var record = records.get(i);
+      // YAML bootstrap intentionally writes zeros for the APP-62 §4 / §5 / §B fields that the
+      // POJO doesn't carry yet (positionLimitEnabled=0, fatFingerEnabled=0, etc.). These explicit
+      // writes are required even though SBE block-length zero-padding would fill them, because
+      // (a) defensive encoding is the LMAX / Aeron / exchange-core convention, and (b) a future
+      // schema reorder must not silently surface garbage from sub-aligned memory. Operator console
+      // override flow (APP-58) replaces these zeros with real values.
       group
           .next()
           .accountId(record.accountId())
           .maxOrderSize(record.maxOrderSize())
           .maxOrderNotional(record.maxOrderNotional())
           .maxDailyVolume(record.maxDailyVolume())
+          .maxOrdersPerSecond(0L)
+          .maxLongPosition(0L)
+          .maxShortPosition(0L)
+          .positionLimitEnabled((short) 0)
+          .priceDeviationBps(0L)
+          .fatFingerEnabled((short) 0)
+          .fatFingerFailClosed((short) 1) // industry-standard default per APP-62 §5
+          .idleSessionTimeoutNanos(0L)
           .putProposerId(DEFAULT_PROPOSER_ID, 0)
           .putApproverId(DEFAULT_APPROVER_ID, 0)
           .status(toStatus(record.status()));

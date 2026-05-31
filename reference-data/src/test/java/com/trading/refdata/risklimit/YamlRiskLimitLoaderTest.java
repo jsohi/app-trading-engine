@@ -20,6 +20,14 @@ final class YamlRiskLimitLoaderTest {
     }
   }
 
+  /**
+   * Also covers the APP-62 deprecated-key tolerance contract: {@code risklimits-valid.yaml} fixture
+   * carries {@code maxDailyLossBps: 50} / {@code 100} on both entries. The R2 implementation of
+   * {@link YamlRiskLimitLoader#toRecord} emits a WARN log and ignores the value. This test asserts
+   * the silent-ignore-with-WARN path loads the surrounding fields correctly; the WARN itself is
+   * observable via the project's Log4j2 ASYNC logger but not asserted here (a follow-up test would
+   * attach a ListAppender — tracked for plan §17 expansion).
+   */
   @Test
   void loadValidRiskLimits() throws Exception {
     final var loader = new YamlRiskLimitLoader(testResource("risklimits-valid.yaml"));
