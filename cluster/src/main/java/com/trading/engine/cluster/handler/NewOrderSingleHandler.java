@@ -949,6 +949,30 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       return null;
     }
 
+    // 5a. (APP-62 §E) Fail-closed boot — every account that can trade MUST have a RiskLimitRecord
+    //     loaded. Without this guard the cluster would silently fail-open on cold boot or for any
+    //     account that wasn't covered by the operator's most recent YAML, letting orders flow with
+    //     no maxOrderSize / maxOrderNotional / maxDailyVolume / position / fat-finger gating.
+    //     SEC 15c3-5 / MiFID II RTS 6 both treat the no-record case as a pre-trade-risk violation,
+    //     not a fail-open default.
+    //
+    //     Downstream null-guards on `riskLimit != null && ...` remain defensive but are now dead
+    //     code on the happy path — kept so a future refactor that moves the lookup earlier doesn't
+    //     silently regress the existing checks.
+    if (!riskLimitStore.contains(account.accountId())) {
+      emitOrderRejectedWithBreachContext(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RiskLimitsNotLoaded,
+          "no risk-limit record loaded for account",
+          RiskCheckEnum.RiskLimitsNotLoaded,
+          0L,
+          0L);
+      return null;
+    }
+
     // 6. Account status must be Active.
     if (account.status() != AccountStatusEnum.Active) {
       emitOrderRejected(
