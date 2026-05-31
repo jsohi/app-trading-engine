@@ -344,6 +344,55 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       new Long2ObjectHashMap<>(1024, 0.65f);
 
   // ===========================================================================
+  // APP-62 §5 — per-symbol fat-finger reference price cache + staleness clock
+  //
+  // Check 11f rejects limit orders whose price deviates from the cluster's
+  // last known mid-quote for the symbol by more than priceDeviationBps. Industry
+  // standard per CME PTRM price-band convention, adapted to FIX 4.4 (tag 103 = 99).
+  //
+  // Reference source: PriceResponse (template 51) flows through
+  // TradingClusteredService.commandHandlers[51] (Raft-replicated, deterministic).
+  // Updates land via updateLastQuotedMid; admit path looks up via the cache.
+  //
+  // Sentinels:
+  //   - lastQuotedMidPrice missing = Long.MIN_VALUE (distinct from 0L which is
+  //     the legitimate zero-price for market orders).
+  //   - lastQuotedMidAsOfNanos missing = 0L (cluster ts is positive epoch-nanos).
+  //
+  // Staleness window: 5 min default. A reference older than this OR with
+  // lastTs > clusterTimestamp (replay edge case) is treated as "no reference";
+  // RiskLimit.fatFingerFailClosed then decides reject vs admit.
+  // ===========================================================================
+
+  /** Sentinel: no last-quoted-mid recorded for this symbol. */
+  static final long LAST_PRICE_MISSING = Long.MIN_VALUE;
+
+  /** Sentinel: no timestamp recorded. Cluster ts is positive epoch-nanos so 0 is unambiguous. */
+  static final long LAST_PRICE_TIMESTAMP_MISSING = 0L;
+
+  /**
+   * Staleness window for the last-quoted-mid reference. A reference older than this is treated as
+   * "no reference" by check 11f. Set to 5 minutes per plan §3.2 default. Should become a {@code
+   * LauncherConfig.riskEngine.lastPriceStalenessNanos} knob in a follow-up slice; left as a
+   * constant here for the first commit.
+   */
+  static final long LAST_PRICE_STALENESS_NANOS = 5L * 60L * 1_000_000_000L;
+
+  /**
+   * Upper-bound guard on PriceResponse mid input. Prices above this are skipped as nonsense
+   * (defends against pricing-service malfunctions that could otherwise poison the fat-finger
+   * reference). Fixed-point 10⁻⁸; corresponds to ~10¹⁰ raw price units.
+   */
+  static final long MAX_REASONABLE_PRICE = 1_000_000_000_000_000_000L;
+
+  /** Per-symbol last-quoted mid price (fixed-point 10⁻⁸). */
+  final Long2LongHashMap lastQuotedMidPrice = new Long2LongHashMap(1024, 0.65f, LAST_PRICE_MISSING);
+
+  /** Per-symbol cluster timestamp when the last mid was recorded. */
+  final Long2LongHashMap lastQuotedMidAsOfNanos =
+      new Long2LongHashMap(1024, 0.65f, LAST_PRICE_TIMESTAMP_MISSING);
+
+  // ===========================================================================
   // Session → orderKey tracking (APP-151 phase 1 — session-disconnect orphan cancel)
   //
   // Maps cluster session id (the Aeron {@code ClientSession#id()}) to the set of
@@ -1230,6 +1279,76 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
             riskLimit.maxShortPosition(),
             projectedShort);
         return null;
+      }
+    }
+
+    // 11f. (APP-62 §5) Fat-finger — limit-priced orders are gated against the cluster's last
+    //      known mid for the symbol. Tolerance is the per-account priceDeviationBps; if the
+    //      account opted into fatFingerFailClosed (industry-standard default), missing or stale
+    //      references cause a reject so the operator must publish a fresh quote before any
+    //      limit can land. Market orders skip the check (no price to band).
+    //
+    //      Reference-price source: PriceResponse from the pricing service, replicated via Raft.
+    //      Replay-safe staleness check guards against lastTs > clusterTimestamp (snapshot replay
+    //      edge case) by treating that as "no reference".
+    //
+    //      Arithmetic: deviationBps = |price - lastMid| * 10_000 / lastMid. We use
+    //      Math.unsignedMultiplyHigh to detect overflow in the (delta × 10_000) multiplication;
+    //      a non-zero high word treats the projected deviation as Long.MAX_VALUE and rejects.
+    if (riskLimit != null
+        && riskLimit.fatFingerEnabled()
+        && (ordType == OrdTypeEnum.Limit || ordType == OrdTypeEnum.PreviouslyQuoted)) {
+      final long symbolHash = packSymbolKey(symbolScratch, 0);
+      long lastMid = lastQuotedMidPrice.get(symbolHash);
+      long lastTs = lastQuotedMidAsOfNanos.get(symbolHash);
+      // Reference is usable only if both maps have an entry AND the timestamp is in the past or
+      // present relative to clusterTimestamp AND within the staleness window. The replay guard
+      // (lastTs <= clusterTimestamp) preserves determinism — under replay the cache could be
+      // restored from a snapshot taken after the current log position.
+      boolean haveReference =
+          lastMid != LAST_PRICE_MISSING
+              && lastTs != LAST_PRICE_TIMESTAMP_MISSING
+              && lastTs <= timestamp
+              && (timestamp - lastTs) <= LAST_PRICE_STALENESS_NANOS;
+      if (!haveReference) {
+        if (riskLimit.fatFingerFailClosed()) {
+          emitOrderRejectedWithBreachContext(
+              eventSink,
+              session,
+              timestamp,
+              side,
+              RejectReasonEnum.PriceTooFarFromMarket,
+              "no fat-finger reference price for symbol",
+              RiskCheckEnum.FatFinger,
+              riskLimit.priceDeviationBps(),
+              0L);
+          return null;
+        }
+        // fail-open mode: skip the check — operator-acknowledged risk
+      } else {
+        long delta = Math.abs(price - lastMid);
+        // Overflow guard on (delta × 10_000): the high 64 bits of the unsigned product. Non-zero
+        // means the product exceeds 2⁶³; treat as a runaway breach.
+        long deltaHigh = Math.unsignedMultiplyHigh(delta, 10_000L);
+        long deviationBps;
+        if (deltaHigh != 0L) {
+          deviationBps = Long.MAX_VALUE;
+        } else {
+          deviationBps = (delta * 10_000L) / lastMid;
+        }
+        if (deviationBps > riskLimit.priceDeviationBps()) {
+          emitOrderRejectedWithBreachContext(
+              eventSink,
+              session,
+              timestamp,
+              side,
+              RejectReasonEnum.PriceTooFarFromMarket,
+              "price deviates from last quoted mid by more than priceDeviationBps",
+              RiskCheckEnum.FatFinger,
+              riskLimit.priceDeviationBps(),
+              deviationBps);
+          return null;
+        }
       }
     }
 
@@ -2172,6 +2291,54 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     } else {
       inner.put(symbolHash, next);
     }
+  }
+
+  // ===========================================================================
+  // APP-62 §5 — fat-finger helpers
+  // ===========================================================================
+
+  /**
+   * Updates the per-symbol last-quoted mid + asOf-timestamp cache from a {@link
+   * com.trading.engine.messages.sbe.PriceResponseDecoder PriceResponse} arrival. Skips on
+   * crossed/locked markets (bid &gt;= ask), zero or negative sides, or out-of-range prices that
+   * exceed {@link #MAX_REASONABLE_PRICE} (defends against pricing-service malfunctions). The
+   * midpoint is computed in an overflow-safe form: {@code bid + (ask - bid) / 2}. Zero-allocation
+   * after construction.
+   *
+   * <p>This method is called from the cluster's PriceResponse dispatch path (Raft-replicated), so
+   * the cache mutation is deterministic across replicas. Wiring lives in {@link
+   * com.trading.engine.cluster.handler.PriceResponseHandler PriceResponseHandler} (or directly from
+   * {@link com.trading.engine.cluster.TradingClusteredService TradingClusteredService} — slice TBD;
+   * this method is the contract).
+   *
+   * @param symbolHash packed symbol key, see {@link #packSymbolKey}
+   * @param bidPrice bid side, fixed-point 10⁻⁸; values &le; 0 cause a skip
+   * @param askPrice ask side, fixed-point 10⁻⁸; values &le; 0 or {@code &lt;= bidPrice} cause a
+   *     skip
+   * @param clusterTimestamp cluster-assigned epoch-nanos at PriceResponse arrival
+   */
+  void updateLastQuotedMid(
+      final long symbolHash,
+      final long bidPrice,
+      final long askPrice,
+      final long clusterTimestamp) {
+    // Skip crossed / locked / sentinel-zero markets — mid is non-meaningful for fat-finger.
+    if (bidPrice <= 0L || askPrice <= 0L || bidPrice >= askPrice) {
+      return;
+    }
+    // Upper-bound sanity: reject obviously-garbage prices before they pollute the cache.
+    if (bidPrice > MAX_REASONABLE_PRICE || askPrice > MAX_REASONABLE_PRICE) {
+      return;
+    }
+    // Overflow-safe midpoint: ask > bid > 0 and both bounded above by MAX_REASONABLE_PRICE so
+    // (ask - bid) is safe; bid + (ask - bid)/2 cannot overflow inside the guarded range.
+    long mid = bidPrice + (askPrice - bidPrice) / 2L;
+    // Defense-in-depth — never let a sentinel value slip into the cache.
+    if (mid == LAST_PRICE_MISSING) {
+      return;
+    }
+    lastQuotedMidPrice.put(symbolHash, mid);
+    lastQuotedMidAsOfNanos.put(symbolHash, clusterTimestamp);
   }
 
   /**
