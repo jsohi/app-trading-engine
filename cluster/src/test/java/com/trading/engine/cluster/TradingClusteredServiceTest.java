@@ -497,7 +497,12 @@ class TradingClusteredServiceTest {
     assertEquals(2, fresh.currencyStore().size());
     assertTrue(
         fresh.currencyStore().contains(CurrencyStore.packCode((byte) 'U', (byte) 'S', (byte) 'D')));
-    assertEquals(1, fresh.riskLimitStore().size());
+    assertEquals(
+        3,
+        fresh
+            .riskLimitStore()
+            .size()); // APP-62 §E — ReferenceDataSeeder seeds limits for accounts 1/2/3 so Check 0a
+    // does not block tests
     assertEquals(10L * PRICE_SCALE, fresh.riskLimitStore().get(1L).maxOrderSize());
 
     // OrderBook restored.
@@ -678,7 +683,12 @@ class TradingClusteredServiceTest {
     assertEquals(0L, fresh.execIdGen().currentCounter());
     assertEquals(3, fresh.accountStore().size());
     assertEquals(2, fresh.currencyStore().size());
-    assertEquals(1, fresh.riskLimitStore().size());
+    assertEquals(
+        3,
+        fresh
+            .riskLimitStore()
+            .size()); // APP-62 §E — ReferenceDataSeeder seeds limits for accounts 1/2/3 so Check 0a
+    // does not block tests
     assertEquals(0, fresh.orderBook().size());
   }
 
@@ -956,7 +966,12 @@ class TradingClusteredServiceTest {
     assertNotNull(fresh.orderBook().get(3L));
     assertEquals(3, fresh.accountStore().size());
     assertEquals(2, fresh.currencyStore().size());
-    assertEquals(1, fresh.riskLimitStore().size());
+    assertEquals(
+        3,
+        fresh
+            .riskLimitStore()
+            .size()); // APP-62 §E — ReferenceDataSeeder seeds limits for accounts 1/2/3 so Check 0a
+    // does not block tests
   }
 
   /**

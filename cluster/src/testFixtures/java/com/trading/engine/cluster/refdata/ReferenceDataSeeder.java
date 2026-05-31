@@ -94,6 +94,14 @@ public final class ReferenceDataSeeder {
    * @param limits the risk-limit store to populate (must be non-null)
    */
   public static void seedRiskLimits(final RiskLimitStore limits) {
+    // APP-62 §E (Check 0a) — fail-closed boot rejects any order whose account has no loaded
+    // RiskLimitRecord. The downstream tests for AccountSuspended (account 2 LOCKED) and
+    // AccountNoTradePermission (account 3 QUOTEONLY) must reach those checks, so we seed
+    // permissive risk limits for all three test accounts. Without these, Check 0a would
+    // reject before the status / permission checks ever fire and those tests would fail
+    // with RiskLimitsNotLoaded instead of the expected reason.
     limits.put(RiskLimitFixtures.permissive(1L));
+    limits.put(RiskLimitFixtures.permissive(2L));
+    limits.put(RiskLimitFixtures.permissive(3L));
   }
 }
