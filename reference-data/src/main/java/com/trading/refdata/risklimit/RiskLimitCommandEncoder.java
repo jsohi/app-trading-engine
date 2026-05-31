@@ -35,14 +35,15 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
    * principal is required before production deployment — tracked under APP-58 (AccountStore +
    * operator identity work).
    */
+  // TODO(APP-58): surface real operator identity from session principal; remove these sentinels.
   private static final byte[] DEFAULT_PROPOSER_ID = paddedAscii("OPS-LOADER");
 
+  // TODO(APP-58): surface real operator identity from session principal; remove these sentinels.
   private static final byte[] DEFAULT_APPROVER_ID = paddedAscii("OPS-APPROVER");
 
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final LoadRiskLimitBatchEncoder batchEncoder = new LoadRiskLimitBatchEncoder();
 
-  // TODO(APP-58): surface real operator identity from session principal; remove these sentinels.
   private static byte[] paddedAscii(final String s) {
     final byte[] out = new byte[16];
     final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
@@ -60,7 +61,7 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
       final int offset)
       throws ReferenceDataLoadException {
 
-    final int count = toIndex - fromIndex;
+    int count = toIndex - fromIndex;
     batchEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder);
     // Cluster overwrites this field with its own deterministic timestamp
     batchEncoder.transactTime(0L);

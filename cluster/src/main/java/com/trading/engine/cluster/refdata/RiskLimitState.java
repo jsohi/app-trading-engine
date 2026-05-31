@@ -28,9 +28,6 @@ import com.trading.engine.messages.sbe.AccountStatusEnum;
  */
 public final class RiskLimitState {
 
-  /** Account-identifier byte arrays are bounded by the SBE {@code Account} char[16] type. */
-  private static final int ACCOUNT_ID_BYTE_LEN = 16;
-
   private long accountId;
   private long maxOrderSize;
   private long maxOrderNotional;
@@ -74,10 +71,10 @@ public final class RiskLimitState {
    * APP-62 §H — operator submitting the load (mandatory, non-empty). Backing byte array is
    * fixed-length.
    */
-  private final byte[] proposerId = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] proposerId = new byte[AccountIdentifierBytes.LENGTH];
 
   /** APP-62 §H — operator approving the load (mandatory, non-empty AND ≠ proposerId). */
-  private final byte[] approverId = new byte[ACCOUNT_ID_BYTE_LEN];
+  private final byte[] approverId = new byte[AccountIdentifierBytes.LENGTH];
 
   private AccountStatusEnum status = AccountStatusEnum.Active;
   private long transactTime;
@@ -258,7 +255,7 @@ public final class RiskLimitState {
    * {@link LoadRiskLimitHandler} to reject loads that omit the proposer.
    */
   public boolean proposerIdIsEmpty() {
-    return isAllZero(proposerId);
+    return AccountIdentifierBytes.isAllZero(proposerId);
   }
 
   /**
@@ -266,7 +263,7 @@ public final class RiskLimitState {
    * populated by any {@link #setApproverId} call). Used by APP-62 §H 4-eyes ingress validation.
    */
   public boolean approverIdIsEmpty() {
-    return isAllZero(approverId);
+    return AccountIdentifierBytes.isAllZero(approverId);
   }
 
   /**
@@ -284,9 +281,5 @@ public final class RiskLimitState {
     for (int i = copyLen; i < dst.length; i++) {
       dst[i] = 0;
     }
-  }
-
-  private static boolean isAllZero(final byte[] buf) {
-    return AccountIdentifierBytes.isAllZero(buf);
   }
 }
