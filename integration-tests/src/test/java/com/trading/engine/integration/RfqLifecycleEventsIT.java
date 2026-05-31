@@ -10,6 +10,7 @@ import com.trading.engine.cluster.TradingClusteredServiceFactory;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyState;
@@ -170,7 +171,8 @@ class RfqLifecycleEventsIT {
             riskLimitStore,
             registry,
             rfqStateMachine,
-            rfqMetrics);
+            rfqMetrics,
+            new RiskMetrics());
 
     cluster = new RfqClusterTestHarness(TIMESTAMP);
     session = new FakeClientSession(42L);

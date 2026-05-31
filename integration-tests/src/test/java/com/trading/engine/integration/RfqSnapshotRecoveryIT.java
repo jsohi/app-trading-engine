@@ -9,6 +9,7 @@ import com.trading.engine.cluster.TradingClusteredServiceFactory;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountState;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyState;
@@ -178,7 +179,8 @@ class RfqSnapshotRecoveryIT {
             riskLimitStore,
             registry,
             rfqStateMachine,
-            rfqMetrics);
+            rfqMetrics,
+            new RiskMetrics());
 
     final var harness = new RfqClusterTestHarness(clusterTime);
     final var session = new FakeClientSession(sessionId);

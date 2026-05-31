@@ -12,6 +12,7 @@ import com.trading.engine.cluster.handler.QuoteRequestHandler;
 import com.trading.engine.cluster.handler.ResumeTradingCommandHandler;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
@@ -140,6 +141,7 @@ public final class TradingClusteredService implements ClusteredService {
   private final ReferenceDataRegistry referenceDataRegistry;
   private final RfqStateMachine rfqStateMachine;
   private final RfqMetrics rfqMetrics;
+  private final RiskMetrics riskMetrics;
 
   /**
    * Direct reference to the registered {@link NewOrderSingleHandler} so the snapshot path can
@@ -258,7 +260,8 @@ public final class TradingClusteredService implements ClusteredService {
       final RiskLimitStore riskLimitStore,
       final ReferenceDataRegistry referenceDataRegistry,
       final RfqStateMachine rfqStateMachine,
-      final RfqMetrics rfqMetrics) {
+      final RfqMetrics rfqMetrics,
+      final RiskMetrics riskMetrics) {
     this.tradingState = notNull(tradingState, "tradingState");
     this.eventSink = notNull(eventSink, "eventSink");
     this.eventJournal = notNull(eventJournal, "eventJournal");
@@ -268,6 +271,7 @@ public final class TradingClusteredService implements ClusteredService {
     this.referenceDataRegistry = notNull(referenceDataRegistry, "referenceDataRegistry");
     this.rfqStateMachine = notNull(rfqStateMachine, "rfqStateMachine");
     this.rfqMetrics = notNull(rfqMetrics, "rfqMetrics");
+    this.riskMetrics = notNull(riskMetrics, "riskMetrics");
     // Consistency check: the registry must be backed by the same concrete store instances we
     // hold a direct reference to. Otherwise NewOrderSingle validation would read from one
     // object graph while ref-data commands mutate another, or a snapshot restore could put the
@@ -288,6 +292,11 @@ public final class TradingClusteredService implements ClusteredService {
     this.newOrderSingleHandler =
         new NewOrderSingleHandler(tradingState, accountStore, currencyStore, riskLimitStore);
     this.newOrderSingleHandler.wireRfqStateMachine(rfqStateMachine, rfqMetrics);
+    // APP-62 §F — wire cluster-scoped risk counters so emitOrderRejected and updateLastQuotedMid
+    // can record per-reason rejects + reference-cache skips. The setter form mirrors
+    // wireRfqStateMachine: handler null-safe on the metric for legacy test paths that hold the
+    // handler directly without going through this factory.
+    this.newOrderSingleHandler.setRiskMetrics(riskMetrics);
     commandHandlers.put(newOrderSingleHandler.commandTemplateId(), newOrderSingleHandler);
     this.quoteRequestHandler =
         new QuoteRequestHandler(rfqStateMachine, accountStore, currencyStore, rfqMetrics);

@@ -62,8 +62,13 @@ final class RefDataEgressBridge implements ControlledEgressListener {
     verifyBlockLength("CurrencyLoadedEvent", CurrencyLoadedEventDecoder.BLOCK_LENGTH, 96);
     verifyBlockLength(
         "CurrencyLoadRejectedEvent", CurrencyLoadRejectedEventDecoder.BLOCK_LENGTH, 84);
-    // APP-62 slice 2 bumped this from 61 to 65 — added maxOrdersPerSecond (uint32 = 4 bytes).
-    verifyBlockLength("RiskLimitLoadedEvent", RiskLimitLoadedEventDecoder.BLOCK_LENGTH, 65);
+    // APP-62 slice 2 bumped this from 61 to 65 (added maxOrdersPerSecond, uint32). The §H/§D
+    // schema refresh bumped it again to 124: removed maxDailyLossBps (int64 = −8); added
+    // maxLongPosition (int64 = +8), maxShortPosition (int64 = +8), priceDeviationBps (uint32 =
+    // +4), idleSessionTimeoutNanos (uint64 = +8), positionLimitEnabled (uint8 = +1),
+    // fatFingerEnabled (uint8 = +1), fatFingerFailClosed (uint8 = +1), proposerId (char[16] =
+    // +16), approverId (char[16] = +16). Net delta = +59 bytes ⇒ 65 + 59 = 124.
+    verifyBlockLength("RiskLimitLoadedEvent", RiskLimitLoadedEventDecoder.BLOCK_LENGTH, 124);
     verifyBlockLength(
         "RiskLimitLoadRejectedEvent", RiskLimitLoadRejectedEventDecoder.BLOCK_LENGTH, 89);
   }

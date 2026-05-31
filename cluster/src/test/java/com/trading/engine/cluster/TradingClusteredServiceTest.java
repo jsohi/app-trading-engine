@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.LoadAccountHandler;
@@ -123,7 +124,8 @@ class TradingClusteredServiceTest {
             riskLimitStore,
             registry,
             rfqStateMachine,
-            rfqMetrics);
+            rfqMetrics,
+            new RiskMetrics());
 
     cluster = new FakeCluster(TIMESTAMP);
     session = new FakeClientSession();
@@ -760,7 +762,8 @@ class TradingClusteredServiceTest {
             limits,
             reg,
             newRfqStateMachine(accounts, new RfqMetrics()),
-            new RfqMetrics());
+            new RfqMetrics(),
+            new RiskMetrics());
     svc.onStart(cluster, null);
     return new ServiceBundle(
         ordGen, exeGen, book, seq, journal, state, sink, accounts, currencies, limits, reg, svc);
@@ -859,7 +862,8 @@ class TradingClusteredServiceTest {
                 riskLimitStore,
                 registry,
                 rfqStateMachine,
-                rfqMetrics));
+                rfqMetrics,
+                new RiskMetrics()));
   }
 
   @Test
@@ -904,7 +908,8 @@ class TradingClusteredServiceTest {
                 riskLimitStore,
                 registry,
                 rfqStateMachine,
-                rfqMetrics));
+                rfqMetrics,
+                new RiskMetrics()));
   }
 
   // ---------------------------------------------------------------------------
@@ -1091,7 +1096,8 @@ class TradingClusteredServiceTest {
             limits,
             reg,
             newRfqStateMachine(accounts, new RfqMetrics()),
-            new RfqMetrics());
+            new RfqMetrics(),
+            new RiskMetrics());
     svc.onStart(cluster, null);
 
     // Place 1000 orders.
@@ -1159,7 +1165,8 @@ class TradingClusteredServiceTest {
             freshLimits,
             freshReg,
             freshRfqStateMachine,
-            freshRfqMetrics);
+            freshRfqMetrics,
+            new RiskMetrics());
     freshSvc.onStart(cluster, null);
 
     freshSvc.loadSnapshot(assembled, 0, totalLen);

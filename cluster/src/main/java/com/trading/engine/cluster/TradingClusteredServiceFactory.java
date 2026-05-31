@@ -3,6 +3,7 @@ package com.trading.engine.cluster;
 import com.trading.engine.cluster.handler.EventSink;
 import com.trading.engine.cluster.journal.EventJournal;
 import com.trading.engine.cluster.metrics.RfqMetrics;
+import com.trading.engine.cluster.metrics.RiskMetrics;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.LoadAccountBatchHandler;
@@ -150,6 +151,7 @@ public final class TradingClusteredServiceFactory {
     registry.registerBatchLoader(new LoadRiskLimitBatchHandler(riskLimitStore, accountStore));
 
     final var rfqMetrics = new RfqMetrics();
+    final var riskMetrics = new RiskMetrics();
     final var rfqStateMachine =
         new RfqStateMachine(
             rfqConfig.poolCapacity(),
@@ -174,6 +176,7 @@ public final class TradingClusteredServiceFactory {
         riskLimitStore,
         registry,
         rfqStateMachine,
-        rfqMetrics);
+        rfqMetrics,
+        riskMetrics);
   }
 }
