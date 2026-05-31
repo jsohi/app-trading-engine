@@ -4,6 +4,7 @@ import com.trading.engine.cluster.TradingClusteredServiceFactory;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
@@ -233,7 +234,11 @@ public final class ClusterNodeLauncher {
               launcherConfig.rfqAcceptQtyToleranceBps());
       final var service =
           TradingClusteredServiceFactory.create(
-              new AccountStore(), new CurrencyStore(), new RiskLimitStore(), rfqConfig);
+              new AccountStore(),
+              new CurrencyStore(),
+              new RiskLimitStore(),
+              new SymbolEligibilityStore(),
+              rfqConfig);
       final var serviceCtx =
           new ClusteredServiceContainer.Context()
               .aeronDirectoryName(aeronDir)

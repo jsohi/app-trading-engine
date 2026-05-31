@@ -12,8 +12,11 @@ import com.trading.engine.cluster.refdata.LoadCurrencyBatchHandler;
 import com.trading.engine.cluster.refdata.LoadCurrencyHandler;
 import com.trading.engine.cluster.refdata.LoadRiskLimitBatchHandler;
 import com.trading.engine.cluster.refdata.LoadRiskLimitHandler;
+import com.trading.engine.cluster.refdata.LoadSymbolEligibilityBatchHandler;
+import com.trading.engine.cluster.refdata.LoadSymbolEligibilityHandler;
 import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
@@ -101,27 +104,34 @@ public final class TradingClusteredServiceFactory {
   /** Convenience for production bootstrap: fresh empty ref-data stores + default RFQ config. */
   public static TradingClusteredService create() {
     return create(
-        new AccountStore(), new CurrencyStore(), new RiskLimitStore(), RfqConfig.DEFAULTS);
+        new AccountStore(),
+        new CurrencyStore(),
+        new RiskLimitStore(),
+        new SymbolEligibilityStore(),
+        RfqConfig.DEFAULTS);
   }
 
   /** Convenience overload: provided ref-data stores + default RFQ config. */
   public static TradingClusteredService create(
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
-      final RiskLimitStore riskLimitStore) {
-    return create(accountStore, currencyStore, riskLimitStore, RfqConfig.DEFAULTS);
+      final RiskLimitStore riskLimitStore,
+      final SymbolEligibilityStore symbolEligibilityStore) {
+    return create(
+        accountStore, currencyStore, riskLimitStore, symbolEligibilityStore, RfqConfig.DEFAULTS);
   }
 
   /**
    * Build a {@link TradingClusteredService} wired with the given ref-data stores and RFQ config.
    * The factory constructs the remaining dependencies ({@link IdGenerator}s, {@link OrderBook},
-   * {@link EventSequencer}, {@link EventJournal}, {@link ReferenceDataRegistry} with all three
+   * {@link EventSequencer}, {@link EventJournal}, {@link ReferenceDataRegistry} with all four
    * loaders) internally.
    */
   public static TradingClusteredService create(
       final AccountStore accountStore,
       final CurrencyStore currencyStore,
       final RiskLimitStore riskLimitStore,
+      final SymbolEligibilityStore symbolEligibilityStore,
       final RfqConfig rfqConfig) {
     final var orderIdGen = new IdGenerator("ORD");
     final var execIdGen = new IdGenerator("EXE");
@@ -141,14 +151,17 @@ public final class TradingClusteredServiceFactory {
     registry.registerStore(accountStore);
     registry.registerStore(currencyStore);
     registry.registerStore(riskLimitStore);
-    // Legacy single-record loaders (templateIds 11, 13, 15)
+    registry.registerStore(symbolEligibilityStore);
+    // Legacy single-record loaders (templateIds 11, 13, 15, 19)
     registry.registerLoader(new LoadAccountHandler(accountStore, currencyStore));
     registry.registerLoader(new LoadCurrencyHandler(currencyStore));
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
-    // Batch loaders (templateIds 12, 14, 16) — used by ReferenceDataOrchestrator via YAML files
+    registry.registerLoader(new LoadSymbolEligibilityHandler(symbolEligibilityStore));
+    // Batch loaders (templateIds 12, 14, 16, 20) — used by ReferenceDataOrchestrator via YAML files
     registry.registerBatchLoader(new LoadAccountBatchHandler(accountStore, currencyStore));
     registry.registerBatchLoader(new LoadCurrencyBatchHandler(currencyStore));
     registry.registerBatchLoader(new LoadRiskLimitBatchHandler(riskLimitStore, accountStore));
+    registry.registerBatchLoader(new LoadSymbolEligibilityBatchHandler(symbolEligibilityStore));
 
     final var rfqMetrics = new RfqMetrics();
     final var riskMetrics = new RiskMetrics();
@@ -174,6 +187,7 @@ public final class TradingClusteredServiceFactory {
         accountStore,
         currencyStore,
         riskLimitStore,
+        symbolEligibilityStore,
         registry,
         rfqStateMachine,
         rfqMetrics,

@@ -23,6 +23,7 @@ import com.trading.engine.cluster.refdata.ReferenceDataRegistry;
 import com.trading.engine.cluster.refdata.ReferenceDataSeeder;
 import com.trading.engine.cluster.refdata.RiskLimitState;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.sequencer.EventSequencer;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
@@ -84,6 +85,7 @@ class TradingClusteredServiceTest {
   private AccountStore accountStore;
   private CurrencyStore currencyStore;
   private RiskLimitStore riskLimitStore;
+  private SymbolEligibilityStore symbolEligibilityStore;
   private ReferenceDataRegistry registry;
   private TradingClusteredService service;
   private FakeCluster cluster;
@@ -101,6 +103,7 @@ class TradingClusteredServiceTest {
     accountStore = new AccountStore();
     currencyStore = new CurrencyStore();
     riskLimitStore = new RiskLimitStore();
+    symbolEligibilityStore = ReferenceDataSeeder.permissiveSymbolEligibilityStore();
 
     ReferenceDataSeeder.seed(accountStore, currencyStore, riskLimitStore);
 
@@ -108,6 +111,7 @@ class TradingClusteredServiceTest {
     registry.registerStore(accountStore);
     registry.registerStore(currencyStore);
     registry.registerStore(riskLimitStore);
+    registry.registerStore(symbolEligibilityStore);
     registry.registerLoader(new LoadAccountHandler(accountStore, currencyStore));
     registry.registerLoader(new LoadCurrencyHandler(currencyStore));
     registry.registerLoader(new LoadRiskLimitHandler(riskLimitStore, accountStore));
@@ -122,6 +126,7 @@ class TradingClusteredServiceTest {
             accountStore,
             currencyStore,
             riskLimitStore,
+            symbolEligibilityStore,
             registry,
             rfqStateMachine,
             rfqMetrics,
@@ -745,6 +750,7 @@ class TradingClusteredServiceTest {
     final var accounts = new AccountStore();
     final var currencies = new CurrencyStore();
     final var limits = new RiskLimitStore();
+    final var eligibility = ReferenceDataSeeder.permissiveSymbolEligibilityStore();
     if (seed) {
       ReferenceDataSeeder.seed(accounts, currencies, limits);
     }
@@ -752,6 +758,7 @@ class TradingClusteredServiceTest {
     reg.registerStore(accounts);
     reg.registerStore(currencies);
     reg.registerStore(limits);
+    reg.registerStore(eligibility);
     final var svc =
         new TradingClusteredService(
             state,
@@ -760,6 +767,7 @@ class TradingClusteredServiceTest {
             accounts,
             currencies,
             limits,
+            eligibility,
             reg,
             newRfqStateMachine(accounts, new RfqMetrics()),
             new RfqMetrics(),
@@ -796,6 +804,9 @@ class TradingClusteredServiceTest {
     cursor = appendFragment(dst, cursor, svc.accountSnapBuffer(), svc.accountSnapLength());
     cursor = appendFragment(dst, cursor, svc.currencySnapBuffer(), svc.currencySnapLength());
     cursor = appendFragment(dst, cursor, svc.riskLimitSnapBuffer(), svc.riskLimitSnapLength());
+    cursor =
+        appendFragment(
+            dst, cursor, svc.symbolEligibilitySnapBuffer(), svc.symbolEligibilitySnapLength());
     cursor = appendFragment(dst, cursor, svc.orderBookSnapBuffer(), svc.orderBookSnapLength());
     cursor = appendFragment(dst, cursor, svc.rfqStateSnapBuffer(), svc.rfqStateSnapLength());
     cursor =
@@ -860,6 +871,7 @@ class TradingClusteredServiceTest {
                 differentAccountStore, // different instance than what is registered
                 currencyStore,
                 riskLimitStore,
+                symbolEligibilityStore,
                 registry,
                 rfqStateMachine,
                 rfqMetrics,
@@ -906,6 +918,7 @@ class TradingClusteredServiceTest {
                 accountStore,
                 currencyStore,
                 riskLimitStore,
+                symbolEligibilityStore,
                 registry,
                 rfqStateMachine,
                 rfqMetrics,
@@ -954,6 +967,7 @@ class TradingClusteredServiceTest {
             + service.accountSnapLength()
             + service.currencySnapLength()
             + service.riskLimitSnapLength()
+            + service.symbolEligibilitySnapLength()
             + service.orderBookSnapLength()
             + service.rfqStateSnapLength()
             + service.clOrdIdDedupSnapLength();
@@ -993,6 +1007,7 @@ class TradingClusteredServiceTest {
             + service.accountSnapLength()
             + service.currencySnapLength()
             + service.riskLimitSnapLength()
+            + service.symbolEligibilitySnapLength()
             + service.orderBookSnapLength()
             + service.rfqStateSnapLength()
             + service.clOrdIdDedupSnapLength();
@@ -1079,9 +1094,11 @@ class TradingClusteredServiceTest {
     limits.put(bigLimit);
 
     final var reg = new ReferenceDataRegistry();
+    final var eligibility = ReferenceDataSeeder.permissiveSymbolEligibilityStore();
     reg.registerStore(accounts);
     reg.registerStore(currencies);
     reg.registerStore(limits);
+    reg.registerStore(eligibility);
     reg.registerLoader(new LoadAccountHandler(accounts, currencies));
     reg.registerLoader(new LoadCurrencyHandler(currencies));
     reg.registerLoader(new LoadRiskLimitHandler(limits, accounts));
@@ -1094,6 +1111,7 @@ class TradingClusteredServiceTest {
             accounts,
             currencies,
             limits,
+            eligibility,
             reg,
             newRfqStateMachine(accounts, new RfqMetrics()),
             new RfqMetrics(),
@@ -1133,6 +1151,7 @@ class TradingClusteredServiceTest {
             + svc.accountSnapLength()
             + svc.currencySnapLength()
             + svc.riskLimitSnapLength()
+            + svc.symbolEligibilitySnapLength()
             + svc.orderBookSnapLength()
             + svc.rfqStateSnapLength()
             + svc.clOrdIdDedupSnapLength();
@@ -1149,10 +1168,12 @@ class TradingClusteredServiceTest {
     final var freshAccounts = new AccountStore();
     final var freshCurrencies = new CurrencyStore();
     final var freshLimits = new RiskLimitStore();
+    final var freshEligibility = ReferenceDataSeeder.permissiveSymbolEligibilityStore();
     final var freshReg = new ReferenceDataRegistry();
     freshReg.registerStore(freshAccounts);
     freshReg.registerStore(freshCurrencies);
     freshReg.registerStore(freshLimits);
+    freshReg.registerStore(freshEligibility);
     final var freshRfqMetrics = new RfqMetrics();
     final var freshRfqStateMachine = newRfqStateMachine(freshAccounts, freshRfqMetrics);
     final var freshSvc =
@@ -1163,6 +1184,7 @@ class TradingClusteredServiceTest {
             freshAccounts,
             freshCurrencies,
             freshLimits,
+            freshEligibility,
             freshReg,
             freshRfqStateMachine,
             freshRfqMetrics,

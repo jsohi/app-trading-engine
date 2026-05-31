@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import com.trading.engine.cluster.refdata.AccountStore;
 import com.trading.engine.cluster.refdata.CurrencyStore;
 import com.trading.engine.cluster.refdata.RiskLimitStore;
+import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -29,6 +30,9 @@ class TradingClusteredServiceFactoryTest {
     assertDoesNotThrow(
         () ->
             TradingClusteredServiceFactory.create(
-                new AccountStore(), new CurrencyStore(), new RiskLimitStore()));
+                new AccountStore(),
+                new CurrencyStore(),
+                new RiskLimitStore(),
+                new SymbolEligibilityStore()));
   }
 }
