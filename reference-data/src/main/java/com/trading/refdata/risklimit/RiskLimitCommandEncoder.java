@@ -6,6 +6,7 @@ import com.trading.engine.messages.sbe.LoadRiskLimitBatchEncoder.NoRiskLimitsEnc
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.agrona.MutableDirectBuffer;
 
@@ -22,8 +23,17 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
 
   /**
    * APP-62 §H — default proposerId / approverId populated for ops-loaded YAML fixtures so the
-   * cluster's 4-eyes validation accepts the load. The byte buffers must be 16 bytes (SBE Account
-   * type) and not byte-equal. Real ops flows (operator console) override these per command.
+   * cluster's 4-eyes validation accepts the YAML-bootstrap load path. The byte buffers must be 16
+   * bytes (SBE {@code Account} type) and not byte-equal.
+   *
+   * <p><b>Audit posture (KNOWN GAP):</b> these sentinels short-circuit the MiFID II RTS 6 §1(2)
+   * intent of identifying the actual proposing and approving operators. Every YAML-loaded risk
+   * limit will record {@code proposerId="OPS-LOADER"} / {@code approverId="OPS-APPROVER"} in {@link
+   * com.trading.engine.messages.sbe.RiskLimitChangedEventEncoder RiskLimitChangedEvent} and in
+   * {@code RiskLimitSnapshot}. This is acceptable ONLY for the pre-production / bootstrap path. A
+   * real operator-console surface that supplies per-record proposerId/approverId from a session
+   * principal is required before production deployment — tracked under APP-58 (AccountStore +
+   * operator identity work).
    */
   private static final byte[] DEFAULT_PROPOSER_ID = paddedAscii("OPS-LOADER");
 
@@ -32,9 +42,10 @@ public final class RiskLimitCommandEncoder implements ReferenceDataEncoder<RiskL
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
   private final LoadRiskLimitBatchEncoder batchEncoder = new LoadRiskLimitBatchEncoder();
 
-  private static byte[] paddedAscii(String s) {
-    byte[] out = new byte[16];
-    byte[] src = s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  // TODO(APP-58): surface real operator identity from session principal; remove these sentinels.
+  private static byte[] paddedAscii(final String s) {
+    final byte[] out = new byte[16];
+    final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
     return out;
   }

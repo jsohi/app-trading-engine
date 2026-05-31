@@ -116,15 +116,20 @@ final class YamlRiskLimitLoaderTest {
   }
 
   @Test
-  void recordRejectsMaxDailyLossBpsOverflow() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new RiskLimitRecord(1L, 0L, 0L, 0L, "Active"));
-  }
-
-  @Test
   void recordRejectsNegativeMaxOrderSize() {
     assertThrows(
         IllegalArgumentException.class, () -> new RiskLimitRecord(1L, -1L, 0L, 0L, "Active"));
+  }
+
+  @Test
+  void recordRejectsNegativeMaxOrderNotional() {
+    assertThrows(
+        IllegalArgumentException.class, () -> new RiskLimitRecord(1L, 0L, -1L, 0L, "Active"));
+  }
+
+  @Test
+  void recordRejectsNegativeMaxDailyVolume() {
+    assertThrows(
+        IllegalArgumentException.class, () -> new RiskLimitRecord(1L, 0L, 0L, -1L, "Active"));
   }
 }

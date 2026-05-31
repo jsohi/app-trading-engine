@@ -24,10 +24,19 @@ import org.agrona.MutableDirectBuffer;
  * </ul>
  *
  * <p>Successful upserts emit {@code RiskLimitLoadedEvent}; re-loading the same accountId is
- * idempotent. Zero allocation on the validate-and-emit path (scratch byte arrays are reused).
+ * idempotent.
  *
- * <p>APP-62: dropped {@code maxDailyLossBps}; added 9 new fields (position L/S caps, fat-finger
- * knobs, per-account idle timeout, proposerId/approverId 4-eyes identifiers).
+ * <p><b>Threading.</b> Not thread-safe — single-threaded cluster duty cycle only. The {@code
+ * proposerIdScratch} and {@code approverIdScratch} byte arrays are mutable per-instance buffers
+ * that are reused on every {@link #onCommand} call.
+ *
+ * <p><b>Allocation.</b> Zero-allocation on the validate-and-emit hot path. The single exception is
+ * the first-load {@code new RiskLimitState()} when the account has no prior record; this is a
+ * reference-data ingress path (not the order-matching hot path) and is acceptable per the CLAUDE.md
+ * reference-data carve-out.
+ *
+ * <p>APP-62: dropped {@code maxDailyLossBps} (re-added by APP-180); added 9 new fields (position
+ * L/S caps, fat-finger knobs, per-account idle timeout, proposerId/approverId 4-eyes identifiers).
  */
 public final class LoadRiskLimitHandler implements ReferenceDataLoader {
 
@@ -45,7 +54,8 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
   private final byte[] proposerIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
   private final byte[] approverIdScratch = new byte[ACCOUNT_ID_BYTE_LEN];
 
-  public LoadRiskLimitHandler(RiskLimitStore riskLimitStore, AccountStore accountStore) {
+  public LoadRiskLimitHandler(
+      final RiskLimitStore riskLimitStore, final AccountStore accountStore) {
     if (riskLimitStore == null) {
       throw new NullPointerException("riskLimitStore must not be null");
     }
@@ -63,11 +73,11 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
 
   @Override
   public int onCommand(
-      MessageHeaderDecoder header,
-      DirectBuffer src,
+      final MessageHeaderDecoder header,
+      final DirectBuffer src,
       int srcOffset,
       int srcLength,
-      MutableDirectBuffer eventDst,
+      final MutableDirectBuffer eventDst,
       int eventDstOffset,
       long sequenceNumber,
       long clusterTimestampNanos) {
@@ -127,7 +137,8 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     // §H 4-eyes — proposerId and approverId both non-empty, must not match each other.
     decoder.getProposerId(proposerIdScratch, 0);
     decoder.getApproverId(approverIdScratch, 0);
-    if (isAllZero(proposerIdScratch) || isAllZero(approverIdScratch)) {
+    if (AccountIdentifierBytes.isAllZero(proposerIdScratch)
+        || AccountIdentifierBytes.isAllZero(approverIdScratch)) {
       return emitRejected(
           eventDst,
           eventDstOffset,
@@ -137,7 +148,7 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
           RejectReasonEnum.FourEyesViolation,
           "proposerId and approverId must be non-empty");
     }
-    if (byteEquals(proposerIdScratch, approverIdScratch)) {
+    if (AccountIdentifierBytes.byteEquals(proposerIdScratch, approverIdScratch)) {
       return emitRejected(
           eventDst,
           eventDstOffset,
@@ -200,13 +211,13 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
   }
 
   private int emitRejected(
-      MutableDirectBuffer eventDst,
+      final MutableDirectBuffer eventDst,
       int eventDstOffset,
       long sequenceNumber,
       long clusterTimestampNanos,
       long accountId,
-      RejectReasonEnum reason,
-      String text) {
+      final RejectReasonEnum reason,
+      final String text) {
     rejectedEncoder.wrapAndApplyHeader(eventDst, eventDstOffset, headerEncoder);
     rejectedEncoder.sequenceNumber(sequenceNumber);
     rejectedEncoder.timestamp(clusterTimestampNanos);
@@ -214,23 +225,5 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     rejectedEncoder.rejectReason(reason);
     rejectedEncoder.text(text);
     return MessageHeaderEncoder.ENCODED_LENGTH + rejectedEncoder.encodedLength();
-  }
-
-  private static boolean isAllZero(byte[] buf) {
-    for (int i = 0; i < buf.length; i++) {
-      if (buf[i] != 0) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private static boolean byteEquals(byte[] a, byte[] b) {
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 }

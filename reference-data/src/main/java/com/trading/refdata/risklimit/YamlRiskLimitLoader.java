@@ -30,12 +30,16 @@ import org.yaml.snakeyaml.Yaml;
  *     maxOrderSize: 1000000000
  *     maxOrderNotional: 0
  *     maxDailyVolume: 0
- *     maxDailyLossBps: 50
  *     status: "Active"
  * </pre>
  *
- * <p>Validates: accountId &gt; 0, all limits &ge; 0, maxDailyLossBps fits uint32 range. Rejects
- * duplicates by {@code accountId} (one limit per account). Rejects fractional numeric values.
+ * <p>Validates: {@code accountId &gt; 0}; all limit values &ge; 0. Rejects duplicates by {@code
+ * accountId} (one limit per account). Rejects fractional numeric values.
+ *
+ * <p>APP-62: {@code maxDailyLossBps} was removed from the schema in this PR. If a stale fixture
+ * still carries the key, the loader emits a {@code WARN}-level log entry naming the entry index and
+ * ignores the value. The field will return in APP-180 when mark price + filled position are
+ * available.
  *
  * <p>Not thread-safe — single-threaded startup use only.
  */
@@ -136,13 +140,19 @@ public final class YamlRiskLimitLoader implements ReferenceDataLoader<RiskLimitR
       final long maxOrderSize = toLong(entry, "maxOrderSize");
       final long maxOrderNotional = toLong(entry, "maxOrderNotional");
       final long maxDailyVolume = toLong(entry, "maxDailyVolume");
-      // APP-62: maxDailyLossBps removed; YAML key is now ignored if present (silent forward-compat).
+      // APP-62: maxDailyLossBps removed; loudly WARN if a stale fixture still carries the key so
+      // operators notice configuration drift rather than running with a control they expect.
+      if (entry.containsKey("maxDailyLossBps")) {
+        LOG.warn(
+            "RiskLimit entry {} in {} carries deprecated field 'maxDailyLossBps' (removed by APP-62; returns in APP-180). Value is ignored.",
+            index,
+            filePath);
+      }
       final String status = requireStringOrDefault(entry, "status", "Active");
       StatusValidator.validateStatus(status, ENTITY_TYPE);
 
       // RiskLimitRecord compact constructor validates remaining constraints
-      return new RiskLimitRecord(
-          accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, status);
+      return new RiskLimitRecord(accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, status);
     } catch (final ReferenceDataLoadException e) {
       throw e;
     } catch (final IllegalArgumentException e) {

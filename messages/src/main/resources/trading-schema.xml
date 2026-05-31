@@ -817,7 +817,7 @@
         <field name="symbol"                    id="55"    type="Symbol"  description="FIX tag 55 — instrument symbol"/>
         <field name="tradingAllowed"            id="10070" type="uint8"   description="0 = trading halted/restricted for this symbol (every order rejected); 1 = trading allowed"/>
         <field name="shortSaleAllowed"          id="10071" type="uint8"   description="0 = short sales prohibited (Reg SHO threshold security, halt-and-locate violation, hard-to-borrow); 1 = short sales allowed. Phase-1 §G treats every Sell as potentially-short for the restricted set (conservative; refined to long/short discrimination under APP-180)."/>
-        <field name="priceDeviationBpsOverride" id="10103" type="uint32"  description="APP-62 §I — per-symbol fat-finger override (basis points). 0 = no override; use the per-account knob from RiskLimit. Field id reuses 10103 from LoadRiskLimit since the semantic is the same."/>
+        <field name="priceDeviationBpsOverride" id="10124" type="uint32"  description="APP-62 §I — per-symbol fat-finger override (basis points). 0 = no override; use the per-account knob (id=10103) from RiskLimit. Distinct field id from the per-account knob because the two carry different audit semantics: 10103 = account-default policy; 10124 = symbol-specific overlay."/>
         <field name="transactTime"              id="60"    type="uint64"  description="Epoch nanos"/>
     </sbe:message>
 
@@ -829,7 +829,7 @@
             <field name="symbol"                    id="55"    type="Symbol"/>
             <field name="tradingAllowed"            id="10070" type="uint8"/>
             <field name="shortSaleAllowed"          id="10071" type="uint8"/>
-            <field name="priceDeviationBpsOverride" id="10103" type="uint32"/>
+            <field name="priceDeviationBpsOverride" id="10124" type="uint32"/>
         </group>
     </sbe:message>
 
@@ -1780,7 +1780,7 @@
             <field name="symbolHash"                id="10117" type="int64"/>
             <field name="tradingAllowed"            id="10070" type="uint8"/>
             <field name="shortSaleAllowed"          id="10071" type="uint8"/>
-            <field name="priceDeviationBpsOverride" id="10103" type="uint32"/>
+            <field name="priceDeviationBpsOverride" id="10124" type="uint32"/>
             <field name="asOfTimestamp"             id="10125" type="uint64" description="Cluster timestamp when last loaded (audit)"/>
         </group>
     </sbe:message>

@@ -5,6 +5,7 @@ import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotEncoder;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotEncoder.NoRiskLimitsEncoder;
+import java.util.Arrays;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
@@ -28,8 +29,16 @@ import org.agrona.collections.LongObjConsumer;
  *
  * <p>APP-62: extended to carry the 9 new risk-limit fields (position L/S caps, fat-finger knobs,
  * per-account idle timeout, 4-eyes proposer/approver identifiers). {@code maxDailyLossBps} field
- * was removed from the schema this PR — re-added by APP-180 once filled position + mark price
- * are produced by the matching engine.
+ * was removed from the schema this PR — re-added by APP-180 once filled position + mark price are
+ * produced by the matching engine.
+ *
+ * <p><b>Snapshot scratch growth.</b> {@link #snapshotTo} uses a {@code long[] snapshotKeysScratch}
+ * for deterministic key ordering. The class is documented as "zero allocation after construction"
+ * for the hot lookup path ({@link #get(long)}, {@link #put(RiskLimitState)}). One exception: if the
+ * map grows past the scratch length, the scratch is reallocated on first snapshot — this happens at
+ * most once per "high water mark" and never on the duty-cycle hot path because snapshots run on a
+ * separate cluster cycle. Pre-size {@code INITIAL_CAPACITY = 4096} accommodates typical deployments
+ * without ever growing.
  */
 public final class RiskLimitStore implements ReferenceDataStore {
 
@@ -39,7 +48,10 @@ public final class RiskLimitStore implements ReferenceDataStore {
   private static final int INITIAL_CAPACITY = 4096;
   private static final float LOAD_FACTOR = 0.65f;
 
-  /** Account-identifier byte length for proposerId / approverId — bounded by the SBE {@code Account} char[16] type. */
+  /**
+   * Account-identifier byte length for proposerId / approverId — bounded by the SBE {@code Account}
+   * char[16] type.
+   */
   private static final int ACCOUNT_ID_BYTE_LEN = 16;
 
   private final Long2ObjectHashMap<RiskLimitState> byAccountId =
@@ -110,7 +122,7 @@ public final class RiskLimitStore implements ReferenceDataStore {
       }
       snapshotKeysFillIdx = 0;
       byAccountId.forEachLong(snapshotKeyCollector);
-      java.util.Arrays.sort(snapshotKeysScratch, 0, recordCount);
+      Arrays.sort(snapshotKeysScratch, 0, recordCount);
 
       for (int i = 0; i < recordCount; i++) {
         long id = snapshotKeysScratch[i];

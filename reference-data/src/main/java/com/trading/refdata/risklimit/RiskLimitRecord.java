@@ -16,20 +16,16 @@ package com.trading.refdata.risklimit;
  *   <li>{@code status} — one of {@code Active}, {@code Suspended}, {@code Closed} (tag&nbsp;10027)
  * </ul>
  *
- * <p>APP-62: {@code maxDailyLossBps} REMOVED — the field is added back by APP-180 when mark price
- * + filled position are produced by the matching engine. The new APP-62 risk-limit fields
- * (position L/S caps, fat-finger knobs, per-account idle timeout, 4-eyes identifiers) are not yet
- * exposed on this record; the YAML loader fills the SBE encoder with safe defaults for those
- * fields, and {@link RiskLimitCommandEncoder} populates default proposerId/approverId so the §H
- * 4-eyes check passes for ops-loaded fixtures. A dedicated ops-tool extension will surface the
- * new fields end-to-end.
+ * <p>APP-62: {@code maxDailyLossBps} REMOVED — the field is added back by APP-180 when mark price +
+ * filled position are produced by the matching engine. The new APP-62 risk-limit fields (position
+ * L/S caps, fat-finger knobs, per-account idle timeout, 4-eyes identifiers) are not yet exposed on
+ * this record; the YAML loader fills the SBE encoder with safe defaults for those fields, and
+ * {@link RiskLimitCommandEncoder} populates default proposerId/approverId so the §H 4-eyes check
+ * passes for ops-loaded fixtures. A dedicated ops-tool extension will surface the new fields
+ * end-to-end.
  */
 public record RiskLimitRecord(
-    long accountId,
-    long maxOrderSize,
-    long maxOrderNotional,
-    long maxDailyVolume,
-    String status) {
+    long accountId, long maxOrderSize, long maxOrderNotional, long maxDailyVolume, String status) {
 
   /** Compact constructor — validates SBE schema constraints. */
   public RiskLimitRecord {

@@ -2,6 +2,7 @@ package com.trading.engine.cluster.refdata;
 
 import com.trading.engine.messages.FixedPointScale;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Factory methods for {@link RiskLimitState} test instances. All limit values use the engine's
@@ -14,8 +15,8 @@ import com.trading.engine.messages.sbe.AccountStatusEnum;
  *
  * <p>APP-62: factories populate the new fields with safe test defaults — position and fat-finger
  * checks both DISABLED (so existing tests that pre-date these fields see no behaviour change),
- * 4-eyes proposer/approver pre-populated with distinct sentinel byte patterns so a test loading
- * via the production handler path passes the §H validation.
+ * 4-eyes proposer/approver pre-populated with distinct sentinel byte patterns so a test loading via
+ * the production handler path passes the §H validation.
  *
  * <p><b>Threading.</b> Stateless utility class — safe for unrestricted concurrent use. Each call
  * allocates a fresh {@link RiskLimitState} instance; callers own the returned reference.
@@ -85,9 +86,9 @@ public final class RiskLimitFixtures {
     return riskLimit(accountId, 10L * FixedPointScale.PRICE_SCALE, 0L, 0L);
   }
 
-  private static byte[] paddedBytes(String s) {
-    byte[] out = new byte[16];
-    byte[] src = s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  private static byte[] paddedBytes(final String s) {
+    final byte[] out = new byte[16];
+    final byte[] src = s.getBytes(StandardCharsets.US_ASCII);
     System.arraycopy(src, 0, out, 0, Math.min(src.length, out.length));
     return out;
   }

@@ -236,8 +236,7 @@ class RefDataIntegrationTest {
       final long maxOrderSize,
       final long maxOrderNotional,
       final long maxDailyVolume) {
-    return encodeLoadRiskLimit(
-        dst, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, 0L);
+    return encodeLoadRiskLimit(dst, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, 0L);
   }
 
   private static int encodeLoadRiskLimit(
