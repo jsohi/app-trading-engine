@@ -2360,19 +2360,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * <p>This method is called from the cluster's PriceResponse dispatch path (Raft-replicated), so
    * the cache mutation is deterministic across replicas.
    *
-   * <p><b>OPERATIONAL GATE — KNOWN GAP.</b> As of the APP-62 §5 first slice this method has no
-   * caller; the {@link com.trading.engine.cluster.handler.PriceResponseHandler
-   * PriceResponseHandler} dispatch hook lands in a follow-up slice. Until that wires up, the {@link
-   * #lastQuotedMidPrice} cache stays empty, and any {@code LoadRiskLimit} that sets {@code
-   * fatFingerEnabled=true} with the industry-standard {@code fatFingerFailClosed=true} default will
-   * reject EVERY limit / PreviouslyQuoted order (no reference → fail-closed). Test fixtures default
-   * {@code fatFingerEnabled=false} so unit tests do not surface this, but production YAML loads
-   * MUST keep {@code fatFingerEnabled=false} until the wire-up commit lands. The risk is documented
-   * here so a future reviewer landing the hook can close this finding by removing this paragraph.
-   *
-   * <p>TODO(APP-62): wire PriceResponseHandler / TradingClusteredService dispatch on tpl 51
-   * (PriceResponse) to call {@link #updateLastQuotedMid}; remove the OPERATIONAL GATE paragraph
-   * above when the wire-up lands.
+   * <p>Wired from {@link com.trading.engine.cluster.handler.PriceResponseHandler
+   * PriceResponseHandler} via {@code setNewOrderSingleHandler}: every accepted PriceResponse (state
+   * REQUESTED → QUOTED) calls this method with the decoded {@code bidPx} / {@code offerPx} before
+   * the 105 QuoteCreatedEvent is emitted. Rejected PriceResponses (state QUOTED / EXPIRED /
+   * REJECTED / pricing-declined / timer-exhausted) do NOT update the cache; only validated quotes
+   * become fat-finger references.
    *
    * @param symbolHash packed symbol key, see {@link #packSymbolKey}
    * @param bidPrice bid side, fixed-point 10⁻⁸; values &le; 0 cause a skip
