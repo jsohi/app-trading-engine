@@ -222,20 +222,11 @@ class SbeEncoderDecoderRoundTripTest {
     final long maxOrderSize = 500_000 * PRICE_SCALE;
     final long maxOrderNotional = 10_000_000 * PRICE_SCALE;
     final long maxDailyVolume = 50_000_000 * PRICE_SCALE;
-    final long maxDailyLossBps = 500L;
     final AccountStatusEnum status = AccountStatusEnum.Active;
     final long transactTime = 3_000_000_000L;
 
     SbeTestEncoder.encodeLoadRiskLimit(
-        buf,
-        0,
-        accountId,
-        maxOrderSize,
-        maxOrderNotional,
-        maxDailyVolume,
-        maxDailyLossBps,
-        status,
-        transactTime);
+        buf, 0, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume, status, transactTime);
 
     SbeMessageAssertions.assertTemplateId(LoadRiskLimitDecoder.TEMPLATE_ID, buf, 0);
 
@@ -247,7 +238,6 @@ class SbeEncoderDecoderRoundTripTest {
     assertEquals(maxOrderSize, dec.maxOrderSize());
     assertEquals(maxOrderNotional, dec.maxOrderNotional());
     assertEquals(maxDailyVolume, dec.maxDailyVolume());
-    assertEquals(maxDailyLossBps, dec.maxDailyLossBps());
     assertEquals(status, dec.status());
     assertEquals(transactTime, dec.transactTime());
   }
@@ -683,18 +673,9 @@ class SbeEncoderDecoderRoundTripTest {
     final long maxOrderSize = 1_000_000 * PRICE_SCALE;
     final long maxOrderNotional = 50_000_000 * PRICE_SCALE;
     final long maxDailyVolume = 200_000_000 * PRICE_SCALE;
-    final long maxDailyLossBps = 250L;
 
     SbeTestEncoder.encodeRiskLimitLoadedEvent(
-        buf,
-        0,
-        seqNum,
-        timestamp,
-        accountId,
-        maxOrderSize,
-        maxOrderNotional,
-        maxDailyVolume,
-        maxDailyLossBps);
+        buf, 0, seqNum, timestamp, accountId, maxOrderSize, maxOrderNotional, maxDailyVolume);
 
     final RiskLimitLoadedEventDecoder dec = SbeTestDecoder.decodeRiskLimitLoaded(buf, 0);
 
@@ -704,7 +685,6 @@ class SbeEncoderDecoderRoundTripTest {
     assertEquals(maxOrderSize, dec.maxOrderSize());
     assertEquals(maxOrderNotional, dec.maxOrderNotional());
     assertEquals(maxDailyVolume, dec.maxDailyVolume());
-    assertEquals(maxDailyLossBps, dec.maxDailyLossBps());
     assertEquals(AccountStatusEnum.Active, dec.status());
     assertEquals(0L, dec.transactTime());
   }
@@ -857,8 +837,8 @@ class SbeEncoderDecoderRoundTripTest {
         buf,
         0,
         0L,
-        new RiskLimitRecord(1L, 10L * PRICE_SCALE, 0L, 0L, 0L),
-        new RiskLimitRecord(2L, 20L * PRICE_SCALE, 0L, 0L, 0L));
+        new RiskLimitRecord(1L, 10L * PRICE_SCALE, 0L, 0L),
+        new RiskLimitRecord(2L, 20L * PRICE_SCALE, 0L, 0L));
 
     final MessageHeaderDecoder hdr = new MessageHeaderDecoder();
     hdr.wrap(buf, 0);

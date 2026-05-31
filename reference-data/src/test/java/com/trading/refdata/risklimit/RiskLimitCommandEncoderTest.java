@@ -26,8 +26,8 @@ final class RiskLimitCommandEncoderTest {
   void encodeBatchRoundTrip() throws Exception {
     final var records =
         List.of(
-            new RiskLimitRecord(1L, 1_000_000_000L, 500_000_000L, 10_000_000_000L, 50L, "Active"),
-            new RiskLimitRecord(2L, 0L, 0L, 0L, 100L, "Suspended"));
+            new RiskLimitRecord(1L, 1_000_000_000L, 500_000_000L, 10_000_000_000L, "Active"),
+            new RiskLimitRecord(2L, 0L, 0L, 0L, "Suspended"));
 
     final int length = encoder.encodeBatch(records, 0, 2, buffer, 0);
     assertTrue(length > 0);
@@ -47,7 +47,6 @@ final class RiskLimitCommandEncoderTest {
     assertEquals(1_000_000_000L, group.maxOrderSize());
     assertEquals(500_000_000L, group.maxOrderNotional());
     assertEquals(10_000_000_000L, group.maxDailyVolume());
-    assertEquals(50L, group.maxDailyLossBps());
     assertEquals(AccountStatusEnum.Active, group.status());
 
     // Second record
@@ -56,7 +55,6 @@ final class RiskLimitCommandEncoderTest {
     assertEquals(0L, group.maxOrderSize());
     assertEquals(0L, group.maxOrderNotional());
     assertEquals(0L, group.maxDailyVolume());
-    assertEquals(100L, group.maxDailyLossBps());
     assertEquals(AccountStatusEnum.Suspended, group.status());
   }
 
@@ -64,9 +62,9 @@ final class RiskLimitCommandEncoderTest {
   void encodeBatchSubRange() throws Exception {
     final var records =
         List.of(
-            new RiskLimitRecord(1L, 100L, 0L, 0L, 10L, "Active"),
-            new RiskLimitRecord(2L, 200L, 0L, 0L, 20L, "Active"),
-            new RiskLimitRecord(3L, 300L, 0L, 0L, 30L, "Closed"));
+            new RiskLimitRecord(1L, 100L, 0L, 0L, "Active"),
+            new RiskLimitRecord(2L, 200L, 0L, 0L, "Active"),
+            new RiskLimitRecord(3L, 300L, 0L, 0L, "Closed"));
 
     final int length = encoder.encodeBatch(records, 1, 3, buffer, 0);
     assertTrue(length > 0);
@@ -88,7 +86,7 @@ final class RiskLimitCommandEncoderTest {
 
   @Test
   void encodeInvalidStatusThrows() {
-    final var records = List.of(new RiskLimitRecord(1L, 0L, 0L, 0L, 0L, "BadStatus"));
+    final var records = List.of(new RiskLimitRecord(1L, 0L, 0L, 0L, "BadStatus"));
 
     final var ex =
         assertThrows(
@@ -108,7 +106,7 @@ final class RiskLimitCommandEncoderTest {
 
   @Test
   void encodedLengthMatchesReturnedValue() throws Exception {
-    final var records = List.of(new RiskLimitRecord(1L, 100L, 0L, 0L, 50L, "Active"));
+    final var records = List.of(new RiskLimitRecord(1L, 100L, 0L, 0L, "Active"));
 
     final int length = encoder.encodeBatch(records, 0, 1, buffer, 0);
 

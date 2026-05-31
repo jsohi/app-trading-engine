@@ -13,17 +13,22 @@ package com.trading.refdata.risklimit;
  *       unlimited) (tag&nbsp;10047)
  *   <li>{@code maxDailyVolume} — maximum daily cumulative volume (&ge; 0, 0 = unlimited)
  *       (tag&nbsp;10031)
- *   <li>{@code maxDailyLossBps} — maximum daily loss in basis points; SBE type {@code uint32} so
- *       value must fit [0, 4294967295] (tag&nbsp;10048)
  *   <li>{@code status} — one of {@code Active}, {@code Suspended}, {@code Closed} (tag&nbsp;10027)
  * </ul>
+ *
+ * <p>APP-62: {@code maxDailyLossBps} REMOVED — the field is added back by APP-180 when mark price
+ * + filled position are produced by the matching engine. The new APP-62 risk-limit fields
+ * (position L/S caps, fat-finger knobs, per-account idle timeout, 4-eyes identifiers) are not yet
+ * exposed on this record; the YAML loader fills the SBE encoder with safe defaults for those
+ * fields, and {@link RiskLimitCommandEncoder} populates default proposerId/approverId so the §H
+ * 4-eyes check passes for ops-loaded fixtures. A dedicated ops-tool extension will surface the
+ * new fields end-to-end.
  */
 public record RiskLimitRecord(
     long accountId,
     long maxOrderSize,
     long maxOrderNotional,
     long maxDailyVolume,
-    long maxDailyLossBps,
     String status) {
 
   /** Compact constructor — validates SBE schema constraints. */
@@ -39,10 +44,6 @@ public record RiskLimitRecord(
     }
     if (maxDailyVolume < 0) {
       throw new IllegalArgumentException("maxDailyVolume must be >= 0, got " + maxDailyVolume);
-    }
-    if (maxDailyLossBps < 0 || maxDailyLossBps > 0xFFFF_FFFFL) {
-      throw new IllegalArgumentException(
-          "maxDailyLossBps must fit uint32 [0, 4294967295], got " + maxDailyLossBps);
     }
     if (status == null || status.isBlank()) {
       throw new IllegalArgumentException("status must not be blank");

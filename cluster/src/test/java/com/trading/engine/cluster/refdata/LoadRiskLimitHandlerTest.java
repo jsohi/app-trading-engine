@@ -24,8 +24,7 @@ class LoadRiskLimitHandlerTest {
       final long accountId,
       final long maxOrderSize,
       final long maxOrderNotional,
-      final long maxDailyVolume,
-      final long maxDailyLossBps) {
+      final long maxDailyVolume) {
     return SbeTestEncoder.encodeLoadRiskLimit(
         dst,
         0,
@@ -33,7 +32,6 @@ class LoadRiskLimitHandlerTest {
         maxOrderSize,
         maxOrderNotional,
         maxDailyVolume,
-        maxDailyLossBps,
         AccountStatusEnum.Active,
         0L);
   }
@@ -63,7 +61,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 1L, 100_00000000L, 0L, 1000_00000000L, 0L);
+    final int srcLength = encodeLoadRiskLimit(src, 1L, 100_00000000L, 0L, 1000_00000000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -87,7 +85,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 0L, 100L, 0L, 1000L, 0L);
+    final int srcLength = encodeLoadRiskLimit(src, 0L, 100L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -108,7 +106,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 999L, 100L, 0L, 1000L, 0L);
+    final int srcLength = encodeLoadRiskLimit(src, 999L, 100L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -129,7 +127,7 @@ class LoadRiskLimitHandlerTest {
     final LoadRiskLimitHandler handler = new LoadRiskLimitHandler(riskStore, accountStore);
 
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
-    final int srcLength = encodeLoadRiskLimit(src, 1L, -1L, 0L, 1000L, 0L);
+    final int srcLength = encodeLoadRiskLimit(src, 1L, -1L, 0L, 1000L);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
     dispatch(handler, src, srcLength, eventDst);
 
@@ -152,9 +150,9 @@ class LoadRiskLimitHandlerTest {
     final MutableDirectBuffer src = new ExpandableArrayBuffer(256);
     final MutableDirectBuffer eventDst = new ExpandableArrayBuffer(256);
 
-    int srcLength = encodeLoadRiskLimit(src, 1L, 100L, 0L, 1000L, 0L);
+    int srcLength = encodeLoadRiskLimit(src, 1L, 100L, 0L, 1000L);
     dispatch(handler, src, srcLength, eventDst);
-    srcLength = encodeLoadRiskLimit(src, 1L, 500L, 0L, 5000L, 0L);
+    srcLength = encodeLoadRiskLimit(src, 1L, 500L, 0L, 5000L);
     dispatch(handler, src, srcLength, eventDst);
 
     assertEquals(1, riskStore.size());

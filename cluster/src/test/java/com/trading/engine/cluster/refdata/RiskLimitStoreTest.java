@@ -21,7 +21,6 @@ class RiskLimitStoreTest {
     s.setMaxOrderSize(maxOrderSize);
     s.setMaxOrderNotional(0L);
     s.setMaxDailyVolume(maxDailyVolume);
-    s.setMaxDailyLossBps(0L);
     s.setStatus(AccountStatusEnum.Active);
     s.setTransactTime(0L);
     return s;

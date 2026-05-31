@@ -182,8 +182,7 @@ class NewOrderSingleHandlerRateLimitTest {
             accountId,
             1_000_000L * FixedPointScale.PRICE_SCALE /* maxOrderSize */,
             0L /* maxOrderNotional — unlimited */,
-            0L /* maxDailyVolume — unlimited */,
-            0L /* maxDailyLossBps — unlimited */);
+            0L /* maxDailyVolume — unlimited */);
     limit.setMaxOrdersPerSecond(maxOrdersPerSecond);
     return limit;
   }

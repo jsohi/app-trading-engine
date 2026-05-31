@@ -197,8 +197,7 @@ class NewOrderSingleHandlerDailyVolumeTest {
             accountId,
             1_000_000L * FixedPointScale.PRICE_SCALE /* maxOrderSize */,
             0L /* maxOrderNotional — unlimited */,
-            maxDailyVolume,
-            0L /* maxDailyLossBps — unlimited */);
+            maxDailyVolume);
     // maxOrdersPerSecond is not set → defaults to 0 (unlimited) — check 11c is skipped.
     return limit;
   }

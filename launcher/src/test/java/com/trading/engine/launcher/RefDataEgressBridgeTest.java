@@ -239,7 +239,7 @@ class RefDataEgressBridgeTest {
   }
 
   private int encodeRiskLimitLoaded(final MutableDirectBuffer buf, final int offset) {
-    return SbeTestEncoder.encodeRiskLimitLoadedEvent(buf, offset, 1L, 0L, 1L, 0L, 0L, 0L, 0L);
+    return SbeTestEncoder.encodeRiskLimitLoadedEvent(buf, offset, 1L, 0L, 1L, 0L, 0L, 0L);
   }
 
   private int encodeRiskLimitLoadRejected(

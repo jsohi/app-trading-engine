@@ -3,5 +3,4 @@ riskLimits:
     maxOrderSize: 1000000000
     maxOrderNotional: 0
     maxDailyVolume: 0
-    maxDailyLossBps: 50
     status: "Active"
