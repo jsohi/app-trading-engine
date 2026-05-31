@@ -299,6 +299,11 @@ public final class TradingClusteredService implements ClusteredService {
     commandHandlers.put(quoteRequestHandler.commandTemplateId(), quoteRequestHandler);
     this.priceResponseHandler =
         new PriceResponseHandler(rfqStateMachine, tradingState.quoteIdGen(), rfqMetrics);
+    // APP-62 §5 — every accepted PriceResponse feeds the fat-finger reference cache so check 11f
+    // has live last-quoted-mid data. Wiring lives here (cluster bootstrap) and not in the handler
+    // constructor so test paths that instantiate PriceResponseHandler standalone don't need to
+    // construct a NewOrderSingleHandler.
+    this.priceResponseHandler.setNewOrderSingleHandler(this.newOrderSingleHandler);
     commandHandlers.put(priceResponseHandler.commandTemplateId(), priceResponseHandler);
 
     // APP-152 slice 2: admin halt/resume commands toggle the trading-halt circuit breaker that

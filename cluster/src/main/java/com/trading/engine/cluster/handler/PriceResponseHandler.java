@@ -65,6 +65,14 @@ public final class PriceResponseHandler implements CommandHandler {
   private Cluster cluster;
 
   /**
+   * APP-62 §5 — destination for last-quoted-mid cache updates on every accepted PriceResponse.
+   * Wired via {@link #setNewOrderSingleHandler}; {@code null} until wired so the integration is
+   * back-compat with tests that don't construct a NOS handler. When set, the accepted-price path
+   * calls {@link NewOrderSingleHandler#updateLastQuotedMid} so check 11f has a populated cache.
+   */
+  private NewOrderSingleHandler nosHandler;
+
+  /**
    * Constructs a {@link PriceResponseHandler}.
    *
    * @param rfqStateMachine the RFQ state machine
@@ -87,6 +95,20 @@ public final class PriceResponseHandler implements CommandHandler {
    */
   public void setCluster(final Cluster cluster) {
     this.cluster = cluster;
+  }
+
+  /**
+   * APP-62 §5 — wires the {@link NewOrderSingleHandler} whose {@code lastQuotedMidPrice} cache
+   * receives mid-quote updates on every accepted PriceResponse. Called once from {@code
+   * TradingClusteredService} construction (after the NOS handler is built). When wired, every
+   * accepted PriceResponse updates the per-symbol cache used by check 11f (fat-finger); without
+   * this wiring the cache stays empty and any {@code LoadRiskLimit} with {@code
+   * fatFingerEnabled=true} + {@code fatFingerFailClosed=true} rejects every limit order.
+   *
+   * @param nosHandler the {@link NewOrderSingleHandler} that owns the fat-finger cache
+   */
+  public void setNewOrderSingleHandler(final NewOrderSingleHandler nosHandler) {
+    this.nosHandler = nosHandler;
   }
 
   @Override
@@ -155,6 +177,16 @@ public final class PriceResponseHandler implements CommandHandler {
     final long bidSize = prDecoder.bidSize();
     final long offerSize = prDecoder.offerSize();
     final long swapPoints = prDecoder.swapPoints();
+
+    // APP-62 §5 — update the per-symbol fat-finger reference cache from this accepted price.
+    // Determinism: PriceResponse flows through TradingClusteredService.commandHandlers[51], so
+    // every Raft replica observes this mutation at the same log position. The cache update is
+    // unconditional within the accepted branch; the NOS handler internally guards crossed/locked
+    // markets, sentinel-zero sides, MAX_REASONABLE_PRICE, and overflow-safe midpoint.
+    if (nosHandler != null) {
+      long symbolHashApp62 = NewOrderSingleHandler.packSymbolKey(slot.symbolBytes, 0);
+      nosHandler.updateLastQuotedMid(symbolHashApp62, bidPx, offerPx, clusterTimestamp);
+    }
 
     // 6. Compute validUntil and TTL correlation; schedule TTL timer FIRST.
     slot.validUntil = clusterTimestamp + rfqStateMachine.ttlForProduct(slot.productType);
