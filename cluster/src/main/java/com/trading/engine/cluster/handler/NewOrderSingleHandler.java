@@ -2769,6 +2769,14 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // never happen for matched admit↔revert pairs but defensive) are also coalesced to "absent".
     if (next <= 0L) {
       inner.remove(symbolHash);
+      // APP-62 Gemini follow-up — when the last symbol drains for an account, remove the
+      // now-empty inner map from the outer map too. Without this, the outer map retains
+      // an empty Long2LongHashMap for every account that has ever traded, leaking memory
+      // monotonically over the cluster lifetime (one ~256-byte allocation per account, never
+      // freed even after the account exits all positions).
+      if (inner.isEmpty()) {
+        outer.remove(accountId);
+      }
     } else {
       inner.put(symbolHash, next);
     }

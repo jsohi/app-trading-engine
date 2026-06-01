@@ -274,10 +274,32 @@ public final class RiskLimitState {
     return AccountIdentifierBytes.byteEquals(proposerId, approverId);
   }
 
+  /**
+   * Copies up to {@code length} bytes from {@code src} starting at {@code srcOffset} into the head
+   * of {@code dst}; pads the remainder of {@code dst} with zero bytes. Defensive against (a) a
+   * {@code src} array shorter than {@code srcOffset + length} and (b) {@code length} larger than
+   * {@code dst.length} — both clamp silently instead of throwing {@link
+   * ArrayIndexOutOfBoundsException}. This robustness matters because the source can be a
+   * caller-owned scratch array (e.g. SBE-decoder buffer) whose effective length depends on the wire
+   * payload at decode time.
+   *
+   * @param dst the destination fixed-length field buffer (always fully written: head from src, tail
+   *     zero-padded)
+   * @param src the source byte array (may be shorter than {@code srcOffset + length})
+   * @param srcOffset start offset in {@code src} (negative values are clamped to 0)
+   * @param length requested number of bytes to copy from {@code src} (clamped to both {@code
+   *     dst.length} and the bytes actually available in {@code src})
+   */
   private static void populateFixedField(
       final byte[] dst, final byte[] src, int srcOffset, int length) {
-    int copyLen = Math.min(length, dst.length);
-    System.arraycopy(src, srcOffset, dst, 0, copyLen);
+    if (srcOffset < 0) {
+      srcOffset = 0;
+    }
+    int available = Math.max(0, src.length - srcOffset);
+    int copyLen = Math.min(Math.min(length, dst.length), available);
+    if (copyLen > 0) {
+      System.arraycopy(src, srcOffset, dst, 0, copyLen);
+    }
     for (int i = copyLen; i < dst.length; i++) {
       dst[i] = 0;
     }
