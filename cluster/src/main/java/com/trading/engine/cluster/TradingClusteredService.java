@@ -720,6 +720,16 @@ public final class TradingClusteredService implements ClusteredService {
         return riskLimitLoadRejectedEventDecoder.sbeDecodedLength();
       case RiskLimitChangedEventDecoder.TEMPLATE_ID:
         riskLimitChangedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        // Gemini R4 CRITICAL: SBE's sbeDecodedLength() returns `limit - offset`, where `limit`
+        // only advances when the codec walks through groups + vardata. RiskLimitChangedEvent's
+        // oldRecord group lives AFTER the root block; without iterating it, sbeDecodedLength()
+        // returns just blockLength and the event-walker would advance the cursor into the middle
+        // of the next event's body — corrupting the journal and breaking projection dispatch.
+        // Drain the group to advance limit past the group body before measuring.
+        final var changedGroup = riskLimitChangedEventDecoder.oldRecord();
+        while (changedGroup.hasNext()) {
+          changedGroup.next();
+        }
         return riskLimitChangedEventDecoder.sbeDecodedLength();
       case SymbolEligibilityLoadedEventDecoder.TEMPLATE_ID:
         symbolEligibilityLoadedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
