@@ -19,14 +19,14 @@ public interface Publisher {
 
 The single method's return-value contract **mirrors `io.aeron.Publication.offer` exactly**:
 
-| Return value | Meaning |
-|---|---|
-| Positive | New stream position; publication succeeded |
-| `Publication.NOT_CONNECTED` (-1) | No subscribers connected (terminal — caller drops) |
-| `Publication.BACK_PRESSURED` (-2) | Subscriber slow, retry later (transient — caller retries) |
-| `Publication.ADMIN_ACTION` (-3) | Term rotation in progress, retry later (transient) |
-| `Publication.CLOSED` (-4) | Publication closed (terminal) |
-| `Publication.MAX_POSITION_EXCEEDED` (-5) | Stream position overflow (terminal) |
+| Return value                             | Meaning                                                   |
+| ---------------------------------------- | --------------------------------------------------------- |
+| Positive                                 | New stream position; publication succeeded                |
+| `Publication.NOT_CONNECTED` (-1)         | No subscribers connected (terminal — caller drops)        |
+| `Publication.BACK_PRESSURED` (-2)        | Subscriber slow, retry later (transient — caller retries) |
+| `Publication.ADMIN_ACTION` (-3)          | Term rotation in progress, retry later (transient)        |
+| `Publication.CLOSED` (-4)                | Publication closed (terminal)                             |
+| `Publication.MAX_POSITION_EXCEEDED` (-5) | Stream position overflow (terminal)                       |
 
 Callers must handle these per Aeron semantics. `OrchestratorService.offerWithRetry` is the canonical mapper: positive → `CONTINUE`, transient (-2/-3) → bounded retry then `ABORT`, terminal → `CONTINUE` (drop, avoid spin loop).
 
@@ -62,21 +62,40 @@ This mirrors the `reapCallback` field in `OrchestratorService`: `this.reapCallba
 ### What NOT to do
 
 - **Inline lambdas inside hot loops** — every iteration creates a new SAM instance. Allocates.
-  ```java
-  // BAD: allocates a new Publisher instance every iteration
-  for (int i = 0; i < 1_000_000; i++) {
-    callSomethingThatTakesPublisher((b, o, l) -> publication.offer(b, o, l));
-  }
-  ```
+    ```java
+    // BAD: allocates a new Publisher instance every iteration
+    for (int i = 0; i < 1_000_000; i++) {
+      callSomethingThatTakesPublisher((b, o, l) -> publication.offer(b, o, l));
+    }
+    ```
 - **Reassigning the binding field** — defeats the JIT inlining and breaks the regression guarantee.
 - **Closing the binding's `Publication` before the SAM holder** — calls will start returning `Publication.CLOSED`. Lifecycle is owned by `OrchestratorComponents.close()` in the canonical wiring.
 
 ## Existing Usages
 
-| SAM | Module | File |
-|---|---|---|
-| `Publisher` (this pattern) | `orchestrator` | `orchestrator/src/main/java/com/trading/engine/orchestrator/Publisher.java` |
-| `ClusterCommandSender` (precedent) | `reference-data` | `reference-data/src/main/java/com/trading/refdata/ClusterCommandSender.java` |
+| SAM                                          | Module              | File                                                                                                       |
+| -------------------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `Publisher` (this pattern)                   | `orchestrator`      | `orchestrator/src/main/java/com/trading/engine/orchestrator/Publisher.java`                                |
+| `ClusterCommandSender` (precedent)           | `reference-data`    | `reference-data/src/main/java/com/trading/refdata/ClusterCommandSender.java`                               |
+| `AccountLimitsLookup` (APP-62 bridge lookup) | `fix-client-bridge` | `fix-client-bridge/src/main/java/com/trading/engine/fixbridge/transport/ClusterAccountLimitsProvider.java` |
+
+### APP-62 — `AccountLimitsLookup` SAM and the bridge cold-boot window
+
+`ClusterAccountLimitsProvider.AccountLimitsLookup` is the single-method indirection the `fix-client-bridge` uses to ask the cluster's `RiskLimitProjection` for an account's pre-trade risk limits. Production binds it via method reference at launcher construction:
+
+```java
+// In FixClientBridgeLauncher
+final var lookup = (AccountLimitsLookup) queryService::getAccountLimits;
+final var provider = new ClusterAccountLimitsProvider(lookup, nanoClock, ttlNanos);
+```
+
+The bridge consults `provider.lookup(accountCode)` on every inbound FIX NewOrderSingle before forwarding to the cluster — this is the bridge's local pre-flight check (the cluster runs the authoritative §4/§5/§G chain regardless). Tests inject a `RecordingAccountLimitsLookup` that returns canned `RiskLimitRecordView` values; the SAM is the seam.
+
+**Cold-boot window — fail-secure semantics**: until the bridge's `RiskLimitProjection` finishes replaying the Aeron archive from position 0, `QueryService.getAccountLimits(accountCode)` returns `null` for every account (the projection's read-side store is still empty). `ClusterAccountLimitsProvider` interprets `null` as "limits unknown" and emits pessimistic-zero defaults to the bridge consumer (rate budget = 0, notional cap = 0). The result is: until projections are caught up, EVERY inbound FIX NOS at the bridge is locally rejected by the pre-flight check. This is intentional fail-secure — the alternative (fail-open while projections warm up) would let unbounded flow reach the cluster during the most vulnerable startup window.
+
+Operators should treat sustained `null`-returns from `getAccountLimits` as "bridge is in cold-boot" — distinct from "account not provisioned" (which would be a permanent `null` after replay completes). The bridge logs a one-shot `INFO projections caught up — risk lookups now live` line at the transition point.
+
+**See also**: `cluster/src/main/java/com/trading/engine/cluster/handler/NewOrderSingleHandler.java` Check 0a — the cluster-side equivalent fail-closed contract (§E).
 
 Both follow the same idiom: `@FunctionalInterface`, single method whose return-value semantics mirror the underlying Aeron call, bound via method reference at construction.
 
