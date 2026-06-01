@@ -1,0 +1,24 @@
+# APP-62 §G — symbol-eligibility (restricted-symbols) dataset for the e2e cohort.
+# Drives NewOrderSingleHandler Check 11g. The §G policy is fail-closed: any order on
+# a symbol with no record loaded gets rejected with RegulatoryRestriction before any
+# other validation can fire. The e2e cohort uses the same four major FX pairs as the
+# accounts / risk-limits / symbols fixtures, and grants permissive defaults so the
+# NOS happy-path scenarios (Limit Buy / Limit Sell EURUSD on ACME) can transit Check
+# 11g and exercise the downstream matching engine.
+symbolEligibilities:
+  - symbol: EURUSD
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 0
+  - symbol: GBPUSD
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 0
+  - symbol: USDJPY
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 0
+  - symbol: AUDUSD
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 0

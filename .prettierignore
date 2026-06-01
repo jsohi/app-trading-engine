@@ -1,0 +1,4 @@
+# Test fixtures that are INTENTIONALLY malformed to exercise loader error paths.
+# Prettier rejects them with a parse error, which would block the pre-commit hook
+# even though the file is meant to be invalid by design.
+reference-data/src/test/resources/eligibilities-malformed.yaml

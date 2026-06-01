@@ -22,6 +22,7 @@ class LauncherConfigTest {
         "accounts.yaml",
         "currencies.yaml",
         "risk-limits.yaml",
+        "restricted-symbols.yaml",
         "",
         8192,
         30_000_000_000L,
@@ -47,6 +48,7 @@ class LauncherConfigTest {
             "accounts.yaml",
             "currencies.yaml",
             "risk-limits.yaml",
+            "restricted-symbols.yaml",
             "e2e",
             8192,
             30_000_000_000L,
@@ -65,6 +67,7 @@ class LauncherConfigTest {
     assertEquals("accounts.yaml", config.accountsFile());
     assertEquals("currencies.yaml", config.currenciesFile());
     assertEquals("risk-limits.yaml", config.riskLimitsFile());
+    assertEquals("restricted-symbols.yaml", config.symbolEligibilitiesFile());
     assertEquals("e2e", config.aeronDirPrefix());
   }
 
@@ -80,6 +83,7 @@ class LauncherConfigTest {
         "a.yaml",
         "c.yaml",
         "r.yaml",
+        "s.yaml",
         "",
         8192,
         30_000_000_000L,
@@ -98,6 +102,7 @@ class LauncherConfigTest {
         "a.yaml",
         "c.yaml",
         "r.yaml",
+        "s.yaml",
         "",
         8192,
         30_000_000_000L,
@@ -132,6 +137,7 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
+                    "s.yaml",
                     "",
                     8192,
                     30_000_000_000L,
@@ -158,6 +164,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -186,6 +193,7 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
+                    "s.yaml",
                     "",
                     8192,
                     30_000_000_000L,
@@ -212,6 +220,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -238,6 +247,7 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
+                    "s.yaml",
                     "",
                     8192,
                     30_000_000_000L,
@@ -266,6 +276,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -292,6 +303,7 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
+                    "s.yaml",
                     "",
                     8192,
                     30_000_000_000L,
@@ -322,6 +334,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -347,6 +360,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -374,6 +388,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -399,6 +414,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -427,6 +443,7 @@ class LauncherConfigTest {
                     "a.yaml",
                     "c.yaml",
                     "r.yaml",
+                    "s.yaml",
                     "",
                     8192,
                     30_000_000_000L,
@@ -453,6 +470,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -480,6 +498,7 @@ class LauncherConfigTest {
                 null,
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -505,6 +524,7 @@ class LauncherConfigTest {
                 "  ",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -532,6 +552,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 null,
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -557,6 +578,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "  ",
                 "r.yaml",
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -584,6 +606,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 null,
+                "s.yaml",
                 "",
                 8192,
                 30_000_000_000L,
@@ -608,6 +631,63 @@ class LauncherConfigTest {
                 10,
                 "a.yaml",
                 "c.yaml",
+                "  ",
+                "s.yaml",
+                "",
+                8192,
+                30_000_000_000L,
+                100L,
+                1_000_000_000L,
+                5_000_000_000L,
+                0,
+                0));
+  }
+
+  // ===== symbolEligibilitiesFile validation (APP-62 §G) =====
+
+  @Test
+  void constructor_nullSymbolEligibilitiesFile_throwsIae() {
+    final var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                new LauncherConfig(
+                    "localhost",
+                    9880,
+                    3,
+                    "data",
+                    "logs",
+                    10,
+                    "a.yaml",
+                    "c.yaml",
+                    "r.yaml",
+                    null,
+                    "",
+                    8192,
+                    30_000_000_000L,
+                    100L,
+                    1_000_000_000L,
+                    5_000_000_000L,
+                    0,
+                    0));
+    assertEquals("symbol-eligibilities.file must not be blank", ex.getMessage());
+  }
+
+  @Test
+  void constructor_blankSymbolEligibilitiesFile_throwsIae() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new LauncherConfig(
+                "localhost",
+                9880,
+                3,
+                "data",
+                "logs",
+                10,
+                "a.yaml",
+                "c.yaml",
+                "r.yaml",
                 "  ",
                 "",
                 8192,
@@ -636,6 +716,7 @@ class LauncherConfigTest {
                 "a.yaml",
                 "c.yaml",
                 "r.yaml",
+                "s.yaml",
                 null,
                 8192,
                 30_000_000_000L,
@@ -660,6 +741,7 @@ class LauncherConfigTest {
       "accounts.file",
       "currencies.file",
       "risk-limits.file",
+      "symbol-eligibilities.file",
       "aeron.dir.prefix"
     };
     // Save and clear any overrides from other tests
@@ -680,6 +762,7 @@ class LauncherConfigTest {
       assertEquals("accounts.yaml", config.accountsFile());
       assertEquals("currencies.yaml", config.currenciesFile());
       assertEquals("risk-limits.yaml", config.riskLimitsFile());
+      assertEquals("restricted-symbols.yaml", config.symbolEligibilitiesFile());
       assertEquals("", config.aeronDirPrefix());
     } finally {
       for (int i = 0; i < keys.length; i++) {
@@ -704,6 +787,7 @@ class LauncherConfigTest {
       "accounts.file",
       "currencies.file",
       "risk-limits.file",
+      "symbol-eligibilities.file",
       "aeron.dir.prefix"
     };
     final String[] values = {
@@ -716,6 +800,7 @@ class LauncherConfigTest {
       "/etc/accounts.yaml",
       "/etc/currencies.yaml",
       "/etc/risk-limits.yaml",
+      "/etc/restricted-symbols.yaml",
       "e2e"
     };
     // Save originals before overwriting
@@ -736,6 +821,7 @@ class LauncherConfigTest {
       assertEquals("/etc/accounts.yaml", config.accountsFile());
       assertEquals("/etc/currencies.yaml", config.currenciesFile());
       assertEquals("/etc/risk-limits.yaml", config.riskLimitsFile());
+      assertEquals("/etc/restricted-symbols.yaml", config.symbolEligibilitiesFile());
       assertEquals("e2e", config.aeronDirPrefix());
     } finally {
       for (int i = 0; i < keys.length; i++) {

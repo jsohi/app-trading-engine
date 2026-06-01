@@ -10,6 +10,8 @@ import com.trading.engine.projections.position.PositionSnapshot;
 import com.trading.engine.projections.quote.QuoteProjection;
 import com.trading.engine.projections.quote.QuoteSnapshot;
 import com.trading.engine.projections.quote.QuoteStatus;
+import com.trading.engine.projections.risklimits.RiskLimitProjection;
+import com.trading.engine.projections.risklimits.RiskLimitRecordView;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -48,15 +50,17 @@ public final class QueryService {
   private final PositionProjection positionProjection;
   private final AccountProjection accountProjection;
   private final QuoteProjection quoteProjection;
+  private final RiskLimitProjection riskLimitProjection;
   private final ProjectionRegistry registry;
 
   /**
-   * Creates a QueryService backed by all four projections and a registry for health/lag.
+   * Creates a QueryService backed by all five projections and a registry for health/lag.
    *
    * @param orderProjection the order read model; must not be null
    * @param positionProjection the position read model; must not be null
    * @param accountProjection the account read model; must not be null
    * @param quoteProjection the quote read model; must not be null
+   * @param riskLimitProjection the APP-62 §A per-account risk-limit read model; must not be null
    * @param registry the projection registry for health and lag monitoring; must not be null
    * @throws NullPointerException if any argument is null
    */
@@ -65,12 +69,22 @@ public final class QueryService {
       final PositionProjection positionProjection,
       final AccountProjection accountProjection,
       final QuoteProjection quoteProjection,
+      final RiskLimitProjection riskLimitProjection,
       final ProjectionRegistry registry) {
     this.orderProjection = Objects.requireNonNull(orderProjection, "orderProjection");
     this.positionProjection = Objects.requireNonNull(positionProjection, "positionProjection");
     this.accountProjection = Objects.requireNonNull(accountProjection, "accountProjection");
     this.quoteProjection = Objects.requireNonNull(quoteProjection, "quoteProjection");
+    this.riskLimitProjection = Objects.requireNonNull(riskLimitProjection, "riskLimitProjection");
     this.registry = Objects.requireNonNull(registry, "registry");
+    // APP-62 §A — register the risk-limit projection here so its lag + health are tracked by
+    // the same ProjectionRegistry surface that powers {@link #isHealthy()} and {@link
+    // #getLagSnapshot()}. The other four projections (order, position, account, quote) are
+    // registered externally by the launcher / test bootstrap before constructing this service
+    // — the constructor-side registration is intentional for risk-limits because it was added
+    // after the original wiring contract was established and avoids touching every launcher.
+    // APP-62 R11 LOW Agent B #8 — closes the observability gap surfaced in iter 1.
+    this.registry.register("risk-limits", riskLimitProjection);
   }
 
   // ---------------------------------------------------------------------------
@@ -216,6 +230,41 @@ public final class QueryService {
    */
   public List<AccountReadModel> getActiveAccounts() {
     return accountProjection.getActiveAccounts();
+  }
+
+  // ---------------------------------------------------------------------------
+  // APP-62 §A — Risk-limit queries (delegate to RiskLimitProjection)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Look up the per-account risk-limit snapshot by numeric account id (APP-62 §A). Returns the
+   * immutable record from the projection or {@code null} if no {@code RiskLimitLoadedEvent} has
+   * been seen for this account (cold boot / unprovisioned account).
+   *
+   * @param accountId numeric account identifier
+   * @return the projection record or {@code null} when no limit has been loaded
+   */
+  public RiskLimitRecordView getAccountLimits(final long accountId) {
+    return riskLimitProjection.getByAccountId(accountId);
+  }
+
+  /**
+   * Look up the per-account risk-limit snapshot by account code (APP-62 §A bridge integration).
+   * Joins {@link AccountProjection} on accountCode to resolve the {@code accountId}, then delegates
+   * to {@link #getAccountLimits(long)}. Returns {@code null} when either the account is unknown OR
+   * no risk-limit record has been loaded for the resolved id (the bridge interprets {@code null} as
+   * "emit pessimistic zeros" per the existing fail-secure contract).
+   *
+   * @param accountCode the FIX-style account code (tag 1)
+   * @return the projection record or {@code null} when account is unknown or no limit loaded
+   */
+  public RiskLimitRecordView getAccountLimits(final String accountCode) {
+    Objects.requireNonNull(accountCode, "accountCode");
+    final var account = accountProjection.getByAccountCode(accountCode);
+    if (account == null) {
+      return null;
+    }
+    return riskLimitProjection.getByAccountId(account.accountId());
   }
 
   // ---------------------------------------------------------------------------

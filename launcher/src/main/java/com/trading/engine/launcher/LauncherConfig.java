@@ -9,10 +9,10 @@ package com.trading.engine.launcher;
  * <p><b>Defaults.</b> fix.host=localhost, fix.port=9880, cluster.nodeCount=3,
  * cluster.baseDir=cluster-data, log.dir=logs, driver.shutdown.timeout.seconds=10,
  * accounts.file=accounts.yaml, currencies.file=currencies.yaml, risk-limits.file=risk-limits.yaml,
- * aeron.dir.prefix="" (empty), rfq.poolCapacity=8192, rfq.defaultTtlNanos=30_000_000_000L,
- * rfq.rateLimitPerSession=100, rfq.rateLimitWindowNanos=1_000_000_000L,
- * rfq.requestTimeoutNanos=5_000_000_000L, rfq.acceptPriceToleranceBps=0,
- * rfq.acceptQtyToleranceBps=0.
+ * symbol-eligibilities.file=restricted-symbols.yaml, aeron.dir.prefix="" (empty),
+ * rfq.poolCapacity=8192, rfq.defaultTtlNanos=30_000_000_000L, rfq.rateLimitPerSession=100,
+ * rfq.rateLimitWindowNanos=1_000_000_000L, rfq.requestTimeoutNanos=5_000_000_000L,
+ * rfq.acceptPriceToleranceBps=0, rfq.acceptQtyToleranceBps=0.
  *
  * @param fixHost TCP bind address for FIX connections
  * @param fixPort TCP port for FIX connections; must be in [1, 65535]
@@ -23,6 +23,10 @@ package com.trading.engine.launcher;
  * @param accountsFile path to the accounts YAML file for reference data loading
  * @param currenciesFile path to the currencies YAML file for reference data loading
  * @param riskLimitsFile path to the risk-limits YAML file for reference data loading
+ * @param symbolEligibilitiesFile path to the symbol-eligibility YAML file (APP-62 §G). The file
+ *     drives the cluster's fail-closed restricted-symbol / short-sale-allowed admission check
+ *     (NewOrderSingleHandler Check 11g) — any symbol with no record loaded gets every order
+ *     rejected with {@code RegulatoryRestriction}.
  * @param aeronDirPrefix prefix for Aeron directory names; empty string means production defaults
  *     ({@code /tmp/aeron-node-{i}}), non-empty (e.g. "e2e") produces {@code
  *     /tmp/aeron-e2e-node-{i}} for process isolation
@@ -49,6 +53,7 @@ public record LauncherConfig(
     String accountsFile,
     String currenciesFile,
     String riskLimitsFile,
+    String symbolEligibilitiesFile,
     String aeronDirPrefix,
     int rfqPoolCapacity,
     long rfqDefaultTtlNanos,
@@ -114,6 +119,9 @@ public record LauncherConfig(
     if (riskLimitsFile == null || riskLimitsFile.isBlank()) {
       throw new IllegalArgumentException("risk-limits.file must not be blank");
     }
+    if (symbolEligibilitiesFile == null || symbolEligibilitiesFile.isBlank()) {
+      throw new IllegalArgumentException("symbol-eligibilities.file must not be blank");
+    }
     if (aeronDirPrefix == null) {
       throw new IllegalArgumentException("aeron.dir.prefix must not be null");
     }
@@ -176,6 +184,7 @@ public record LauncherConfig(
         System.getProperty("accounts.file", "accounts.yaml"),
         System.getProperty("currencies.file", "currencies.yaml"),
         System.getProperty("risk-limits.file", "risk-limits.yaml"),
+        System.getProperty("symbol-eligibilities.file", "restricted-symbols.yaml"),
         System.getProperty("aeron.dir.prefix", ""),
         Integer.parseInt(
             System.getProperty("rfq.poolCapacity", Integer.toString(DEFAULT_RFQ_POOL_CAPACITY))),
@@ -219,6 +228,7 @@ public record LauncherConfig(
         "accounts.yaml",
         "currencies.yaml",
         "risk-limits.yaml",
+        "restricted-symbols.yaml",
         "",
         DEFAULT_RFQ_POOL_CAPACITY,
         DEFAULT_RFQ_DEFAULT_TTL_NANOS,

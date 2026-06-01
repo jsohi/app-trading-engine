@@ -51,7 +51,20 @@ application {
 // :launcher:run -Dfix.port=19880` would be silently ignored. We filter to known prefixes to
 // avoid leaking unrelated Gradle internals.
 val knownPrefixes =
-    listOf("fix.", "cluster.", "log.", "aeron.", "accounts.", "currencies.", "risk-limits.", "symbols.", "driver.", "websocket.", "bridge.")
+    listOf(
+        "fix.",
+        "cluster.",
+        "log.",
+        "aeron.",
+        "accounts.",
+        "currencies.",
+        "risk-limits.",
+        "symbol-eligibilities.",
+        "symbols.",
+        "driver.",
+        "websocket.",
+        "bridge.",
+    )
 tasks.named<JavaExec>("run") {
     systemProperties(
         System

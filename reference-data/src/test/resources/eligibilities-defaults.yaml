@@ -1,0 +1,4 @@
+symbolEligibilities:
+  - symbol: EURUSD
+    tradingAllowed: true
+    shortSaleAllowed: true

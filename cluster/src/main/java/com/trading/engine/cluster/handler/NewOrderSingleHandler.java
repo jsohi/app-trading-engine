@@ -13,11 +13,15 @@ import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.state.RfqSlot;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
+import com.trading.engine.messages.sbe.AccountPositionSnapshotDecoder;
+import com.trading.engine.messages.sbe.AccountPositionSnapshotEncoder;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotEncoder;
 import com.trading.engine.messages.sbe.ExpireReasonEnum;
+import com.trading.engine.messages.sbe.LastQuotedPriceSnapshotDecoder;
+import com.trading.engine.messages.sbe.LastQuotedPriceSnapshotEncoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
@@ -34,6 +38,7 @@ import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.messages.sbe.TenorEnum;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 import io.aeron.cluster.service.ClientSession;
+import java.util.Arrays;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -135,6 +140,31 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   /** Pre-allocated codec for the restore path ({@link #restoreDedupFrom}). */
   private final ClOrdIdDedupSnapshotDecoder clOrdIdDedupSnapDecoder =
       new ClOrdIdDedupSnapshotDecoder();
+
+  /**
+   * APP-62 §5 — pre-allocated codecs for {@code LastQuotedPriceSnapshot} (template 211)
+   * encode/restore. Persists the §5 fat-finger reference cache ({@link #lastQuotedMidPrice} +
+   * {@link #lastQuotedMidAsOfNanos}) across snapshot+restore so a freshly recovered cluster
+   * continues to enforce the price-band check on day-2 instead of falling back to fail-closed for
+   * every symbol until pricing reseeds.
+   */
+  private final LastQuotedPriceSnapshotEncoder lastQuotedPriceSnapEncoder =
+      new LastQuotedPriceSnapshotEncoder();
+
+  private final LastQuotedPriceSnapshotDecoder lastQuotedPriceSnapDecoder =
+      new LastQuotedPriceSnapshotDecoder();
+
+  /**
+   * APP-62 §4 — pre-allocated codecs for {@code AccountPositionSnapshot} (template 212)
+   * encode/restore. Persists the §4 working-position counters ({@link #accountSymbolWorkingLong} +
+   * {@link #accountSymbolWorkingShort}) across snapshot+restore so the max-long / max-short caps
+   * remain enforceable after a cluster failover.
+   */
+  private final AccountPositionSnapshotEncoder accountPositionSnapEncoder =
+      new AccountPositionSnapshotEncoder();
+
+  private final AccountPositionSnapshotDecoder accountPositionSnapDecoder =
+      new AccountPositionSnapshotDecoder();
 
   /** Egress buffer for encoding domain events. Sized to accommodate the largest event. */
   private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[8 * 1024]);
@@ -564,8 +594,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   // Same idiom as {@code EventSink.broadcastBuffer} (one-call mutable context for a final-field
   // consumer that runs synchronously inside the enclosing method).
   private long idleScanScratchCurrentTs;
-  private long idleScanScratchThresholdTs;
   private EventSink idleScanScratchEventSink;
+
+  /**
+   * APP-62 §B — system-wide default idle timeout in nanos captured at scan entry from the {@code
+   * timeoutNanos} parameter of {@link #onIdleScan}. Read by {@link #idleScanVisit} as the explicit
+   * fallback when the per-session accountId has no per-account override (sessionAccountMapping
+   * miss, RiskLimit miss, or {@code idleSessionTimeoutNanos == 0L} meaning "use system default").
+   * Held as a named field rather than re-derived from {@code currentTs - thresholdTs} so the
+   * contract is self-documenting and the inner loop body has no implicit subtraction. APP-62 R11
+   * LOW Agent B #2 — promoted from previously-dead field to the canonical fallback path.
+   */
+  private long idleScanScratchDefaultTimeoutNanos;
 
   /**
    * Pre-allocated forEach consumer for {@link #sessionLastActivityNanos}. Method-reference form
@@ -632,6 +672,36 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    */
   final Long2ObjectHashMap<LongHashSet> sessionOrders =
       new Long2ObjectHashMap<>(SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR);
+
+  // ===========================================================================
+  // APP-62 §B — per-session → accountId mapping (drives per-account idle timeout)
+  //
+  // Bound at admit time (the first time the session sends a NOS that admits) so
+  // idleScanVisit can look up the account's idleSessionTimeoutNanos and apply a
+  // per-account override on top of the system-wide default supplied to onIdleScan.
+  // Cleared on onSessionClose and after an idle scan evicts the session.
+  // Sentinel ACCOUNT_MAPPING_MISSING = 0L (legitimate accountIds are positive —
+  // issued by AccountStore as ascending ids starting at 1L).
+  //
+  // NOT snapshot-persisted, by design. Same trade-off as sessionLastActivityNanos
+  // and sessionOrders — session state is ephemeral; on cluster restart Aeron
+  // Cluster re-invokes onSessionOpen for every surviving session and the FIRST
+  // admitted NOS rebinds the mapping naturally. Determinism is preserved: every
+  // replica restores the same empty map.
+  // ===========================================================================
+
+  /** Sentinel for "no accountId recorded for this sessionId" — accountIds are positive. */
+  static final long ACCOUNT_MAPPING_MISSING = 0L;
+
+  /**
+   * sessionId → accountId of the most recent NOS admitted on that session (APP-62 §B). Read by
+   * {@link #idleScanVisit} to look up per-account {@code idleSessionTimeoutNanos}; missing → fall
+   * back to the system-wide default passed to {@link #onIdleScan}. Package-private for direct-state
+   * assertions in unit tests.
+   */
+  final Long2LongHashMap sessionAccountMapping =
+      new Long2LongHashMap(
+          SESSION_MAP_INITIAL_CAPACITY, SESSION_ORDERS_LOAD_FACTOR, ACCOUNT_MAPPING_MISSING);
 
   /**
    * Cluster timestamp at which {@link #evictExpiredClOrdIds} last ran. Initialised to {@code 0L}
@@ -1278,6 +1348,14 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // times in the same validateNewOrder pass.
     long packedSymbolHashApp62 = packSymbolKey(symbolScratch, 0);
 
+    // Single eligibility lookup — APP-62 R11 LOW Agent A #5. Both Check 11f (§I per-symbol
+    // fat-finger override) and Check 11g (§G symbol-eligibility / Reg SHO restricted-symbol
+    // gate) key off the same SymbolEligibility record. Previously each call site re-probed
+    // symbolEligibilityStore; hoisting saves one Object2ObjectHashMap.get per limit order on
+    // the hot path. A `null` here means "no eligibility record loaded" — 11f falls back to the
+    // account-wide priceDeviationBps and 11g rejects fail-closed.
+    final var symbolEligibility = symbolEligibilityStore.get(packedSymbolHashApp62);
+
     // 11e. (APP-62 §4) Per-(account, symbol) position limit — worst-case fill exposure check.
     //      Working LONG and working SHORT quantities are bounded independently against
     //      RiskLimit.maxLongPosition / maxShortPosition (CME PTRM Long-Qty / Short-Qty convention).
@@ -1345,6 +1423,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       long symbolHash = packedSymbolHashApp62;
       long lastMid = lastQuotedMidPrice.get(symbolHash);
       long lastTs = lastQuotedMidAsOfNanos.get(symbolHash);
+      // APP-62 §I — per-symbol fat-finger override (0 = use account default, matches the
+      // schema field's "0 = no override" contract). The override is loaded via
+      // LoadSymbolEligibility / LoadSymbolEligibilityBatch and snapshotted in template 213, so
+      // it survives cluster snapshot+restore as part of the same eligibility record consulted
+      // by check 11g. A symbol with a non-zero override tightens (or loosens) the band relative
+      // to the account-wide priceDeviationBps — common in fixed-income desks where illiquid
+      // tenors carry tighter limits than majors. Re-uses the hoisted symbolEligibility lookup
+      // (single map probe shared with check 11g) — APP-62 R11 LOW Agent A #5.
+      long effectivePriceDeviationBps =
+          (symbolEligibility != null && symbolEligibility.priceDeviationBpsOverride() > 0L)
+              ? symbolEligibility.priceDeviationBpsOverride()
+              : riskLimit.priceDeviationBps();
       // Reference is usable only if both maps have an entry AND the timestamp is in the past or
       // present relative to clusterTimestamp AND within the staleness window. The replay guard
       // (lastTs <= clusterTimestamp) preserves determinism — under replay the cache could be
@@ -1364,7 +1454,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
               RejectReasonEnum.PriceTooFarFromMarket,
               "no fat-finger reference price for symbol",
               RiskCheckEnum.FatFinger,
-              riskLimit.priceDeviationBps(),
+              effectivePriceDeviationBps,
               0L);
           return null;
         }
@@ -1380,16 +1470,16 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
         } else {
           deviationBps = (delta * 10_000L) / lastMid;
         }
-        if (deviationBps > riskLimit.priceDeviationBps()) {
+        if (deviationBps > effectivePriceDeviationBps) {
           emitOrderRejectedWithBreachContext(
               eventSink,
               session,
               timestamp,
               side,
               RejectReasonEnum.PriceTooFarFromMarket,
-              "price deviates from last quoted mid by more than priceDeviationBps",
+              "price deviates from last mid by more than priceDeviationBps",
               RiskCheckEnum.FatFinger,
-              riskLimit.priceDeviationBps(),
+              effectivePriceDeviationBps,
               deviationBps);
           return null;
         }
@@ -1407,10 +1497,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      the matching engine (APP-180); conservative behaviour is documented in operations.md.
     //
     //      Peek-only — reads symbolEligibilityStore but never mutates. Re-uses the hoisted
-    //      packedSymbolHashApp62 from the top of the §11 block (APP-62 R10 LOW Agent A #8).
+    //      packedSymbolHashApp62 from the top of the §11 block (APP-62 R10 LOW Agent A #8) AND
+    //      the hoisted symbolEligibility record (APP-62 R11 LOW Agent A #5 — single map probe
+    //      shared with check 11f).
     //
     //      Primitive locals bare (no `final`) per memory feedback_final_primitives_autoboxing.md.
-    final var eligibility = symbolEligibilityStore.get(packedSymbolHashApp62);
+    final var eligibility = symbolEligibility;
     if (eligibility == null) {
       emitOrderRejectedWithBreachContext(
           eventSink,
@@ -1768,6 +1860,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       // APP-151 phase 5 — per-session metrics. Increment "orders admitted" counter for this
       // session.
       incrementSessionCounter(sessionMetricOrdersAdmitted, session.id());
+      // APP-62 §B — bind sessionId → accountId so the idle scan can consult the per-account
+      // idleSessionTimeoutNanos override. Always overwrites (last-admit wins) since a single
+      // FIX session can legitimately submit on behalf of multiple accounts (CompID-as-broker
+      // arrangements); the idle clock is driven by the most recently admitted account.
+      sessionAccountMapping.put(session.id(), account.accountId());
     }
 
     // 15. (APP-62 §4) Apply the admitted order's quantity to the per-(account, symbol) working
@@ -1967,6 +2064,8 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     cancelSessionOrders(sessionId, clusterTimestamp, eventSink, CancelReasonEnum.SessionDisconnect);
     // APP-151 phase 4 — clear the idle-activity entry so subsequent scans don't see a stale ts.
     sessionLastActivityNanos.remove(sessionId);
+    // APP-62 §B — release the per-session accountId binding (drives per-account idle timeout).
+    sessionAccountMapping.remove(sessionId);
     // APP-151 phase 5 — emit a one-line GFLog summary of this session's lifetime activity, then
     // clear the per-session counters. Logged BEFORE clear so the values are still resident; the
     // remove() calls return MISSING for never-opened sessions and that's reflected as 0 in the
@@ -2134,7 +2233,7 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       return;
     }
     idleScanScratchCurrentTs = currentTimestamp;
-    idleScanScratchThresholdTs = currentTimestamp - timeoutNanos;
+    idleScanScratchDefaultTimeoutNanos = timeoutNanos;
     idleScanScratchEventSink = eventSink;
     try {
       sessionLastActivityNanos.forEachLong(idleScanConsumer);
@@ -2142,7 +2241,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       if (!idleScanPendingRemoval.isEmpty()) {
         final var rit = idleScanPendingRemoval.iterator();
         while (rit.hasNext()) {
-          sessionLastActivityNanos.remove(rit.nextValue());
+          long evictedSessionId = rit.nextValue();
+          sessionLastActivityNanos.remove(evictedSessionId);
+          // APP-62 §B — release the session→account binding alongside the activity entry so a
+          // future re-bind (the next admitted NOS on a freshly-opened replacement session id)
+          // is not shadowed by a stale account id from a closed session.
+          sessionAccountMapping.remove(evictedSessionId);
         }
       }
     } finally {
@@ -2158,8 +2262,10 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   /**
    * Inner-loop body for {@link #onIdleScan} — bound as the {@link
    * org.agrona.collections.LongLongConsumer} for {@link Long2LongHashMap#forEachLong}. Cancels all
-   * orders for any session whose {@code lastActivity} predates {@link #idleScanScratchThresholdTs}
-   * with reason {@link CancelReasonEnum#IdleTimeout} — APP-62 §J wires this reason through {@link
+   * orders for any session whose {@code lastActivity} predates the effective threshold computed as
+   * {@code idleScanScratchCurrentTs - effectiveTimeoutNanos} (with the per-account override applied
+   * on top of {@link #idleScanScratchDefaultTimeoutNanos}), with reason {@link
+   * CancelReasonEnum#IdleTimeout} — APP-62 §J wires this reason through {@link
    * #cancelSessionOrders} which emits an {@code OrderExpiredEvent} (template 121) per affected
    * order so the FIX wire form is ExecType=Expired (tag 150='C') rather than ExecType=Canceled.
    * Marks the session id for removal from {@link #sessionLastActivityNanos} after the iteration
@@ -2171,7 +2277,34 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   private void idleScanVisit(final long sessionId, final long lastActivity) {
     // {@code Long2LongHashMap.forEachLong} does NOT visit absent entries, so the missing-sentinel
     // check is defensive (guards against any future seeding bug that puts MISSING explicitly).
-    if (lastActivity == IDLE_LAST_ACTIVITY_MISSING || lastActivity >= idleScanScratchThresholdTs) {
+    if (lastActivity == IDLE_LAST_ACTIVITY_MISSING) {
+      return;
+    }
+    // APP-62 §B — resolve the effective per-session threshold via per-account override on top of
+    // the system-wide default. Lookup walks: sessionId → accountId → RiskLimitState →
+    // idleSessionTimeoutNanos. Any missing link (no admit observed for this session yet, no
+    // RiskLimit loaded, or override == 0L meaning "use system default") falls back to the
+    // named default field {@link #idleScanScratchDefaultTimeoutNanos} populated at scan entry.
+    // Sentinel sequencing: sessionAccountMapping.get returns ACCOUNT_MAPPING_MISSING (0L) when
+    // absent; accountIds are positive so the > 0L gate disambiguates cleanly. {@code
+    // riskLimit.idleSessionTimeoutNanos() > 0L} is the second gate — the schema field
+    // describes 0 as "use account default" which here means "the system-wide default supplied
+    // to onIdleScan". APP-62 R11 LOW Agent B #2 — fallback now reads the named default field
+    // rather than implicitly re-deriving from idleScanScratchThresholdTs so the contract is
+    // self-documenting.
+    long effectiveTimeoutNanos = idleScanScratchDefaultTimeoutNanos;
+    long boundAccountId = sessionAccountMapping.get(sessionId);
+    if (boundAccountId != ACCOUNT_MAPPING_MISSING) {
+      final var perAccountLimit = riskLimitStore.get(boundAccountId);
+      if (perAccountLimit != null) {
+        long perAccountTimeoutNanos = perAccountLimit.idleSessionTimeoutNanos();
+        if (perAccountTimeoutNanos > 0L) {
+          effectiveTimeoutNanos = perAccountTimeoutNanos;
+        }
+      }
+    }
+    long effectiveThresholdTs = idleScanScratchCurrentTs - effectiveTimeoutNanos;
+    if (lastActivity >= effectiveThresholdTs) {
       return;
     }
     cancelSessionOrders(
@@ -2900,6 +3033,362 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       clOrdIdRegistry.put(group.dedupKey(), group.firstSeenTimestamp());
     }
     return clOrdIdDedupSnapDecoder.encodedLength();
+  }
+
+  // ===========================================================================
+  // Test-only diagnostic accessors (package-private callers in the handler package
+  // already see the field directly; these exist for cross-package tests in :cluster).
+  // ===========================================================================
+
+  /**
+   * Test-only accessor — returns the §5 last-quoted-mid map for snapshot round-trip assertions.
+   * Returned reference is the live map; callers MUST treat it as read-only.
+   */
+  public long lastQuotedMidPriceForTest(final long symbolHash) {
+    return lastQuotedMidPrice.get(symbolHash);
+  }
+
+  /** Test-only accessor — returns the §5 last-quoted-mid as-of timestamp for the given symbol. */
+  public long lastQuotedMidAsOfNanosForTest(final long symbolHash) {
+    return lastQuotedMidAsOfNanos.get(symbolHash);
+  }
+
+  /**
+   * Test-only accessor — returns the §4 working-long quantity for the given (account, symbol) pair,
+   * or {@code 0L} when no working position exists.
+   */
+  public long workingLongQtyForTest(final long accountId, final long symbolHash) {
+    final var inner = accountSymbolWorkingLong.get(accountId);
+    if (inner == null) {
+      return 0L;
+    }
+    final long v = inner.get(symbolHash);
+    return v == WORKING_POSITION_MISSING ? 0L : v;
+  }
+
+  /** Test-only accessor — returns the §4 working-short quantity for (account, symbol). */
+  public long workingShortQtyForTest(final long accountId, final long symbolHash) {
+    final var inner = accountSymbolWorkingShort.get(accountId);
+    if (inner == null) {
+      return 0L;
+    }
+    final long v = inner.get(symbolHash);
+    return v == WORKING_POSITION_MISSING ? 0L : v;
+  }
+
+  /**
+   * Test-only mutator — drives the §4 working-position counter without going through the full NOS
+   * admit path. Wraps the package-private {@link #applyWorkingPosition} for cross-package access.
+   */
+  public void applyWorkingPositionForTest(
+      final long accountId, final long symbolHash, final SideEnum side, final long delta) {
+    applyWorkingPosition(accountId, symbolHash, side, delta);
+  }
+
+  /** Test-only mutator — wraps {@link #updateLastQuotedMid} for cross-package access. */
+  public void updateLastQuotedMidForTest(
+      final long symbolHash, final long bidPrice, final long askPrice, final long ts) {
+    updateLastQuotedMid(symbolHash, bidPrice, askPrice, ts);
+  }
+
+  // ===========================================================================
+  // APP-62 §5 — LastQuotedPriceSnapshot (template 211) encode/restore
+  // ===========================================================================
+
+  /**
+   * APP-62 §5 — pre-allocated sort scratch for the deterministic key-order walk of {@link
+   * #lastQuotedMidPrice} during {@link #snapshotLastQuotedPricesTo}. Capacity grown lazily; sized
+   * at 1024 to cover typical symbol cardinality without rehashing. Single-threaded cluster duty
+   * cycle — no contention.
+   */
+  private long[] lastQuotedPriceSortScratch = new long[1024];
+
+  /**
+   * Encodes the §5 fat-finger reference price cache ({@link #lastQuotedMidPrice} + {@link
+   * #lastQuotedMidAsOfNanos}) into a {@code LastQuotedPriceSnapshot} (template 211) at the given
+   * buffer offset.
+   *
+   * <p><b>Deterministic key order.</b> Entries are emitted in ascending {@code symbolHash} order so
+   * the snapshot bytes (and consequently the snapshot CRC) are identical across Raft replicas. The
+   * sort is done over a pre-allocated long[] scratch grown only when symbol cardinality exceeds the
+   * prior high-water mark.
+   *
+   * <p><b>Threading.</b> single-threaded cluster duty cycle (same constraint as {@code onCommand}).
+   * No synchronisation required.
+   *
+   * <p><b>Allocation.</b> Zero allocation on the hot path; the SBE encoder, group flyweight, and
+   * sort scratch are all pre-allocated. The scratch grows only when the symbol set outgrows the
+   * prior capacity (a cold, one-time event per growth boundary).
+   *
+   * @param buf destination buffer (must have room for the encoded snapshot)
+   * @param offset start offset in {@code buf}
+   * @return total bytes written including the SBE message header
+   */
+  public int snapshotLastQuotedPricesTo(final MutableDirectBuffer buf, final int offset) {
+    lastQuotedPriceSnapEncoder.wrapAndApplyHeader(buf, offset, headerEncoder);
+    int size = lastQuotedMidPrice.size();
+    if (lastQuotedPriceSortScratch.length < size) {
+      lastQuotedPriceSortScratch = new long[Math.max(size, lastQuotedPriceSortScratch.length * 2)];
+    }
+    int idx = 0;
+    final Long2LongHashMap.KeyIterator keyIter = lastQuotedMidPrice.keySet().iterator();
+    while (keyIter.hasNext()) {
+      lastQuotedPriceSortScratch[idx++] = keyIter.nextValue();
+    }
+    // Arrays.sort(long[], int, int) is documented to allocate only when the range is
+    // large enough to switch to the parallel-merge fallback; the typical-cluster cardinality
+    // (≤ 50K symbols) stays on the primitive dual-pivot Quicksort with no temp allocation.
+    Arrays.sort(lastQuotedPriceSortScratch, 0, idx);
+    final var group = lastQuotedPriceSnapEncoder.noEntriesCount(idx);
+    for (int i = 0; i < idx; i++) {
+      long symbolHash = lastQuotedPriceSortScratch[i];
+      group.next();
+      group.symbolHash(symbolHash);
+      group.lastMidPrice(lastQuotedMidPrice.get(symbolHash));
+      group.asOfTimestamp(lastQuotedMidAsOfNanos.get(symbolHash));
+    }
+    return MessageHeaderEncoder.ENCODED_LENGTH + lastQuotedPriceSnapEncoder.encodedLength();
+  }
+
+  /**
+   * Restores the §5 fat-finger reference price cache from a previously-encoded {@code
+   * LastQuotedPriceSnapshot} (template 211). Both {@link #lastQuotedMidPrice} and {@link
+   * #lastQuotedMidAsOfNanos} are cleared then re-populated from the snapshot.
+   *
+   * @param src source buffer
+   * @param offset start offset of the SBE message BODY (header already consumed by caller)
+   * @param blockLength SBE block length from the inbound message header
+   * @param version SBE schema version from the inbound message header
+   * @return the number of body bytes consumed (excludes the header consumed by the caller)
+   */
+  public int restoreLastQuotedPricesFrom(
+      final DirectBuffer src, final int offset, final int blockLength, final int version) {
+    lastQuotedMidPrice.clear();
+    lastQuotedMidAsOfNanos.clear();
+    lastQuotedPriceSnapDecoder.wrap(src, offset, blockLength, version);
+    final var group = lastQuotedPriceSnapDecoder.noEntries();
+    while (group.hasNext()) {
+      group.next();
+      long symbolHash = group.symbolHash();
+      lastQuotedMidPrice.put(symbolHash, group.lastMidPrice());
+      lastQuotedMidAsOfNanos.put(symbolHash, group.asOfTimestamp());
+    }
+    return lastQuotedPriceSnapDecoder.encodedLength();
+  }
+
+  // ===========================================================================
+  // APP-62 §4 — AccountPositionSnapshot (template 212) encode/restore
+  // ===========================================================================
+
+  /**
+   * APP-62 §4 — pre-allocated sort scratch for deterministic encode order in {@link
+   * #snapshotAccountPositionsTo}. Outer scratch holds ascending account ids; inner scratch is
+   * re-used per account to hold the ascending symbol hashes for that account.
+   */
+  private long[] accountPositionAccountSortScratch = new long[1024];
+
+  private long[] accountPositionSymbolSortScratch = new long[1024];
+
+  /**
+   * Encodes the §4 per-(account, symbol) working position counters into an {@code
+   * AccountPositionSnapshot} (template 212) at the given buffer offset. One group entry per
+   * (accountId, symbolHash) pair with non-zero working long OR short qty. Entries are emitted in
+   * ascending accountId order, then ascending symbolHash order within each account so the snapshot
+   * bytes are byte-identical across Raft replicas.
+   *
+   * <p><b>Sparse-merge.</b> The outer maps {@link #accountSymbolWorkingLong} and {@link
+   * #accountSymbolWorkingShort} are independent — an account may have a working long on symbol A
+   * and a working short on symbol B with no overlap. The encode merges per account by union'ing the
+   * symbol-hash key sets and emitting one group entry per merged symbol, reading {@code 0L} from
+   * the absent side as the sentinel from the inner map's missing-value configuration.
+   *
+   * @param buf destination buffer (must have room for the encoded snapshot)
+   * @param offset start offset in {@code buf}
+   * @return total bytes written including the SBE message header
+   */
+  public int snapshotAccountPositionsTo(final MutableDirectBuffer buf, final int offset) {
+    accountPositionSnapEncoder.wrapAndApplyHeader(buf, offset, headerEncoder);
+    // Outer pass: collect all account ids that appear in either side.
+    int outerCount = 0;
+    final var longOuter = accountSymbolWorkingLong.keySet().iterator();
+    while (longOuter.hasNext()) {
+      if (accountPositionAccountSortScratch.length == outerCount) {
+        accountPositionAccountSortScratch =
+            growLongScratch(accountPositionAccountSortScratch, outerCount + 1);
+      }
+      accountPositionAccountSortScratch[outerCount++] = longOuter.nextLong();
+    }
+    final var shortOuter = accountSymbolWorkingShort.keySet().iterator();
+    while (shortOuter.hasNext()) {
+      long accountId = shortOuter.nextLong();
+      if (!accountSymbolWorkingLong.containsKey(accountId)) {
+        if (accountPositionAccountSortScratch.length == outerCount) {
+          accountPositionAccountSortScratch =
+              growLongScratch(accountPositionAccountSortScratch, outerCount + 1);
+        }
+        accountPositionAccountSortScratch[outerCount++] = accountId;
+      }
+    }
+    Arrays.sort(accountPositionAccountSortScratch, 0, outerCount);
+
+    // First-pass count of total group entries so we can size the SBE group correctly.
+    int totalEntries = 0;
+    for (int i = 0; i < outerCount; i++) {
+      totalEntries += countMergedSymbols(accountPositionAccountSortScratch[i]);
+    }
+
+    final var group = accountPositionSnapEncoder.noEntriesCount(totalEntries);
+    for (int i = 0; i < outerCount; i++) {
+      long accountId = accountPositionAccountSortScratch[i];
+      int innerCount = collectMergedSymbols(accountId);
+      Arrays.sort(accountPositionSymbolSortScratch, 0, innerCount);
+      final var longInner = accountSymbolWorkingLong.get(accountId);
+      final var shortInner = accountSymbolWorkingShort.get(accountId);
+      for (int j = 0; j < innerCount; j++) {
+        long symbolHash = accountPositionSymbolSortScratch[j];
+        long workingLong = longInner != null ? longInner.get(symbolHash) : 0L;
+        long workingShort = shortInner != null ? shortInner.get(symbolHash) : 0L;
+        if (workingLong == WORKING_POSITION_MISSING) {
+          workingLong = 0L;
+        }
+        if (workingShort == WORKING_POSITION_MISSING) {
+          workingShort = 0L;
+        }
+        group.next();
+        group.accountId(accountId);
+        group.symbolHash(symbolHash);
+        group.workingLongQty(workingLong);
+        group.workingShortQty(workingShort);
+      }
+    }
+    return MessageHeaderEncoder.ENCODED_LENGTH + accountPositionSnapEncoder.encodedLength();
+  }
+
+  /**
+   * Counts the union of symbol hashes across the long-side and short-side inner maps for {@code
+   * accountId}. Used by {@link #snapshotAccountPositionsTo} to pre-size the SBE group cardinality.
+   */
+  private int countMergedSymbols(final long accountId) {
+    final var longInner = accountSymbolWorkingLong.get(accountId);
+    final var shortInner = accountSymbolWorkingShort.get(accountId);
+    if (longInner == null && shortInner == null) {
+      return 0;
+    }
+    if (shortInner == null) {
+      return longInner.size();
+    }
+    if (longInner == null) {
+      return shortInner.size();
+    }
+    int count = longInner.size();
+    final var sit = shortInner.keySet().iterator();
+    while (sit.hasNext()) {
+      if (!longInner.containsKey(sit.nextValue())) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Collects the union of symbol hashes across the long-side and short-side inner maps for {@code
+   * accountId} into {@link #accountPositionSymbolSortScratch}. Returns the count of populated
+   * entries. The caller is expected to sort the prefix in-place before encoding.
+   */
+  private int collectMergedSymbols(final long accountId) {
+    int count = 0;
+    final var longInner = accountSymbolWorkingLong.get(accountId);
+    final var shortInner = accountSymbolWorkingShort.get(accountId);
+    if (longInner != null) {
+      final var lit = longInner.keySet().iterator();
+      while (lit.hasNext()) {
+        if (accountPositionSymbolSortScratch.length == count) {
+          accountPositionSymbolSortScratch =
+              growLongScratch(accountPositionSymbolSortScratch, count + 1);
+        }
+        accountPositionSymbolSortScratch[count++] = lit.nextValue();
+      }
+    }
+    if (shortInner != null) {
+      final var sit = shortInner.keySet().iterator();
+      while (sit.hasNext()) {
+        long symbolHash = sit.nextValue();
+        if (longInner == null || !longInner.containsKey(symbolHash)) {
+          if (accountPositionSymbolSortScratch.length == count) {
+            accountPositionSymbolSortScratch =
+                growLongScratch(accountPositionSymbolSortScratch, count + 1);
+          }
+          accountPositionSymbolSortScratch[count++] = symbolHash;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Doubles the given long[] up to at least {@code minCapacity}. Cold path — only invoked when a
+   * scratch outgrows the prior high-water mark, which is rare (sizes only ratchet up).
+   *
+   * @param current the current scratch
+   * @param minCapacity the required minimum new capacity
+   * @return a fresh long[] sized to at least {@code minCapacity}
+   */
+  private static long[] growLongScratch(final long[] current, final int minCapacity) {
+    int newCap = current.length * 2;
+    if (newCap < minCapacity) {
+      newCap = minCapacity;
+    }
+    final var grown = new long[newCap];
+    System.arraycopy(current, 0, grown, 0, current.length);
+    return grown;
+  }
+
+  /**
+   * Restores the §4 per-(account, symbol) working-position counters from a previously-encoded
+   * {@code AccountPositionSnapshot} (template 212). Both outer maps are cleared then re-populated
+   * with fresh inner {@link Long2LongHashMap} instances sized to the working-position initial
+   * capacity (matches the {@code applyWorkingPosition} lazy-allocation path).
+   *
+   * @param src source buffer
+   * @param offset start offset of the SBE message BODY (header already consumed by caller)
+   * @param blockLength SBE block length from the inbound message header
+   * @param version SBE schema version from the inbound message header
+   * @return the number of body bytes consumed (excludes the header consumed by the caller)
+   */
+  public int restoreAccountPositionsFrom(
+      final DirectBuffer src, final int offset, final int blockLength, final int version) {
+    accountSymbolWorkingLong.clear();
+    accountSymbolWorkingShort.clear();
+    accountPositionSnapDecoder.wrap(src, offset, blockLength, version);
+    final var group = accountPositionSnapDecoder.noEntries();
+    while (group.hasNext()) {
+      group.next();
+      long accountId = group.accountId();
+      long symbolHash = group.symbolHash();
+      long workingLong = group.workingLongQty();
+      long workingShort = group.workingShortQty();
+      if (workingLong != 0L) {
+        var inner = accountSymbolWorkingLong.get(accountId);
+        if (inner == null) {
+          inner =
+              new Long2LongHashMap(
+                  WORKING_POSITION_INNER_INITIAL_CAPACITY, 0.65f, WORKING_POSITION_MISSING);
+          accountSymbolWorkingLong.put(accountId, inner);
+        }
+        inner.put(symbolHash, workingLong);
+      }
+      if (workingShort != 0L) {
+        var inner = accountSymbolWorkingShort.get(accountId);
+        if (inner == null) {
+          inner =
+              new Long2LongHashMap(
+                  WORKING_POSITION_INNER_INITIAL_CAPACITY, 0.65f, WORKING_POSITION_MISSING);
+          accountSymbolWorkingShort.put(accountId, inner);
+        }
+        inner.put(symbolHash, workingShort);
+      }
+    }
+    return accountPositionSnapDecoder.encodedLength();
   }
 
   /**

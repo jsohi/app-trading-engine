@@ -15,30 +15,29 @@ import org.agrona.concurrent.SystemNanoClock;
  *
  * <h2>Cluster query path — present state</h2>
  *
- * <p><b>REQUIRES the {@code :query-service} module to expose an {@code AccountLimitsQuery} surface
- * that returns a fully-populated {@link BrowserEvent.AccountLimits} per account code.</b> As of
- * APP-40 Day 4-b that surface does not yet exist; the cluster has the data ({@code
- * RiskLimitLoadedEvent} template 115 in {@code messages/src/main/resources/trading-schema.xml}) but
- * no read-model projection is registered for it and {@link
- * com.trading.engine.queryservice.QueryService} exposes only {@code getAccountByCode} which returns
- * identity/capabilities — not pre-trade limits. Two further gaps:
+ * <p>The cluster has the data ({@code RiskLimitLoadedEvent} template 115 + {@code
+ * RiskLimitChangedEvent} template 119 in {@code messages/src/main/resources/trading-schema.xml})
+ * and as of APP-62 R11 the read-model {@code RiskLimitProjection} ({@code
+ * projections/src/main/java/com/trading/engine/projections/risklimits/RiskLimitProjection.java})
+ * consumes templates 115/119 and exposes per-account limits via {@link
+ * com.trading.engine.queryservice.QueryService#getAccountLimits(String)} returning {@code
+ * RiskLimitRecordView}.
  *
  * <ul>
- *   <li>The cluster schema has {@code maxOrderSize} and {@code maxOrderNotional} which map to
- *       {@link BrowserEvent.AccountLimits#maxQtyInt64()} and {@link
- *       BrowserEvent.AccountLimits#maxNotionalInt64()}, but does NOT yet carry {@code
- *       priceDeviationBps} or {@code maxOrdersPerSecond}. Those two fields will need to be added to
- *       {@code RiskLimitLoadedEvent} (or surfaced via a separate per-session policy store) before
- *       the bridge can deliver them with cluster-authoritative values.
- *   <li>No {@code RiskLimitProjection} consumes template 115 today, so even {@code
- *       maxOrderSize}/{@code maxOrderNotional} are not queryable from outside the cluster process.
+ *   <li>The {@code RiskLimitRecordView} surface carries {@code maxOrderSize}, {@code
+ *       maxOrderNotional}, {@code priceDeviationBps} and {@code maxOrdersPerSecond} — all four of
+ *       the {@link BrowserEvent.AccountLimits} fields. The {@link RiskLimitToBrowserAdapter}
+ *       performs the per-field narrowing from cluster-side {@code long} to browser-side {@code int}
+ *       (clamping at {@link Integer#MAX_VALUE}).
+ *   <li>The remaining gap is launcher-binding: a top-level process is responsible for wiring {@code
+ *       QueryService::getAccountLimits} into this provider's {@link AccountLimitsLookup} SAM. Until
+ *       that wiring lands the bridge's runtime path falls through to the in-memory default provider
+ *       (see {@link BoundedAccountLimitsSource}).
  * </ul>
  *
- * <p>This provider is therefore implemented against a minimal {@link AccountLimitsLookup} SAM that
- * the launcher binds to whatever cluster-side query mechanism exists. When the {@code
- * :query-service} surface lands (tracked separately — see TODOs in {@code launcher} wiring), the
- * launcher will swap its in-memory or no-op binding for the real one without any change to this
- * class.
+ * <p>This provider is implemented against the minimal {@link AccountLimitsLookup} SAM so the
+ * binding swap is a single launcher edit with no module-graph changes to {@code
+ * :fix-client-bridge}. See TODO(APP-62) immediately below for the exact binding contract.
  *
  * <h2>Threading</h2>
  *
@@ -87,6 +86,22 @@ import org.agrona.concurrent.SystemNanoClock;
  * @see AccountLimitsLookup
  * @see BoundedAccountLimitsSource
  */
+// TODO(APP-62): wire the production binding in the top-level launcher:
+//     new ClusterAccountLimitsProvider(
+//         accountCode -> {
+//           final var view = queryService.getAccountLimits(accountCode);
+//           if (view == null) return null;
+//           return RiskLimitToBrowserAdapter.toBrowserLimits(
+//               accountCode,
+//               view.maxOrderSize(),
+//               view.maxOrderNotional(),
+//               view.priceDeviationBps(),
+//               view.maxOrdersPerSecond());
+//         });
+//   Until this wiring lands, the JWT cold-path auth handler resolves to the in-memory
+//   BoundedAccountLimitsSource. Tracked as the same gap as RiskLimitToBrowserAdapter (APP-62 R11
+//   MEDIUM Agent B #1) — the adapter, provider and projection all exist; only the launcher
+//   binding is outstanding.
 public final class ClusterAccountLimitsProvider implements AccountLimitsProvider {
 
   /**
@@ -97,9 +112,9 @@ public final class ClusterAccountLimitsProvider implements AccountLimitsProvider
 
   /**
    * Minimal SAM for cluster-side per-account limits lookup. The launcher provides the impl —
-   * typically backed by {@code QueryService.getAccountLimitsByCode(...)} once that surface is
-   * exposed (see class-level Javadoc). Returning {@code null} indicates the account is not
-   * provisioned in the cluster's read-model.
+   * typically backed by {@code QueryService.getAccountLimits(String)} (now exposed as of APP-62
+   * R11; see class-level Javadoc and the TODO(APP-62) binding sketch). Returning {@code null}
+   * indicates the account is not provisioned in the cluster's read-model.
    *
    * <p>The SAM lives next to the provider rather than in {@code :query-service} to keep the
    * bridge's transport package self-contained — adding a {@code :query-service} dependency to

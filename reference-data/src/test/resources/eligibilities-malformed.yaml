@@ -1,0 +1,5 @@
+symbolEligibilities:
+  - symbol: EURUSD
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: [this is not valid yaml structure here

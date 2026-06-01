@@ -98,6 +98,7 @@ echo "Starting trading engine..."
     -Daccounts.file="$DATA_DIR/accounts.yaml" \
     -Dcurrencies.file="$DATA_DIR/currencies.yaml" \
     -Drisk-limits.file="$DATA_DIR/risk-limits.yaml" \
+    -Dsymbol-eligibilities.file="$DATA_DIR/restricted-symbols.yaml" \
     > "$LOG_DIR/launcher.log" 2>&1 &
 LAUNCHER_PID=$!
 

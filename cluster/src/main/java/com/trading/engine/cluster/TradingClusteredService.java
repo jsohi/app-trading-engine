@@ -22,6 +22,7 @@ import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
+import com.trading.engine.messages.sbe.AccountPositionSnapshotDecoder;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
 import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventDecoder;
@@ -31,6 +32,7 @@ import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
 import com.trading.engine.messages.sbe.IdGeneratorSnapshotDecoder;
 import com.trading.engine.messages.sbe.IdGeneratorSnapshotEncoder;
+import com.trading.engine.messages.sbe.LastQuotedPriceSnapshotDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
@@ -78,13 +80,16 @@ import org.agrona.concurrent.UnsafeBuffer;
  *       TradingState}.
  * </ul>
  *
- * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits a nine-body-fragment envelope: {@code
- * SnapshotTaken} (header, templateId 200) + {@code EventSequencerSnapshot} (206) + {@code
- * IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201) + {@code CurrencySnapshot} (208) +
- * {@code RiskLimitSnapshot} (209) + {@code SymbolEligibilitySnapshot} (213) + {@code
- * OrderBookSnapshot} (202) + {@code RfqStateSnapshot} (203) + {@code ClOrdIdDedupSnapshot} (210).
- * The header carries a CRC32C checksum covering the concatenated body bytes in publish order;
- * {@link #onStart} verifies the checksum before handing control back to the cluster framework.
+ * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits an eleven-body-fragment envelope (publish
+ * order, must match the CRC computation order in {@link #encodeSnapshotFragments} and the assembly
+ * cursor in {@link #assembleSnapshot}): {@code SnapshotTaken} (header, templateId 200) + {@code
+ * EventSequencerSnapshot} (206) + {@code IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201)
+ * + {@code CurrencySnapshot} (208) + {@code RiskLimitSnapshot} (209) + {@code
+ * SymbolEligibilitySnapshot} (213) + {@code OrderBookSnapshot} (202) + {@code RfqStateSnapshot}
+ * (203) + {@code ClOrdIdDedupSnapshot} (210) + {@code LastQuotedPriceSnapshot} (211) + {@code
+ * AccountPositionSnapshot} (212). The header carries a CRC32C checksum covering the concatenated
+ * body bytes in publish order; {@link #onStart} verifies the checksum before handing control back
+ * to the cluster framework.
  *
  * <p><b>Determinism.</b> Every mutation is driven by either (a) a cluster-supplied message and
  * timestamp or (b) a cluster-supplied snapshot fragment. No wall-clock, no randomness, no heap
@@ -123,9 +128,12 @@ public final class TradingClusteredService implements ClusteredService {
    * survives snapshot+restore. Bumped from 8 to 9 by APP-62 §G to include {@code
    * SymbolEligibilitySnapshot} (template 213) — required so the §G fail-closed symbol-eligibility
    * check 11g posture survives snapshot+restore (without the fragment the eligibility map ends up
-   * empty after restore and every order would be rejected with RegulatoryRestriction).
+   * empty after restore and every order would be rejected with RegulatoryRestriction). Bumped from
+   * 9 to 11 by APP-62 §4/§5 snapshot persistence ({@code LastQuotedPriceSnapshot} template 211 +
+   * {@code AccountPositionSnapshot} template 212) — required so the §5 fat-finger reference-price
+   * cache and the §4 working-position counters both survive snapshot+restore.
    */
-  private static final int SNAPSHOT_STORE_COUNT = 9;
+  private static final int SNAPSHOT_STORE_COUNT = 11;
 
   /**
    * Maximum consecutive empty polls tolerated during snapshot reassembly in {@link #onStart} before
@@ -244,6 +252,24 @@ public final class TradingClusteredService implements ClusteredService {
   private final MutableDirectBuffer clOrdIdDedupSnapBuf =
       new ExpandableArrayBuffer(2 * 1024 * 1024);
 
+  /**
+   * APP-62 §5 — snapshot 211 ({@code LastQuotedPriceSnapshot}) staging buffer. Sized for up to ~50K
+   * symbols × 24 B per entry + group / header overhead ≈ 1.3 MB; 2 MB is a safe round-up. Without
+   * this fragment, the §5 fat-finger reference cache empties on snapshot restore and the cluster
+   * transiently fails-closed every limit order until pricing reseeds.
+   */
+  private final MutableDirectBuffer lastQuotedPriceSnapBuf =
+      new ExpandableArrayBuffer(2 * 1024 * 1024);
+
+  /**
+   * APP-62 §4 — snapshot 212 ({@code AccountPositionSnapshot}) staging buffer. Sized for up to ~50K
+   * (account, symbol) entries × 32 B per entry + group / header overhead ≈ 1.6 MB; 2 MB is a safe
+   * round-up. Without this fragment, the §4 working-position counters reset to zero on snapshot
+   * restore and the per-(account, symbol) maxLong / maxShort caps lose history.
+   */
+  private final MutableDirectBuffer accountPositionSnapBuf =
+      new ExpandableArrayBuffer(2 * 1024 * 1024);
+
   // Lengths populated by encodeSnapshotFragments().
   private int snapshotHeaderLen;
   private int eventSeqSnapLen;
@@ -255,6 +281,8 @@ public final class TradingClusteredService implements ClusteredService {
   private int orderBookSnapLen;
   private int rfqStateSnapLen;
   private int clOrdIdDedupSnapLen;
+  private int lastQuotedPriceSnapLen;
+  private int accountPositionSnapLen;
 
   // Used by onStart() for snapshot image reassembly and by onTakeSnapshot() for atomic assembly
   // before publication. Dual use is safe: Aeron Cluster guarantees onStart() completes before
@@ -281,6 +309,8 @@ public final class TradingClusteredService implements ClusteredService {
   private boolean symbolEligibilityFragmentSeen;
   private boolean rfqStateFragmentSeen;
   private boolean clOrdIdDedupFragmentSeen;
+  private boolean lastQuotedPriceFragmentSeen;
+  private boolean accountPositionFragmentSeen;
   private boolean orderIdGenRestored;
   private boolean execIdGenRestored;
   private boolean quoteIdGenRestored;
@@ -810,7 +840,7 @@ public final class TradingClusteredService implements ClusteredService {
    *   <li>Hard cap — fail fast before allocation if {@code totalLen > SNAPSHOT_HARD_CAP_MULTIPLIER
    *       * maxMessageLength}
    *   <li>Pre-size — {@code checkLimit(totalLen)} to avoid incremental doubling
-   *   <li>Assemble — {@code putBytes} the SnapshotTaken header plus all nine body fragments into
+   *   <li>Assemble — {@code putBytes} the SnapshotTaken header plus all eleven body fragments into
    *       the contiguous reassembly buffer
    *   <li>Integrity — assert {@code pos == totalLen}
    *   <li>80% warning — surfaced via cluster error handler
@@ -825,7 +855,7 @@ public final class TradingClusteredService implements ClusteredService {
   int assembleSnapshot(final int maxMessageLength) {
     encodeSnapshotFragments(cluster == null ? 0L : cluster.time());
 
-    // Pre-compute total assembled length across all fragments (header + 8 body). Use long
+    // Pre-compute total assembled length across all fragments (header + 11 body). Use long
     // arithmetic so a pathological state-growth bug cannot wrap the sum negative and silently
     // bypass the hard cap.
     final long totalLenLong =
@@ -838,7 +868,9 @@ public final class TradingClusteredService implements ClusteredService {
             + symbolEligibilitySnapLen
             + orderBookSnapLen
             + rfqStateSnapLen
-            + clOrdIdDedupSnapLen;
+            + clOrdIdDedupSnapLen
+            + lastQuotedPriceSnapLen
+            + accountPositionSnapLen;
 
     // Hard cap: fail fast before attempting allocation to protect against OOM from unbounded
     // state growth (e.g., order pool leak that never releases slots). Scales with maxMessageLength
@@ -869,7 +901,7 @@ public final class TradingClusteredService implements ClusteredService {
     // doublings on the duty-cycle thread).
     snapshotReassemblyBuf.checkLimit(totalLen);
 
-    // Assemble all 8 fragments into snapshotReassemblyBuf as one contiguous block.
+    // Assemble all 11 fragments into snapshotReassemblyBuf as one contiguous block.
     int pos = 0;
     snapshotReassemblyBuf.putBytes(pos, snapshotHeaderBuf, 0, snapshotHeaderLen);
     pos += snapshotHeaderLen;
@@ -893,6 +925,12 @@ public final class TradingClusteredService implements ClusteredService {
     pos += rfqStateSnapLen;
     snapshotReassemblyBuf.putBytes(pos, clOrdIdDedupSnapBuf, 0, clOrdIdDedupSnapLen);
     pos += clOrdIdDedupSnapLen;
+    // APP-62 §5 — LastQuotedPriceSnapshot (tpl 211) after the dedup fragment.
+    snapshotReassemblyBuf.putBytes(pos, lastQuotedPriceSnapBuf, 0, lastQuotedPriceSnapLen);
+    pos += lastQuotedPriceSnapLen;
+    // APP-62 §4 — AccountPositionSnapshot (tpl 212) last in the body block.
+    snapshotReassemblyBuf.putBytes(pos, accountPositionSnapBuf, 0, accountPositionSnapLen);
+    pos += accountPositionSnapLen;
 
     // Post-assembly integrity: verify cursor matches pre-computed total.
     if (pos != totalLen) {
@@ -1003,7 +1041,7 @@ public final class TradingClusteredService implements ClusteredService {
   /**
    * Encode every snapshot fragment into the per-store staging buffers and populate the {@code
    * *SnapLen} fields. After this returns, the staging buffers hold the SnapshotTaken header
-   * followed by the nine body fragments in publish order:
+   * followed by the eleven body fragments in publish order:
    *
    * <pre>
    *   [snapshotHeaderBuf]          // SnapshotTaken (200)
@@ -1016,10 +1054,12 @@ public final class TradingClusteredService implements ClusteredService {
    *   [orderBookSnapBuf]           // OrderBookSnapshot (202)
    *   [rfqStateSnapBuf]            // RfqStateSnapshot (203) — APP-232
    *   [clOrdIdDedupSnapBuf]        // ClOrdIdDedupSnapshot (210) — APP-206 R7
+   *   [lastQuotedPriceSnapBuf]     // LastQuotedPriceSnapshot (211) — APP-62 §5
+   *   [accountPositionSnapBuf]     // AccountPositionSnapshot (212) — APP-62 §4
    * </pre>
    *
-   * <p>The header's {@code checksum} field is a CRC32C over the nine body fragments concatenated in
-   * publish order (the header itself is not covered, which matches the exchange-core idiom —
+   * <p>The header's {@code checksum} field is a CRC32C over the eleven body fragments concatenated
+   * in publish order (the header itself is not covered, which matches the exchange-core idiom —
    * checksum validates what follows). The body-fragment count is also published in {@code
    * SnapshotTaken.storeCount} (= {@link #SNAPSHOT_STORE_COUNT}) so the restore path can verify
    * fragment count before walking.
@@ -1066,7 +1106,19 @@ public final class TradingClusteredService implements ClusteredService {
     //    but still inside the 24h dedup window would be admitted again.
     clOrdIdDedupSnapLen = newOrderSingleHandler.snapshotDedupTo(clOrdIdDedupSnapBuf, 0);
 
-    // CRC32C over the eight body fragments in publish order.
+    // 9. LastQuotedPriceSnapshot (template 211) — APP-62 §5. Persists the fat-finger reference
+    //    price cache so the cluster continues enforcing the price-band check after restore
+    //    rather than transiently fail-closed-rejecting every limit order until pricing reseeds.
+    lastQuotedPriceSnapLen =
+        newOrderSingleHandler.snapshotLastQuotedPricesTo(lastQuotedPriceSnapBuf, 0);
+
+    // 10. AccountPositionSnapshot (template 212) — APP-62 §4. Persists the per-(account, symbol)
+    //     working-position counters so the max-long / max-short admission caps remain enforceable
+    //     across cluster failover.
+    accountPositionSnapLen =
+        newOrderSingleHandler.snapshotAccountPositionsTo(accountPositionSnapBuf, 0);
+
+    // CRC32C over the eleven body fragments in publish order.
     crc.reset();
     crc.update(eventSeqSnapBuf.byteArray(), 0, eventSeqSnapLen);
     crc.update(idGenSnapBuf.byteArray(), 0, idGenSnapLen);
@@ -1077,6 +1129,8 @@ public final class TradingClusteredService implements ClusteredService {
     crc.update(orderBookSnapBuf.byteArray(), 0, orderBookSnapLen);
     crc.update(rfqStateSnapBuf.byteArray(), 0, rfqStateSnapLen);
     crc.update(clOrdIdDedupSnapBuf.byteArray(), 0, clOrdIdDedupSnapLen);
+    crc.update(lastQuotedPriceSnapBuf.byteArray(), 0, lastQuotedPriceSnapLen);
+    crc.update(accountPositionSnapBuf.byteArray(), 0, accountPositionSnapLen);
     final int checksum = (int) crc.getValue();
 
     final long totalBody =
@@ -1088,7 +1142,9 @@ public final class TradingClusteredService implements ClusteredService {
             + symbolEligibilitySnapLen
             + orderBookSnapLen
             + rfqStateSnapLen
-            + clOrdIdDedupSnapLen;
+            + clOrdIdDedupSnapLen
+            + lastQuotedPriceSnapLen
+            + accountPositionSnapLen;
 
     // Finally, encode the SnapshotTaken header.
     snapshotTakenEncoder.wrapAndApplyHeader(snapshotHeaderBuf, 0, headerEncoder);
@@ -1183,6 +1239,31 @@ public final class TradingClusteredService implements ClusteredService {
     return clOrdIdDedupSnapBuf;
   }
 
+  int lastQuotedPriceSnapLength() {
+    return lastQuotedPriceSnapLen;
+  }
+
+  MutableDirectBuffer lastQuotedPriceSnapBuffer() {
+    return lastQuotedPriceSnapBuf;
+  }
+
+  int accountPositionSnapLength() {
+    return accountPositionSnapLen;
+  }
+
+  MutableDirectBuffer accountPositionSnapBuffer() {
+    return accountPositionSnapBuf;
+  }
+
+  /**
+   * Test-only accessor returning the registered {@link NewOrderSingleHandler}. Used by snapshot
+   * round-trip tests that need to drive {@code updateLastQuotedMid} / {@code applyWorkingPosition}
+   * directly to seed the §4 / §5 snapshot fragments before encoding.
+   */
+  NewOrderSingleHandler newOrderSingleHandlerForTest() {
+    return newOrderSingleHandler;
+  }
+
   MutableDirectBuffer snapshotReassemblyBuffer() {
     return snapshotReassemblyBuf;
   }
@@ -1192,7 +1273,7 @@ public final class TradingClusteredService implements ClusteredService {
   // ===========================================================================
 
   /**
-   * Walk a single contiguous buffer containing the SnapshotTaken header plus all nine body
+   * Walk a single contiguous buffer containing the SnapshotTaken header plus all eleven body
    * fragments in publish order (see {@link #encodeSnapshotFragments} for the exact layout) and
    * apply them to the live state. Verifies the CRC32C over the body fragments against the checksum
    * embedded in the {@code SnapshotTaken} header.
@@ -1255,7 +1336,7 @@ public final class TradingClusteredService implements ClusteredService {
     referenceDataRegistry.resetAll();
     tradingState.clearOrderBook();
     rfqStateMachine.clear();
-    // Track whether each of the seven required fragments has been seen so we can reject
+    // Track whether each of the eleven required fragments has been seen so we can reject
     // CRC-valid but semantically incomplete snapshots (missing or duplicated fragments).
     eventSeqFragmentSeen = false;
     idGenFragmentSeen = false;
@@ -1266,6 +1347,8 @@ public final class TradingClusteredService implements ClusteredService {
     symbolEligibilityFragmentSeen = false;
     rfqStateFragmentSeen = false;
     clOrdIdDedupFragmentSeen = false;
+    lastQuotedPriceFragmentSeen = false;
+    accountPositionFragmentSeen = false;
     orderIdGenRestored = false;
     execIdGenRestored = false;
     quoteIdGenRestored = false;
@@ -1317,7 +1400,9 @@ public final class TradingClusteredService implements ClusteredService {
         || !riskLimitFragmentSeen
         || !symbolEligibilityFragmentSeen
         || !rfqStateFragmentSeen
-        || !clOrdIdDedupFragmentSeen) {
+        || !clOrdIdDedupFragmentSeen
+        || !lastQuotedPriceFragmentSeen
+        || !accountPositionFragmentSeen) {
       throw new IllegalStateException(
           "snapshot missing required fragments"
               + " (eventSeq="
@@ -1338,6 +1423,10 @@ public final class TradingClusteredService implements ClusteredService {
               + rfqStateFragmentSeen
               + ", clOrdIdDedup="
               + clOrdIdDedupFragmentSeen
+              + ", lastQuotedPrice="
+              + lastQuotedPriceFragmentSeen
+              + ", accountPosition="
+              + accountPositionFragmentSeen
               + ")");
     }
     if (!orderIdGenRestored || !execIdGenRestored || !quoteIdGenRestored) {
@@ -1426,6 +1515,36 @@ public final class TradingClusteredService implements ClusteredService {
       // contract survives snapshot+restore.
       final int consumed =
           newOrderSingleHandler.restoreDedupFrom(
+              src,
+              offset + MessageHeaderDecoder.ENCODED_LENGTH,
+              headerDecoder.blockLength(),
+              headerDecoder.version());
+      return MessageHeaderDecoder.ENCODED_LENGTH + consumed;
+    }
+    if (templateId == LastQuotedPriceSnapshotDecoder.TEMPLATE_ID) {
+      if (lastQuotedPriceFragmentSeen) {
+        throw new IllegalStateException("duplicate LastQuotedPriceSnapshot fragment in snapshot");
+      }
+      lastQuotedPriceFragmentSeen = true;
+      // APP-62 §5: restore the fat-finger reference price cache so the price-band check stays
+      // enforceable through snapshot recovery.
+      final int consumed =
+          newOrderSingleHandler.restoreLastQuotedPricesFrom(
+              src,
+              offset + MessageHeaderDecoder.ENCODED_LENGTH,
+              headerDecoder.blockLength(),
+              headerDecoder.version());
+      return MessageHeaderDecoder.ENCODED_LENGTH + consumed;
+    }
+    if (templateId == AccountPositionSnapshotDecoder.TEMPLATE_ID) {
+      if (accountPositionFragmentSeen) {
+        throw new IllegalStateException("duplicate AccountPositionSnapshot fragment in snapshot");
+      }
+      accountPositionFragmentSeen = true;
+      // APP-62 §4: restore the per-(account, symbol) working-position counters so the max-long /
+      // max-short admission caps survive snapshot+restore.
+      final int consumed =
+          newOrderSingleHandler.restoreAccountPositionsFrom(
               src,
               offset + MessageHeaderDecoder.ENCODED_LENGTH,
               headerDecoder.blockLength(),
