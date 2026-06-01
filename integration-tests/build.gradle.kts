@@ -25,6 +25,17 @@ dependencies {
 
     // Existing test dependencies
     testImplementation(project(":cluster"))
+    // APP-62 §5.3 — riskControlEvidence task uses ReferenceDataSeeder /
+    // RiskLimitFixtures from :cluster test-fixtures to drive the
+    // NewOrderSingleHandler / LoadRiskLimitHandler directly with regulator-grade
+    // boundary inputs (FINRA 3110 / RTS 6 §9 evidence pack).
+    testImplementation(testFixtures(project(":cluster")))
+    // APP-62 §5.3 — EvidenceReportListener implements
+    // org.junit.platform.launcher.TestExecutionListener directly (registered via
+    // META-INF/services SPI). The platform-launcher artifact is on the runtime
+    // classpath via root build.gradle.kts, but the listener compiles against the
+    // API and therefore needs it at compile time too.
+    testImplementation(libs.junit.platform.launcher)
     testImplementation(project(":launcher"))
     testImplementation(project(":query-service"))
     testImplementation(project(":test-support"))
@@ -72,7 +83,60 @@ tasks.register<Test>("perfTest") {
         )
 }
 
-// Default :test excludes the perf tag so regular CI never picks them up.
+// ─── riskControlEvidence task (APP-62 §5.3) ─────────────────────────────────
+// Emits the FINRA 3110 / RTS 6 §9 boundary-fuzz evidence pack for every APP-62
+// pre-trade check (PositionLimit, FatFinger, RiskLimitsNotLoaded,
+// SymbolEligibility, FourEyesViolation). Drives the handlers directly with
+// boundary inputs (limit−1 / limit / limit+1, Long.MAX_VALUE saturation,
+// stale-reference, fail-closed / fail-open toggles, per-symbol overrides,
+// empty / equal 4-eyes identifiers) and writes a regulator-friendly markdown
+// table via {@code EvidenceReportListener} (a JUnit Platform
+// TestExecutionListener registered through SPI).
+//
+// Opt-in: the task filters {@code @Tag("risk-evidence")} which the default
+// {@code :test} task explicitly excludes. PR CI runs {@code :test} only —
+// regulators / auditors run {@code :integration-tests:riskControlEvidence}
+// against the same JVM args as :test for reproducibility.
+tasks.register<Test>("riskControlEvidence") {
+    group = "verification"
+    description = "Emit FINRA 3110 / RTS 6 §9 boundary-fuzz evidence pack for APP-62 checks " +
+        "(tagged @Tag(\"risk-evidence\"); excluded from the default :test task)."
+    useJUnitPlatform {
+        includeTags("risk-evidence")
+    }
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    // Pin the same JVM args as :test so the evidence pack is reproducible against the
+    // same JVM-flag profile that produced the gating IT run.
+    jvmArgs(
+        "-XX:+UseG1GC",
+        "-XX:MaxGCPauseMillis=50",
+        "-Daeron.term.buffer.length=1m",
+        "-Daeron.dir.warn.if.exists=false",
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    )
+    val evidenceOutputDir =
+        layout.buildDirectory
+            .dir("reports/risk-control-evidence")
+            .get()
+            .asFile
+    systemProperty("evidence.outputDir", evidenceOutputDir.absolutePath)
+    systemProperty(
+        "evidence.committedLatestPath",
+        layout.projectDirectory
+            .dir("../docs/evidence")
+            .file("APP-62-evidence-latest.md")
+            .asFile.absolutePath,
+    )
+    doFirst {
+        delete(evidenceOutputDir)
+        evidenceOutputDir.mkdirs()
+    }
+    outputs.dir(evidenceOutputDir)
+}
+
+// Default :test excludes the perf and risk-evidence tags so regular CI never picks them up.
 //
 // JVM-flag pinning (APP-225 §D10) — pin the GC + Aeron tuning that the cluster needs
 // for deterministic integration runs:
@@ -88,7 +152,7 @@ tasks.register<Test>("perfTest") {
 // reflective-access opens must be repeated here.
 tasks.named<Test>("test") {
     useJUnitPlatform {
-        excludeTags("perf")
+        excludeTags("perf", "risk-evidence")
     }
     jvmArgs(
         "-XX:+UseG1GC",
