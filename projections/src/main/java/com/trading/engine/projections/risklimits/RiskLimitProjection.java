@@ -107,13 +107,27 @@ public final class RiskLimitProjection implements Projection {
       final DirectBuffer buffer,
       final int offset,
       final int length) {
+    // Gemini R3 fix: the EventConsumer dispatches EVERY domain event here (OrderCreated /
+    // OrderFilled / OrderCanceled / QuoteCreated / etc.), but this projection only mutates state
+    // on tpl 115 + 119. Acquiring the write stamp on every event regardless of template would
+    // serialize concurrent readers against unrelated egress traffic. Fast-path: peek the eventType
+    // BEFORE the lock; if it's not one we mutate state for, advance the volatile cursor and
+    // return without acquiring the lock. The lock now only covers our two real upsert templates.
+    if (eventType != RiskLimitLoadedEventDecoder.TEMPLATE_ID
+        && eventType != RiskLimitChangedEventDecoder.TEMPLATE_ID) {
+      lastProcessedSeqNo = seqNo; // volatile write — readers' lastProcessedSequence() stays fresh
+      return; // unregistered type — skip without bumping eventsProcessed; no lock acquired
+    }
     final long stamp = lock.writeLock();
     try {
       switch (eventType) {
         case RiskLimitLoadedEventDecoder.TEMPLATE_ID -> onRiskLimitLoaded(seqNo, buffer, offset);
         case RiskLimitChangedEventDecoder.TEMPLATE_ID -> onRiskLimitChanged(seqNo, buffer, offset);
         default -> {
-          return; // unregistered type — skip without bumping eventsProcessed
+          // Unreachable: the pre-lock filter above returns for any non-mutating template. Kept
+          // as a defensive arm so any future template-ID added to the outer if becomes a
+          // compile-time-visible omission here.
+          return;
         }
       }
       eventsProcessed++;
