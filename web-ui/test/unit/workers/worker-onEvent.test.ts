@@ -200,12 +200,18 @@ function makeOrderRejectedPayload(fields: {
 }): Uint8Array {
   const buf = new ArrayBuffer(OrderRejectedEventDecoder.BLOCK_LENGTH);
   const dv = new DataView(buf);
+  // APP-62 §D schema (BLOCK_LENGTH=163): seq(0..7) timestamp(8..15) clOrdId(16..35)
+  // symbol(36..43) side(44) rejectReason(45) accountCode(46..61) productType(62)
+  // currency(63..65) orderQty(66..73) price(74..81) limitValue(82..89)
+  // projectedValue(90..97) checkId(98) text(99..162).
   dv.setBigInt64(0, fields.seq, true);
   dv.setBigUint64(8, fields.timestamp, true);
-  writeFixedString(dv, 16, fields.clOrdId, 20); // clOrdId at body[16]
-  writeFixedString(dv, 36, fields.symbol, 8); // symbol at body[36]
-  dv.setUint8(45, fields.rejectReason); // rejectReason at body[45]
-  writeFixedString(dv, 66, fields.text, 64); // text at body[66]
+  writeFixedString(dv, 16, fields.clOrdId, 20);
+  writeFixedString(dv, 36, fields.symbol, 8);
+  dv.setUint8(45, fields.rejectReason);
+  // orderQty (66) + price (74) + limitValue (82) + projectedValue (90) + checkId (98)
+  // are left zero-initialised — the test only asserts on text + reason.
+  writeFixedString(dv, 99, fields.text, 64);
   return prependSbeHeader(new Uint8Array(buf));
 }
 
