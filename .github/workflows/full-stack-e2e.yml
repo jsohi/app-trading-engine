@@ -6,8 +6,17 @@ name: Full-Stack E2E
 # workflow_dispatch with a reviewed head SHA.
 
 on:
-  pull_request:
+  # Post-merge verification: full-stack E2E (cluster + websocket-server +
+  # Vite + JWKS + Playwright + JCStress, ~28-35 min wall clock) runs once
+  # after each PR merges into main. Catches regressions in the merge
+  # commit even when the PR's manual run was green.
+  push:
     branches: [main]
+  # Manual on-demand trigger for pre-merge verification on a feature
+  # branch. Invoke from the GitHub Actions UI ("Run workflow") or
+  # `gh workflow run full-stack-e2e.yml --ref <branch>`. PR auto-trigger
+  # removed at the repo owner's request — CI minutes are spent
+  # intentionally, not on every feature-branch push.
   workflow_dispatch:
     inputs:
       head_sha:
