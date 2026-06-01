@@ -97,3 +97,45 @@ browser-resident latency probe added later — always anchor wall-time
 comparisons to `performance.timeOrigin + performance.now()`, never to bare
 `performance.now()` or `Date.now()` (the latter is subject to system clock
 jumps).
+
+## APP-62 §5 fat-finger staleness vs PTP drift
+
+`NewOrderSingleHandler.LAST_PRICE_STALENESS_NANOS` (default 5 minutes) is the
+window during which a cached `lastQuotedMidPrice` is considered usable as a
+fat-finger reference. The check is
+
+```
+haveReference = lastTs <= clusterTimestamp
+             && (clusterTimestamp - lastTs) <= LAST_PRICE_STALENESS_NANOS
+```
+
+where `lastTs` is the cluster timestamp at which the `PriceResponse` event was
+applied. The price flows pricing-service → cluster, both running on their own
+boxes — so `lastTs` and `clusterTimestamp` are produced by different OS
+clocks. The 5-minute knob MUST exceed the worst-case PTP cross-box clock skew
+between the pricing-service host and the cluster leader, otherwise legitimate
+fresh quotes appear stale relative to the receiving cluster's clock and trip
+the fail-closed `RejectReasonEnum.PriceTooFarFromMarket` path.
+
+Typical PTP skew budgets for this comparison:
+
+| Topology                                      | Expected skew       | Headroom vs 5 min      |
+| --------------------------------------------- | ------------------- | ---------------------- |
+| Single rack, PTP hardware timestamping        | < 1 microsecond     | 8 orders of magnitude  |
+| Same data centre, PTP via switch              | 1-10 microseconds   | 7+ orders of magnitude |
+| Cross-AZ within a region                      | 1-10 milliseconds   | 5+ orders of magnitude |
+| Cross-region (chrony fallback, internet path) | 10-100 milliseconds | 3+ orders of magnitude |
+
+The 5-minute default is therefore safe for every supported deployment
+topology by a wide margin. **Do not tune `LAST_PRICE_STALENESS_NANOS` down
+below the worst expected cross-box skew** — that would convert clock drift
+into fat-finger rejects of legitimate flow. If a desk genuinely needs sub-
+minute staleness (HFT cash-equity context, for example), the operational
+prerequisite is PTP hardware timestamping (sub-microsecond skew) — not a
+software knob change.
+
+The reverse case — `LAST_PRICE_STALENESS_NANOS` set too high — silently
+weakens §5: a stale reference that drifts arbitrarily far from the true
+market still passes the band check. The default of 5 minutes balances PTP
+headroom against the operational expectation that pricing-service publishes
+at least one quote per symbol per minute under normal conditions.
