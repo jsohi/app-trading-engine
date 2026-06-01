@@ -17,12 +17,14 @@ import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotEncoder;
+import com.trading.engine.messages.sbe.ExpireReasonEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
@@ -110,6 +112,15 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   private final OrderCreatedEventEncoder orderCreatedEncoder = new OrderCreatedEventEncoder();
   private final OrderRejectedEventEncoder orderRejectedEncoder = new OrderRejectedEventEncoder();
   private final OrderCanceledEventEncoder orderCanceledEncoder = new OrderCanceledEventEncoder();
+
+  /**
+   * APP-62 §J — {@code OrderExpiredEvent} (SBE template 121) encoder used for idle-timeout and
+   * TIF-driven order expiries. Distinct from {@link #orderCanceledEncoder} so the FIX wire form for
+   * expired orders is ExecType=Expired ('C', tag 150) rather than ExecType=Canceled ('4'), matching
+   * the FIX 4.4 semantic contract for time-based terminations.
+   */
+  private final OrderExpiredEventEncoder orderExpiredEncoder = new OrderExpiredEventEncoder();
+
   private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
   /**
@@ -1254,58 +1265,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       }
     }
 
-    // 11c. (APP-62 slice 2) Per-account rate limit — at most maxOrdersPerSecond NewOrderSingle
-    //      admissions per 1-second wall-clock-aligned window. Skipped when the account has no
-    //      rate limit configured (maxOrdersPerSecond == 0 == unlimited).
+    // APP-62 R10 HIGH (review iter 1) — peek-only checks (11e, 11f, 11g) run BEFORE the
+    // mutating rate-limit (11c) and daily-volume (11d) gates so a rejected order does not
+    // consume rate-token or daily-volume capacity. Without this ordering, a flurry of orders
+    // hitting 11e/11f/11g rejects would drain a legitimate account's rate-limit budget — a
+    // §G DoS vector. The peek checks read state only (workingLongFor / workingShortFor /
+    // lastQuotedMidPrice / symbolEligibilityStore.get) and never mutate; mutation for §4
+    // working-position happens in admitNewOrder via applyWorkingPosition.
     //
-    //      The window aligns to absolute epoch seconds (cluster timestamp / 1e9), not a
-    //      rolling window from first admission. This is deterministic (purely a function of
-    //      the cluster-supplied timestamp), simple to reason about, and avoids the unbounded
-    //      memory growth a true sliding window would require.
-    //
-    //      A rejected order does NOT consume rate-limit capacity (the check fires only on the
-    //      pass path here; once admitted, the count increments). This matches the "rate of
-    //      successful submissions" semantics most ops teams expect.
-    if (riskLimit != null
-        && riskLimit.maxOrdersPerSecond() > 0L
-        && !tryConsumeRateToken(account.accountId(), riskLimit.maxOrdersPerSecond(), timestamp)) {
-      emitOrderRejected(
-          eventSink,
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.RateLimitExceeded,
-          "account rate limit exceeded for current 1s window");
-      return null;
-    }
-
-    // 11d. (APP-62 slice 3) Per-account daily-volume limit — cumulative admitted qty across
-    //      the current UTC day must not exceed maxDailyVolume. Skipped when the account has
-    //      no daily-volume limit configured (maxDailyVolume == 0 == unlimited).
-    //
-    //      Day alignment: bucket = clusterTimestamp / NANOS_PER_DAY (epoch days, UTC). Aligned
-    //      to absolute epoch days for determinism. A day rollover resets the counter to the
-    //      incoming order's qty.
-    //
-    //      Phase-1 semantics: tracks ADMITTED qty (orders that reached this check), not FILLED.
-    //      Conservative — admitted-but-unfilled orders still represent risk capacity consumed
-    //      against the limit. A future slice 4 may refine to deduct on cancel / expire.
-    //
-    //      A rejected order does NOT consume daily-volume capacity (check fires here; the
-    //      accumulator increments only on the pass path).
-    if (riskLimit != null
-        && riskLimit.maxDailyVolume() > 0L
-        && !tryConsumeDailyVolume(
-            account.accountId(), riskLimit.maxDailyVolume(), orderQty, timestamp)) {
-      emitOrderRejected(
-          eventSink,
-          session,
-          timestamp,
-          side,
-          RejectReasonEnum.DailyVolumeExceeded,
-          "order would exceed account maxDailyVolume for current UTC day");
-      return null;
-    }
+    // Hoist packSymbolKey to a single computation — APP-62 R10 LOW Agent A #8 — the three
+    // checks below all key off the same packed-symbol-hash and previously recomputed it three
+    // times in the same validateNewOrder pass.
+    long packedSymbolHashApp62 = packSymbolKey(symbolScratch, 0);
 
     // 11e. (APP-62 §4) Per-(account, symbol) position limit — worst-case fill exposure check.
     //      Working LONG and working SHORT quantities are bounded independently against
@@ -1313,12 +1284,16 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      The check gates only when positionLimitEnabled = true on the loaded risk record; the
     //      explicit boolean removes the "0 means disabled" ambiguity. Saturation overflow on the
     //      projected sum is treated as a breach via the strict `>` comparison.
+    //
+    //      Peek-only — the working-position counter is bumped in admitNewOrder
+    // (applyWorkingPosition),
+    //      NOT here, so a downstream reject (11c/11d) does not leave a phantom working-position
+    // bump.
     if (riskLimit != null && riskLimit.positionLimitEnabled()) {
       // Primitive locals intentionally bare (no `final`) per memory rule
       // feedback_final_primitives_autoboxing.md — `final` on primitives can hide autoboxing.
-      long symbolHash = packSymbolKey(symbolScratch, 0);
-      long currentLong = workingLongFor(account.accountId(), symbolHash);
-      long currentShort = workingShortFor(account.accountId(), symbolHash);
+      long currentLong = workingLongFor(account.accountId(), packedSymbolHashApp62);
+      long currentShort = workingShortFor(account.accountId(), packedSymbolHashApp62);
       long projectedLong = side == SideEnum.Buy ? safeAdd(currentLong, orderQty) : currentLong;
       long projectedShort = side == SideEnum.Sell ? safeAdd(currentShort, orderQty) : currentShort;
       if (projectedLong > riskLimit.maxLongPosition()) {
@@ -1362,10 +1337,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      Arithmetic: deviationBps = |price - lastMid| * 10_000 / lastMid. We use
     //      Math.unsignedMultiplyHigh to detect overflow in the (delta × 10_000) multiplication;
     //      a non-zero high word treats the projected deviation as Long.MAX_VALUE and rejects.
+    //
+    //      Peek-only — reads lastQuotedMidPrice / lastQuotedMidAsOfNanos but never mutates them.
     if (riskLimit != null
         && riskLimit.fatFingerEnabled()
         && (ordType == OrdTypeEnum.Limit || ordType == OrdTypeEnum.PreviouslyQuoted)) {
-      long symbolHash = packSymbolKey(symbolScratch, 0);
+      long symbolHash = packedSymbolHashApp62;
       long lastMid = lastQuotedMidPrice.get(symbolHash);
       long lastTs = lastQuotedMidAsOfNanos.get(symbolHash);
       // Reference is usable only if both maps have an entry AND the timestamp is in the past or
@@ -1429,9 +1406,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     //      symbol rejects. True long/short discrimination needs per-account filled position from
     //      the matching engine (APP-180); conservative behaviour is documented in operations.md.
     //
+    //      Peek-only — reads symbolEligibilityStore but never mutates. Re-uses the hoisted
+    //      packedSymbolHashApp62 from the top of the §11 block (APP-62 R10 LOW Agent A #8).
+    //
     //      Primitive locals bare (no `final`) per memory feedback_final_primitives_autoboxing.md.
-    long symEligHash = packSymbolKey(symbolScratch, 0);
-    final var eligibility = symbolEligibilityStore.get(symEligHash);
+    final var eligibility = symbolEligibilityStore.get(packedSymbolHashApp62);
     if (eligibility == null) {
       emitOrderRejectedWithBreachContext(
           eventSink,
@@ -1471,6 +1450,70 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
           RiskCheckEnum.SymbolEligibility,
           1L,
           0L);
+      return null;
+    }
+
+    // 11c. (APP-62 slice 2) Per-account rate limit — at most maxOrdersPerSecond NewOrderSingle
+    //      admissions per 1-second wall-clock-aligned window. Skipped when the account has no
+    //      rate limit configured (maxOrdersPerSecond == 0 == unlimited).
+    //
+    //      The window aligns to absolute epoch seconds (cluster timestamp / 1e9), not a
+    //      rolling window from first admission. This is deterministic (purely a function of
+    //      the cluster-supplied timestamp), simple to reason about, and avoids the unbounded
+    //      memory growth a true sliding window would require.
+    //
+    //      A rejected order does NOT consume rate-limit capacity (the check fires only on the
+    //      pass path here; once admitted, the count increments). This matches the "rate of
+    //      successful submissions" semantics most ops teams expect.
+    //
+    //      APP-62 R10 HIGH (review iter 1) — moved AFTER 11e/11f/11g so a peek-check reject
+    //      (position-limit / fat-finger / symbol-eligibility) does not drain the rate budget.
+    //      tryConsumeRateToken is check-then-commit: it reads prevCount, returns false WITHOUT
+    //      mutating when the limit is already reached, and writes back the new packed counter
+    //      only on the pass path — so moving the call later in the chain preserves the
+    //      "consumed only on pass" semantics.
+    if (riskLimit != null
+        && riskLimit.maxOrdersPerSecond() > 0L
+        && !tryConsumeRateToken(account.accountId(), riskLimit.maxOrdersPerSecond(), timestamp)) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.RateLimitExceeded,
+          "account rate limit exceeded for current 1s window");
+      return null;
+    }
+
+    // 11d. (APP-62 slice 3) Per-account daily-volume limit — cumulative admitted qty across
+    //      the current UTC day must not exceed maxDailyVolume. Skipped when the account has
+    //      no daily-volume limit configured (maxDailyVolume == 0 == unlimited).
+    //
+    //      Day alignment: bucket = clusterTimestamp / NANOS_PER_DAY (epoch days, UTC). Aligned
+    //      to absolute epoch days for determinism. A day rollover resets the counter to the
+    //      incoming order's qty.
+    //
+    //      Phase-1 semantics: tracks ADMITTED qty (orders that reached this check), not FILLED.
+    //      Conservative — admitted-but-unfilled orders still represent risk capacity consumed
+    //      against the limit. A future slice 4 may refine to deduct on cancel / expire.
+    //
+    //      A rejected order does NOT consume daily-volume capacity (check fires here; the
+    //      accumulator increments only on the pass path).
+    //
+    //      APP-62 R10 HIGH (review iter 1) — moved AFTER 11e/11f/11g for the same reason as
+    //      11c above. tryConsumeDailyVolume is also check-then-commit (returns false WITHOUT
+    //      mutating when nextCumulative > limit or saturation/overflow).
+    if (riskLimit != null
+        && riskLimit.maxDailyVolume() > 0L
+        && !tryConsumeDailyVolume(
+            account.accountId(), riskLimit.maxDailyVolume(), orderQty, timestamp)) {
+      emitOrderRejected(
+          eventSink,
+          session,
+          timestamp,
+          side,
+          RejectReasonEnum.DailyVolumeExceeded,
+          "order would exceed account maxDailyVolume for current UTC day");
       return null;
     }
 
@@ -1983,15 +2026,26 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
    * Shared cancel-all-orders-for-session path used by both {@link #onSessionClose} (cancelReason =
    * {@code SessionDisconnect}) and {@link #onIdleScan} (cancelReason = {@code IdleTimeout}).
    * Removes the session's entry from {@link #sessionOrders}, iterates its orderKeys, emits one
-   * {@code OrderCanceledEvent} per live order, and releases each pool slot. Stale orderKeys (whose
-   * {@link OrderState} is no longer in the {@link com.trading.engine.cluster.OrderBook}) are
-   * silently skipped — emit and apply stay coupled.
+   * {@code OrderCanceledEvent} OR one {@code OrderExpiredEvent} per live order depending on {@code
+   * cancelReason}, and releases each pool slot. Stale orderKeys (whose {@link OrderState} is no
+   * longer in the {@link com.trading.engine.cluster.OrderBook}) are silently skipped — emit and
+   * apply stay coupled.
+   *
+   * <p><b>APP-62 §J wire-form discriminator.</b> For {@link CancelReasonEnum#IdleTimeout} the
+   * emitted event is {@code OrderExpiredEvent} (SBE template 121) so the FIX 4.4 wire form is
+   * ExecType=Expired (tag 150='C') per the FIX 4.4 spec for time-based terminations. All other
+   * reasons ({@code SessionDisconnect} today; {@code ExplicitCancel} / {@code OperatorForce}
+   * future) emit {@code OrderCanceledEvent} (SBE template 103) → ExecType=Canceled (tag 150='4').
+   * Cluster-state apply is identical either way ({@link TradingState#applyOrderCanceled} releases
+   * the pool slot and the book entry); the wire ExecType is the only semantic difference.
    *
    * @param sessionId session whose orders should be cancelled
    * @param clusterTimestamp cluster epoch-nanos to stamp on each emitted event
    * @param eventSink event emission pipeline
    * @param cancelReason {@link CancelReasonEnum#SessionDisconnect} or {@link
-   *     CancelReasonEnum#IdleTimeout} today; phase 5+ may add more triggers
+   *     CancelReasonEnum#IdleTimeout} today; phase 5+ may add more triggers. {@code IdleTimeout}
+   *     routes through {@link #emitOrderExpiredEvent}; all other values route through {@link
+   *     #emitOrderCanceledEvent}.
    */
   private void cancelSessionOrders(
       final long sessionId,
@@ -2023,7 +2077,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
         // and we never release a slot for an order whose cancel event was not emitted.
         continue;
       }
-      emitOrderCanceledEvent(eventSink, clusterTimestamp, state, cancelReason);
+      // APP-62 §J — IdleTimeout (and future TIF-driven) expiries emit OrderExpiredEvent
+      // (template 121) so the FIX wire form is ExecType=Expired ('C'). All other reasons keep
+      // the OrderCanceledEvent (template 103) path → ExecType=Canceled ('4').
+      if (cancelReason == CancelReasonEnum.IdleTimeout) {
+        emitOrderExpiredEvent(eventSink, clusterTimestamp, state, ExpireReasonEnum.IdleTimeout);
+      } else {
+        emitOrderCanceledEvent(eventSink, clusterTimestamp, state, cancelReason);
+      }
+      // applyOrderCanceled is the correct cluster-state transition for both wire forms — the
+      // order is terminated, the book slot is released, the dedup entry is preserved. There is
+      // no separate "applyOrderExpired" because the in-cluster state machine does not
+      // distinguish expired from cancelled; only the FIX wire ExecType differs (APP-62 §J).
       tradingState.applyOrderCanceled(orderKey);
       if (counterMap != null) {
         incrementSessionCounter(counterMap, sessionId);
@@ -2093,8 +2158,11 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
   /**
    * Inner-loop body for {@link #onIdleScan} — bound as the {@link
    * org.agrona.collections.LongLongConsumer} for {@link Long2LongHashMap#forEachLong}. Cancels all
-   * orders for any session whose {@code lastActivity} predates {@link #idleScanScratchThresholdTs};
-   * marks that session id for removal from {@link #sessionLastActivityNanos} after the iteration
+   * orders for any session whose {@code lastActivity} predates {@link #idleScanScratchThresholdTs}
+   * with reason {@link CancelReasonEnum#IdleTimeout} — APP-62 §J wires this reason through {@link
+   * #cancelSessionOrders} which emits an {@code OrderExpiredEvent} (template 121) per affected
+   * order so the FIX wire form is ExecType=Expired (tag 150='C') rather than ExecType=Canceled.
+   * Marks the session id for removal from {@link #sessionLastActivityNanos} after the iteration
    * completes.
    *
    * @param sessionId Aeron cluster session id (forEach key)
@@ -2201,6 +2269,102 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     if (leavesQtyApp62Cxl > 0L) {
       long symbolHashApp62Cxl = packSymbolKey(symbolScratch, 0);
       revertWorkingPosition(state.accountId(), symbolHashApp62Cxl, state.side(), leavesQtyApp62Cxl);
+    }
+  }
+
+  /**
+   * Encodes and emits one {@code OrderExpiredEvent} (SBE template 121) using the provided live
+   * {@link OrderState}. APP-62 §J — the cluster's idle-timeout reaper (and future TIF-driven expiry
+   * hooks) routes through this method instead of {@link #emitOrderCanceledEvent} so the gateway
+   * translates the event to a FIX 4.4 ExecutionReport with ExecType=Expired (tag 150='C') per the
+   * FIX 4.4 §4.5 contract for time-based terminations. Caller verifies non-null and runs the
+   * matching {@link TradingState#applyOrderCanceled} after this method returns so emit and apply
+   * stay coupled (no separate "applyOrderExpired" exists — the cluster-state transition is
+   * identical to a cancel; only the FIX wire ExecType differs).
+   *
+   * <p><b>Schema shape.</b> {@code OrderExpiredEvent} carries the same lifecycle fields as {@code
+   * OrderCanceledEvent} ({@code orderId}, {@code execId}, {@code clOrdId}, {@code symbol}, {@code
+   * side}, {@code cumQty}, {@code productType}) but substitutes {@code expireReason} (template 121,
+   * field id=10131) for {@code cancelReason} and omits {@code origClOrdId} — idle-timeout and TIF
+   * expiries are not paired with a counterparty cancel request, so FIX OrigClOrdID (tag 41) has no
+   * value to carry.
+   *
+   * <p><b>ExecID.</b> Generated fresh per expire via {@link TradingState#generateExecId()} to
+   * honour the FIX 4.4 §4.4.5 "ExecID unique per ExecType per day" contract — same id-generator the
+   * cancel and created paths use.
+   *
+   * <p><b>ProductType.</b> Emitted as {@code state.productType()} — the value the order was
+   * admitted with, captured by APP-151 phase 3's addition of the {@code productType} field on
+   * {@link OrderState}. Reverts to {@code NULL_VAL} only for orders that crossed a cluster snapshot
+   * (the field is in-memory only — separate slice tracks snapshot persistence).
+   *
+   * <p><b>Working-position revert.</b> Mirrors the cancel emitter's APP-62 §4 contract: if the
+   * order still has working {@code leavesQty}, the per-symbol working counter is decremented so the
+   * next admit doesn't silently inherit the expired order's exposure. Idle-timeout / TIF expiries
+   * release working position just like an explicit cancel.
+   *
+   * @param eventSink the event emission pipeline
+   * @param clusterTimestamp the cluster-assigned timestamp in epoch nanos
+   * @param state the live OrderState (must be non-null; caller's responsibility)
+   * @param expireReason {@link ExpireReasonEnum} value chosen by the caller — {@link
+   *     ExpireReasonEnum#IdleTimeout} from {@link #onIdleScan} today; {@link
+   *     ExpireReasonEnum#TimeInForceExpired} reserved for future TIF enforcement work
+   */
+  private void emitOrderExpiredEvent(
+      final EventSink eventSink,
+      final long clusterTimestamp,
+      final OrderState state,
+      final ExpireReasonEnum expireReason) {
+    // Generate a fresh execId per expire (FIX 4.4 §4.4.5 — ExecID unique per ExecType per day).
+    // Same id-generator as OrderCreatedEvent / OrderCanceledEvent paths.
+    tradingState.generateExecId();
+
+    orderExpiredEncoder.wrapAndApplyHeader(egressBuffer, 0, headerEncoder);
+    // sequenceNumber + timestamp written as zero by design: EventSink.emit overwrites both
+    // fields with the authoritative cluster sequence + nanosecond timestamp during egress
+    // publication (same pattern as OrderCreatedEvent / OrderCanceledEvent).
+    orderExpiredEncoder.sequenceNumber(0L);
+    orderExpiredEncoder.timestamp(0L);
+
+    // orderId (FIX tag 37) — copy from state via the shared clOrdIdScratch (both fields are
+    // 20-byte char). SBE-generated putXxx(byte[], int) copies bytes immediately into the egress
+    // buffer, so we can serially reuse the scratch for orderId / clOrdId. Safe because the
+    // cluster duty cycle is single-threaded.
+    state.copyOrderIdTo(clOrdIdScratch, 0);
+    orderExpiredEncoder.putOrderId(clOrdIdScratch, 0);
+
+    // execId (FIX tag 17) — from the fresh id minted above.
+    orderExpiredEncoder.putExecId(tradingState.execIdScratch(), 0);
+
+    // clOrdId (FIX tag 11) — from state.
+    state.copyClOrdIdTo(clOrdIdScratch, 0);
+    orderExpiredEncoder.putClOrdId(clOrdIdScratch, 0);
+
+    // symbol (FIX tag 55) — from state.
+    state.copySymbolTo(symbolScratch, 0);
+    orderExpiredEncoder.putSymbol(symbolScratch, 0);
+
+    // side (FIX tag 54), cumQty (FIX tag 14), productType (informational only, no FIX tag)
+    orderExpiredEncoder.side(state.side());
+    orderExpiredEncoder.cumQty(state.cumQty());
+    orderExpiredEncoder.productType(state.productType());
+
+    // expireReason (SBE id=10131) — drives FIX Text(58) augmentation in the gateway translator;
+    // FIX 4.4 has no dedicated ExpireReason tag, so the discriminator is carried event-side only.
+    orderExpiredEncoder.expireReason(expireReason);
+
+    // Primitive local bare (no `final`) per memory rule feedback_final_primitives_autoboxing.md.
+    int eventLen = MessageHeaderEncoder.ENCODED_LENGTH + orderExpiredEncoder.encodedLength();
+    eventSink.emit(clusterTimestamp, egressBuffer, 0, eventLen);
+
+    // APP-62 §4 — release the working position counter that was incremented at admit time.
+    // symbolScratch was just populated by state.copySymbolTo above, so the packed hash is current.
+    // The revert is idempotent (no-op when the inner map is missing); applies regardless of
+    // expireReason — both IdleTimeout and TimeInForceExpired release working exposure.
+    long leavesQtyApp62Exp = state.leavesQty();
+    if (leavesQtyApp62Exp > 0L) {
+      long symbolHashApp62Exp = packSymbolKey(symbolScratch, 0);
+      revertWorkingPosition(state.accountId(), symbolHashApp62Exp, state.side(), leavesQtyApp62Exp);
     }
   }
 
@@ -2460,11 +2624,12 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     if (inner == null) {
       return;
     }
-    final long current = inner.get(symbolHash);
+    // Primitive locals bare (no `final`) per memory rule feedback_final_primitives_autoboxing.md.
+    long current = inner.get(symbolHash);
     if (current == WORKING_POSITION_MISSING) {
       return;
     }
-    final long next = current - orderQty;
+    long next = current - orderQty;
     // Agrona Long2LongHashMap rejects writing the missing-value sentinel via put(). When the
     // counter reaches zero we remove the key instead, restoring the "no working quantity"
     // semantics the sentinel encodes. Negative results (orderQty larger than current — should

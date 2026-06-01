@@ -9,11 +9,13 @@ import com.trading.engine.messages.sbe.CxlRejReasonEnum;
 import com.trading.engine.messages.sbe.CxlRejResponseToEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
 import com.trading.engine.messages.sbe.ExecutionReportDecoder;
+import com.trading.engine.messages.sbe.ExpireReasonEnum;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import com.trading.engine.messages.sbe.QuoteRejectReasonEnum;
@@ -167,6 +169,20 @@ public final class SbeToFixTranslator {
    */
   private final byte[] oxlExecId = new byte[OrderCanceledEventDecoder.execIdLength()];
 
+  // OrderExpiredEvent char fields (prefix "oxp" — APP-62 §J). Dedicated scratch arrays distinct
+  // from the {@code oxl*} cancel buffers so a hypothetical interleaved cancel+expire dispatch
+  // (e.g., a future emitter ordering that fires both events for the same order) can never
+  // alias the Artio-encoder byte[] references that Artio captures by reference and reads only
+  // at encode() time. Single-threaded gateway duty-cycle means we don't observe interleaving
+  // today, but the per-event dedicated buffer is the safe industry-standard pattern and keeps
+  // future-proofing aligned with the {@code oxl*} rationale above. OrderExpiredEvent does NOT
+  // carry origClOrdId (FIX tag 41 has no semantics for server-initiated expiries), so no
+  // origClOrdId scratch is allocated.
+  private final byte[] oxpOrderId = new byte[OrderExpiredEventDecoder.orderIdLength()];
+  private final byte[] oxpExecId = new byte[OrderExpiredEventDecoder.execIdLength()];
+  private final byte[] oxpClOrdId = new byte[OrderExpiredEventDecoder.clOrdIdLength()];
+  private final byte[] oxpSymbol = new byte[OrderExpiredEventDecoder.symbolLength()];
+
   /**
    * Per-field scratch for the encoded UTC timestamp. Same reference-aliasing concern as the other
    * char fields applies to {@link UtcTimestampEncoder#buffer()}: it's the encoder's internal buffer
@@ -187,6 +203,9 @@ public final class SbeToFixTranslator {
 
   /** Same per-field rationale as {@link #erTransactTime}, for OrderCanceledEvent (APP-151 ph2). */
   private final byte[] oxlTransactTime = new byte[32];
+
+  /** Same per-field rationale as {@link #erTransactTime}, for OrderExpiredEvent (APP-62 §J). */
+  private final byte[] oxpTransactTime = new byte[32];
 
   /** Same per-field rationale as {@link #erTransactTime}, for Quote.transactTime. */
   private final byte[] qTransactTime = new byte[32];
@@ -965,6 +984,108 @@ public final class SbeToFixTranslator {
   }
 
   // ---------------------------------------------------------------------------
+  // OrderExpiredEvent → ExecutionReport (35=8, ExecType=Expired) — APP-62 §J
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Translate an SBE {@code OrderExpiredEvent} (template 121, APP-62 §J) into a FIX 4.4
+   * ExecutionReport with {@code ExecType=Expired('C', tag 150)} and {@code OrdStatus=Expired('C',
+   * tag 39)}. The cluster emits this domain event for idle-session timeouts (today's {@link
+   * NewOrderSingleHandler#onIdleScan} hook) and — once landed — TIF-driven expiries; both deserve
+   * the FIX 4.4 semantic distinction from ExecType=Canceled ('4') per the spec's §4.5 "ExecType —
+   * Execution Type" table.
+   *
+   * <p><b>FIX field mapping.</b>
+   *
+   * <ul>
+   *   <li>OrderID (37) ← event's orderId
+   *   <li>ExecID (17) ← event's execId (cluster mints a real one per expire via the same
+   *       id-generator as OrderCreated / OrderCanceled — FIX 4.4 §4.4.5 ExecID uniqueness)
+   *   <li>ClOrdID (11) ← event's clOrdId
+   *   <li>OrigClOrdID (41) ← NOT emitted; FIX OrigClOrdID is for cancel-request paths only and the
+   *       OrderExpiredEvent schema deliberately omits the field
+   *   <li>ExecType (150) ← 'C' (Expired) — FIX 4.4 spec
+   *   <li>OrdStatus (39) ← 'C' (Expired) — FIX 4.4 spec
+   *   <li>Symbol (55) ← event's symbol
+   *   <li>Side (54) ← event's side mapped via {@link #mapSide}
+   *   <li>LeavesQty (151) ← 0 (per FIX 4.4 — an expired order has no open quantity)
+   *   <li>CumQty (14) ← {@code sbe.cumQty()} (today's idle-timeout cancel-of-unfilled paths emit 0;
+   *       partial-filled expires would carry the real value once that path lands)
+   *   <li>AvgPx (6) ← 0 (cluster does not retain avg-fill price on {@code OrderState} yet; tracking
+   *       lands alongside partial-fill cancel/expire work)
+   *   <li>TransactTime (60) ← event's timestamp (cluster epoch nanos → FIX UTC timestamp ASCII)
+   *   <li>Text (58) ← human-readable expire reason mapped from {@code sbe.expireReason()} via
+   *       {@link #mapExpireReasonToText}. FIX 4.4 has no dedicated ExpireReason tag (only
+   *       OrdRejReason 103 on rejected ERs), so industry convention is to carry the discriminator
+   *       via Text(58) — same pattern as {@link #translateOrderCanceledEvent}.
+   * </ul>
+   *
+   * <p><b>ProductType.</b> Cluster populates {@code productType} from {@link OrderState}. FIX 4.4
+   * has no stock ProductType tag, so this is informational only and not emitted on the wire —
+   * future ticket will add a custom tag if/when required by downstream consumers.
+   *
+   * @param sbe the decoder positioned over a complete OrderExpiredEvent message
+   * @param fix the Artio encoder — caller must populate the FIX session header before {@code
+   *     encode}
+   * @throws IllegalStateException if {@code sbe.side()} is {@code NULL_VAL} or otherwise unmapped
+   *     (per the class-level "Unmapped enum values throw" contract)
+   */
+  public void translateOrderExpiredEvent(OrderExpiredEventDecoder sbe, ExecutionReportEncoder fix) {
+    // orderId (tag 37) — required
+    sbe.getOrderId(oxpOrderId, 0);
+    fix.orderID(oxpOrderId, 0, trimNulls(oxpOrderId));
+
+    // execId (tag 17) — cluster-minted per APP-62 §J emit path (mirrors APP-151 phase 3 cancel).
+    sbe.getExecId(oxpExecId, 0);
+    fix.execID(oxpExecId, 0, trimNulls(oxpExecId));
+
+    // clOrdId (tag 11) — required
+    sbe.getClOrdId(oxpClOrdId, 0);
+    fix.clOrdID(oxpClOrdId, 0, trimNulls(oxpClOrdId));
+
+    // OrigClOrdID (tag 41) — NOT emitted: the OrderExpiredEvent schema omits origClOrdId because
+    // expiries are server-initiated and have no paired counterparty cancel request to echo.
+
+    // execType (tag 150) — Expired ('C') per FIX 4.4 §4.5.
+    fix.execType('C');
+
+    // ordStatus (tag 39) — Expired ('C') per FIX 4.4 §4.5.
+    fix.ordStatus('C');
+
+    // symbol (tag 55) — required
+    sbe.getSymbol(oxpSymbol, 0);
+    fix.instrument().symbol(oxpSymbol, 0, trimNulls(oxpSymbol));
+
+    // side (tag 54) — required
+    fix.side(mapSide(sbe.side()));
+
+    // leavesQty (tag 151) = 0, cumQty (tag 14) from event, avgPx (tag 6) = 0.
+    // Sequential reuse of {@code dec} across the three setters is safe — see same comment block
+    // on translateOrderCanceledEvent: Artio's encoder setters COPY the DecimalFloat value at
+    // setter-call time, not by reference resolved at encode().
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.leavesQty(dec);
+    FixedPoint.toDecimalFloat(sbe.cumQty(), dec);
+    fix.cumQty(dec);
+    FixedPoint.toDecimalFloat(0L, dec);
+    fix.avgPx(dec);
+
+    // transactTime (tag 60) — required
+    // Primitive local bare (no `final`) per memory rule feedback_final_primitives_autoboxing.md.
+    int tsLen = tsEnc.encodeFrom(sbe.timestamp(), TimeUnit.NANOSECONDS);
+    System.arraycopy(tsEnc.buffer(), 0, oxpTransactTime, 0, tsLen);
+    fix.transactTime(oxpTransactTime, 0, tsLen);
+
+    // text (tag 58) — human-readable expire reason. FIX 4.4 has no dedicated ExpireReason tag,
+    // so the discriminator is surfaced via Text(58) following the same convention as the cancel
+    // path (mapCancelReasonToText). null → tag 58 omitted (FIX 4.4 Text is optional).
+    final byte[] reasonText = mapExpireReasonToText(sbe.expireReason());
+    if (reasonText != null) {
+      fix.text(reasonText, 0, reasonText.length);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -1023,6 +1144,41 @@ public final class SbeToFixTranslator {
       case ExplicitCancel -> CANCEL_TEXT_EXPLICIT;
       case IdleTimeout -> CANCEL_TEXT_IDLE_TIMEOUT;
       case OperatorForce -> CANCEL_TEXT_OPERATOR_FORCE;
+      case NULL_VAL -> null;
+    };
+  }
+
+  /**
+   * ASCII text for FIX Text(58) on an idle-timeout expire ExecutionReport. APP-62 §J — the
+   * idle-timeout reaper now routes through {@code OrderExpiredEvent} (template 121) so the wire
+   * form is ExecType=Expired ('C'); the surfaced text is distinct from the canceled-path
+   * "Cancelled: idle session timeout" so downstream consumers can distinguish the two.
+   */
+  private static final byte[] EXPIRE_TEXT_IDLE_TIMEOUT =
+      "Expired: idle session timeout".getBytes(StandardCharsets.US_ASCII);
+
+  /** ASCII text for FIX Text(58) when a TIF window elapsed (reserved future emitter). */
+  private static final byte[] EXPIRE_TEXT_TIME_IN_FORCE =
+      "Expired: time in force elapsed".getBytes(StandardCharsets.US_ASCII);
+
+  /**
+   * Map an {@link ExpireReasonEnum} value to its human-readable FIX Text(58) ASCII bytes for the
+   * APP-62 §J OrderExpiredEvent translation path. Returns {@code null} for {@link
+   * ExpireReasonEnum#NULL_VAL} or a {@code null} input so the caller can skip the tag (FIX 4.4 Text
+   * is optional). The null-input branch is defensive — SBE decoders never produce a {@code null}
+   * enum on the wire — but it keeps the switch total and prevents an NPE from leaking up the egress
+   * translator if a flyweight is misused.
+   *
+   * @param reason the expire reason from the decoder (may be null)
+   * @return ASCII text bytes, or {@code null} if {@code reason} is {@code null} or {@code NULL_VAL}
+   */
+  private static byte[] mapExpireReasonToText(final ExpireReasonEnum reason) {
+    if (reason == null) {
+      return null;
+    }
+    return switch (reason) {
+      case IdleTimeout -> EXPIRE_TEXT_IDLE_TIMEOUT;
+      case TimeInForceExpired -> EXPIRE_TEXT_TIME_IN_FORCE;
       case NULL_VAL -> null;
     };
   }

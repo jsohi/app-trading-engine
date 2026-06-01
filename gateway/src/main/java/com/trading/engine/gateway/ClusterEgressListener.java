@@ -7,6 +7,7 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import io.aeron.cluster.client.ControlledEgressListener;
@@ -48,6 +49,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final OrderCreatedEventDecoder orderCreatedDecoder = new OrderCreatedEventDecoder();
   private final OrderRejectedEventDecoder orderRejectedDecoder = new OrderRejectedEventDecoder();
   private final OrderCanceledEventDecoder orderCanceledDecoder = new OrderCanceledEventDecoder();
+  private final OrderExpiredEventDecoder orderExpiredDecoder = new OrderExpiredEventDecoder();
 
   // --- Scratch buffers for correlation key extraction (zero-alloc) ---
   private final byte[] clOrdIdScratch = new byte[ExecutionReportDecoder.clOrdIdLength()];
@@ -56,6 +58,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
   private final byte[] ocClOrdIdScratch = new byte[OrderCreatedEventDecoder.clOrdIdLength()];
   private final byte[] orClOrdIdScratch = new byte[OrderRejectedEventDecoder.clOrdIdLength()];
   private final byte[] oxlClOrdIdScratch = new byte[OrderCanceledEventDecoder.clOrdIdLength()];
+  private final byte[] oxpClOrdIdScratch = new byte[OrderExpiredEventDecoder.clOrdIdLength()];
 
   // --- Collaborators (injected, not owned) ---
   private final SbeToFixTranslator translator;
@@ -144,6 +147,7 @@ public final class ClusterEgressListener implements ControlledEgressListener {
       case OrderCreatedEventDecoder.TEMPLATE_ID -> handleOrderCreated(buffer, offset, timestamp);
       case OrderRejectedEventDecoder.TEMPLATE_ID -> handleOrderRejected(buffer, offset, timestamp);
       case OrderCanceledEventDecoder.TEMPLATE_ID -> handleOrderCanceled(buffer, offset, timestamp);
+      case OrderExpiredEventDecoder.TEMPLATE_ID -> handleOrderExpired(buffer, offset, timestamp);
       // QuoteRequestReject (templateId=3) is NOT handled here — it comes from the orchestrator
       // via stream 101 (OrchestratorResponseListener), not from the cluster egress.
       default -> {
@@ -384,6 +388,58 @@ public final class ClusterEgressListener implements ControlledEgressListener {
     return Action.ABORT;
   }
 
+  /**
+   * Handles a cluster-emitted {@code OrderExpiredEvent} (SBE template 121, APP-62 §J). Correlation
+   * by {@code clOrdId} mirrors {@link #handleOrderCanceled}. The cluster's idle-timeout reaper (and
+   * future TIF-driven expiries) emits these so the gateway can translate to FIX 4.4 ExecutionReport
+   * with ExecType=Expired (tag 150='C') — semantically distinct from ExecType=Canceled ('4'), which
+   * is what {@link #handleOrderCanceled} handles.
+   *
+   * <p>If the FIX session has already disconnected by the time the expire arrives (common for the
+   * idle-timeout case — the session is precisely the one that went quiet), the in-flight tracker is
+   * drained and the event is dropped. The expire is durably journaled in the cluster log
+   * regardless; the gateway is purely the egress hop.
+   *
+   * <p>Uses a dedicated {@code oxpClOrdIdScratch} buffer (separate from {@code oxlClOrdIdScratch})
+   * so the gateway's correlation-extraction scratch invariants remain honoured across interleaved
+   * cancel and expire deliveries — see {@code lastCorrelationScratch} javadoc.
+   *
+   * @param buffer egress message buffer positioned at the SBE header offset
+   * @param offset byte offset of the SBE header within {@code buffer}
+   * @param timestamp cluster timestamp from the egress message header
+   * @return {@link Action#CONTINUE} on successful delivery / orphan drop; {@link Action#ABORT} on
+   *     FIX session back-pressure (triggers re-delivery on the next poll)
+   */
+  private Action handleOrderExpired(
+      final DirectBuffer buffer, final int offset, final long timestamp) {
+    orderExpiredDecoder.wrap(
+        buffer,
+        offset + MessageHeaderDecoder.ENCODED_LENGTH,
+        headerDecoder.blockLength(),
+        headerDecoder.version());
+    orderExpiredDecoder.getClOrdId(oxpClOrdIdScratch, 0);
+    // Primitive locals bare (no `final`) per memory rule feedback_final_primitives_autoboxing.md.
+    int clOrdIdLen = trimNullPadding(oxpClOrdIdScratch);
+
+    lastCorrelationScratch = oxpClOrdIdScratch;
+    lastCorrelationLen = clOrdIdLen;
+
+    final long sessionKey = sessionLookup.findByCorrelationId(oxpClOrdIdScratch, 0, clOrdIdLen);
+    if (sessionKey == SessionLookup.NULL_SESSION) {
+      inFlightTracker.onResponseReceived(oxpClOrdIdScratch, 0, clOrdIdLen);
+      LOG.info().append("Orphaned OrderExpiredEvent: clOrdIdLen=").append(clOrdIdLen).commit();
+      return Action.CONTINUE;
+    }
+
+    boolean delivered =
+        callback.onEgressMessage(sessionKey, OrderExpiredEventDecoder.TEMPLATE_ID, timestamp);
+    if (delivered) {
+      inFlightTracker.onResponseReceived(oxpClOrdIdScratch, 0, clOrdIdLen);
+      return Action.CONTINUE;
+    }
+    return Action.ABORT;
+  }
+
   // ===========================================================================
   // Accessors — callback reads pre-wrapped decoders without re-decoding
   // ===========================================================================
@@ -443,6 +499,18 @@ public final class ClusterEgressListener implements ControlledEgressListener {
    */
   public OrderCanceledEventDecoder orderCanceledDecoder() {
     return orderCanceledDecoder;
+  }
+
+  /**
+   * Returns the pre-wrapped OrderExpiredEvent decoder. Valid only when the last {@code onMessage}
+   * invocation handled templateId {@link OrderExpiredEventDecoder#TEMPLATE_ID}. APP-62 §J.
+   *
+   * @return the pre-wrapped {@link OrderExpiredEventDecoder} positioned over the last received
+   *     expire-event message body — never null; reading fields outside the templateId-121
+   *     invocation window returns stale bytes from a previous message
+   */
+  public OrderExpiredEventDecoder orderExpiredDecoder() {
+    return orderExpiredDecoder;
   }
 
   /** Returns the SBE-to-FIX translator for use by the callback. */

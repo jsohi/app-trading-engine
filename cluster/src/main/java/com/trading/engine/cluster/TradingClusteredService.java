@@ -20,8 +20,12 @@ import com.trading.engine.cluster.refdata.RiskLimitStore;
 import com.trading.engine.cluster.refdata.SymbolEligibilityStore;
 import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
+import com.trading.engine.messages.sbe.AccountLoadRejectedEventDecoder;
+import com.trading.engine.messages.sbe.AccountLoadedEventDecoder;
 import com.trading.engine.messages.sbe.AccountSnapshotDecoder;
 import com.trading.engine.messages.sbe.ClOrdIdDedupSnapshotDecoder;
+import com.trading.engine.messages.sbe.CurrencyLoadRejectedEventDecoder;
+import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.CurrencySnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotDecoder;
 import com.trading.engine.messages.sbe.EventSequencerSnapshotEncoder;
@@ -31,9 +35,13 @@ import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrderBookSnapshotDecoder;
 import com.trading.engine.messages.sbe.RfqStateSnapshotDecoder;
+import com.trading.engine.messages.sbe.RiskLimitChangedEventDecoder;
+import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventDecoder;
+import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
 import com.trading.engine.messages.sbe.RiskLimitSnapshotDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenDecoder;
 import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
+import com.trading.engine.messages.sbe.SymbolEligibilityLoadedEventDecoder;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.cluster.codecs.CloseReason;
@@ -42,6 +50,7 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import java.nio.ByteOrder;
 import java.util.Objects;
 import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
@@ -69,13 +78,13 @@ import org.agrona.concurrent.UnsafeBuffer;
  *       TradingState}.
  * </ul>
  *
- * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits an eight-body-fragment envelope: {@code
+ * <p>{@link #onTakeSnapshot(ExclusivePublication)} emits a nine-body-fragment envelope: {@code
  * SnapshotTaken} (header, templateId 200) + {@code EventSequencerSnapshot} (206) + {@code
  * IdGeneratorSnapshot} (205) + {@code AccountSnapshot} (201) + {@code CurrencySnapshot} (208) +
- * {@code RiskLimitSnapshot} (209) + {@code OrderBookSnapshot} (202) + {@code RfqStateSnapshot}
- * (203) + {@code ClOrdIdDedupSnapshot} (210). The header carries a CRC32C checksum covering the
- * concatenated body bytes in publish order; {@link #onStart} verifies the checksum before handing
- * control back to the cluster framework.
+ * {@code RiskLimitSnapshot} (209) + {@code SymbolEligibilitySnapshot} (213) + {@code
+ * OrderBookSnapshot} (202) + {@code RfqStateSnapshot} (203) + {@code ClOrdIdDedupSnapshot} (210).
+ * The header carries a CRC32C checksum covering the concatenated body bytes in publish order;
+ * {@link #onStart} verifies the checksum before handing control back to the cluster framework.
  *
  * <p><b>Determinism.</b> Every mutation is driven by either (a) a cluster-supplied message and
  * timestamp or (b) a cluster-supplied snapshot fragment. No wall-clock, no randomness, no heap
@@ -111,7 +120,10 @@ public final class TradingClusteredService implements ClusteredService {
    * Number of body fragments in a well-formed snapshot envelope. Bumped from 6 to 7 by APP-232 to
    * include {@code RfqStateSnapshot} (template 203). Bumped from 7 to 8 by APP-206 R7 to include
    * {@code ClOrdIdDedupSnapshot} (template 210) — required so the 24h ClOrdID-uniqueness contract
-   * survives snapshot+restore.
+   * survives snapshot+restore. Bumped from 8 to 9 by APP-62 §G to include {@code
+   * SymbolEligibilitySnapshot} (template 213) — required so the §G fail-closed symbol-eligibility
+   * check 11g posture survives snapshot+restore (without the fragment the eligibility map ends up
+   * empty after restore and every order would be rejected with RegulatoryRestriction).
    */
   private static final int SNAPSHOT_STORE_COUNT = 9;
 
@@ -178,6 +190,38 @@ public final class TradingClusteredService implements ClusteredService {
   // ===== Pre-allocated scratch buffers =====
   // Ref-data event buffer used by the legacy ReferenceDataRegistry dispatch path.
   private final UnsafeBuffer refDataEventBuffer = new UnsafeBuffer(new byte[8 * 1024]);
+
+  // ===== Pre-allocated event decoders for ref-data event walking (APP-62 R10 BLOCKER fix) =====
+  // Each ref-data dispatch may emit one or more SBE events concatenated into refDataEventBuffer
+  // (e.g., LoadRiskLimit emits LoadedEvent + ChangedEvent; LoadRiskLimitBatch emits N×LoadedEvent;
+  // LoadSymbolEligibilityBatch emits N×LoadedEvent). The cluster walks each event by SBE header,
+  // assigns a fresh sequence number from EventSequencer, rewrites the sequence in-place, then
+  // journals + offers each event independently so projections see one journal entry per event.
+  //
+  // sequenceNumber lives at the FIRST field of every ref-data event body (verified across all
+  // templates: 110/111/113/114/115/116/119/120). The offset of the field within the SBE message
+  // (header + body) is therefore MessageHeaderDecoder.ENCODED_LENGTH + 0; an int64 write at that
+  // offset rewrites the field cleanly without disturbing subsequent fields. The walk passes
+  // bodyOffset (= cursor + MessageHeaderDecoder.ENCODED_LENGTH) directly to putLong.
+  private final AccountLoadedEventDecoder accountLoadedEventDecoder =
+      new AccountLoadedEventDecoder();
+  private final AccountLoadRejectedEventDecoder accountLoadRejectedEventDecoder =
+      new AccountLoadRejectedEventDecoder();
+  private final CurrencyLoadedEventDecoder currencyLoadedEventDecoder =
+      new CurrencyLoadedEventDecoder();
+  private final CurrencyLoadRejectedEventDecoder currencyLoadRejectedEventDecoder =
+      new CurrencyLoadRejectedEventDecoder();
+  private final RiskLimitLoadedEventDecoder riskLimitLoadedEventDecoder =
+      new RiskLimitLoadedEventDecoder();
+  private final RiskLimitLoadRejectedEventDecoder riskLimitLoadRejectedEventDecoder =
+      new RiskLimitLoadRejectedEventDecoder();
+  private final RiskLimitChangedEventDecoder riskLimitChangedEventDecoder =
+      new RiskLimitChangedEventDecoder();
+  private final SymbolEligibilityLoadedEventDecoder symbolEligibilityLoadedEventDecoder =
+      new SymbolEligibilityLoadedEventDecoder();
+  // Dedicated header decoder reserved for the event walk so the inbound command's headerDecoder
+  // wrap state on the parent message remains untouched during the walk.
+  private final MessageHeaderDecoder walkHeaderDecoder = new MessageHeaderDecoder();
 
   // ===== Snapshot staging buffers =====
   private final MutableDirectBuffer snapshotHeaderBuf = new ExpandableArrayBuffer(64);
@@ -486,16 +530,27 @@ public final class TradingClusteredService implements ClusteredService {
     headerDecoder.wrap(buffer, offset);
     final int templateId = headerDecoder.templateId();
 
-    // 1. Ref-data dispatch (templateIds 11-16) — legacy ReferenceDataRegistry path.
-    // Ref-data handlers pre-stamp seqNo+timestamp, so pass next sequence BEFORE dispatch.
-    final long refDataSeqNo = eventSink.sequencer().currentSequence() + 1L;
+    // 1. Ref-data dispatch (templateIds 11-16, 19-20) — legacy ReferenceDataRegistry path.
+    //    Handlers stamp a best-effort sequenceNumber on each emitted event. The cluster walks
+    //    each emitted SBE event header (in case a single command emits multiple events — e.g.,
+    //    APP-62 §D LoadRiskLimit emits LoadedEvent + ChangedEvent; batches emit N×Event), assigns
+    //    a fresh authoritative sequence from EventSequencer per event, rewrites the sequence
+    //    field in-place, and then journals + offers each event independently so projections see
+    //    one journal entry per event. Pass the projected next sequence so single-event handlers
+    //    encode a plausible (but non-authoritative) value; the walk rewrites regardless.
+    final long refDataSeqNoHint = eventSink.sequencer().currentSequence() + 1L;
     final int refDataEventLen =
         referenceDataRegistry.dispatchCommand(
-            headerDecoder, buffer, offset, length, refDataEventBuffer, 0, refDataSeqNo, timestamp);
+            headerDecoder,
+            buffer,
+            offset,
+            length,
+            refDataEventBuffer,
+            0,
+            refDataSeqNoHint,
+            timestamp);
     if (refDataEventLen > 0) {
-      eventSink.sequencer().nextSequence(); // commit
-      appendToJournal(refDataSeqNo, refDataEventBuffer, 0, refDataEventLen);
-      eventSink.offerToSession(session, refDataEventBuffer, 0, refDataEventLen);
+      walkAndDispatchRefDataEvents(session, refDataEventBuffer, 0, refDataEventLen);
       return;
     }
     // refDataEventLen == NOT_HANDLED → fall through to trading command dispatch.
@@ -517,6 +572,132 @@ public final class TradingClusteredService implements ClusteredService {
 
     // 3. Unknown templateId — silently drop in Phase 1. A future PR will add structured logging
     // via GFLog.
+  }
+
+  /**
+   * Walk a contiguous run of SBE event messages emitted by a single ref-data dispatch and emit each
+   * one through the cluster's event pipeline: assign a fresh sequence per event from {@link
+   * EventSequencer}, rewrite the {@code sequenceNumber} field in-place at the head of the body,
+   * append a journal entry tagged with that event's templateId, and offer the slice to the client
+   * session. This is the BLOCKER fix from APP-62 R10 review iteration 1 — prior to this method, a
+   * single dispatch that emitted multiple events (e.g., APP-62 §D LoadRiskLimit → LoadedEvent +
+   * ChangedEvent; LoadRiskLimitBatch → N×LoadedEvent; LoadSymbolEligibilityBatch → N×LoadedEvent)
+   * journaled the entire concatenated buffer as one entry tagged with the FIRST event's templateId,
+   * making every event after the first invisible to templateId-dispatched projections and silently
+   * colliding event sequence numbers.
+   *
+   * <p>Zero-allocation: each event templateId routes to a pre-allocated decoder field; the decoder
+   * gives us the body's {@code encodedLength()} (block + groups + var-data); total event length is
+   * header + body. The per-event sequence is written via {@link MutableDirectBuffer#putLong} in
+   * little-endian (SBE wire convention) at offset 0 of the body — the {@code sequenceNumber} field
+   * is the FIRST field of every ref-data event template (110, 111, 113, 114, 115, 116, 119, 120).
+   *
+   * @param session the client session (may be {@code null} on the internal-ingress test path)
+   * @param eventBuf the buffer holding one or more concatenated SBE event messages
+   * @param startOffset the offset of the first SBE header within {@code eventBuf}
+   * @param totalLen the total bytes spanning all concatenated events
+   * @throws IllegalStateException if an unrecognized templateId is encountered (ref-data handlers
+   *     must only emit events from the templateId set above) or if the walk does not consume {@code
+   *     totalLen} exactly
+   */
+  private void walkAndDispatchRefDataEvents(
+      final ClientSession session,
+      final UnsafeBuffer eventBuf,
+      final int startOffset,
+      final int totalLen) {
+    int cursor = startOffset;
+    final int endExclusive = startOffset + totalLen;
+    while (cursor < endExclusive) {
+      walkHeaderDecoder.wrap(eventBuf, cursor);
+      final int eventTemplateId = walkHeaderDecoder.templateId();
+      final int eventBlockLength = walkHeaderDecoder.blockLength();
+      final int eventVersion = walkHeaderDecoder.version();
+      final int bodyOffset = cursor + MessageHeaderDecoder.ENCODED_LENGTH;
+
+      // Wrap the per-templateId decoder to obtain encodedLength() (block + groups + var-data).
+      // Each branch wraps a pre-allocated decoder; no allocation.
+      final int bodyEncodedLength =
+          encodedBodyLength(eventTemplateId, eventBuf, bodyOffset, eventBlockLength, eventVersion);
+      final int eventLen = MessageHeaderDecoder.ENCODED_LENGTH + bodyEncodedLength;
+      if (cursor + eventLen > endExclusive) {
+        throw new IllegalStateException(
+            "ref-data event walk overrun: templateId="
+                + eventTemplateId
+                + ", cursor="
+                + cursor
+                + ", eventLen="
+                + eventLen
+                + ", endExclusive="
+                + endExclusive);
+      }
+
+      // Assign an authoritative sequence and overwrite the field in place (LE per SBE wire).
+      final long seqNo = eventSink.sequencer().nextSequence();
+      eventBuf.putLong(bodyOffset, seqNo, ByteOrder.LITTLE_ENDIAN);
+
+      // Journal + offer THIS event only — appendToJournal reads the templateId from the header at
+      // the supplied offset so each entry is correctly tagged.
+      appendToJournal(seqNo, eventBuf, cursor, eventLen);
+      eventSink.offerToSession(session, eventBuf, cursor, eventLen);
+
+      cursor += eventLen;
+    }
+    if (cursor != endExclusive) {
+      throw new IllegalStateException(
+          "ref-data event walk did not consume buffer exactly: cursor="
+              + cursor
+              + ", endExclusive="
+              + endExclusive);
+    }
+  }
+
+  /**
+   * Compute the body {@code encodedLength()} (block + repeating groups + variable-length data) for
+   * a ref-data event templateId by wrapping the appropriate pre-allocated decoder. Throws on an
+   * unknown templateId — every ref-data {@link
+   * com.trading.engine.cluster.refdata.ReferenceDataLoader} / {@link
+   * com.trading.engine.cluster.refdata.ReferenceDataBatchLoader} must emit only events from this
+   * switch.
+   */
+  private int encodedBodyLength(
+      final int templateId,
+      final UnsafeBuffer eventBuf,
+      final int bodyOffset,
+      final int blockLength,
+      final int version) {
+    // sbeDecodedLength() walks through the body (block + groups + varData) and returns the total
+    // body bytes — required because messages with repeating groups (e.g., RiskLimitChangedEvent's
+    // oldRecord group, RiskLimitLoadRejectedEvent's text varData) have an encodedLength larger
+    // than the block length alone.
+    switch (templateId) {
+      case AccountLoadedEventDecoder.TEMPLATE_ID:
+        accountLoadedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return accountLoadedEventDecoder.sbeDecodedLength();
+      case AccountLoadRejectedEventDecoder.TEMPLATE_ID:
+        accountLoadRejectedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return accountLoadRejectedEventDecoder.sbeDecodedLength();
+      case CurrencyLoadedEventDecoder.TEMPLATE_ID:
+        currencyLoadedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return currencyLoadedEventDecoder.sbeDecodedLength();
+      case CurrencyLoadRejectedEventDecoder.TEMPLATE_ID:
+        currencyLoadRejectedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return currencyLoadRejectedEventDecoder.sbeDecodedLength();
+      case RiskLimitLoadedEventDecoder.TEMPLATE_ID:
+        riskLimitLoadedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return riskLimitLoadedEventDecoder.sbeDecodedLength();
+      case RiskLimitLoadRejectedEventDecoder.TEMPLATE_ID:
+        riskLimitLoadRejectedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return riskLimitLoadRejectedEventDecoder.sbeDecodedLength();
+      case RiskLimitChangedEventDecoder.TEMPLATE_ID:
+        riskLimitChangedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return riskLimitChangedEventDecoder.sbeDecodedLength();
+      case SymbolEligibilityLoadedEventDecoder.TEMPLATE_ID:
+        symbolEligibilityLoadedEventDecoder.wrap(eventBuf, bodyOffset, blockLength, version);
+        return symbolEligibilityLoadedEventDecoder.sbeDecodedLength();
+      default:
+        throw new IllegalStateException(
+            "ref-data event walk: unknown event templateId " + templateId);
+    }
   }
 
   @Override
@@ -629,7 +810,8 @@ public final class TradingClusteredService implements ClusteredService {
    *   <li>Hard cap — fail fast before allocation if {@code totalLen > SNAPSHOT_HARD_CAP_MULTIPLIER
    *       * maxMessageLength}
    *   <li>Pre-size — {@code checkLimit(totalLen)} to avoid incremental doubling
-   *   <li>Assemble — {@code putBytes} all 7 fragments into contiguous buffer
+   *   <li>Assemble — {@code putBytes} the SnapshotTaken header plus all nine body fragments into
+   *       the contiguous reassembly buffer
    *   <li>Integrity — assert {@code pos == totalLen}
    *   <li>80% warning — surfaced via cluster error handler
    *   <li>Size guard — fail if {@code totalLen > maxMessageLength}
@@ -820,16 +1002,27 @@ public final class TradingClusteredService implements ClusteredService {
 
   /**
    * Encode every snapshot fragment into the per-store staging buffers and populate the {@code
-   * *SnapLen} fields. After this returns, the staging buffers hold (in publish order):
+   * *SnapLen} fields. After this returns, the staging buffers hold the SnapshotTaken header
+   * followed by the nine body fragments in publish order:
    *
    * <pre>
-   *   [snapshotHeaderBuf][eventSeqSnapBuf][idGenSnapBuf][accountSnapBuf][currencySnapBuf]
-   *   [riskLimitSnapBuf][orderBookSnapBuf]
+   *   [snapshotHeaderBuf]          // SnapshotTaken (200)
+   *   [eventSeqSnapBuf]            // EventSequencerSnapshot (206)
+   *   [idGenSnapBuf]               // IdGeneratorSnapshot (205)
+   *   [accountSnapBuf]             // AccountSnapshot (201)
+   *   [currencySnapBuf]            // CurrencySnapshot (208)
+   *   [riskLimitSnapBuf]           // RiskLimitSnapshot (209)
+   *   [symbolEligibilitySnapBuf]   // SymbolEligibilitySnapshot (213) — APP-62 §G
+   *   [orderBookSnapBuf]           // OrderBookSnapshot (202)
+   *   [rfqStateSnapBuf]            // RfqStateSnapshot (203) — APP-232
+   *   [clOrdIdDedupSnapBuf]        // ClOrdIdDedupSnapshot (210) — APP-206 R7
    * </pre>
    *
-   * <p>The header's {@code checksum} field is a CRC32C over the six body fragments concatenated in
+   * <p>The header's {@code checksum} field is a CRC32C over the nine body fragments concatenated in
    * publish order (the header itself is not covered, which matches the exchange-core idiom —
-   * checksum validates what follows).
+   * checksum validates what follows). The body-fragment count is also published in {@code
+   * SnapshotTaken.storeCount} (= {@link #SNAPSHOT_STORE_COUNT}) so the restore path can verify
+   * fragment count before walking.
    */
   void encodeSnapshotFragments(final long snapshotTimestamp) {
     // 1. EventSequencer — SBE message is one long field (next-sequence-to-assign).
@@ -999,9 +1192,10 @@ public final class TradingClusteredService implements ClusteredService {
   // ===========================================================================
 
   /**
-   * Walk a single contiguous buffer containing all seven snapshot fragments in publish order and
-   * apply them to the live state. Verifies the CRC32C over the six body fragments against the
-   * checksum embedded in the {@code SnapshotTaken} header.
+   * Walk a single contiguous buffer containing the SnapshotTaken header plus all nine body
+   * fragments in publish order (see {@link #encodeSnapshotFragments} for the exact layout) and
+   * apply them to the live state. Verifies the CRC32C over the body fragments against the checksum
+   * embedded in the {@code SnapshotTaken} header.
    *
    * <p>Test helper. Production uses {@link #onStart(Cluster, Image)} which reassembles the image
    * and then calls this method.
@@ -1122,7 +1316,8 @@ public final class TradingClusteredService implements ClusteredService {
         || !currencyFragmentSeen
         || !riskLimitFragmentSeen
         || !symbolEligibilityFragmentSeen
-        || !rfqStateFragmentSeen) {
+        || !rfqStateFragmentSeen
+        || !clOrdIdDedupFragmentSeen) {
       throw new IllegalStateException(
           "snapshot missing required fragments"
               + " (eventSeq="
@@ -1141,6 +1336,8 @@ public final class TradingClusteredService implements ClusteredService {
               + orderBookFragmentSeen
               + ", rfqState="
               + rfqStateFragmentSeen
+              + ", clOrdIdDedup="
+              + clOrdIdDedupFragmentSeen
               + ")");
     }
     if (!orderIdGenRestored || !execIdGenRestored || !quoteIdGenRestored) {

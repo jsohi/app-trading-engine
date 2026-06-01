@@ -38,7 +38,10 @@ import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
+import com.trading.engine.messages.sbe.RiskLimitChangedEventDecoder;
+import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
+import com.trading.engine.messages.sbe.SnapshotTakenEncoder;
 import com.trading.engine.messages.sbe.TimeInForceEnum;
 import com.trading.engine.testsupport.aeron.FakeClientSession;
 import com.trading.engine.testsupport.aeron.FakeCluster;
@@ -46,7 +49,11 @@ import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.Cluster;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.CRC32C;
+import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -444,6 +451,138 @@ class TradingClusteredServiceTest {
     // The currency is now in the store.
     final int packed = CurrencyStore.packCode((byte) 'J', (byte) 'P', (byte) 'Y');
     assertTrue(currencyStore.contains(packed));
+  }
+
+  /**
+   * APP-62 R10 BLOCKER (review iter 1) — LoadRiskLimit emits TWO events back-to-back
+   * (RiskLimitLoadedEvent tpl 115 + RiskLimitChangedEvent tpl 119). Pre-fix the cluster journaled
+   * both as ONE entry tagged with tpl 115 and only assigned one sequence number to BOTH events
+   * (colliding the changed-event seq with the next ref-data command's seq). Post-fix the cluster
+   * walks each emitted SBE header and journals + offers each event independently with its own
+   * monotonic sequence number.
+   */
+  @Test
+  void loadRiskLimit_singleCommand_journalsLoadedAndChangedAsSeparateEntries() {
+    final long seqBefore = eventSequencer.currentSequence();
+    final var buf = new ExpandableArrayBuffer(512);
+    final int len =
+        SbeTestEncoder.encodeLoadRiskLimit(
+            buf,
+            0,
+            1L, // account 1 is pre-seeded; this is a re-load → ChangedEvent has at least one diff
+            10L * (long) PRICE_SCALE, // maxOrderSize bumped from seed value (10 units)
+            999L * (long) PRICE_SCALE, // maxOrderNotional change vs seed
+            0L,
+            AccountStatusEnum.Active,
+            0L);
+
+    dispatch(buf, len);
+
+    // BLOCKER assertion 1: TWO events on the session, in publish order (115 then 119).
+    assertEquals(2, session.messages.size());
+    assertTemplateId(RiskLimitLoadedEventDecoder.TEMPLATE_ID, session.messages.get(0));
+    assertTemplateId(RiskLimitChangedEventDecoder.TEMPLATE_ID, session.messages.get(1));
+
+    // BLOCKER assertion 2: journal has exactly TWO entries; sequence bumped by 2.
+    assertEquals(2, eventJournal.size());
+    assertEquals(seqBefore + 2L, eventSequencer.currentSequence());
+    assertEquals(seqBefore + 1L, eventJournal.lowestSequence());
+    assertEquals(seqBefore + 2L, eventJournal.highestSequence());
+
+    // BLOCKER assertion 3: each journal entry carries its own templateId (not BOTH tagged as 115).
+    final List<Integer> templateIds = new ArrayList<>();
+    final List<Long> seqs = new ArrayList<>();
+    eventJournal.replayFrom(
+        seqBefore + 1L,
+        (final long seqNo,
+            final int eventType,
+            final DirectBuffer buf2,
+            final int offset,
+            final int length) -> {
+          templateIds.add(eventType);
+          seqs.add(seqNo);
+        });
+    assertEquals(
+        List.of(RiskLimitLoadedEventDecoder.TEMPLATE_ID, RiskLimitChangedEventDecoder.TEMPLATE_ID),
+        templateIds);
+    assertEquals(List.of(seqBefore + 1L, seqBefore + 2L), seqs);
+  }
+
+  /**
+   * APP-62 R10 MEDIUM #3 + LOW Agent A #1 (review iter 1) — the missing-fragment guard inside
+   * loadSnapshot must include {@code clOrdIdDedupFragmentSeen}; pre-fix a snapshot lacking the tpl
+   * 210 fragment would silently restore with an empty dedup map.
+   */
+  @Test
+  void loadSnapshot_missingClOrdIdDedupFragment_throwsIllegalStateException() {
+    // Encode all fragments via the production path, then corrupt the SnapshotTaken header to
+    // claim only the first 8 fragments (storeCount=8, body length = sum minus the clOrdIdDedup
+    // fragment) so loadSnapshot's walk skips tpl 210 — and the missing-fragment guard fires.
+    service.encodeSnapshotFragments(TIMESTAMP);
+
+    final int headerLen = service.snapshotHeaderLength();
+    final int bodyLenWithoutDedup =
+        service.eventSeqSnapLength()
+            + service.idGenSnapLength()
+            + service.accountSnapLength()
+            + service.currencySnapLength()
+            + service.riskLimitSnapLength()
+            + service.symbolEligibilitySnapLength()
+            + service.orderBookSnapLength()
+            + service.rfqStateSnapLength();
+    final var assembled = new ExpandableArrayBuffer(headerLen + bodyLenWithoutDedup + 64);
+
+    // Re-encode the SnapshotTaken header with storeCount=8 and the truncated body length + a
+    // recomputed CRC over the eight body fragments (the loadSnapshot guards check checksum BEFORE
+    // the missing-fragment guard, so we must hand-craft a self-consistent envelope).
+    final var hdrEnc = new MessageHeaderEncoder();
+    final var snapTakenEnc = new SnapshotTakenEncoder();
+    snapTakenEnc.wrapAndApplyHeader(assembled, 0, hdrEnc);
+    snapTakenEnc.lastSequenceNumber(0L);
+    snapTakenEnc.snapshotTimestamp(TIMESTAMP);
+    snapTakenEnc.snapshotVersion(1L);
+    snapTakenEnc.storeCount((short) 8);
+    snapTakenEnc.totalByteLength(bodyLenWithoutDedup);
+    final int reEncodedHeaderLen =
+        MessageHeaderEncoder.ENCODED_LENGTH + snapTakenEnc.encodedLength();
+
+    // Concatenate eight body fragments after the header.
+    int pos = reEncodedHeaderLen;
+    pos = putFragment(assembled, pos, service.eventSeqSnapBuffer(), service.eventSeqSnapLength());
+    pos = putFragment(assembled, pos, service.idGenSnapBuffer(), service.idGenSnapLength());
+    pos = putFragment(assembled, pos, service.accountSnapBuffer(), service.accountSnapLength());
+    pos = putFragment(assembled, pos, service.currencySnapBuffer(), service.currencySnapLength());
+    pos = putFragment(assembled, pos, service.riskLimitSnapBuffer(), service.riskLimitSnapLength());
+    pos =
+        putFragment(
+            assembled,
+            pos,
+            service.symbolEligibilitySnapBuffer(),
+            service.symbolEligibilitySnapLength());
+    pos = putFragment(assembled, pos, service.orderBookSnapBuffer(), service.orderBookSnapLength());
+    pos = putFragment(assembled, pos, service.rfqStateSnapBuffer(), service.rfqStateSnapLength());
+
+    // Recompute CRC32C over the eight body bytes and patch into the header.
+    final CRC32C crc = new CRC32C();
+    crc.update(assembled.byteArray(), reEncodedHeaderLen, pos - reEncodedHeaderLen);
+    snapTakenEnc.checksum(Integer.toUnsignedLong((int) crc.getValue()));
+
+    final int assembledLen = pos;
+    final var thrown =
+        assertThrows(
+            IllegalStateException.class, () -> service.loadSnapshot(assembled, 0, assembledLen));
+    assertTrue(
+        thrown.getMessage().contains("clOrdIdDedup=false"),
+        "expected clOrdIdDedup=false in missing-fragment message but was: " + thrown.getMessage());
+  }
+
+  private static int putFragment(
+      final MutableDirectBuffer dst,
+      final int dstOffset,
+      final MutableDirectBuffer src,
+      final int srcLength) {
+    dst.putBytes(dstOffset, src, 0, srcLength);
+    return dstOffset + srcLength;
   }
 
   @Test

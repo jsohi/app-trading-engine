@@ -1,6 +1,7 @@
 package com.trading.engine.cluster.refdata;
 
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
+import java.util.Arrays;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
@@ -189,7 +190,7 @@ public final class ReferenceDataRegistry {
     }
     snapshotKeysFillIdx = 0;
     storesBySnapshotTemplateId.forEachInt(snapshotKeyCollector);
-    java.util.Arrays.sort(snapshotKeysScratch, 0, storeCount);
+    Arrays.sort(snapshotKeysScratch, 0, storeCount);
 
     int written = 0;
     for (int i = 0; i < storeCount; i++) {

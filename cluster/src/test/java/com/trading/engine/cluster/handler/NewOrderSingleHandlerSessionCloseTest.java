@@ -1,6 +1,7 @@
 package com.trading.engine.cluster.handler;
 
 import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderCanceled;
+import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderExpired;
 import static com.trading.engine.testsupport.sbe.SbeTestDecoder.decodeOrderRejected;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,9 +31,12 @@ import com.trading.engine.cluster.state.RfqStateMachine;
 import com.trading.engine.cluster.state.TradingState;
 import com.trading.engine.messages.sbe.AccountStatusEnum;
 import com.trading.engine.messages.sbe.CancelReasonEnum;
+import com.trading.engine.messages.sbe.ExpireReasonEnum;
+import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.NewOrderSingleDecoder;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
 import com.trading.engine.messages.sbe.RejectReasonEnum;
 import com.trading.engine.messages.sbe.SideEnum;
@@ -855,10 +859,12 @@ class NewOrderSingleHandlerSessionCloseTest {
 
   /**
    * Opens a session at TS, seeds 2 orders, scans at TS+6min with a 5-minute timeout — both orders
-   * must be cancelled with {@link CancelReasonEnum#IdleTimeout}.
+   * must be expired with {@link ExpireReasonEnum#IdleTimeout}. APP-62 §J wires the idle-timeout
+   * path to {@code OrderExpiredEvent} (SBE template 121) so the FIX wire form is ExecType=Expired
+   * ('C', tag 150) rather than ExecType=Canceled.
    */
   @Test
-  void onIdleScan_idleSession_cancelsOrders_emitsIdleTimeoutEvents() {
+  void onIdleScan_idleSession_expiresOrders_emitsIdleTimeoutEvents() {
     handler.onSessionOpen(SESSION_ID, TS);
     final long orderKey1 = seedOrderState("IDLE-IDLE-001", "EURUSD", SideEnum.Buy);
     handler.trackSessionOrder(SESSION_ID, orderKey1);
@@ -872,26 +878,26 @@ class NewOrderSingleHandlerSessionCloseTest {
     assertEquals(
         2,
         session.messages.size(),
-        "exactly 2 OrderCanceledEvents must be emitted for idle session");
+        "exactly 2 OrderExpiredEvents must be emitted for idle session");
 
-    final var decoded0 = decodeOrderCanceled(wrapDecodeBuf(0), 0);
+    final var decoded0 = decodeOrderExpired(wrapDecodeBuf(0), 0);
     assertEquals(
-        CancelReasonEnum.IdleTimeout,
-        decoded0.cancelReason(),
-        "first cancel event cancelReason must be IdleTimeout");
+        ExpireReasonEnum.IdleTimeout,
+        decoded0.expireReason(),
+        "first expire event expireReason must be IdleTimeout");
 
-    final var decoded1 = decodeOrderCanceled(wrapDecodeBuf(1), 0);
+    final var decoded1 = decodeOrderExpired(wrapDecodeBuf(1), 0);
     assertEquals(
-        CancelReasonEnum.IdleTimeout,
-        decoded1.cancelReason(),
-        "second cancel event cancelReason must be IdleTimeout");
+        ExpireReasonEnum.IdleTimeout,
+        decoded1.expireReason(),
+        "second expire event expireReason must be IdleTimeout");
 
     assertFalse(
         handler.sessionOrders.containsKey(SESSION_ID),
-        "sessionOrders entry must be removed after idle cancellation");
+        "sessionOrders entry must be removed after idle expire");
     assertFalse(
         handler.sessionLastActivityNanos.containsKey(SESSION_ID),
-        "sessionLastActivityNanos entry must be removed after idle cancellation");
+        "sessionLastActivityNanos entry must be removed after idle expire");
 
     assertNull(tradingState.orderBook().get(orderKey1), "book slot for order 1 must be released");
     assertNull(tradingState.orderBook().get(orderKey2), "book slot for order 2 must be released");
@@ -1019,16 +1025,18 @@ class NewOrderSingleHandlerSessionCloseTest {
   }
 
   // =========================================================================
-  // Test 23 — emitOrderCanceledEvent via onIdleScan sets cancelReason=IdleTimeout
+  // Test 23 — emitOrderExpiredEvent via onIdleScan sets expireReason=IdleTimeout (APP-62 §J)
   // =========================================================================
 
   /**
    * Confirms via the {@link NewOrderSingleHandler#onIdleScan} code path that the emitted {@link
-   * OrderCanceledEventDecoder} carries {@link CancelReasonEnum#IdleTimeout} in the {@code
-   * cancelReason} field.
+   * OrderExpiredEventDecoder} carries {@link ExpireReasonEnum#IdleTimeout} in the {@code
+   * expireReason} field. APP-62 §J — idle-timeout now routes through the OrderExpiredEvent
+   * (template 121) emit path so the gateway translates the wire form to ExecType=Expired ('C', tag
+   * 150) instead of ExecType=Canceled.
    */
   @Test
-  void emitOrderCanceledEvent_idleTimeout_setsCancelReasonField() {
+  void emitOrderExpiredEvent_idleTimeout_setsExpireReasonField() {
     handler.onSessionOpen(SESSION_ID, TS);
     final long orderKey = seedOrderState("IDLE-REASON-001", "EURUSD", SideEnum.Buy);
     handler.trackSessionOrder(SESSION_ID, orderKey);
@@ -1037,12 +1045,69 @@ class NewOrderSingleHandlerSessionCloseTest {
     final long scanTs = TS + 6L * 60L * 1_000_000_000L;
     handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
 
-    assertEquals(1, session.messages.size(), "exactly one OrderCanceledEvent must be emitted");
-    final var decoded = decodeOrderCanceled(wrapDecodeBuf(0), 0);
+    assertEquals(1, session.messages.size(), "exactly one OrderExpiredEvent must be emitted");
+    final var decoded = decodeOrderExpired(wrapDecodeBuf(0), 0);
     assertEquals(
-        CancelReasonEnum.IdleTimeout,
-        decoded.cancelReason(),
-        "cancelReason must be IdleTimeout for idle-scan-triggered cancels");
+        ExpireReasonEnum.IdleTimeout,
+        decoded.expireReason(),
+        "expireReason must be IdleTimeout for idle-scan-triggered expiries");
+  }
+
+  // =========================================================================
+  // Test 23a — idle-scan emit path uses OrderExpiredEvent (template 121), not 103
+  // =========================================================================
+
+  /**
+   * APP-62 §J regression — verifies the wire templateId emitted by the idle-scan reaper is exactly
+   * {@link OrderExpiredEventDecoder#TEMPLATE_ID} (121), guarding against accidental regression to
+   * the {@code OrderCanceledEvent} (template 103) path that would surface the wrong FIX ExecType to
+   * counterparty sessions.
+   */
+  @Test
+  void idleScan_emitsOrderExpiredEventTemplateId_notOrderCanceled() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey = seedOrderState("IDLE-TPL-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    final long scanTs = TS + 6L * 60L * 1_000_000_000L;
+    handler.onIdleScan(scanTs, NewOrderSingleHandler.IDLE_SESSION_TIMEOUT_NANOS, eventSink);
+
+    assertEquals(1, session.messages.size(), "exactly one event must be emitted");
+    final var buf = wrapDecodeBuf(0);
+    final var hdr = new MessageHeaderDecoder();
+    hdr.wrap(buf, 0);
+    assertEquals(
+        OrderExpiredEventDecoder.TEMPLATE_ID,
+        hdr.templateId(),
+        "idle-scan emit path must use OrderExpiredEvent (template 121) per APP-62 §J — not 103");
+  }
+
+  // =========================================================================
+  // Test 23b — session-close emit path remains OrderCanceledEvent (regression)
+  // =========================================================================
+
+  /**
+   * APP-62 §J regression — verifies the session-disconnect cancel path STILL emits {@link
+   * OrderCanceledEventDecoder} (template 103); only the idle-timeout reaper was rewired to {@code
+   * OrderExpiredEvent}. {@code SessionDisconnect} (and future {@code ExplicitCancel} / {@code
+   * OperatorForce}) reasons stay on the cancel path → ExecType=Canceled ('4').
+   */
+  @Test
+  void sessionClose_stillEmitsOrderCanceledEventTemplateId() {
+    handler.onSessionOpen(SESSION_ID, TS);
+    final long orderKey = seedOrderState("CLOSE-TPL-001", "EURUSD", SideEnum.Buy);
+    handler.trackSessionOrder(SESSION_ID, orderKey);
+
+    handler.onSessionClose(SESSION_ID, TS, eventSink);
+
+    assertEquals(1, session.messages.size(), "exactly one event must be emitted");
+    final var buf = wrapDecodeBuf(0);
+    final var hdr = new MessageHeaderDecoder();
+    hdr.wrap(buf, 0);
+    assertEquals(
+        OrderCanceledEventDecoder.TEMPLATE_ID,
+        hdr.templateId(),
+        "session-close emit path must remain OrderCanceledEvent (template 103) per APP-62 §J");
   }
 
   // =========================================================================

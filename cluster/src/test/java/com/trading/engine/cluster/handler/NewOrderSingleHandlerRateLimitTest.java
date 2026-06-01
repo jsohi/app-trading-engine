@@ -496,4 +496,82 @@ class NewOrderSingleHandlerRateLimitTest {
     assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(1));
     assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(2));
   }
+
+  // =========================================================================
+  // Test 7 — APP-62 R10 HIGH (review iter 1): peek-only checks (11e/11f/11g)
+  //         run BEFORE the mutating rate-limit (11c) and daily-volume (11d) gates
+  // =========================================================================
+
+  /**
+   * APP-62 R10 HIGH (review iteration 1) — a symbol-eligibility reject (check 11g) must NOT consume
+   * rate-limit capacity. Pre-fix, the original check ordering was 11c → 11d → 11e → 11f → 11g, so a
+   * flurry of restricted-symbol orders (11g rejects) drained a legitimate trader's rate budget — a
+   * §G DoS vector. Post-fix, the peek-only checks (11e/11f/11g) run first; the mutating gates
+   * (11c/11d) run only after the peek-only block passes.
+   *
+   * <p>Scenario: {@code maxOrdersPerSecond=1}.
+   *
+   * <ol>
+   *   <li>First order targets symbol {@code FORBID} (no eligibility record → 11g fail-closed). Must
+   *       reject with {@code RegulatoryRestriction} AND leave the rate counter at zero.
+   *   <li>Second order targets the permissive {@code EURUSD}. Must be admitted — would be rejected
+   *       with {@code RateLimitExceeded} if the first order had consumed a token.
+   *   <li>Third order targets {@code EURUSD} again. Must reject with {@code RateLimitExceeded}
+   *       since the second order consumed the only token.
+   * </ol>
+   */
+  @Test
+  void check11g_rejectDoesNotConsumeRateToken_thanksToReorder() {
+    seedAccountA();
+    seedRiskLimitA(1L);
+
+    // Order 1 — symbol FORBID has no eligibility record → §G fail-closed reject.
+    final int forbidLen =
+        SbeTestEncoder.encodeNewOrderSingle(
+            msgBuf,
+            0,
+            "REORD-001",
+            "FORBID",
+            SideEnum.Buy,
+            OrdTypeEnum.Limit,
+            VALID_PRICE,
+            VALID_QTY,
+            ACCOUNT_CODE_A,
+            "USD");
+    handler.onCommand(
+        session,
+        T0,
+        msgBuf,
+        0,
+        forbidLen,
+        NewOrderSingleDecoder.BLOCK_LENGTH,
+        NewOrderSingleDecoder.SCHEMA_VERSION,
+        eventSink);
+
+    assertEquals(1, session.messages.size());
+    final var rej1 = decodeOrderRejected(session.messages.get(0));
+    assertEquals(
+        RejectReasonEnum.RegulatoryRestriction,
+        rej1.rejectReason(),
+        "FORBID symbol must trigger §G RegulatoryRestriction, not RateLimitExceeded");
+
+    // Order 2 — permissive EURUSD. Must admit; pre-fix this order would have been the rejected
+    // one because order 1 would have already consumed the only rate token.
+    dispatchNosA("REORD-002", T0);
+    assertEquals(
+        2,
+        session.messages.size(),
+        "EURUSD order must be admitted — the §G reject on order 1 must not have consumed a"
+            + " rate token");
+    assertTemplateId(OrderCreatedEventDecoder.TEMPLATE_ID, session.messages.get(1));
+
+    // Order 3 — permissive EURUSD again. Now the rate-limit counter IS at 1; must reject.
+    dispatchNosA("REORD-003", T0);
+    assertEquals(3, session.messages.size());
+    final var rej3 = decodeOrderRejected(session.messages.get(2));
+    assertEquals(
+        RejectReasonEnum.RateLimitExceeded,
+        rej3.rejectReason(),
+        "third order must hit the configured 1-per-second rate limit");
+  }
 }

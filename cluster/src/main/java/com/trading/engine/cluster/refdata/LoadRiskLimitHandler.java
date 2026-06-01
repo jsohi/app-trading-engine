@@ -236,13 +236,14 @@ public final class LoadRiskLimitHandler implements ReferenceDataLoader {
     int loadedLen = MessageHeaderEncoder.ENCODED_LENGTH + loadedEncoder.encodedLength();
 
     // APP-62 §D — append RiskLimitChangedEvent (template 119) right after the loaded event so
-    // both land in the same EventSink emit call. The cluster's event sequencer will assign
-    // sequenceNumber + 1 to this event when it stamps the egress.
+    // both land in the same EventSink emit call. The cluster dispatch (TradingClusteredService
+    // #walkAndDispatchRefDataEvents) walks each emitted event by SBE header and stamps an
+    // authoritative sequenceNumber in-place; emit 0L here so the rewrite has a known sentinel.
     int changedLen =
         encodeChangedEvent(
             eventDst,
             eventDstOffset + loadedLen,
-            sequenceNumber + 1L,
+            0L,
             clusterTimestampNanos,
             accountId,
             firstLoad,

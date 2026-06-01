@@ -8,6 +8,7 @@ import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
 import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventDecoder;
@@ -247,6 +248,46 @@ public final class SbeTestDecoder {
    */
   public static OrderCanceledEventDecoder decodeOrderCanceled(final byte[] bytes) {
     return decodeOrderCanceled(new UnsafeBuffer(bytes), 0);
+  }
+
+  /**
+   * Decodes an {@link OrderExpiredEventDecoder} (SBE template 121, APP-62 §J) from the buffer,
+   * verifying the header templateId matches {@link OrderExpiredEventDecoder#TEMPLATE_ID}.
+   *
+   * @param buffer buffer containing the SBE-encoded OrderExpiredEvent
+   * @param offset byte offset where the message header starts
+   * @return a decoder flyweight wrapped over the message body
+   * @throws AssertionError if the header templateId does not match
+   */
+  public static OrderExpiredEventDecoder decodeOrderExpired(
+      final DirectBuffer buffer, final int offset) {
+    final MessageHeaderDecoder header = new MessageHeaderDecoder();
+    header.wrap(buffer, offset);
+    if (header.templateId() != OrderExpiredEventDecoder.TEMPLATE_ID) {
+      throw new AssertionError(
+          "Expected templateId "
+              + OrderExpiredEventDecoder.TEMPLATE_ID
+              + " but was "
+              + header.templateId());
+    }
+    final OrderExpiredEventDecoder decoder = new OrderExpiredEventDecoder();
+    decoder.wrap(
+        buffer,
+        offset + MessageHeaderDecoder.ENCODED_LENGTH,
+        header.blockLength(),
+        header.version());
+    return decoder;
+  }
+
+  /**
+   * Decodes an {@link OrderExpiredEventDecoder} from a byte array (header at offset 0).
+   *
+   * @param bytes SBE-encoded OrderExpiredEvent bytes
+   * @return a decoder flyweight wrapped over the message body
+   * @throws AssertionError if the header templateId does not match
+   */
+  public static OrderExpiredEventDecoder decodeOrderExpired(final byte[] bytes) {
+    return decodeOrderExpired(new UnsafeBuffer(bytes), 0);
   }
 
   // -----------------------------------------------------------------------

@@ -10,12 +10,17 @@ import org.agrona.MutableDirectBuffer;
  * caller-provided buffer. The {@link ReferenceDataRegistry} routes inbound cluster commands to the
  * loader registered for the matching {@link #commandTemplateId()}.
  *
- * <p><b>Output convention.</b> {@link #onCommand} writes a complete SBE event message (8-byte
- * header + body) into {@code eventDst} starting at {@code eventDstOffset} and returns the total
- * bytes written. Both successful (Loaded) and rejected (LoadRejected) outcomes write an event — the
- * caller does not need a separate "did it succeed" signal because the event templateId
- * distinguishes them. Returning 0 means "no event was written" (reserved for unexpected shapes;
- * loaders should always emit an event in normal operation).
+ * <p><b>Output convention.</b> {@link #onCommand} writes one or more complete SBE event messages
+ * (8-byte header + body each) into {@code eventDst} starting at {@code eventDstOffset} and returns
+ * the total bytes written across all emitted events. Most loaders emit a single event (a Loaded or
+ * LoadRejected outcome distinguished by templateId), but APP-62 §D {@code LoadRiskLimitHandler}
+ * emits two events back-to-back (LoadedEvent followed by ChangedEvent). The cluster (see {@code
+ * TradingClusteredService#walkAndDispatchRefDataEvents}) walks each emitted SBE header, assigns a
+ * fresh authoritative sequence number from {@code EventSequencer} per event, rewrites the {@code
+ * sequenceNumber} field in-place, and journals + offers each event independently — so a handler's
+ * stamp on {@code sequenceNumber} is best-effort and gets overwritten. Returning 0 means "no event
+ * was written" (reserved for unexpected shapes; loaders should always emit an event in normal
+ * operation).
  *
  * <p><b>Zero allocation.</b> Implementations hold pre-allocated SBE flyweight encoders / decoders
  * as fields. The hot path (decode → validate → upsert → encode) must not allocate. Validation throw

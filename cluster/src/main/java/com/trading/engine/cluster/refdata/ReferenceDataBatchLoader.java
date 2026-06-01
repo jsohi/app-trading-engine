@@ -13,10 +13,14 @@ import org.agrona.MutableDirectBuffer;
  *
  * <p><b>Per-record events vs. summary event.</b> This interface emits one event per record. The
  * events are written contiguously into the caller-provided buffer; the return value is the total
- * bytes written. The caller (cluster's onSessionMessage) is responsible for publishing the event
- * stream slice to the egress / event publication channel. The reason for per-record (vs. a single
- * batch summary) is replay symmetry — projections consume the event stream and shouldn't have to
- * know whether an account was loaded via a single or batch command.
+ * bytes written across all events. The caller (cluster's onSessionMessage → {@code
+ * TradingClusteredService#walkAndDispatchRefDataEvents}) walks each emitted SBE header, assigns a
+ * fresh authoritative sequence number from {@code EventSequencer} per event, rewrites the {@code
+ * sequenceNumber} field in-place, and journals + offers each event independently. The handler's
+ * stamp on {@code firstSequenceNumber} / per-record sequence is best-effort and gets overwritten.
+ * The reason for per-record (vs. a single batch summary) is replay symmetry — projections consume
+ * the event stream and shouldn't have to know whether an account was loaded via a single or batch
+ * command.
  *
  * <p><b>Atomicity.</b> The batch is NOT all-or-nothing — each record is validated and upserted
  * independently. A bad record in the middle of a batch produces a LoadRejected event for that
