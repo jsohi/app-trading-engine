@@ -12,6 +12,7 @@ import com.trading.engine.messages.sbe.ExecutionReportDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestRejectDecoder;
@@ -559,6 +560,16 @@ public final class FixGateway implements Agent {
         egressListener
             .translator()
             .translateOrderCanceledEvent(egressListener.orderCanceledDecoder(), erEncoder);
+        position = session.trySend(erEncoder);
+      }
+      case OrderExpiredEventDecoder.TEMPLATE_ID -> {
+        // APP-62 §J — cluster-emitted OrderExpiredEvent (template 121) → FIX ER
+        // ExecType=Expired('C', tag 150). Cluster emitters today: idle-session timeout
+        // (NewOrderSingleHandler.onIdleScan). Reserved future emitter: TIF-driven expiries.
+        erEncoder.reset();
+        egressListener
+            .translator()
+            .translateOrderExpiredEvent(egressListener.orderExpiredDecoder(), erEncoder);
         position = session.trySend(erEncoder);
       }
       default -> {

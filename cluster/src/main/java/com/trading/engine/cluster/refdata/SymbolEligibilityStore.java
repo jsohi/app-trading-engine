@@ -34,14 +34,21 @@ import org.agrona.collections.LongObjConsumer;
  * #snapshotTo} relies on {@code snapshotKeysFillIdx} being reset at the start of every call;
  * concurrent or re-entrant invocation would corrupt that counter.
  *
- * <p><b>Snapshot scratch growth.</b> {@link #snapshotTo} uses a {@code long[] snapshotKeysScratch}
- * for deterministic key ordering. The class is documented as "zero allocation after construction"
- * for the hot lookup path ({@link #get(long)}, {@link #put(SymbolEligibilityState)}). One
- * exception: if the map grows past the scratch length, the scratch is reallocated on first snapshot
- * — this happens at most once per "high water mark" and never on the duty-cycle hot path because
- * snapshots run on a separate cluster cycle. Pre-size {@code INITIAL_CAPACITY = 8192} accommodates
- * typical equity-universe deployments (Reg SHO threshold list + IPO restrictions) without ever
- * growing.
+ * <p><b>Allocation scope.</b> The "zero allocation after construction" guarantee covers ONLY the
+ * order-admission hot path — {@link #get(long)} and {@link #put(SymbolEligibilityState)} — both of
+ * which run on the cluster duty cycle. Cold paths intentionally allocate:
+ *
+ * <ul>
+ *   <li>{@link #snapshotTo}'s {@code long[] snapshotKeysScratch} re-allocates on first snapshot if
+ *       the map grows past the scratch length. Bounded to "once per high-water mark" and never runs
+ *       on the duty-cycle hot path (snapshots run on a separate cluster cycle). Pre-size {@code
+ *       INITIAL_CAPACITY = 8192} accommodates typical equity-universe deployments (Reg SHO
+ *       threshold list + IPO restrictions) without ever growing.
+ *   <li>{@link #restoreFrom} allocates one {@link SymbolEligibilityState} per record. Runs once on
+ *       cluster startup (Aeron Cluster snapshot replay) — bounded by the snapshot's record count,
+ *       not the order-rate. Same idiom as the equivalent allocation in {@link
+ *       RiskLimitStore#restoreFrom}.
+ * </ul>
  */
 public final class SymbolEligibilityStore implements ReferenceDataStore {
 
@@ -164,6 +171,10 @@ public final class SymbolEligibilityStore implements ReferenceDataStore {
     final var group = snapshotDecoder.noEntries();
     while (group.hasNext()) {
       group.next();
+      // Allocation: one SymbolEligibilityState per record on the cold snapshot-restore path.
+      // Bounded by the snapshot's record count (typical: a few thousand symbols); runs once on
+      // cluster startup before the duty cycle is admitting orders, so the per-record alloc never
+      // crosses the order-admission hot path. Documented in the class-level Javadoc carve-out.
       final var state = new SymbolEligibilityState();
       state.setSymbolHash(group.symbolHash());
       state.setTradingAllowed(group.tradingAllowed() != 0);

@@ -785,8 +785,9 @@
 
         APP-152 slice 2: HaltTradingCommand (17), ResumeTradingCommand (18) toggle the
         cluster-wide trading-halt circuit breaker primitive that gates NewOrderSingle in
-        NewOrderSingleHandler validation Check 0. Template 19 is reserved for a future
-        KillSwitchCommand (APP-153) that flushes in-flight RFQ slots in addition to halting.
+        NewOrderSingleHandler validation Check 0. Template 19 (LoadSymbolEligibility) and
+        template 20 (LoadSymbolEligibilityBatch) were added by APP-62 §G to carry the
+        restricted-symbol / Reg SHO short-sale-allowed dataset feeding admission Check 11g.
 
         Events: 117 TradingHaltActivatedEvent / 118 TradingHaltClearedEvent (template IDs 117-118
         are within the events 100-116 + reserved 117-119 range per CLAUDE.md).

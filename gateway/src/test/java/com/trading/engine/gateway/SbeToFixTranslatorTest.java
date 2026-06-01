@@ -15,12 +15,15 @@ import com.trading.engine.fix.decoder_flyweight.ExecutionReportDecoder;
 import com.trading.engine.fix.decoder_flyweight.QuoteRequestRejectDecoder;
 import com.trading.engine.messages.sbe.CancelReasonEnum;
 import com.trading.engine.messages.sbe.ExecTypeEnum;
+import com.trading.engine.messages.sbe.ExpireReasonEnum;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.engine.messages.sbe.OrdStatusEnum;
 import com.trading.engine.messages.sbe.OrdTypeEnum;
 import com.trading.engine.messages.sbe.OrderCanceledEventDecoder;
 import com.trading.engine.messages.sbe.OrderCanceledEventEncoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.ProductTypeEnum;
@@ -1419,5 +1422,237 @@ class SbeToFixTranslatorTest {
     final var fix = newQrrEncoder();
     new SbeToFixTranslator().translateQuoteRequestReject(sbeDec, fix);
     return encodeAndDecodeQrr(fix);
+  }
+
+  // ===========================================================================
+  // OrderExpiredEvent → ExecutionReport (ExecType=Expired) — APP-62 §J
+  // ===========================================================================
+
+  /** Arbitrary epoch-nanos timestamp reused across OrderExpiredEvent tests. */
+  private static final long OXP_TS_NANOS = 1_712_491_300_000_000_000L;
+
+  /**
+   * Happy-path: all required FIX 4.4 ExecutionReport fields present with correct values when the
+   * SBE OrderExpiredEvent carries orderId, clOrdId, symbol, Buy side, and a timestamp. ExecType
+   * (150) and OrdStatus (39) must both be {@code 'C'} (Expired) per FIX 4.4 §4.5. OrigClOrdID (41)
+   * MUST be absent — the event schema deliberately omits it (APP-62 §J).
+   */
+  @Test
+  void translateOrderExpiredEvent_happyPath_emitsExpectedFixFields() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(1L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-001");
+    enc.execId("EXEC-EXP-001");
+    enc.clOrdId("CL-EXP-001");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.cumQty(0L);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.IdleTimeout);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    // tag 35 — MsgType = "8" (ExecutionReport)
+    assertEquals("8", fixDec.header().msgTypeAsString());
+    // tag 37 — OrderID
+    assertEquals("ORD-EXP-001", fixDec.orderIDAsString());
+    // tag 17 — ExecID (cluster-minted; comes from SBE event execId field)
+    assertEquals("EXEC-EXP-001", fixDec.execIDAsString());
+    // tag 11 — ClOrdID
+    assertEquals("CL-EXP-001", fixDec.clOrdIDAsString());
+    // tag 41 — OrigClOrdID MUST be absent per APP-62 §J schema choice
+    assertFalse(
+        fixDec.hasOrigClOrdID(),
+        "OrigClOrdID (tag 41) must NOT be emitted by OrderExpiredEvent translation");
+    // tag 150 — ExecType = 'C' (Expired) per FIX 4.4 §4.5
+    assertEquals('C', fixDec.execType());
+    // tag 39 — OrdStatus = 'C' (Expired)
+    assertEquals('C', fixDec.ordStatus());
+    // tag 55 — Symbol
+    assertEquals("EURUSD", fixDec.symbolAsString());
+    // tag 54 — Side = '1' (Buy)
+    assertEquals('1', fixDec.side());
+    // tag 151 — LeavesQty = 0
+    assertEquals(0L, fixDec.leavesQty().value());
+    // tag 14 — CumQty
+    assertEquals(0L, fixDec.cumQty().value());
+    // tag 6 — AvgPx = 0
+    assertEquals(0L, fixDec.avgPx().value());
+    // tag 60 — TransactTime populated from event timestamp
+    assertTrue(fixDec.transactTimeLength() > 0, "tag 60 TransactTime must be populated");
+  }
+
+  /** Sell side on the SBE OrderExpiredEvent must map to FIX side char {@code '2'}. */
+  @Test
+  void translateOrderExpiredEvent_sellSide_mapsToFix2() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(2L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-002");
+    enc.execId("EXEC-EXP-002");
+    enc.clOrdId("CL-EXP-002");
+    enc.symbol("USDJPY");
+    enc.side(SideEnum.Sell);
+    enc.cumQty(0L);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.IdleTimeout);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    assertEquals('2', fixDec.side(), "Sell side (SBE) must map to FIX char '2'");
+    assertEquals('C', fixDec.execType(), "ExecType (tag 150) must be 'C' (Expired)");
+  }
+
+  /**
+   * Partial-filled cumQty must propagate from the SBE event to FIX tag 14 — guards the wire
+   * correctness for future emitters that support expiring partially-filled orders.
+   */
+  @Test
+  void translateOrderExpiredEvent_partialFilledCumQty_propagatesToFix14() {
+    // 5.0 fixed-point 10^-8 == 500_000_000L
+    final long cumQtyFixed = 500_000_000L;
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(3L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-PF");
+    enc.execId("EXEC-EXP-PF");
+    enc.clOrdId("CL-EXP-PF");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.cumQty(cumQtyFixed);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.IdleTimeout);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    final long actualScaled =
+        java.math.BigDecimal.valueOf(fixDec.cumQty().value(), fixDec.cumQty().scale())
+            .scaleByPowerOfTen(8)
+            .longValueExact();
+    assertEquals(
+        cumQtyFixed,
+        actualScaled,
+        "CumQty (tag 14) must round-trip the fixed-point cumQty from the OrderExpiredEvent");
+  }
+
+  /**
+   * {@link ExpireReasonEnum#IdleTimeout} must surface as FIX Text(58) {@code "Expired: idle session
+   * timeout"} — APP-62 §J convention since FIX 4.4 has no dedicated ExpireReason tag.
+   */
+  @Test
+  void translateOrderExpiredEvent_idleTimeout_emitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(4L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-IT");
+    enc.execId("EXEC-EXP-IT");
+    enc.clOrdId("CL-EXP-IT");
+    enc.symbol("EURUSD");
+    enc.side(SideEnum.Buy);
+    enc.cumQty(0L);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.IdleTimeout);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    assertTrue(fixDec.hasText(), "tag 58 Text must be present for IdleTimeout expire reason");
+    assertEquals(
+        "Expired: idle session timeout",
+        fixDec.textAsString(),
+        "Text(58) must carry the idle-timeout expire reason string");
+  }
+
+  /**
+   * {@link ExpireReasonEnum#TimeInForceExpired} must surface as FIX Text(58) {@code "Expired: time
+   * in force elapsed"}.
+   */
+  @Test
+  void translateOrderExpiredEvent_timeInForceExpired_emitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(5L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-TIF");
+    enc.execId("EXEC-EXP-TIF");
+    enc.clOrdId("CL-EXP-TIF");
+    enc.symbol("USDJPY");
+    enc.side(SideEnum.Sell);
+    enc.cumQty(0L);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.TimeInForceExpired);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    assertTrue(
+        fixDec.hasText(), "tag 58 Text must be present for TimeInForceExpired expire reason");
+    assertEquals(
+        "Expired: time in force elapsed",
+        fixDec.textAsString(),
+        "Text(58) must carry the TIF expire reason string");
+  }
+
+  /**
+   * {@link ExpireReasonEnum#NULL_VAL} must leave FIX tag 58 absent — defensive switch behaviour.
+   */
+  @Test
+  void translateOrderExpiredEvent_nullExpireReason_omitsText58() {
+    final var sbeBuf = new ExpandableArrayBuffer(512);
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(sbeBuf, 0, new MessageHeaderEncoder());
+    enc.sequenceNumber(6L);
+    enc.timestamp(OXP_TS_NANOS);
+    enc.orderId("ORD-EXP-NR");
+    enc.execId("EXEC-EXP-NR");
+    enc.clOrdId("CL-EXP-NR");
+    enc.symbol("GBPUSD");
+    enc.side(SideEnum.Buy);
+    enc.cumQty(0L);
+    enc.productType(ProductTypeEnum.NULL_VAL);
+    enc.expireReason(ExpireReasonEnum.NULL_VAL);
+
+    final var fixDec = translateExpired(sbeBuf);
+
+    assertFalse(fixDec.hasText(), "tag 58 Text must be absent when expireReason is NULL_VAL");
+  }
+
+  // ---------------------------------------------------------------------------
+  // OrderExpiredEvent test helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Convenience pipeline for OrderExpiredEvent: wraps the SBE buffer with a fresh translator
+   * instance, translates, encodes to wire, and decodes via Artio's FIX ExecutionReportDecoder.
+   * Mirrors the {@code translateCanceled} helper pattern.
+   */
+  private static ExecutionReportDecoder translateExpired(final MutableDirectBuffer sbeBuf) {
+    final var hdrDec = new MessageHeaderDecoder();
+    hdrDec.wrap(sbeBuf, 0);
+    final var sbeDec = new OrderExpiredEventDecoder();
+    sbeDec.wrap(
+        sbeBuf, MessageHeaderDecoder.ENCODED_LENGTH, hdrDec.blockLength(), hdrDec.version());
+
+    final var fix = new ExecutionReportEncoder();
+    fix.header().senderCompID("EXCH").targetCompID("CLIENT").msgSeqNum(1);
+    fix.header().sendingTime("20260407-12:00:00".getBytes(StandardCharsets.US_ASCII));
+    new SbeToFixTranslator().translateOrderExpiredEvent(sbeDec, fix);
+
+    final var wire = new MutableAsciiBuffer(new byte[2048]);
+    final long encoded = fix.encode(wire, 0);
+    final int wireOffset = (int) (encoded >>> 32);
+    final int wireLen = (int) encoded;
+
+    final var fixDec = new ExecutionReportDecoder();
+    fixDec.decode(wire, wireOffset, wireLen);
+    return fixDec;
   }
 }

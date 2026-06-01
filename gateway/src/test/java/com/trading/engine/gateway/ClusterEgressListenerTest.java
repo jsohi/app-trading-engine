@@ -14,6 +14,8 @@ import com.trading.engine.messages.sbe.OrderCancelRejectDecoder;
 import com.trading.engine.messages.sbe.OrderCancelRejectEncoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderCreatedEventEncoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventDecoder;
+import com.trading.engine.messages.sbe.OrderExpiredEventEncoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventDecoder;
 import com.trading.engine.messages.sbe.OrderRejectedEventEncoder;
 import com.trading.engine.messages.sbe.QuoteDecoder;
@@ -427,12 +429,67 @@ class ClusterEgressListenerTest {
   void decoderAccessors_returnNonNull_newDecoders() {
     assertNotNull(listener.orderCreatedDecoder());
     assertNotNull(listener.orderRejectedDecoder());
+    assertNotNull(listener.orderExpiredDecoder(), "APP-62 §J orderExpiredDecoder must be non-null");
   }
 
   @Test
   void decoderAccessors_returnSameInstance_newDecoders() {
     assertSame(listener.orderCreatedDecoder(), listener.orderCreatedDecoder());
     assertSame(listener.orderRejectedDecoder(), listener.orderRejectedDecoder());
+    assertSame(
+        listener.orderExpiredDecoder(),
+        listener.orderExpiredDecoder(),
+        "orderExpiredDecoder must return the same pre-allocated flyweight instance");
+  }
+
+  // ===========================================================================
+  // OrderExpiredEvent dispatch (APP-62 §J)
+  // ===========================================================================
+
+  @Test
+  void onMessage_orderExpiredEvent_dispatchesToCallback() {
+    final int len = encodeOrderExpiredEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(SESSION_KEY, lastSessionKey.get());
+    assertEquals(OrderExpiredEventDecoder.TEMPLATE_ID, lastTemplateId.get());
+    assertEquals(TIMESTAMP, lastTimestamp.get());
+  }
+
+  @Test
+  void onMessage_orderExpiredEvent_sessionNotFound_continues() {
+    final int len = encodeOrderExpiredEvent("UNKNOWN-CL-ORD-ID");
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.CONTINUE, action);
+    assertEquals(-1, lastSessionKey.get());
+  }
+
+  @Test
+  void onMessage_orderExpiredEvent_callbackReturnsFalse_aborts() {
+    callbackDelivers = false;
+    final int len = encodeOrderExpiredEvent(CL_ORD_ID);
+
+    final Action action = listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    assertEquals(Action.ABORT, action);
+  }
+
+  @Test
+  void orderExpiredDecoder_positionedAfterOnMessage() {
+    final int len = encodeOrderExpiredEvent(CL_ORD_ID);
+    listener.onMessage(1L, TIMESTAMP, buffer, 0, len, null);
+
+    final var dec = listener.orderExpiredDecoder();
+    final byte[] scratch = new byte[OrderExpiredEventDecoder.clOrdIdLength()];
+    dec.getClOrdId(scratch, 0);
+    final String decoded =
+        new String(
+            scratch, 0, ClusterEgressListener.trimNullPadding(scratch), StandardCharsets.US_ASCII);
+    assertEquals(CL_ORD_ID, decoded);
   }
 
   // ===========================================================================
@@ -476,6 +533,19 @@ class ClusterEgressListenerTest {
     enc.clOrdId(clOrdId);
     enc.side(SideEnum.Buy);
     enc.rejectReason(RejectReasonEnum.UnknownSymbol);
+    return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
+  }
+
+  /**
+   * Encodes a minimal SBE {@code OrderExpiredEvent} (template 121, APP-62 §J) for egress dispatch
+   * tests. Only the fields the egress listener reads (clOrdId for correlation, side for the
+   * required required-field check) are populated; other fields default to NULL/zero.
+   */
+  private int encodeOrderExpiredEvent(final String clOrdId) {
+    final var enc = new OrderExpiredEventEncoder();
+    enc.wrapAndApplyHeader(buffer, 0, headerEncoder);
+    enc.clOrdId(clOrdId);
+    enc.side(SideEnum.Buy);
     return MessageHeaderEncoder.ENCODED_LENGTH + enc.encodedLength();
   }
 }
