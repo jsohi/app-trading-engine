@@ -1462,13 +1462,18 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
       } else {
         long delta = Math.abs(price - lastMid);
         // Overflow guard on (delta × 10_000): the high 64 bits of the unsigned product. Non-zero
-        // means the product exceeds 2⁶³; treat as a runaway breach.
+        // means the product exceeds 2⁶³; treat as a runaway breach. Gemini R2 caught a
+        // signed-overflow gap: unsignedMultiplyHigh only flags products ≥ 2⁶⁴; a product in
+        // [2⁶³, 2⁶⁴−1] yields deltaHigh==0 but the signed long wraps to a negative number
+        // (delta * 10_000L < 0L) which would let a runaway value silently pass as a small
+        // negative deviationBps. Guard on BOTH the high-word check AND signed-negative product.
         long deltaHigh = Math.unsignedMultiplyHigh(delta, 10_000L);
+        long product = delta * 10_000L;
         long deviationBps;
-        if (deltaHigh != 0L) {
+        if (deltaHigh != 0L || product < 0L) {
           deviationBps = Long.MAX_VALUE;
         } else {
-          deviationBps = (delta * 10_000L) / lastMid;
+          deviationBps = product / lastMid;
         }
         if (deviationBps > effectivePriceDeviationBps) {
           emitOrderRejectedWithBreachContext(
