@@ -296,7 +296,12 @@ public final class RiskLimitState {
       srcOffset = 0;
     }
     int available = Math.max(0, src.length - srcOffset);
-    int copyLen = Math.min(Math.min(length, dst.length), available);
+    // Gemini R3: clamp the floor at 0 too. If `length` is negative (caller bug — e.g. an SBE
+    // decoder returning -1 for an absent field on legacy wire) Math.min(...) would propagate the
+    // negative through and the zero-pad loop at `for (i = copyLen; i < dst.length; i++)` would
+    // start from a negative index, walking arbitrary heap. Floor at 0 means "copy nothing,
+    // zero-fill the whole destination" — the safe degenerate behavior.
+    int copyLen = Math.max(0, Math.min(Math.min(length, dst.length), available));
     if (copyLen > 0) {
       System.arraycopy(src, srcOffset, dst, 0, copyLen);
     }

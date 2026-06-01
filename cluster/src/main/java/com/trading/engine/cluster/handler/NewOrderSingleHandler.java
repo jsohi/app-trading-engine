@@ -2774,11 +2774,21 @@ public final class NewOrderSingleHandler implements CommandHandler, SessionMetri
     // never happen for matched admit↔revert pairs but defensive) are also coalesced to "absent".
     if (next <= 0L) {
       inner.remove(symbolHash);
-      // APP-62 Gemini follow-up — when the last symbol drains for an account, remove the
-      // now-empty inner map from the outer map too. Without this, the outer map retains
-      // an empty Long2LongHashMap for every account that has ever traded, leaking memory
-      // monotonically over the cluster lifetime (one ~256-byte allocation per account, never
-      // freed even after the account exits all positions).
+      // APP-62 Gemini R1 + R3 trade-off (kept R1's empty-map removal after R3 surfaced the
+      // counter-argument):
+      //   R1 (MEDIUM) — without this removal the outer map retains an empty Long2LongHashMap for
+      //     every account that ever traded, leaking ~256 B per account monotonically over the
+      //     cluster lifetime. Unbounded growth in long-running clusters with high account churn
+      //     is the larger production risk.
+      //   R3 (HIGH) — removing the empty inner forces a fresh Long2LongHashMap allocation on the
+      //     account's NEXT admit via applyWorkingPosition's lazy-create branch. That allocation
+      //     IS on the order-admit hot path.
+      // We accept the bounded steady-state allocation (rate-limited by per-account admit rate
+      // when an account is fully flat) to preserve the monotonic-growth bound. Accounts that
+      // continuously hold ≥ 1 working position never trigger this path (the inner stays
+      // non-empty). Accounts that flap empty/non-empty on every order are pathological and rare;
+      // if observed, the right fix is to gate the removal behind a "stable empty for N seconds"
+      // condition rather than to leak the map forever.
       if (inner.isEmpty()) {
         outer.remove(accountId);
       }

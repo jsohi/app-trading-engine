@@ -5,7 +5,6 @@ import com.trading.engine.messages.sbe.LoadSymbolEligibilityBatchEncoder.NoEligi
 import com.trading.engine.messages.sbe.MessageHeaderEncoder;
 import com.trading.refdata.ReferenceDataLoadException;
 import com.trading.refdata.spi.ReferenceDataEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.agrona.MutableDirectBuffer;
 
@@ -113,13 +112,20 @@ public final class SymbolEligibilityCommandEncoder
    * constructor has already validated that the ASCII byte length fits.
    */
   private static void packSymbolAscii(final String symbol, final byte[] dst) {
-    final byte[] src = symbol.getBytes(StandardCharsets.US_ASCII);
-    // Defensive clear-then-copy; covers the case where the scratch buffer carried a longer
+    // Gemini R3: was `symbol.getBytes(StandardCharsets.US_ASCII)` which allocates a fresh byte
+    // array per call. The record's SymbolEligibilityRecord compact constructor already validates
+    // pure-ASCII so direct char→byte casting is safe (every codepoint fits in one byte). Copy
+    // chars directly into the destination scratch with explicit narrowing — zero allocation per
+    // record. Clear-then-copy semantics preserved by the trailing zero-fill loop.
+    final int n = Math.min(symbol.length(), dst.length);
+    for (int i = 0; i < n; i++) {
+      dst[i] = (byte) symbol.charAt(i);
+    }
+    // Defensive trailing zero-fill: covers reuse of a scratch buffer that carried a longer
     // previous symbol's tail bytes. SBE Symbol is fixed-length so trailing zero bytes are the
     // canonical padding for a shorter symbol.
-    for (int i = 0; i < dst.length; i++) {
+    for (int i = n; i < dst.length; i++) {
       dst[i] = 0;
     }
-    System.arraycopy(src, 0, dst, 0, Math.min(src.length, dst.length));
   }
 }

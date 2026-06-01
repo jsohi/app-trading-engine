@@ -1,6 +1,5 @@
 package com.trading.refdata.eligibility;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
@@ -66,13 +65,28 @@ public record SymbolEligibilityRecord(
       throw new IllegalArgumentException("symbol must not be blank");
     }
     // SBE Symbol field is 8 ASCII bytes. Reject longer strings at the boundary rather than
-    // silently truncating on encode (which would corrupt the symbol key used by the §G
-    // check). ASCII byte length is also asserted: a multi-byte UTF-8 codepoint would mis-pack
-    // into the symbol hash used by NewOrderSingleHandler.
-    final byte[] asciiBytes = symbol.getBytes(StandardCharsets.US_ASCII);
-    if (asciiBytes.length > MAX_SYMBOL_LENGTH) {
+    // silently truncating on encode (which would corrupt the symbol key used by the §G check).
+    //
+    // Gemini R3: validate ASCII codepoints EXPLICITLY rather than via getBytes(US_ASCII). The
+    // getBytes path silently replaces non-ASCII codepoints with '?' (0x3F) before measuring the
+    // byte length — so e.g. "EUR€USD" would have come through as 8 bytes (well under the limit)
+    // and packed into the symbol hash with a fabricated '?' byte, drifting from the operator's
+    // configured symbol. Range-check every char against [0x20, 0x7E] (printable ASCII) and reject
+    // anything else. Symbol length is the char count, which equals the ASCII byte count when
+    // every char is in the printable range.
+    if (symbol.length() > MAX_SYMBOL_LENGTH) {
       throw new IllegalArgumentException(
-          "symbol must be <= " + MAX_SYMBOL_LENGTH + " ASCII chars, got " + asciiBytes.length);
+          "symbol must be <= " + MAX_SYMBOL_LENGTH + " ASCII chars, got " + symbol.length());
+    }
+    for (int i = 0; i < symbol.length(); i++) {
+      char c = symbol.charAt(i);
+      if (c < 0x20 || c > 0x7E) {
+        throw new IllegalArgumentException(
+            "symbol must contain only printable ASCII (0x20-0x7E); offending codepoint at index "
+                + i
+                + ": 0x"
+                + Integer.toHexString(c));
+      }
     }
     if (priceDeviationBpsOverride < 0) {
       throw new IllegalArgumentException(
