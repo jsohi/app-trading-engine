@@ -4,3 +4,13 @@ riskLimits:
     maxOrderNotional: 0
     maxDailyVolume: 0
     status: "Active"
+  # APP-62 §E — every account that can trade must have a risk-limit record loaded; the cluster
+  # rejects with RiskLimitsNotLoaded BEFORE the account-status check. The LOCKED account is
+  # asserted by e2e-scenarios.yaml to fail with "account not active" — that path only fires once
+  # the risk-limit lookup succeeds, so we register a permissive record here. The downstream
+  # AccountStatusEnum.Suspended check (set in accounts.yaml) still trips the expected rejection.
+  - accountId: 2
+    maxOrderSize: 1000000000
+    maxOrderNotional: 0
+    maxDailyVolume: 0
+    status: "Active"

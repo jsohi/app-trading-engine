@@ -1,0 +1,4 @@
+symbolEligibilities:
+  - tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 0

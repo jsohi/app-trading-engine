@@ -7,6 +7,7 @@ import com.trading.engine.messages.sbe.CurrencyLoadedEventDecoder;
 import com.trading.engine.messages.sbe.MessageHeaderDecoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadRejectedEventDecoder;
 import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
+import com.trading.engine.messages.sbe.SymbolEligibilityLoadedEventDecoder;
 import com.trading.refdata.ResponseCollector;
 import io.aeron.cluster.client.ControlledEgressListener;
 import io.aeron.cluster.codecs.EventCode;
@@ -19,8 +20,8 @@ import org.apache.logging.log4j.Logger;
 /**
  * Lightweight {@link ControlledEgressListener} for reference data loading at startup. Decodes
  * AccountLoaded (110), AccountLoadRejected (111), CurrencyLoaded (113), CurrencyLoadRejected (114),
- * RiskLimitLoaded (115), RiskLimitLoadRejected (116) from cluster egress and routes to a {@link
- * ResponseCollector}.
+ * RiskLimitLoaded (115), RiskLimitLoadRejected (116), SymbolEligibilityLoaded (120, APP-62 §G) from
+ * cluster egress and routes to a {@link ResponseCollector}.
  *
  * <p><b>Batch response handling.</b> A single egress fragment may contain multiple concatenated SBE
  * messages (one per record in a batch command). This bridge iterates through the buffer using
@@ -51,6 +52,10 @@ final class RefDataEgressBridge implements ControlledEgressListener {
   private static final int CURRENCY_LOAD_REJECTED = CurrencyLoadRejectedEventDecoder.TEMPLATE_ID;
   private static final int RISK_LIMIT_LOADED = RiskLimitLoadedEventDecoder.TEMPLATE_ID;
   private static final int RISK_LIMIT_LOAD_REJECTED = RiskLimitLoadRejectedEventDecoder.TEMPLATE_ID;
+  // APP-62 §G — fail-closed symbol-eligibility loaded event. There is no companion reject event
+  // for §G (the YAML loader is the structural-validation surface); only success acks are routed.
+  private static final int SYMBOL_ELIGIBILITY_LOADED =
+      SymbolEligibilityLoadedEventDecoder.TEMPLATE_ID;
 
   // Verify ALL 6 ref-data event types are flat (no groups/vardata) at class load time.
   // Java assert is disabled by default in production (-ea not set). These explicit if/throw
@@ -71,6 +76,11 @@ final class RefDataEgressBridge implements ControlledEgressListener {
     verifyBlockLength("RiskLimitLoadedEvent", RiskLimitLoadedEventDecoder.BLOCK_LENGTH, 124);
     verifyBlockLength(
         "RiskLimitLoadRejectedEvent", RiskLimitLoadRejectedEventDecoder.BLOCK_LENGTH, 89);
+    // APP-62 §G SymbolEligibilityLoadedEvent: 8 (sequenceNumber) + 8 (timestamp) + 8 (symbol)
+    // + 1 (tradingAllowed) + 1 (shortSaleAllowed) + 4 (priceDeviationBpsOverride) + 8
+    // (transactTime) = 38.
+    verifyBlockLength(
+        "SymbolEligibilityLoadedEvent", SymbolEligibilityLoadedEventDecoder.BLOCK_LENGTH, 38);
   }
 
   // Pre-allocated SBE decoders — one per reject event type because the text field
@@ -131,7 +141,8 @@ final class RefDataEgressBridge implements ControlledEgressListener {
 
       final int bodyOffset = pos + MessageHeaderDecoder.ENCODED_LENGTH;
       switch (templateId) {
-        case ACCOUNT_LOADED, CURRENCY_LOADED, RISK_LIMIT_LOADED -> collector.onLoaded();
+        case ACCOUNT_LOADED, CURRENCY_LOADED, RISK_LIMIT_LOADED, SYMBOL_ELIGIBILITY_LOADED ->
+            collector.onLoaded();
         case ACCOUNT_LOAD_REJECTED -> {
           acctRejDecoder.wrap(buffer, bodyOffset, blockLen, headerDecoder.version());
           collector.onRejected(acctRejDecoder.text().trim());

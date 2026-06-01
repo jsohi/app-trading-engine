@@ -1,0 +1,9 @@
+symbolEligibilities:
+  - symbol: EURUSD
+    tradingAllowed: true
+    shortSaleAllowed: true
+    priceDeviationBpsOverride: 250
+  - symbol: GBPUSD
+    tradingAllowed: false
+    shortSaleAllowed: false
+    priceDeviationBpsOverride: 0

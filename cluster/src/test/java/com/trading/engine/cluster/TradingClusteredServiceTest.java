@@ -950,6 +950,12 @@ class TradingClusteredServiceTest {
     cursor = appendFragment(dst, cursor, svc.rfqStateSnapBuffer(), svc.rfqStateSnapLength());
     cursor =
         appendFragment(dst, cursor, svc.clOrdIdDedupSnapBuffer(), svc.clOrdIdDedupSnapLength());
+    cursor =
+        appendFragment(
+            dst, cursor, svc.lastQuotedPriceSnapBuffer(), svc.lastQuotedPriceSnapLength());
+    cursor =
+        appendFragment(
+            dst, cursor, svc.accountPositionSnapBuffer(), svc.accountPositionSnapLength());
     return cursor;
   }
 
@@ -1109,7 +1115,9 @@ class TradingClusteredServiceTest {
             + service.symbolEligibilitySnapLength()
             + service.orderBookSnapLength()
             + service.rfqStateSnapLength()
-            + service.clOrdIdDedupSnapLength();
+            + service.clOrdIdDedupSnapLength()
+            + service.lastQuotedPriceSnapLength()
+            + service.accountPositionSnapLength();
 
     // Load onto a fresh service and verify full state restoration.
     final var fresh = createServiceBundle(false);
@@ -1149,7 +1157,9 @@ class TradingClusteredServiceTest {
             + service.symbolEligibilitySnapLength()
             + service.orderBookSnapLength()
             + service.rfqStateSnapLength()
-            + service.clOrdIdDedupSnapLength();
+            + service.clOrdIdDedupSnapLength()
+            + service.lastQuotedPriceSnapLength()
+            + service.accountPositionSnapLength();
     assertEquals(expectedLen, assembledLen);
 
     // Verify the assembled buffer is a valid snapshot.
@@ -1293,7 +1303,9 @@ class TradingClusteredServiceTest {
             + svc.symbolEligibilitySnapLength()
             + svc.orderBookSnapLength()
             + svc.rfqStateSnapLength()
-            + svc.clOrdIdDedupSnapLength();
+            + svc.clOrdIdDedupSnapLength()
+            + svc.lastQuotedPriceSnapLength()
+            + svc.accountPositionSnapLength();
 
     // Build a fresh service with matching capacity and restore.
     final var freshOrdGen = new IdGenerator("ORD");
@@ -1352,5 +1364,157 @@ class TradingClusteredServiceTest {
     assertTrue(assembledLen > 0);
     final long hardCap = (long) TradingClusteredService.SNAPSHOT_HARD_CAP_MULTIPLIER * maxMsg;
     assertTrue(assembledLen < hardCap, "normal snapshot must be under hard cap");
+  }
+
+  // ---------------------------------------------------------------------------
+  // APP-62 §5 / §4 — snapshot tpl 211 (LastQuotedPrice) + tpl 212 (AccountPosition)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void snapshotRoundTrip_lastQuotedMidPrices_restored() {
+    final var handler = service.newOrderSingleHandlerForTest();
+    handler.updateLastQuotedMidForTest(11L, 100L, 200L, 1_000L);
+    handler.updateLastQuotedMidForTest(22L, 300L, 500L, 2_000L);
+    handler.updateLastQuotedMidForTest(33L, 700L, 900L, 3_000L);
+
+    final var concatenated = new ExpandableArrayBuffer(65_536);
+    final int len = encodeAndConcatenateSnapshot(service, concatenated);
+
+    final var fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(concatenated, 0, len);
+
+    final var freshHandler = fresh.service().newOrderSingleHandlerForTest();
+    assertEquals(150L, freshHandler.lastQuotedMidPriceForTest(11L));
+    assertEquals(400L, freshHandler.lastQuotedMidPriceForTest(22L));
+    assertEquals(800L, freshHandler.lastQuotedMidPriceForTest(33L));
+    assertEquals(1_000L, freshHandler.lastQuotedMidAsOfNanosForTest(11L));
+    assertEquals(2_000L, freshHandler.lastQuotedMidAsOfNanosForTest(22L));
+    assertEquals(3_000L, freshHandler.lastQuotedMidAsOfNanosForTest(33L));
+  }
+
+  @Test
+  void snapshotRoundTrip_accountPositions_restored() {
+    final var handler = service.newOrderSingleHandlerForTest();
+    handler.applyWorkingPositionForTest(1L, 100L, SideEnum.Buy, 50L);
+    handler.applyWorkingPositionForTest(1L, 200L, SideEnum.Sell, 75L);
+    handler.applyWorkingPositionForTest(2L, 100L, SideEnum.Sell, 33L);
+    handler.applyWorkingPositionForTest(2L, 200L, SideEnum.Buy, 99L);
+
+    final var concatenated = new ExpandableArrayBuffer(65_536);
+    final int len = encodeAndConcatenateSnapshot(service, concatenated);
+
+    final var fresh = createServiceBundle(false);
+    fresh.service().loadSnapshot(concatenated, 0, len);
+
+    final var freshHandler = fresh.service().newOrderSingleHandlerForTest();
+    assertEquals(50L, freshHandler.workingLongQtyForTest(1L, 100L));
+    assertEquals(75L, freshHandler.workingShortQtyForTest(1L, 200L));
+    assertEquals(33L, freshHandler.workingShortQtyForTest(2L, 100L));
+    assertEquals(99L, freshHandler.workingLongQtyForTest(2L, 200L));
+  }
+
+  @Test
+  void loadSnapshot_missingLastQuotedPriceFragment_throwsIllegalStateException() {
+    assertMissingFragmentThrows("lastQuotedPrice=false", true /* drop tpl 211 */, false);
+  }
+
+  @Test
+  void loadSnapshot_missingAccountPositionFragment_throwsIllegalStateException() {
+    assertMissingFragmentThrows("accountPosition=false", false, true /* drop tpl 212 */);
+  }
+
+  /**
+   * Build a snapshot envelope missing one of the two new APP-62 fragments, then assert loadSnapshot
+   * rejects with the matching missing-fragment guard message.
+   */
+  private void assertMissingFragmentThrows(
+      final String expectedContains,
+      final boolean dropLastQuotedPrice,
+      final boolean dropAccountPosition) {
+    service.encodeSnapshotFragments(TIMESTAMP);
+
+    final int headerLen = service.snapshotHeaderLength();
+    int storeCount = 11;
+    long bodyLen =
+        (long) service.eventSeqSnapLength()
+            + service.idGenSnapLength()
+            + service.accountSnapLength()
+            + service.currencySnapLength()
+            + service.riskLimitSnapLength()
+            + service.symbolEligibilitySnapLength()
+            + service.orderBookSnapLength()
+            + service.rfqStateSnapLength()
+            + service.clOrdIdDedupSnapLength();
+    if (!dropLastQuotedPrice) {
+      bodyLen += service.lastQuotedPriceSnapLength();
+    } else {
+      storeCount--;
+    }
+    if (!dropAccountPosition) {
+      bodyLen += service.accountPositionSnapLength();
+    } else {
+      storeCount--;
+    }
+    final var assembled = new ExpandableArrayBuffer(headerLen + (int) bodyLen + 64);
+
+    final var hdrEnc = new MessageHeaderEncoder();
+    final var snapTakenEnc = new SnapshotTakenEncoder();
+    snapTakenEnc.wrapAndApplyHeader(assembled, 0, hdrEnc);
+    snapTakenEnc.lastSequenceNumber(0L);
+    snapTakenEnc.snapshotTimestamp(TIMESTAMP);
+    snapTakenEnc.snapshotVersion(1L);
+    snapTakenEnc.storeCount((short) storeCount);
+    snapTakenEnc.totalByteLength(bodyLen);
+    final int reEncodedHeaderLen =
+        MessageHeaderEncoder.ENCODED_LENGTH + snapTakenEnc.encodedLength();
+
+    int pos = reEncodedHeaderLen;
+    pos = putFragment(assembled, pos, service.eventSeqSnapBuffer(), service.eventSeqSnapLength());
+    pos = putFragment(assembled, pos, service.idGenSnapBuffer(), service.idGenSnapLength());
+    pos = putFragment(assembled, pos, service.accountSnapBuffer(), service.accountSnapLength());
+    pos = putFragment(assembled, pos, service.currencySnapBuffer(), service.currencySnapLength());
+    pos = putFragment(assembled, pos, service.riskLimitSnapBuffer(), service.riskLimitSnapLength());
+    pos =
+        putFragment(
+            assembled,
+            pos,
+            service.symbolEligibilitySnapBuffer(),
+            service.symbolEligibilitySnapLength());
+    pos = putFragment(assembled, pos, service.orderBookSnapBuffer(), service.orderBookSnapLength());
+    pos = putFragment(assembled, pos, service.rfqStateSnapBuffer(), service.rfqStateSnapLength());
+    pos =
+        putFragment(
+            assembled, pos, service.clOrdIdDedupSnapBuffer(), service.clOrdIdDedupSnapLength());
+    if (!dropLastQuotedPrice) {
+      pos =
+          putFragment(
+              assembled,
+              pos,
+              service.lastQuotedPriceSnapBuffer(),
+              service.lastQuotedPriceSnapLength());
+    }
+    if (!dropAccountPosition) {
+      pos =
+          putFragment(
+              assembled,
+              pos,
+              service.accountPositionSnapBuffer(),
+              service.accountPositionSnapLength());
+    }
+
+    final CRC32C crc = new CRC32C();
+    crc.update(assembled.byteArray(), reEncodedHeaderLen, pos - reEncodedHeaderLen);
+    snapTakenEnc.checksum(Integer.toUnsignedLong((int) crc.getValue()));
+
+    final int assembledLen = pos;
+    final var thrown =
+        assertThrows(
+            IllegalStateException.class, () -> service.loadSnapshot(assembled, 0, assembledLen));
+    assertTrue(
+        thrown.getMessage().contains(expectedContains),
+        "expected '"
+            + expectedContains
+            + "' in missing-fragment message but was: "
+            + thrown.getMessage());
   }
 }

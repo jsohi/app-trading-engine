@@ -12,6 +12,7 @@ import com.trading.engine.messages.sbe.OrderCreatedEventDecoder;
 import com.trading.engine.messages.sbe.OrderFilledEventDecoder;
 import com.trading.engine.messages.sbe.QuoteCreatedEventDecoder;
 import com.trading.engine.messages.sbe.QuoteRequestedEventDecoder;
+import com.trading.engine.messages.sbe.RiskLimitLoadedEventDecoder;
 import com.trading.engine.messages.sbe.SideEnum;
 import com.trading.engine.projections.EventConsumer;
 import com.trading.engine.projections.ProjectionRegistry;
@@ -20,6 +21,7 @@ import com.trading.engine.projections.order.OrderProjection;
 import com.trading.engine.projections.position.PositionProjection;
 import com.trading.engine.projections.quote.QuoteProjection;
 import com.trading.engine.projections.quote.QuoteStatus;
+import com.trading.engine.projections.risklimits.RiskLimitProjection;
 import com.trading.engine.testsupport.sbe.SbeTestEncoder;
 import java.util.Map;
 import org.agrona.ExpandableArrayBuffer;
@@ -41,6 +43,7 @@ class QueryServiceTest {
   private PositionProjection positionProjection;
   private AccountProjection accountProjection;
   private QuoteProjection quoteProjection;
+  private RiskLimitProjection riskLimitProjection;
   private ProjectionRegistry registry;
   private EventConsumer consumer;
   private QueryService queryService;
@@ -53,6 +56,7 @@ class QueryServiceTest {
     positionProjection = new PositionProjection();
     accountProjection = new AccountProjection(64);
     quoteProjection = new QuoteProjection(64);
+    riskLimitProjection = new RiskLimitProjection(64);
 
     consumer = new EventConsumer();
     consumer.registerProjection(
@@ -70,7 +74,12 @@ class QueryServiceTest {
 
     queryService =
         new QueryService(
-            orderProjection, positionProjection, accountProjection, quoteProjection, registry);
+            orderProjection,
+            positionProjection,
+            accountProjection,
+            quoteProjection,
+            riskLimitProjection,
+            registry);
 
     buf = new ExpandableArrayBuffer(512);
     seqNo = 0;
@@ -86,25 +95,62 @@ class QueryServiceTest {
         NullPointerException.class,
         () ->
             new QueryService(
-                null, positionProjection, accountProjection, quoteProjection, registry));
-    assertThrows(
-        NullPointerException.class,
-        () ->
-            new QueryService(orderProjection, null, accountProjection, quoteProjection, registry));
-    assertThrows(
-        NullPointerException.class,
-        () ->
-            new QueryService(orderProjection, positionProjection, null, quoteProjection, registry));
-    assertThrows(
-        NullPointerException.class,
-        () ->
-            new QueryService(
-                orderProjection, positionProjection, accountProjection, null, registry));
+                null,
+                positionProjection,
+                accountProjection,
+                quoteProjection,
+                riskLimitProjection,
+                registry));
     assertThrows(
         NullPointerException.class,
         () ->
             new QueryService(
-                orderProjection, positionProjection, accountProjection, quoteProjection, null));
+                orderProjection,
+                null,
+                accountProjection,
+                quoteProjection,
+                riskLimitProjection,
+                registry));
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            new QueryService(
+                orderProjection,
+                positionProjection,
+                null,
+                quoteProjection,
+                riskLimitProjection,
+                registry));
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            new QueryService(
+                orderProjection,
+                positionProjection,
+                accountProjection,
+                null,
+                riskLimitProjection,
+                registry));
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            new QueryService(
+                orderProjection,
+                positionProjection,
+                accountProjection,
+                quoteProjection,
+                null,
+                registry));
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            new QueryService(
+                orderProjection,
+                positionProjection,
+                accountProjection,
+                quoteProjection,
+                riskLimitProjection,
+                null));
   }
 
   // ---------------------------------------------------------------------------
@@ -240,11 +286,42 @@ class QueryServiceTest {
   @Test
   void getLagSnapshot_delegatesToProjectionRegistry() {
     final Map<String, Long> lag = queryService.getLagSnapshot();
-    assertEquals(4, lag.size());
+    assertEquals(5, lag.size());
     assertTrue(lag.containsKey("order"));
     assertTrue(lag.containsKey("position"));
     assertTrue(lag.containsKey("account"));
     assertTrue(lag.containsKey("quote"));
+    // APP-62 R11 LOW Agent B #8 — risk-limits projection now registered by QueryService ctor.
+    assertTrue(lag.containsKey("risk-limits"));
+  }
+
+  // ---------------------------------------------------------------------------
+  // APP-62 §A — getAccountLimits delegation tests
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void getAccountLimits_byAccountId_returnsViewMatchingProjection() {
+    final int len =
+        SbeTestEncoder.encodeRiskLimitLoadedEvent(buf, 0, ++seqNo, 1L, 42L, 100L, 1_000L, 0L);
+    riskLimitProjection.onEvent(
+        seqNo, RiskLimitLoadedEventDecoder.TEMPLATE_ID, buf, HDR_LEN, len - HDR_LEN);
+
+    final var record = queryService.getAccountLimits(42L);
+    assertNotNull(record);
+    assertEquals(42L, record.accountId());
+    assertEquals(100L, record.maxOrderSize());
+    assertEquals(1_000L, record.maxOrderNotional());
+  }
+
+  @Test
+  void getAccountLimits_byAccountId_unknownAccount_returnsNull() {
+    assertNull(queryService.getAccountLimits(999L));
+  }
+
+  @Test
+  void getAccountLimits_byAccountCode_unknownAccount_returnsNull() {
+    // No AccountLoadedEvent dispatched for this code — bridge sees cold-boot fail-secure path.
+    assertNull(queryService.getAccountLimits("UNKNOWN-CODE"));
   }
 
   // ---------------------------------------------------------------------------

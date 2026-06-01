@@ -14,6 +14,8 @@ import com.trading.refdata.account.AccountCommandEncoder;
 import com.trading.refdata.account.YamlAccountLoader;
 import com.trading.refdata.currency.CurrencyCommandEncoder;
 import com.trading.refdata.currency.YamlCurrencyLoader;
+import com.trading.refdata.eligibility.SymbolEligibilityCommandEncoder;
+import com.trading.refdata.eligibility.YamlSymbolEligibilityLoader;
 import com.trading.refdata.risklimit.RiskLimitCommandEncoder;
 import com.trading.refdata.risklimit.YamlRiskLimitLoader;
 import io.aeron.Aeron;
@@ -106,7 +108,7 @@ public final class TradingEngineLauncher {
     LOG.info(
         "Configuration: fixHost={} fixPort={} nodeCount={} baseDir={} logDir={}"
             + " driverShutdownTimeoutSeconds={} accountsFile={} currenciesFile={}"
-            + " riskLimitsFile={} aeronDirPrefix='{}'",
+            + " riskLimitsFile={} symbolEligibilitiesFile={} aeronDirPrefix='{}'",
         config.fixHost(),
         config.fixPort(),
         config.nodeCount(),
@@ -116,6 +118,7 @@ public final class TradingEngineLauncher {
         config.accountsFile(),
         config.currenciesFile(),
         config.riskLimitsFile(),
+        config.symbolEligibilitiesFile(),
         config.aeronDirPrefix());
 
     // ===== Step 2: Create log directory =====
@@ -230,7 +233,8 @@ public final class TradingEngineLauncher {
           ingressEndpoints,
           config.accountsFile(),
           config.currenciesFile(),
-          config.riskLimitsFile());
+          config.riskLimitsFile(),
+          config.symbolEligibilitiesFile());
       LOG.info("Step 8 complete: reference data loaded in {}ms", elapsedMs(stepStart));
 
       // ===== Step 9a: Launch pricing service =====
@@ -343,7 +347,8 @@ public final class TradingEngineLauncher {
       final String ingressEndpoints,
       final String accountsFile,
       final String currenciesFile,
-      final String riskLimitsFile)
+      final String riskLimitsFile,
+      final String symbolEligibilitiesFile)
       throws ReferenceDataLoadException {
 
     final var collector = new ResponseCollector();
@@ -399,6 +404,20 @@ public final class TradingEngineLauncher {
           pollEgress,
           collector);
       LOG.info("Risk limit reference data loaded successfully");
+
+      // 4. Symbol eligibilities FOURTH (APP-62 §G). No FK on prior datasets — the §G check
+      // keys on the symbol hash directly. Loading last keeps the dataset order consistent with
+      // the conceptual layering: identity → accounting → admission policy. The fail-closed
+      // semantics in NewOrderSingleHandler require this load complete before the gateway begins
+      // forwarding orders, which the outer startup ordering (Step 8 before Step 10 gateway
+      // launch) already guarantees.
+      orchestrator.load(
+          new YamlSymbolEligibilityLoader(Path.of(symbolEligibilitiesFile)),
+          new SymbolEligibilityCommandEncoder(),
+          sender,
+          pollEgress,
+          collector);
+      LOG.info("Symbol eligibility reference data loaded successfully");
     }
   }
 
